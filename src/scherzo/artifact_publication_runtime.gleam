@@ -116,8 +116,11 @@ fn failure_requires_workspace_retention(
   failure: artifact_publication_recording.PublicationFailure,
 ) -> Bool {
   list.any(routes, fn(route) {
-    route.id == failure.publication_id
-    && route.mode == artifact_publication_config.CommitStackPublication
+    case route.publication {
+      artifact_publication_config.CommitStackPublicationRoute(_) ->
+        route.id == failure.publication_id
+      artifact_publication_config.FilePublicationRoute(_) -> False
+    }
   })
 }
 
@@ -178,10 +181,8 @@ pub fn publication_manifest_is_commit_stack(
     _ ->
       case manifest.dry_run_manifest {
         Some(planned) ->
-          case planned.commit_stack {
-            Some(_) -> True
-            None -> False
-          }
+          artifact_publication_planner.planned_publication_mode(planned)
+          == "commit_stack"
         None -> False
       }
   }

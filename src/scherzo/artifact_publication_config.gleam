@@ -67,11 +67,14 @@ pub type PublicationRoute {
     repository: String,
     required: Bool,
     pull_request: Option(PublicationPullRequestOverride),
-    mode: PublicationMode,
-    files: List(PublicationFileRoute),
-    commit_stack: Option(PublicationCommitStackRoute),
+    publication: PublicationRoutePublication,
     target: PublicationTarget,
   )
+}
+
+pub type PublicationRoutePublication {
+  FilePublicationRoute(files: List(PublicationFileRoute))
+  CommitStackPublicationRoute(commit_stack: PublicationCommitStackRoute)
 }
 
 pub type PublicationMode {
@@ -492,13 +495,8 @@ fn parse_publication_route(
     pull_request_node,
     "artifacts.publications[].pull_request",
   ))
-  use files <- result.try(parse_files_for_mode(
+  use publication <- result.try(parse_route_publication_for_mode(
     get_entry(entries, "files"),
-    mode,
-    contract,
-    id,
-  ))
-  use commit_stack <- result.try(parse_commit_stack_for_mode(
     get_entry(entries, "commit_stack"),
     mode,
     contract,
@@ -515,9 +513,7 @@ fn parse_publication_route(
     repository: repository,
     required: unwrap_bool(required, True),
     pull_request: pull_request,
-    mode: mode,
-    files: files,
-    commit_stack: commit_stack,
+    publication: publication,
     target: target,
   ))
 }
@@ -548,62 +544,85 @@ fn validate_pull_request_for_mode(
   Ok(Nil)
 }
 
-fn parse_files_for_mode(
-  node: Option(yay.Node),
+fn parse_route_publication_for_mode(
+  files_node: Option(yay.Node),
+  commit_stack_node: Option(yay.Node),
   mode: PublicationMode,
   contract: Option(workflow_contract.Contract),
   publication_id: String,
-) -> Result(List(PublicationFileRoute), PublicationConfigError) {
+) -> Result(PublicationRoutePublication, PublicationConfigError) {
   case mode {
-    FilePublication -> parse_publication_files(node, contract, publication_id)
-    CommitStackPublication ->
-      case node {
-        None -> Ok([])
-        Some(_) ->
-          error(
-            "commit_stack_publication_files_unsupported",
-            "publication "
-              <> publication_id
-              <> " uses mode commit_stack and must not declare files",
-          )
-      }
+    FilePublication -> {
+      use files <- result.try(parse_publication_files(
+        files_node,
+        contract,
+        publication_id,
+      ))
+      use _ <- result.try(reject_file_publication_commit_stack(
+        commit_stack_node,
+        publication_id,
+      ))
+      Ok(FilePublicationRoute(files: files))
+    }
+    CommitStackPublication -> {
+      use _ <- result.try(reject_commit_stack_publication_files(
+        files_node,
+        publication_id,
+      ))
+      use commit_stack <- result.try(require_publication_commit_stack(
+        commit_stack_node,
+        contract,
+        publication_id,
+      ))
+      Ok(CommitStackPublicationRoute(commit_stack: commit_stack))
+    }
   }
 }
 
-fn parse_commit_stack_for_mode(
+fn reject_file_publication_commit_stack(
   node: Option(yay.Node),
-  mode: PublicationMode,
+  publication_id: String,
+) -> Result(Nil, PublicationConfigError) {
+  case node {
+    None -> Ok(Nil)
+    Some(_) ->
+      error(
+        "file_publication_commit_stack_unsupported",
+        "publication "
+          <> publication_id
+          <> " must use mode commit_stack to declare commit_stack",
+      )
+  }
+}
+
+fn reject_commit_stack_publication_files(
+  node: Option(yay.Node),
+  publication_id: String,
+) -> Result(Nil, PublicationConfigError) {
+  case node {
+    None -> Ok(Nil)
+    Some(_) ->
+      error(
+        "commit_stack_publication_files_unsupported",
+        "publication "
+          <> publication_id
+          <> " uses mode commit_stack and must not declare files",
+      )
+  }
+}
+
+fn require_publication_commit_stack(
+  node: Option(yay.Node),
   contract: Option(workflow_contract.Contract),
   publication_id: String,
-) -> Result(Option(PublicationCommitStackRoute), PublicationConfigError) {
-  case mode {
-    FilePublication ->
-      case node {
-        None -> Ok(None)
-        Some(_) ->
-          error(
-            "file_publication_commit_stack_unsupported",
-            "publication "
-              <> publication_id
-              <> " must use mode commit_stack to declare commit_stack",
-          )
-      }
-    CommitStackPublication ->
-      case node {
-        None ->
-          error(
-            "missing_publication_commit_stack",
-            "artifacts.publications[].commit_stack is required for mode commit_stack",
-          )
-        Some(node) -> {
-          use route <- result.try(parse_publication_commit_stack(
-            node,
-            contract,
-            publication_id,
-          ))
-          Ok(Some(route))
-        }
-      }
+) -> Result(PublicationCommitStackRoute, PublicationConfigError) {
+  case node {
+    None ->
+      error(
+        "missing_publication_commit_stack",
+        "artifacts.publications[].commit_stack is required for mode commit_stack",
+      )
+    Some(node) -> parse_publication_commit_stack(node, contract, publication_id)
   }
 }
 

@@ -615,8 +615,8 @@ fn verify_driver_result_matches_commit_stack(
   DriverPublicationResult,
   artifact_publication_manifest.PublicationErrorInfo,
 ) {
-  case planned.commit_stack {
-    Some(stack) ->
+  case planned.publication {
+    artifact_publication_planner.PlannedCommitStackPublication(stack) ->
       case driver_result.head_revision == stack.stack.head_sha {
         True -> Ok(driver_result)
         False ->
@@ -631,7 +631,7 @@ fn verify_driver_result_matches_commit_stack(
             redaction_values,
           ))
       }
-    None -> Ok(driver_result)
+    artifact_publication_planner.PlannedFilePublication(_) -> Ok(driver_result)
   }
 }
 

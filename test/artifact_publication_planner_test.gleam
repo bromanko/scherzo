@@ -36,7 +36,7 @@ pub fn plans_leaf_output_publication_manifest_test() {
   assert manifest.repository_id == "github.docs"
   assert manifest.github_repo == Some("scherzo-systems/scherzo")
   assert manifest.branch == "scherzo/workflow.execplan/LIV-761/review_doc"
-  let assert [planned] = manifest.files
+  let assert [planned] = artifact_publication_planner.planned_files(manifest)
   assert planned.destination_path == "docs/plans/LIV-761.md"
   assert planned.source.ref == plan_ref()
   assert planned.source.sha256 == plan_sha()
@@ -109,7 +109,7 @@ pub fn plans_artifact_set_entry_publication_test() {
       dict.from_list([#("templates/publication.md", body_template())]),
     )
 
-  let assert [planned] = manifest.files
+  let assert [planned] = artifact_publication_planner.planned_files(manifest)
   assert planned.destination_path == "docs/review/LIV-761.md"
   assert planned.source.output == "exec_plan_bundle"
   assert planned.source.entry == Some("plan")
@@ -142,7 +142,7 @@ pub fn plans_generic_artifact_set_entry_publication_test() {
       dict.from_list([#("templates/publication.md", body_template())]),
     )
 
-  let assert [planned] = manifest.files
+  let assert [planned] = artifact_publication_planner.planned_files(manifest)
   assert planned.destination_path == "docs/plans/LIV-761.png"
   assert planned.source.output == "visual_artifacts"
   assert planned.source.entry == Some("screenshot")
@@ -176,7 +176,7 @@ pub fn plans_artifact_set_entry_can_render_destination_from_metadata_test() {
       dict.from_list([#("templates/publication.md", body_template())]),
     )
 
-  let assert [planned] = manifest.files
+  let assert [planned] = artifact_publication_planner.planned_files(manifest)
   assert planned.destination_path == "docs/review/custom/LIV-761-plan.md"
   let json = artifact_publication_planner.manifest_to_string(manifest)
   assert string.contains(
@@ -212,7 +212,7 @@ pub fn plans_materialized_execplan_bundle_entry_publication_test() {
       dict.from_list([#("templates/publication.md", body_template())]),
     )
 
-  let assert [planned] = manifest.files
+  let assert [planned] = artifact_publication_planner.planned_files(manifest)
   assert planned.destination_path == "docs/review/materialized/LIV-761-plan.md"
   assert planned.source.output == "exec_plan_bundle"
   assert planned.source.entry == Some("plan")
@@ -249,7 +249,8 @@ pub fn metadata_bearing_manifest_round_trips_through_decoder_test() {
   let json = artifact_publication_planner.manifest_to_string(manifest)
   let assert Ok(decoded) =
     artifact_publication_planner_decode.decode_manifest_json(json)
-  let assert [decoded_file] = decoded.files
+  let assert [decoded_file] =
+    artifact_publication_planner.planned_files(decoded)
   assert decoded_file.destination_path == "docs/review/custom/LIV-761-plan.md"
   assert metadata_destination_path(decoded_file.source.metadata)
     == Some("docs/review/custom/LIV-761-plan.md")
@@ -445,9 +446,10 @@ pub fn commit_stack_existing_pr_branch_plans_retained_target_test() {
     )
 
   assert manifest.branch == existing_branch()
-  assert manifest.files == []
+  assert artifact_publication_planner.planned_files(manifest) == []
   assert manifest.pull_request.enabled == False
-  let assert Some(_) = manifest.commit_stack
+  let assert Some(_) =
+    artifact_publication_planner.planned_commit_stack(manifest)
   let assert artifact_publication_planner.ExistingPrBranchTargetPlan(target) =
     manifest.target
   assert target.pr_number == 42
@@ -639,8 +641,9 @@ pub fn commit_stack_manifest_round_trips_through_decoder_test() {
   let assert Ok(decoded) =
     artifact_publication_planner_decode.decode_manifest_json(json)
   assert decoded.branch == existing_branch()
-  assert decoded.files == []
-  let assert Some(decoded_stack) = decoded.commit_stack
+  assert artifact_publication_planner.planned_files(decoded) == []
+  let assert Some(decoded_stack) =
+    artifact_publication_planner.planned_commit_stack(decoded)
   assert decoded_stack.output == "commit_stack"
   assert decoded_stack.manifest_ref == commit_stack_ref()
   assert decoded_stack.stack.head_sha == commit_stack_head_sha()
@@ -651,6 +654,46 @@ pub fn commit_stack_manifest_round_trips_through_decoder_test() {
     decoded.target
   assert target.pr_number == 42
   assert target.pr_url == "https://example.test/pr/42"
+}
+
+pub fn mixed_publication_manifest_rejected_by_decoder_test() {
+  let stack_contents = commit_stack_manifest_contents("scherzo-systems/scherzo")
+  let target_contents = existing_target_contents("scherzo-systems/scherzo")
+  let stack_store =
+    store_with_contents([
+      #(commit_stack_ref(), stack_contents),
+      #(existing_target_ref(), target_contents),
+    ])
+  let assert Ok(commit_stack_manifest) =
+    artifact_publication_planner.plan_publication(
+      commit_stack_output_manifest(stack_contents, target_contents),
+      repositories(),
+      commit_stack_existing_route(),
+      stack_store,
+      work(),
+      "run-1",
+      dict.new(),
+    )
+  let file_store = store_with_contents([#(plan_ref(), plan_contents())])
+  let assert Ok(file_manifest) =
+    artifact_publication_planner.plan_publication(
+      leaf_manifest(plan_sha(), plan_bytes()),
+      repositories(),
+      leaf_route(),
+      file_store,
+      work(),
+      "run-1",
+      dict.from_list([#("templates/publication.md", body_template())]),
+    )
+
+  let mixed_json =
+    manifest_json_with_commit_stack(
+      artifact_publication_planner.manifest_to_string(file_manifest),
+      artifact_publication_planner.manifest_to_string(commit_stack_manifest),
+    )
+  let assert Error(error) =
+    artifact_publication_planner_decode.decode_manifest_json(mixed_json)
+  assert error == "invalid_publication_manifest_json"
 }
 
 pub fn legacy_manifest_without_work_decodes_with_fallback_work_test() {
@@ -702,7 +745,7 @@ pub fn commit_stack_stable_branch_target_plans_driver_publication_test() {
 
   assert manifest.branch
     == "scherzo/workflow.implementation/LIV-761/conflict_resolution"
-  assert manifest.files == []
+  assert artifact_publication_planner.planned_files(manifest) == []
   assert manifest.pull_request.enabled == True
   assert manifest.pull_request.title == Some("LIV-761 publication")
   let assert Some(body) = manifest.pull_request.body
@@ -711,7 +754,8 @@ pub fn commit_stack_stable_branch_target_plans_driver_publication_test() {
   assert string.contains(body, "https://linear.example/LIV-761")
   let assert artifact_publication_planner.StableBranchTargetPlan =
     manifest.target
-  let assert Some(_) = manifest.commit_stack
+  let assert Some(_) =
+    artifact_publication_planner.planned_commit_stack(manifest)
 }
 
 pub fn commit_stack_artifact_rejects_malformed_payloads_test() {
@@ -1442,10 +1486,8 @@ fn commit_stack_route_with_target(
     repository: "github.docs",
     required: True,
     pull_request: None,
-    mode: artifact_publication_config.CommitStackPublication,
-    files: [],
-    commit_stack: Some(
-      artifact_publication_config.PublicationCommitStackRoute(
+    publication: artifact_publication_config.CommitStackPublicationRoute(
+      commit_stack: artifact_publication_config.PublicationCommitStackRoute(
         selector: artifact_publication_config.PublicationCommitStackSelector(
           output: "commit_stack",
         ),
@@ -1466,10 +1508,7 @@ fn bundle_entry_route() -> artifact_publication_config.PublicationRoute {
         body_template: Some("templates/publication.md"),
       ),
     ),
-    mode: artifact_publication_config.FilePublication,
-    commit_stack: None,
-    target: artifact_publication_config.StableBranchTarget,
-    files: [
+    publication: artifact_publication_config.FilePublicationRoute(files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
           output: "exec_plan_bundle",
@@ -1477,7 +1516,8 @@ fn bundle_entry_route() -> artifact_publication_config.PublicationRoute {
         ),
         path: "docs/review/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
-    ],
+    ]),
+    target: artifact_publication_config.StableBranchTarget,
   )
 }
 
@@ -1492,10 +1532,7 @@ fn bundle_entry_metadata_route() -> artifact_publication_config.PublicationRoute
         body_template: Some("templates/publication.md"),
       ),
     ),
-    mode: artifact_publication_config.FilePublication,
-    commit_stack: None,
-    target: artifact_publication_config.StableBranchTarget,
-    files: [
+    publication: artifact_publication_config.FilePublicationRoute(files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
           output: "exec_plan_bundle",
@@ -1503,7 +1540,8 @@ fn bundle_entry_metadata_route() -> artifact_publication_config.PublicationRoute
         ),
         path: "{{ artifact.metadata.publication.destination_path }}",
       ),
-    ],
+    ]),
+    target: artifact_publication_config.StableBranchTarget,
   )
 }
 
@@ -1520,10 +1558,7 @@ fn leaf_route_with_path(
         body_template: Some("templates/publication.md"),
       ),
     ),
-    mode: artifact_publication_config.FilePublication,
-    commit_stack: None,
-    target: artifact_publication_config.StableBranchTarget,
-    files: [
+    publication: artifact_publication_config.FilePublicationRoute(files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
           output: "review_doc",
@@ -1531,7 +1566,8 @@ fn leaf_route_with_path(
         ),
         path: path,
       ),
-    ],
+    ]),
+    target: artifact_publication_config.StableBranchTarget,
   )
 }
 
@@ -1549,10 +1585,7 @@ fn leaf_route_with_selector(
         body_template: Some("templates/publication.md"),
       ),
     ),
-    mode: artifact_publication_config.FilePublication,
-    commit_stack: None,
-    target: artifact_publication_config.StableBranchTarget,
-    files: [
+    publication: artifact_publication_config.FilePublicationRoute(files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
           output: output,
@@ -1560,7 +1593,8 @@ fn leaf_route_with_selector(
         ),
         path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
-    ],
+    ]),
+    target: artifact_publication_config.StableBranchTarget,
   )
 }
 
@@ -1575,10 +1609,7 @@ fn duplicate_path_route() -> artifact_publication_config.PublicationRoute {
         body_template: Some("templates/publication.md"),
       ),
     ),
-    mode: artifact_publication_config.FilePublication,
-    commit_stack: None,
-    target: artifact_publication_config.StableBranchTarget,
-    files: [
+    publication: artifact_publication_config.FilePublicationRoute(files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
           output: "review_doc",
@@ -1593,7 +1624,8 @@ fn duplicate_path_route() -> artifact_publication_config.PublicationRoute {
         ),
         path: "docs/dup.md",
       ),
-    ],
+    ]),
+    target: artifact_publication_config.StableBranchTarget,
   )
 }
 
@@ -2494,6 +2526,27 @@ fn manifest_json_without_work(payload: String) -> String {
   let assert Ok(#(prefix, _work_json)) =
     string.split_once(payload, on: ",\"work\":")
   prefix <> "}"
+}
+
+fn manifest_json_with_commit_stack(
+  file_manifest_json: String,
+  commit_stack_manifest_json: String,
+) -> String {
+  let commit_stack_json =
+    manifest_json_commit_stack_payload(commit_stack_manifest_json)
+  string.replace(
+    file_manifest_json,
+    each: "\"commit_stack\":null",
+    with: "\"commit_stack\":" <> commit_stack_json,
+  )
+}
+
+fn manifest_json_commit_stack_payload(payload: String) -> String {
+  let assert Ok(#(_, after_commit_stack)) =
+    string.split_once(payload, on: ",\"commit_stack\":")
+  let assert Ok(#(commit_stack_json, _)) =
+    string.split_once(after_commit_stack, on: ",\"work\":")
+  commit_stack_json
 }
 
 fn body_template() -> String {

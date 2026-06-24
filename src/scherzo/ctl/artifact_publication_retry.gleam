@@ -450,7 +450,10 @@ fn routes_require_commit_stack(
   routes: List(artifact_publication_config.PublicationRoute),
 ) -> Bool {
   list.any(routes, fn(route) {
-    route.mode == artifact_publication_config.CommitStackPublication
+    case route.publication {
+      artifact_publication_config.CommitStackPublicationRoute(_) -> True
+      artifact_publication_config.FilePublicationRoute(_) -> False
+    }
   })
 }
 

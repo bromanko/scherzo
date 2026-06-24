@@ -133,7 +133,9 @@ pub fn planned_manifest(
     base_revision: None,
     head_revision: None,
     change_id: None,
-    selected_paths: destination_paths(planned.files),
+    selected_paths: destination_paths(
+      artifact_publication_planner.planned_files(planned),
+    ),
     changed_paths: [],
     removed_paths: [],
     dry_run_manifest: Some(planned),
@@ -172,7 +174,9 @@ pub fn published_manifest(
     base_revision: None,
     head_revision: Some(commit_sha),
     change_id: None,
-    selected_paths: destination_paths(planned.files),
+    selected_paths: destination_paths(
+      artifact_publication_planner.planned_files(planned),
+    ),
     changed_paths: changed_paths,
     removed_paths: removed_paths,
     dry_run_manifest: Some(planned),
@@ -210,7 +214,9 @@ pub fn unchanged_manifest(
     base_revision: None,
     head_revision: commit_sha,
     change_id: None,
-    selected_paths: destination_paths(planned.files),
+    selected_paths: destination_paths(
+      artifact_publication_planner.planned_files(planned),
+    ),
     changed_paths: [],
     removed_paths: removed_paths,
     dry_run_manifest: Some(planned),
@@ -292,7 +298,9 @@ pub fn failed_from_planned_manifest(
     base_revision: None,
     head_revision: commit_sha,
     change_id: None,
-    selected_paths: destination_paths(planned.files),
+    selected_paths: destination_paths(
+      artifact_publication_planner.planned_files(planned),
+    ),
     changed_paths: changed_paths,
     removed_paths: removed_paths,
     dry_run_manifest: Some(planned),
@@ -479,10 +487,7 @@ fn option_int_to_json(value: Option(Int)) -> json.Json {
 fn publication_mode_for_planned(
   planned: artifact_publication_planner.DryRunPublicationManifest,
 ) -> Option(String) {
-  case planned.commit_stack {
-    Some(_) -> Some("commit_stack")
-    None -> Some("files")
-  }
+  Some(artifact_publication_planner.planned_publication_mode(planned))
 }
 
 fn planned_pr_number(

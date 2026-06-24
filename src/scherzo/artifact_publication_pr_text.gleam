@@ -1,5 +1,5 @@
 import gleam/list
-import gleam/option.{type Option, Some}
+import gleam/option.{Some}
 import gleam/string
 import scherzo/artifact_publication_planner
 
@@ -83,9 +83,13 @@ fn fallback_body(
 fn files_or_commit_stack_markdown(
   manifest: artifact_publication_planner.DryRunPublicationManifest,
 ) -> String {
-  case manifest.files {
-    [] -> commit_stack_markdown(manifest.commit_stack)
-    files -> planned_files_markdown(files)
+  case manifest.publication {
+    artifact_publication_planner.PlannedFilePublication([]) ->
+      unavailable_artifact_markdown()
+    artifact_publication_planner.PlannedFilePublication(files) ->
+      planned_files_markdown(files)
+    artifact_publication_planner.PlannedCommitStackPublication(commit_stack) ->
+      commit_stack_markdown(commit_stack)
   }
 }
 
@@ -108,24 +112,24 @@ fn planned_files_markdown(
 }
 
 fn commit_stack_markdown(
-  commit_stack: Option(artifact_publication_planner.PlannedCommitStack),
+  stack: artifact_publication_planner.PlannedCommitStack,
 ) -> String {
-  case commit_stack {
-    Some(stack) ->
-      "- Commit stack output: `"
-      <> stack.output
-      <> "`\n"
-      <> "- Base: `"
-      <> stack.stack.base_ref
-      <> "` @ `"
-      <> stack.stack.base_sha
-      <> "`\n"
-      <> "- Head: `"
-      <> stack.stack.head_sha
-      <> "`\n"
-      <> "- Changed files: review the GitHub PR Files changed tab."
-    _ -> "- No published artifact or changed-file list is available."
-  }
+  "- Commit stack output: `"
+  <> stack.output
+  <> "`\n"
+  <> "- Base: `"
+  <> stack.stack.base_ref
+  <> "` @ `"
+  <> stack.stack.base_sha
+  <> "`\n"
+  <> "- Head: `"
+  <> stack.stack.head_sha
+  <> "`\n"
+  <> "- Changed files: review the GitHub PR Files changed tab."
+}
+
+fn unavailable_artifact_markdown() -> String {
+  "- No published artifact or changed-file list is available."
 }
 
 fn work_label(work: artifact_publication_planner.PublicationWork) -> String {
