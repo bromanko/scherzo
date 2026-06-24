@@ -222,8 +222,9 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   assert route.id == "merge_conflict_resolution_commit_stack"
   assert route.repository == "github.code"
   assert route.required == True
-  assert route.mode == artifact_publication_config.CommitStackPublication
-  let assert Some(commit_stack) = route.commit_stack
+  let assert artifact_publication_config.CommitStackPublicationRoute(
+    commit_stack: commit_stack,
+  ) = route.publication
   let artifact_publication_config.PublicationCommitStackRoute(selector:) =
     commit_stack
   let artifact_publication_config.PublicationCommitStackSelector(output:) =

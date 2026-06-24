@@ -629,8 +629,8 @@ fn execute_planned_publication(
   runner: command_runner.Runner,
   publication_driver: Option(WorkspacePublicationDriver),
 ) -> Result(RouteExecutionOutcome, String) {
-  case planned.commit_stack {
-    Some(_) ->
+  case planned.publication {
+    artifact_publication_planner.PlannedCommitStackPublication(_) ->
       execute_commit_stack_publication(
         route,
         workflow_id,
@@ -641,7 +641,7 @@ fn execute_planned_publication(
         runner,
         publication_driver,
       )
-    None ->
+    artifact_publication_planner.PlannedFilePublication(_) ->
       execute_unsupported_file_publication(
         route,
         workflow_id,

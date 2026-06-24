@@ -64,8 +64,10 @@ pub fn parses_artifact_publications_test() {
       title: Some("Publish {{ publication.id }}"),
       body_template: Some("docs/pr-body.md"),
     ))
+  let assert artifact_publication_config.FilePublicationRoute(files) =
+    route.publication
   let assert [artifact_publication_config.PublicationFileRoute(selector, path)] =
-    route.files
+    files
   assert selector
     == artifact_publication_config.PublicationFileSelector(
       output: "exec_plan_bundle",
@@ -81,8 +83,9 @@ pub fn parses_commit_stack_existing_pr_branch_publication_test() {
     )
 
   let assert [route] = dag.publication_routes
-  assert route.mode == artifact_publication_config.CommitStackPublication
-  let assert Some(commit_stack) = route.commit_stack
+  let assert artifact_publication_config.CommitStackPublicationRoute(
+    commit_stack: commit_stack,
+  ) = route.publication
   let artifact_publication_config.PublicationCommitStackRoute(selector:) =
     commit_stack
   assert selector
@@ -102,6 +105,20 @@ pub fn rejects_commit_stack_publication_files_selector_test() {
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      files:\n        - select:\n            output: commit_stack\n          path: tmp/commit-stack.json\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
     )
     == "commit_stack_publication_files_unsupported"
+}
+
+pub fn rejects_file_publication_commit_stack_selector_test() {
+  assert error_code(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      mode: files\n      files:\n        - select:\n            output: exec_plan_bundle\n            entry: plan\n          path: docs/plans/{{ work.identifier }}.md\n      commit_stack:\n        select:\n          output: exec_plan_bundle\n",
+    )
+    == "file_publication_commit_stack_unsupported"
+}
+
+pub fn rejects_commit_stack_publication_without_commit_stack_selector_test() {
+  assert error_code(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
+    )
+    == "missing_publication_commit_stack"
 }
 
 pub fn parses_commit_stack_publication_pull_request_override_test() {
@@ -146,7 +163,8 @@ pub fn parses_commit_stack_stable_branch_publication_test() {
     )
 
   let assert [route] = dag.publication_routes
-  assert route.mode == artifact_publication_config.CommitStackPublication
+  let assert artifact_publication_config.CommitStackPublicationRoute(_) =
+    route.publication
   let assert artifact_publication_config.StableBranchTarget = route.target
 }
 

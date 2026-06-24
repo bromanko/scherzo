@@ -307,7 +307,7 @@ pub fn record_failed_attempt(
           message: message,
         ),
       ),
-      publication_mode: Some(publication_mode_to_string(route.mode)),
+      publication_mode: Some(route_publication_mode_to_string(route)),
     )
   use attempt <- result.try(write_attempt(
     route,
@@ -324,12 +324,12 @@ pub fn record_failed_attempt(
   Ok(#(PublicationFailure(route.id, code, message, route.required), attempt))
 }
 
-fn publication_mode_to_string(
-  mode: artifact_publication_config.PublicationMode,
+fn route_publication_mode_to_string(
+  route: artifact_publication_config.PublicationRoute,
 ) -> String {
-  case mode {
-    artifact_publication_config.FilePublication -> "files"
-    artifact_publication_config.CommitStackPublication -> "commit_stack"
+  case route.publication {
+    artifact_publication_config.FilePublicationRoute(_) -> "files"
+    artifact_publication_config.CommitStackPublicationRoute(_) -> "commit_stack"
   }
 }
 

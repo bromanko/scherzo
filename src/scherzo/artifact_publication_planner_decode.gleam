@@ -1,6 +1,6 @@
 import gleam/dynamic/decode
 import gleam/json
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/artifact_publication_planner
 import scherzo/commit_stack_artifact
@@ -47,25 +47,51 @@ pub fn dry_run_manifest_decoder() -> decode.Decoder(
   let _ = schema_version
   let _ = artifact_type
   let #(repository_kind, repository_id, github_repo, github_base) = repository
-  decode.success(artifact_publication_planner.DryRunPublicationManifest(
-    run_id: run_id,
-    workflow_id: workflow_id,
-    publication_id: publication_id,
-    series_id: series_id,
-    version_id: version_id,
-    required: required,
-    dry_run: dry_run,
-    repository_kind: repository_kind,
-    repository_id: repository_id,
-    github_repo: github_repo,
-    github_base: github_base,
-    branch: branch,
-    target: target,
-    pull_request: pull_request,
-    files: files,
-    commit_stack: commit_stack,
-    work: work,
-  ))
+  let build_manifest = fn(publication) {
+    artifact_publication_planner.DryRunPublicationManifest(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      publication_id: publication_id,
+      series_id: series_id,
+      version_id: version_id,
+      required: required,
+      dry_run: dry_run,
+      repository_kind: repository_kind,
+      repository_id: repository_id,
+      github_repo: github_repo,
+      github_base: github_base,
+      branch: branch,
+      target: target,
+      pull_request: pull_request,
+      publication: publication,
+      work: work,
+    )
+  }
+  case decode_publication(files, commit_stack) {
+    Ok(publication) -> decode.success(build_manifest(publication))
+    Error(Nil) ->
+      decode.failure(
+        build_manifest(
+          artifact_publication_planner.PlannedFilePublication(files: []),
+        ),
+        expected: "publication manifest must not include both files and commit_stack",
+      )
+  }
+}
+
+fn decode_publication(
+  files: List(artifact_publication_planner.PlannedPublicationFile),
+  commit_stack: Option(artifact_publication_planner.PlannedCommitStack),
+) -> Result(artifact_publication_planner.PlannedPublication, Nil) {
+  case files, commit_stack {
+    [_, ..], Some(_) -> Error(Nil)
+    _, Some(commit_stack) ->
+      Ok(artifact_publication_planner.PlannedCommitStackPublication(
+        commit_stack: commit_stack,
+      ))
+    _, None ->
+      Ok(artifact_publication_planner.PlannedFilePublication(files: files))
+  }
 }
 
 fn publication_work_decoder() -> decode.Decoder(
