@@ -43,13 +43,17 @@ pub type ContractDescriptorSpec {
   )
 }
 
+pub type SourceRequirement(source) {
+  Required(source)
+  Optional(Option(source))
+}
+
 pub type InputSpec {
   InputSpec(
     name: String,
     type_: ContractType,
-    required: Bool,
     description: Option(String),
-    source: Option(InputSource),
+    source: SourceRequirement(InputSource),
     descriptor: Option(ContractDescriptorSpec),
   )
 }
@@ -58,9 +62,8 @@ pub type ContextSpec {
   ContextSpec(
     name: String,
     type_: ContractType,
-    required: Bool,
     description: Option(String),
-    source: Option(ContextSource),
+    source: SourceRequirement(ContextSource),
     descriptor: Option(ContractDescriptorSpec),
   )
 }
@@ -69,9 +72,8 @@ pub type OutputSpec {
   OutputSpec(
     name: String,
     type_: ContractType,
-    required: Bool,
     description: Option(String),
-    source: Option(OutputSource),
+    source: SourceRequirement(OutputSource),
     descriptor: Option(ContractDescriptorSpec),
   )
 }
@@ -112,6 +114,22 @@ pub type ContractError {
   ContractError(code: String, message: String)
 }
 
+pub fn requirement_required(requirement: SourceRequirement(source)) -> Bool {
+  case requirement {
+    Required(_) -> True
+    Optional(_) -> False
+  }
+}
+
+pub fn requirement_source(
+  requirement: SourceRequirement(source),
+) -> Option(source) {
+  case requirement {
+    Required(source) -> Some(source)
+    Optional(source) -> source
+  }
+}
+
 pub fn parse(root: yay.Node) -> Result(Option(Contract), ContractError) {
   case get_node(root, "contract") {
     None -> Ok(None)
@@ -125,10 +143,7 @@ pub fn parse(root: yay.Node) -> Result(Option(Contract), ContractError) {
 pub fn validate_static(contract: Contract) -> Result(Nil, ContractError) {
   use Nil <- result.try(validate_unique_inputs(contract.inputs, []))
   use Nil <- result.try(validate_unique_context(contract.context, []))
-  use Nil <- result.try(validate_unique_outputs(contract.outputs, []))
-  use Nil <- result.try(validate_required_inputs(contract.inputs))
-  use Nil <- result.try(validate_required_context(contract.context))
-  validate_required_outputs(contract.outputs)
+  validate_unique_outputs(contract.outputs, [])
 }
 
 pub fn type_to_string(type_: ContractType) -> String {
@@ -584,7 +599,7 @@ fn read_input_spec(
     yay.NodeStr(raw_type) -> {
       use type_ <- result.try(type_from_string(raw_type))
       let descriptor = Some(legacy_alias_to_descriptor(type_))
-      Ok(InputSpec(name, type_, False, None, None, descriptor))
+      Ok(InputSpec(name, type_, None, Optional(None), descriptor))
     }
     yay.NodeMap(_) -> {
       use entries <- result.try(read_map_entries(
@@ -609,7 +624,13 @@ fn read_input_spec(
         name,
       ))
       use source <- result.try(read_input_source_option(entries, name))
-      Ok(InputSpec(name, type_, required, description, source, descriptor))
+      use source <- result.try(source_requirement(
+        required,
+        source,
+        "input",
+        name,
+      ))
+      Ok(InputSpec(name, type_, description, source, descriptor))
     }
     _ ->
       error(
@@ -627,7 +648,7 @@ fn read_context_spec(
     yay.NodeStr(raw_type) -> {
       use type_ <- result.try(type_from_string(raw_type))
       let descriptor = Some(legacy_alias_to_descriptor(type_))
-      Ok(ContextSpec(name, type_, False, None, None, descriptor))
+      Ok(ContextSpec(name, type_, None, Optional(None), descriptor))
     }
     yay.NodeMap(_) -> {
       use entries <- result.try(read_map_entries(
@@ -652,7 +673,13 @@ fn read_context_spec(
         name,
       ))
       use source <- result.try(read_context_source_option(entries, name))
-      Ok(ContextSpec(name, type_, required, description, source, descriptor))
+      use source <- result.try(source_requirement(
+        required,
+        source,
+        "context",
+        name,
+      ))
+      Ok(ContextSpec(name, type_, description, source, descriptor))
     }
     _ ->
       error(
@@ -672,9 +699,8 @@ fn read_output_spec(
       Ok(OutputSpec(
         name,
         type_,
-        False,
         None,
-        None,
+        Optional(None),
         Some(legacy_alias_to_descriptor(type_)),
       ))
     }
@@ -701,7 +727,13 @@ fn read_output_spec(
         name,
       ))
       use source <- result.try(read_output_source_option(entries, name))
-      Ok(OutputSpec(name, type_, required, description, source, descriptor))
+      use source <- result.try(source_requirement(
+        required,
+        source,
+        "output",
+        name,
+      ))
+      Ok(OutputSpec(name, type_, description, source, descriptor))
     }
     _ ->
       error(
@@ -899,6 +931,23 @@ fn read_entry_required(
         "contract_entry_required_not_bool",
         "contract " <> kind <> " " <> name <> " required must be a boolean",
       )
+  }
+}
+
+fn source_requirement(
+  required: Bool,
+  source: Option(source),
+  kind: String,
+  name: String,
+) -> Result(SourceRequirement(source), ContractError) {
+  case required, source {
+    True, Some(source) -> Ok(Required(source))
+    True, None ->
+      error(
+        "contract_required_" <> kind <> "_missing_source",
+        "required contract " <> kind <> " " <> name <> " must declare a source",
+      )
+    False, source -> Ok(Optional(source))
   }
 }
 
@@ -1413,68 +1462,13 @@ fn validate_unique_outputs(
   }
 }
 
-fn validate_required_inputs(
-  inputs: List(InputSpec),
-) -> Result(Nil, ContractError) {
-  case inputs {
-    [] -> Ok(Nil)
-    [input, ..rest] ->
-      case input.required, input.source {
-        True, None ->
-          error(
-            "contract_required_input_missing_source",
-            "required contract input " <> input.name <> " must declare a source",
-          )
-        _, _ -> validate_required_inputs(rest)
-      }
-  }
-}
-
-fn validate_required_context(
-  context: List(ContextSpec),
-) -> Result(Nil, ContractError) {
-  case context {
-    [] -> Ok(Nil)
-    [value, ..rest] ->
-      case value.required, value.source {
-        True, None ->
-          error(
-            "contract_required_context_missing_source",
-            "required contract context "
-              <> value.name
-              <> " must declare a source",
-          )
-        _, _ -> validate_required_context(rest)
-      }
-  }
-}
-
-fn validate_required_outputs(
-  outputs: List(OutputSpec),
-) -> Result(Nil, ContractError) {
-  case outputs {
-    [] -> Ok(Nil)
-    [output, ..rest] ->
-      case output.required, output.source {
-        True, None ->
-          error(
-            "contract_required_output_missing_source",
-            "required contract output "
-              <> output.name
-              <> " must declare a source",
-          )
-        _, _ -> validate_required_outputs(rest)
-      }
-  }
-}
-
 fn input_to_json(input: InputSpec) -> json.Json {
   let fields = [
     #("name", json.string(input.name)),
     #("type", json.string(type_to_string(input.type_))),
-    #("required", json.bool(input.required)),
+    #("required", json.bool(requirement_required(input.source))),
     #("description", option_string_to_json(input.description)),
-    #("source", option_input_source_to_json(input.source)),
+    #("source", option_input_source_to_json(requirement_source(input.source))),
   ]
   let fields = put_descriptor_fields(fields, input.descriptor)
   json.object(fields)
@@ -1484,9 +1478,12 @@ fn context_to_json(context: ContextSpec) -> json.Json {
   let fields = [
     #("name", json.string(context.name)),
     #("type", json.string(type_to_string(context.type_))),
-    #("required", json.bool(context.required)),
+    #("required", json.bool(requirement_required(context.source))),
     #("description", option_string_to_json(context.description)),
-    #("source", option_context_source_to_json(context.source)),
+    #(
+      "source",
+      option_context_source_to_json(requirement_source(context.source)),
+    ),
   ]
   let fields = put_descriptor_fields(fields, context.descriptor)
   json.object(fields)
@@ -1496,9 +1493,9 @@ fn output_to_json(output: OutputSpec) -> json.Json {
   let fields = [
     #("name", json.string(output.name)),
     #("type", json.string(type_to_string(output.type_))),
-    #("required", json.bool(output.required)),
+    #("required", json.bool(requirement_required(output.source))),
     #("description", option_string_to_json(output.description)),
-    #("source", option_output_source_to_json(output.source)),
+    #("source", option_output_source_to_json(requirement_source(output.source))),
   ]
   let fields = put_descriptor_fields(fields, output.descriptor)
   json.object(fields)

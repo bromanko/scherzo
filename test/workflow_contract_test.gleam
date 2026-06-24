@@ -1,6 +1,6 @@
 import gleam/dict
 import gleam/json
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
@@ -24,6 +24,16 @@ fn error_code(source: String) -> String {
   let assert Error(workflow_contract.ContractError(code, _)) =
     workflow_contract.parse(root(source))
   code
+}
+
+fn required(requirement: workflow_contract.SourceRequirement(source)) -> Bool {
+  workflow_contract.requirement_required(requirement)
+}
+
+fn source(
+  requirement: workflow_contract.SourceRequirement(source),
+) -> Option(source) {
+  workflow_contract.requirement_source(requirement)
 }
 
 fn minimal_contract(body: String) -> String {
@@ -84,14 +94,14 @@ pub fn parses_valid_research_contract_test() {
   let assert [prompt, attachments] = contract.inputs
   assert prompt.name == "prompt"
   assert prompt.type_ == workflow_contract.Text
-  assert prompt.required
-  assert prompt.source == Some(workflow_contract.IssueContext)
+  assert required(prompt.source)
+  assert source(prompt.source) == Some(workflow_contract.IssueContext)
   assert attachments.name == "attachments"
-  assert attachments.required == False
+  assert !required(attachments.source)
   let assert [findings] = contract.outputs
   assert findings.name == "findings"
   assert findings.type_ == workflow_contract.DocumentMarkdown
-  assert findings.source
+  assert source(findings.source)
     == Some(workflow_contract.StepField(
       "collect_findings",
       workflow_contract.Stdout,
@@ -107,6 +117,14 @@ pub fn rejects_invalid_contract_shapes_test() {
       "  outputs:\n    findings:\n      type: document.markdown\n      required: false\n      primary: true\n",
     ))
     == "contract_primary_not_supported"
+  assert error_code(minimal_contract(
+      "  inputs:\n    prompt:\n      type: text\n      required: true\n",
+    ))
+    == "contract_required_input_missing_source"
+  assert error_code(minimal_contract(
+      "  context:\n    base_ref:\n      type: git_ref\n      required: true\n",
+    ))
+    == "contract_required_context_missing_source"
   assert error_code(minimal_contract(
       "  outputs:\n    findings:\n      type: document.markdown\n      required: true\n",
     ))
@@ -145,14 +163,16 @@ pub fn parses_input_and_context_sources_test() {
       "  inputs:\n    prompt:\n      type: text\n      source: issue_context\n    scheduled:\n      type: text\n      source: scheduled_context\n    plan:\n      type: exec_plan\n      source: mapped_output\n    literal_prompt:\n      type: text\n      source:\n        type: literal\n        value: hi\n  context:\n    base_ref:\n      type: git_ref\n      source: workspace_driver_base\n    mapped_base:\n      type: git_ref\n      required: true\n      source: mapped_output\n    literal_base:\n      type: git_ref\n      required: true\n      source:\n        type: literal\n        value: feature/liv-292\n",
     ))
   let assert [prompt, scheduled, plan, literal_prompt] = contract.inputs
-  assert prompt.source == Some(workflow_contract.IssueContext)
-  assert scheduled.source == Some(workflow_contract.ScheduledContext)
-  assert plan.source == Some(workflow_contract.MappedOutputSource)
-  assert literal_prompt.source == Some(workflow_contract.LiteralInput("hi"))
+  assert source(prompt.source) == Some(workflow_contract.IssueContext)
+  assert source(scheduled.source) == Some(workflow_contract.ScheduledContext)
+  assert source(plan.source) == Some(workflow_contract.MappedOutputSource)
+  assert source(literal_prompt.source)
+    == Some(workflow_contract.LiteralInput("hi"))
   let assert [base_ref, mapped_base, literal_base] = contract.context
-  assert base_ref.source == Some(workflow_contract.WorkspaceDriverBase)
-  assert mapped_base.source == Some(workflow_contract.MappedOutputContext)
-  assert literal_base.source
+  assert source(base_ref.source) == Some(workflow_contract.WorkspaceDriverBase)
+  assert source(mapped_base.source)
+    == Some(workflow_contract.MappedOutputContext)
+  assert source(literal_base.source)
     == Some(workflow_contract.LiteralContext("feature/liv-292"))
 }
 
@@ -269,41 +289,41 @@ pub fn parses_output_sources_test() {
     pr,
     branch,
   ] = contract.outputs
-  assert stdout_doc.source
+  assert source(stdout_doc.source)
     == Some(workflow_contract.StepField(
       "collect_findings",
       workflow_contract.Stdout,
     ))
-  assert final_plan.source
+  assert source(final_plan.source)
     == Some(workflow_contract.StepField(
       "draft_execplan",
       workflow_contract.FinalResponse,
     ))
-  assert structured_change.source
+  assert source(structured_change.source)
     == Some(workflow_contract.StructuredOutput(
       "summarize_change",
       "code_change",
     ))
-  assert inline_change.source
+  assert source(inline_change.source)
     == Some(workflow_contract.InlineJson("summarize_change", "code_change"))
-  assert bundle.source
+  assert source(bundle.source)
     == Some(workflow_contract.StepFile(
       "materialize_bundle",
       "tmp/execplan-bundle.json",
     ))
-  assert pack.source
+  assert source(pack.source)
     == Some(workflow_contract.StepFile(
       "materialize_pack",
       "tmp/execplan-implementation-pack.json",
     ))
-  assert code_bundle.source
+  assert source(code_bundle.source)
     == Some(workflow_contract.StepFile(
       "materialize_code_change_bundle",
       "tmp/execplan-code-change-bundle.json",
     ))
-  assert pr.source
+  assert source(pr.source)
     == Some(workflow_contract.StaticUrl("https://example.invalid/pr/1"))
-  assert branch.source
+  assert source(branch.source)
     == Some(workflow_contract.StaticGitRef("feature/liv-292"))
 }
 
