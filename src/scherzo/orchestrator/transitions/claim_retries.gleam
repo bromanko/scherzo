@@ -86,18 +86,11 @@ fn restore_retry_cancellation(
     None -> previous_retry.delay_ms
   }
   let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      retry_attempts: dict.insert(
-        state.runtime.retry_attempts,
-        task_identity,
-        previous_retry,
-      ),
-      claimed: dict.insert(
-        state.runtime.claimed,
-        task_identity,
-        issue.identifier,
-      ),
+    orchestrator_state.mark_task_retrying(
+      state.runtime,
+      task_identity,
+      previous_retry,
+      issue.identifier,
     )
   let state = transition_types.State(..state, runtime: runtime) |> sync_state
   #(state, [

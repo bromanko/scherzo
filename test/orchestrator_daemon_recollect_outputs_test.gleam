@@ -50,7 +50,7 @@ pub fn recollect_outputs_daemon_applies_without_worker_or_terminal_records_test(
     daemon.apply_operator_command(
       started.data,
       command.RecollectWorkflowOutputs("run-1"),
-      1000,
+      5000,
     )
 
   let after = ledger_kinds(root)
@@ -220,6 +220,42 @@ pub fn recollect_outputs_daemon_is_idempotent_when_latest_manifest_valid_test() 
   assert command.status_to_string(result.status) == "applied"
   let assert Some(message) = result.message
   assert string.contains(message, "workflow outputs already valid for run-1")
+  assert after == before
+  assert process.receive(worker_subject, within: 20) == Error(Nil)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn recollect_outputs_daemon_rejects_current_workflow_unavailable_without_mutation_test() {
+  let dir = "test/tmp/daemon-recollect-outputs/workflow-unavailable"
+  let issue = issue()
+  let #(workflow_path, root) = write_recollect_workflow(dir)
+  let _seed = seed_completed_run(workflow_path, root, issue, False)
+  let current_issue = tracker_issue.Issue(..issue, labels: ["workflow:missing"])
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      tracker_issue_only(current_issue),
+      hub_subject,
+      worker_subject,
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let before = ledger_kinds(root)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RecollectWorkflowOutputs("run-1"),
+      1000,
+    )
+
+  let after = ledger_kinds(root)
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("workflow_unavailable")
+  let assert Some(message) = result.message
+  assert string.contains(message, "unknown_workflow_label")
   assert after == before
   assert process.receive(worker_subject, within: 20) == Error(Nil)
 

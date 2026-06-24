@@ -3756,7 +3756,9 @@ fn issue_for_id(
               case dict.get(state.pending_review_lane_preflights, identity) {
                 Ok(pending) -> Ok(pending.issue)
                 Error(Nil) ->
-                  case dict.get(state.runtime.completed, identity) {
+                  case
+                    orchestrator_state.completed_for(state.runtime, identity)
+                  {
                     Ok(issue) -> Ok(issue)
                     Error(Nil) -> fetch_issue_by_id(state, issue_id)
                   }
@@ -3807,7 +3809,7 @@ fn local_issues_with_identifier(
     state.pending_review_lane_preflights
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
-  let completed = state.runtime.completed |> dict.values
+  let completed = orchestrator_state.completed_issues(state.runtime)
   list.append(
     running,
     list.append(
@@ -4965,14 +4967,9 @@ fn park_dispatch_recovery_rejection(
       parked_at_ms: state.dependencies.now_ms(),
     )
   let identity = orchestrator_state.task_ref_identity(task_ref)
-  let state =
-    State(
-      ..state,
-      runtime: orchestrator_state.RuntimeState(
-        ..state.runtime,
-        parked: dict.insert(state.runtime.parked, identity, parked),
-      ),
-    )
+  let runtime =
+    orchestrator_state.mark_task_parked(state.runtime, identity, parked)
+  let state = State(..state, runtime: runtime)
   let state = transition_park_issue(state, parked, None)
   let state = case string.trim(message) == "" {
     True -> state

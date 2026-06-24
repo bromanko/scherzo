@@ -21,7 +21,7 @@ pub fn fixture_state_satisfies_transition_invariants_test() {
   )
 }
 
-pub fn completed_history_can_coexist_with_running_continuation_test() {
+pub fn completed_index_without_completed_lifecycle_reports_error_test() {
   let issue = orchestrator_transition_test.fixture_issue()
   let state = state_with_running_worker(issue)
   let task_identity = orchestrator_state.issue_identity(issue)
@@ -30,11 +30,13 @@ pub fn completed_history_can_coexist_with_running_continuation_test() {
       ..state,
       runtime: orchestrator_state.RuntimeState(
         ..state.runtime,
-        completed: dict.from_list([#(task_identity, issue)]),
+        completed: dict.from_list([
+          #(task_identity, orchestrator_state.CompletedEntry(issue, 10)),
+        ]),
       ),
     )
 
-  invariant_helpers.assert_valid_state(state)
+  invariant_helpers.assert_state_error(state, "completed_lifecycle_mismatch")
 }
 
 pub fn running_and_parked_conflict_reports_clear_error_test() {
@@ -353,21 +355,18 @@ fn state_with_running_worker(
 ) -> transition_types.State {
   let task_ref = task.from_legacy_issue(issue).ref
   let task_identity = orchestrator_state.task_ref_identity(task_ref)
+  let running =
+    orchestrator_state.RunningEntry(
+      task: task.from_legacy_issue(issue),
+      issue: issue,
+      workspace_path: "test/tmp/workspaces/ABC-1",
+      session: None,
+    )
   let runtime =
-    orchestrator_state.RuntimeState(
-      ..orchestrator_transition_test.fixture_runtime(),
-      running: dict.from_list([
-        #(
-          task_identity,
-          orchestrator_state.RunningEntry(
-            task: task.from_legacy_issue(issue),
-            issue: issue,
-            workspace_path: "test/tmp/workspaces/ABC-1",
-            session: None,
-          ),
-        ),
-      ]),
-      claimed: dict.from_list([#(task_identity, issue.identifier)]),
+    orchestrator_state.mark_task_running(
+      orchestrator_transition_test.fixture_runtime(),
+      task_identity,
+      running,
     )
   let entry =
     transition_types.WorkerEntry(

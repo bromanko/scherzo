@@ -356,10 +356,8 @@ fn reset_issue_for_operator_retry(
   let identity = orchestrator_state.issue_identity(issue)
   let runtime =
     orchestrator_state.RuntimeState(
-      ..state.runtime,
-      retry_attempts: dict.delete(state.runtime.retry_attempts, identity),
+      ..orchestrator_state.clear_task_lifecycle(state.runtime, identity),
       issue_counters: dict.delete(state.runtime.issue_counters, identity),
-      completed: dict.delete(state.runtime.completed, identity),
     )
   transition_types.State(..state, runtime: runtime)
 }
@@ -438,12 +436,8 @@ fn park_issue(
     )
   let runtime =
     orchestrator_state.RuntimeState(
-      ..state.runtime,
-      running: dict.delete(state.runtime.running, identity),
-      claimed: dict.delete(state.runtime.claimed, identity),
-      retry_attempts: dict.delete(state.runtime.retry_attempts, identity),
+      ..orchestrator_state.mark_task_parked(state.runtime, identity, parked),
       issue_counters: dict.delete(state.runtime.issue_counters, identity),
-      parked: dict.insert(state.runtime.parked, identity, parked),
     )
   let state = transition_types.State(..state, runtime: runtime)
   let reason_text = orchestrator_reason.park_to_string(parked.reason)
@@ -496,9 +490,7 @@ fn handle_unpark(
       let issue_identifier = identifier_for_runtime(state.runtime, issue_id)
       let runtime =
         orchestrator_state.RuntimeState(
-          ..state.runtime,
-          parked: dict.delete(state.runtime.parked, identity),
-          retry_attempts: dict.delete(state.runtime.retry_attempts, identity),
+          ..orchestrator_state.clear_task_lifecycle(state.runtime, identity),
           issue_counters: dict.delete(state.runtime.issue_counters, identity),
         )
       let state = transition_types.State(..state, runtime: runtime)
@@ -573,7 +565,8 @@ fn identifier_for_runtime(
     Ok(identifier) -> identifier
     Error(Nil) ->
       case dict.get(runtime.completed, identity) {
-        Ok(issue) -> issue.identifier
+        Ok(completed) ->
+          orchestrator_state.completed_issue(completed).identifier
         Error(Nil) ->
           case dict.get(runtime.parked, identity) {
             Ok(parked) -> parked.identifier

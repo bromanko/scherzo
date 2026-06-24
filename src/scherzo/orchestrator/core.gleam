@@ -370,19 +370,15 @@ pub fn apply_task_start(
   let task.Task(ref: ref, ..) = item
   let issue = task.to_runtime_issue(item)
   let identity = orchestrator_state.task_ref_identity(ref)
-  orchestrator_state.RuntimeState(
-    ..state,
-    running: dict.insert(
-      state.running,
-      identity,
-      orchestrator_state.RunningEntry(
-        task: item,
-        issue: issue,
-        workspace_path: workspace_path,
-        session: None,
-      ),
+  orchestrator_state.mark_task_running(
+    state,
+    identity,
+    orchestrator_state.RunningEntry(
+      task: item,
+      issue: issue,
+      workspace_path: workspace_path,
+      session: None,
     ),
-    claimed: dict.insert(state.claimed, identity, issue.identifier),
   )
 }
 
@@ -553,12 +549,6 @@ pub fn apply_task_worker_failure(
   now_ms: Int,
 ) -> Transition {
   let baseline_issue = issue_with_lifecycle_id(baseline_issue, issue_id)
-  let identity = orchestrator_state.task_ref_identity(ref)
-  let state =
-    orchestrator_state.RuntimeState(
-      ..state,
-      running: dict.delete(state.running, identity),
-    )
   let counter = get_task_counter(state, ref)
   let failures = counter.failure_attempts + 1
   let counter =
@@ -627,7 +617,6 @@ fn state_after_task_worker_exit(
   let identity = orchestrator_state.task_ref_identity(ref)
   orchestrator_state.RuntimeState(
     ..state,
-    running: dict.delete(state.running, identity),
     aggregate_pi_totals: add_tokens(state.aggregate_pi_totals, tokens),
   )
   |> orchestrator_state.cache_completed_task(identity, final_issue, now_ms)
@@ -673,14 +662,23 @@ pub fn schedule_task_retry(
       timer_generation: generation,
     )
   Transition(
-    state: orchestrator_state.RuntimeState(
-      ..state,
-      retry_attempts: dict.insert(state.retry_attempts, identity, retry),
+    state: orchestrator_state.mark_task_retrying(
+      state,
+      identity,
+      retry,
+      retry_entry_identifier(retry),
     ),
     effects: [
       ScheduleRetry(issue_id, delay_ms, generation, reason, previous_retry),
     ],
   )
+}
+
+fn retry_entry_identifier(retry: orchestrator_state.RetryEntry) -> String {
+  case retry.task_ref.key {
+    Some(identifier) -> identifier
+    None -> retry.issue_id
+  }
 }
 
 pub fn reconcile_issue(
@@ -709,13 +707,7 @@ pub fn reconcile_task_issue(
       case is_terminal(config, refreshed.state) {
         True ->
           Transition(
-            state: orchestrator_state.release_task_claim(
-              orchestrator_state.RuntimeState(
-                ..state,
-                running: dict.delete(state.running, identity),
-              ),
-              ref,
-            ),
+            state: orchestrator_state.clear_task_lifecycle(state, identity),
             effects: [
               StopWorker(refreshed.id, reason.StopTerminal),
               ..cleanup_effects(entry.workspace_path)
@@ -727,16 +719,13 @@ pub fn reconcile_task_issue(
               let refreshed_task =
                 task.Task(..task.from_legacy_issue(refreshed), ref: ref)
               Transition(
-                state: orchestrator_state.RuntimeState(
-                  ..state,
-                  running: dict.insert(
-                    state.running,
-                    identity,
-                    orchestrator_state.RunningEntry(
-                      ..entry,
-                      task: refreshed_task,
-                      issue: refreshed,
-                    ),
+                state: orchestrator_state.mark_task_running(
+                  state,
+                  identity,
+                  orchestrator_state.RunningEntry(
+                    ..entry,
+                    task: refreshed_task,
+                    issue: refreshed,
                   ),
                 ),
                 effects: [],
@@ -744,13 +733,7 @@ pub fn reconcile_task_issue(
             }
             False ->
               Transition(
-                state: orchestrator_state.release_task_claim(
-                  orchestrator_state.RuntimeState(
-                    ..state,
-                    running: dict.delete(state.running, identity),
-                  ),
-                  ref,
-                ),
+                state: orchestrator_state.clear_task_lifecycle(state, identity),
                 effects: [StopWorker(refreshed.id, reason.StopNonActive)],
               )
           }
@@ -819,12 +802,7 @@ fn park_task(
       parked_at_ms: now_ms,
     )
   Transition(
-    state: orchestrator_state.RuntimeState(
-      ..state,
-      claimed: dict.delete(state.claimed, identity),
-      parked: dict.insert(state.parked, identity, parked),
-      retry_attempts: dict.delete(state.retry_attempts, identity),
-    ),
+    state: orchestrator_state.mark_task_parked(state, identity, parked),
     effects: [ParkIssue(issue_id, reason), ReleaseClaim(issue_id)],
   )
 }

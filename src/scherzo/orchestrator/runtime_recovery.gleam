@@ -1,4 +1,3 @@
-import gleam/dict
 import gleam/list
 import scherzo/runtime/reason
 import scherzo/runtime/state as orchestrator_state
@@ -73,11 +72,7 @@ fn runtime_with_parked_issue(
       ),
       parked_at_ms: parked_at_ms,
     )
-  orchestrator_state.RuntimeState(
-    ..runtime,
-    parked: dict.insert(runtime.parked, identity, parked_entry),
-    claimed: dict.delete(runtime.claimed, identity),
-  )
+  orchestrator_state.mark_task_parked(runtime, identity, parked_entry)
 }
 
 fn park_reason_from_string(text: String) -> reason.ParkReason {

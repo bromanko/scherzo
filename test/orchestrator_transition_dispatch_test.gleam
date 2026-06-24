@@ -544,11 +544,10 @@ pub fn explicit_retry_preserves_parked_safety_test() {
       parked_at_ms: 123,
     )
   let runtime =
-    orchestrator_state.RuntimeState(
-      ..orchestrator_transition_test.fixture_runtime(),
-      parked: dict.from_list([
-        #(orchestrator_state.issue_identity(issue), parked),
-      ]),
+    orchestrator_state.mark_task_parked(
+      orchestrator_transition_test.fixture_runtime(),
+      orchestrator_state.issue_identity(issue),
+      parked,
     )
   let state =
     transition_types.State(
@@ -1572,23 +1571,19 @@ fn assert_retry_pre_claim_failure_restores_retry(
 }
 
 fn state_with_retry(issue: tracker_issue.Issue) -> transition_types.State {
+  let task_ref = task.from_legacy_issue(issue).ref
+  let task_identity = orchestrator_state.task_ref_identity(task_ref)
   let runtime =
-    orchestrator_state.RuntimeState(
-      ..orchestrator_transition_test.fixture_runtime(),
-      claimed: dict.from_list([
-        #(orchestrator_state.issue_identity(issue), issue.identifier),
-      ]),
-      retry_attempts: dict.from_list([
-        #(
-          orchestrator_state.issue_identity(issue),
-          orchestrator_state.RetryEntry(
-            task_ref: task.from_legacy_issue(issue).ref,
-            issue_id: issue.id,
-            delay_ms: 1000,
-            timer_generation: 1,
-          ),
-        ),
-      ]),
+    orchestrator_state.mark_task_retrying(
+      orchestrator_transition_test.fixture_runtime(),
+      task_identity,
+      orchestrator_state.RetryEntry(
+        task_ref: task_ref,
+        issue_id: issue.id,
+        delay_ms: 1000,
+        timer_generation: 1,
+      ),
+      issue.identifier,
     )
   transition_types.State(
     ..orchestrator_transition_test.fixture_state(),
