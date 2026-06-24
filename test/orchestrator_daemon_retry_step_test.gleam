@@ -41,6 +41,7 @@ import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
 import scherzo/workflow_fingerprint as workflow_fingerprint_module
 import scherzo/workflow_run
+import scherzo/workspace
 import scherzo/workspace_manifest
 import simplifile
 import support/test_helpers
@@ -3223,8 +3224,7 @@ fn write_publication_retained_workspace_manifest(
             workspace_profile: "retained",
             driver_command: "retained-driver",
             driver_capabilities: ["publish-commit-stack"],
-            source_workspace_name: None,
-            source_workspace_relative_path: None,
+            source: workspace.FreshWorkspace,
             state: workspace_manifest.Ready,
           ),
         ],

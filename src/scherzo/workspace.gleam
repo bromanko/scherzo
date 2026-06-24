@@ -14,6 +14,45 @@ pub type PreparedWorkspace {
   PreparedWorkspace(key: String, path: String, created: Bool, populated: Bool)
 }
 
+pub type WorkspaceSource {
+  FreshWorkspace
+  DerivedWorkspace(name: String, path: String)
+}
+
+pub fn source_from_options(
+  name: Option(String),
+  path: Option(String),
+) -> Result(WorkspaceSource, Nil) {
+  case name, path {
+    None, None -> Ok(FreshWorkspace)
+    Some(name), Some(path) -> Ok(DerivedWorkspace(name: name, path: path))
+    _, _ -> Error(Nil)
+  }
+}
+
+pub fn source_to_options(
+  source: WorkspaceSource,
+) -> #(Option(String), Option(String)) {
+  case source {
+    FreshWorkspace -> #(None, None)
+    DerivedWorkspace(name, path) -> #(Some(name), Some(path))
+  }
+}
+
+pub fn source_name(source: WorkspaceSource) -> Option(String) {
+  case source {
+    FreshWorkspace -> None
+    DerivedWorkspace(name, _) -> Some(name)
+  }
+}
+
+pub fn source_path(source: WorkspaceSource) -> Option(String) {
+  case source {
+    FreshWorkspace -> None
+    DerivedWorkspace(_, path) -> Some(path)
+  }
+}
+
 pub type AfterRunOutcome {
   AfterRunSkipped
   AfterRunSucceeded(diagnostic: String)

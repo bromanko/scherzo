@@ -33,8 +33,7 @@ pub type Entry {
     workspace_profile: String,
     driver_command: String,
     driver_capabilities: List(String),
-    source_workspace_name: Option(String),
-    source_workspace_relative_path: Option(String),
+    source: workspace.WorkspaceSource,
     state: EntryState,
   )
 }
@@ -288,7 +287,7 @@ fn validate_cleanup_entry(
           use source_workspace_path <- result.try(
             validated_optional_absolute_path(
               run_root,
-              entry.source_workspace_relative_path,
+              workspace.source_path(entry.source),
             ),
           )
           use _ <- result.try(validate_entry_paths(entry))
@@ -312,11 +311,10 @@ fn validate_entry_paths(entry: Entry) -> Result(Nil, error.WorkspaceError) {
     entry.workspace_name,
     entry.relative_path,
   ))
-  case entry.source_workspace_name, entry.source_workspace_relative_path {
-    None, None -> Ok(Nil)
-    Some(source_name), Some(source_relative_path) ->
+  case entry.source {
+    workspace.FreshWorkspace -> Ok(Nil)
+    workspace.DerivedWorkspace(source_name, source_relative_path) ->
       validate_workspace_relative_path(source_name, source_relative_path)
-    _, _ -> Error(error.WorkspaceIo("managed workspace source entry mismatch"))
   }
 }
 
@@ -462,11 +460,11 @@ fn entry_to_json(entry: Entry) -> json.Json {
     ),
     #(
       "source_workspace_name",
-      option_string_to_json(entry.source_workspace_name),
+      option_string_to_json(workspace.source_name(entry.source)),
     ),
     #(
       "source_workspace_relative_path",
-      option_string_to_json(entry.source_workspace_relative_path),
+      option_string_to_json(workspace.source_path(entry.source)),
     ),
     #("state", json.string(state_to_string(entry.state))),
   ])
@@ -525,20 +523,44 @@ fn entry_decoder() -> decode.Decoder(Entry) {
     decode.optional(decode.string),
   )
   use state <- decode.field("state", state_decoder())
-  decode.success(Entry(
-    run_id: run_id,
-    workflow_id: workflow_id,
-    step_id: step_id,
-    attempt_index: attempt_index,
-    workspace_name: workspace_name,
-    relative_path: relative_path,
-    workspace_profile: workspace_profile,
-    driver_command: driver_command,
-    driver_capabilities: driver_capabilities,
-    source_workspace_name: source_workspace_name,
-    source_workspace_relative_path: source_workspace_relative_path,
-    state: state,
-  ))
+  case
+    workspace.source_from_options(
+      source_workspace_name,
+      source_workspace_relative_path,
+    )
+  {
+    Ok(source) ->
+      decode.success(Entry(
+        run_id: run_id,
+        workflow_id: workflow_id,
+        step_id: step_id,
+        attempt_index: attempt_index,
+        workspace_name: workspace_name,
+        relative_path: relative_path,
+        workspace_profile: workspace_profile,
+        driver_command: driver_command,
+        driver_capabilities: driver_capabilities,
+        source: source,
+        state: state,
+      ))
+    Error(Nil) ->
+      decode.failure(
+        Entry(
+          run_id: run_id,
+          workflow_id: workflow_id,
+          step_id: step_id,
+          attempt_index: attempt_index,
+          workspace_name: workspace_name,
+          relative_path: relative_path,
+          workspace_profile: workspace_profile,
+          driver_command: driver_command,
+          driver_capabilities: driver_capabilities,
+          source: workspace.FreshWorkspace,
+          state: state,
+        ),
+        expected: "matching workspace source fields",
+      )
+  }
 }
 
 fn state_decoder() -> decode.Decoder(EntryState) {

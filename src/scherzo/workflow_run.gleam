@@ -45,6 +45,7 @@ import scherzo/workflow_run/workspace_preparation.{
 }
 import scherzo/workflow_run/workstream_handoff
 import scherzo/workflow_scheduler
+import scherzo/workspace
 import scherzo/workspace_profile
 import scherzo/workspace_run
 import simplifile
@@ -162,8 +163,7 @@ pub type AttemptStart {
     attempt: Int,
     workspace_name: String,
     workspace_path: String,
-    source_workspace_name: Option(String),
-    source_workspace_path: Option(String),
+    source: workspace.WorkspaceSource,
   )
 }
 

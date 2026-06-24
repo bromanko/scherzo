@@ -26,8 +26,7 @@ pub type PreparedStepWorkspace {
     attempt_index: Int,
     workspace_name: String,
     path: String,
-    source_workspace_name: Option(String),
-    source_workspace_path: Option(String),
+    source: workspace.WorkspaceSource,
     workspace_profile: String,
   )
 }
@@ -214,8 +213,7 @@ fn prepare_step_attempt_with_cleanup(
         known_workspaces,
         profile.name,
       ))
-      let #(source_name, source_path) = source
-      use _ <- try_prepare(validate_source_directory(source_path))
+      use _ <- try_prepare(validate_source_directory(source))
       use _ <- try_prepare(create_directory(run_root))
       let prepared =
         PreparedStepWorkspace(
@@ -229,8 +227,7 @@ fn prepare_step_attempt_with_cleanup(
           attempt_index: attempt_index,
           workspace_name: workspace_ref.name,
           path: workspace_path,
-          source_workspace_name: source_name,
-          source_workspace_path: source_path,
+          source: source,
           workspace_profile: profile.name,
         )
       use _ <- try_prepare(write_manifest_entry(
@@ -517,8 +514,7 @@ pub fn prepare_scheduled_step_attempt(
         known_workspaces,
         profile.name,
       ))
-      let #(source_name, source_path) = source
-      use _ <- try_prepare(validate_source_directory(source_path))
+      use _ <- try_prepare(validate_source_directory(source))
       use _ <- try_prepare(create_directory(run_root))
       let prepared =
         PreparedStepWorkspace(
@@ -532,8 +528,7 @@ pub fn prepare_scheduled_step_attempt(
           attempt_index: scheduled.attempt,
           workspace_name: workspace_ref.name,
           path: workspace_path,
-          source_workspace_name: source_name,
-          source_workspace_path: source_path,
+          source: source,
           workspace_profile: profile.name,
         )
       use _ <- try_prepare(write_manifest_entry(
@@ -715,11 +710,11 @@ fn validate_recovered_source_workspace(
 }
 
 fn validate_source_directory(
-  source_path: Option(String),
+  source: workspace.WorkspaceSource,
 ) -> Result(Nil, error.WorkspaceError) {
-  case source_path {
-    None -> Ok(Nil)
-    Some(path) -> validate_existing_directory(path)
+  case source {
+    workspace.FreshWorkspace -> Ok(Nil)
+    workspace.DerivedWorkspace(_, path) -> validate_existing_directory(path)
   }
 }
 
@@ -854,8 +849,7 @@ fn reuse_prepared_workspace(
     PreparedStepWorkspace(
       ..prepared,
       attempt_index: attempt_index,
-      source_workspace_name: Some(prepared.workspace_name),
-      source_workspace_path: Some(prepared.path),
+      source: workspace.DerivedWorkspace(prepared.workspace_name, prepared.path),
     )
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
   use _ <- try_prepare(write_manifest_entry(
@@ -890,8 +884,7 @@ fn reuse_scheduled_prepared_workspace(
     PreparedStepWorkspace(
       ..prepared,
       attempt_index: scheduled.attempt,
-      source_workspace_name: Some(prepared.workspace_name),
-      source_workspace_path: Some(prepared.path),
+      source: workspace.DerivedWorkspace(prepared.workspace_name, prepared.path),
     )
   use _ <- try_prepare(ensure_directory_after_create(prepared.path))
   use _ <- try_prepare(write_manifest_entry(
@@ -915,9 +908,9 @@ fn source_workspace(
   from: Option(String),
   known_workspaces: Dict(String, PreparedStepWorkspace),
   profile_name: String,
-) -> Result(#(Option(String), Option(String)), error.WorkspaceError) {
+) -> Result(workspace.WorkspaceSource, error.WorkspaceError) {
   case from {
-    None -> Ok(#(None, None))
+    None -> Ok(workspace.FreshWorkspace)
     Some(name) ->
       case dict.get(known_workspaces, name) {
         Ok(prepared) -> {
@@ -925,7 +918,7 @@ fn source_workspace(
             prepared,
             profile_name,
           ))
-          Ok(#(Some(name), Some(prepared.path)))
+          Ok(workspace.DerivedWorkspace(name, prepared.path))
         }
         Error(Nil) ->
           Error(error.WorkspaceIo("source workspace is not prepared: " <> name))
@@ -1161,11 +1154,11 @@ fn base_hook_env(
     #("SCHERZO_WORKSPACE_PATH", prepared.path),
     #(
       "SCHERZO_SOURCE_WORKSPACE_NAME",
-      optional_env_value(prepared.source_workspace_name),
+      optional_env_value(workspace.source_name(prepared.source)),
     ),
     #(
       "SCHERZO_SOURCE_WORKSPACE_PATH",
-      optional_env_value(prepared.source_workspace_path),
+      optional_env_value(workspace.source_path(prepared.source)),
     ),
   ]
 }
@@ -1207,9 +1200,9 @@ fn write_manifest_entry(
       prepared.path,
     ),
   )
-  use source_relative_path <- try_workspace(relative_source_path(
+  use source <- try_workspace(relative_source(
     prepared.run_root,
-    prepared.source_workspace_path,
+    prepared.source,
   ))
   workspace_manifest.write_entry(
     prepared.run_root,
@@ -1227,22 +1220,23 @@ fn write_manifest_entry(
       driver_capabilities: config_types.workspace_capability_names(
         context.capabilities,
       ),
-      source_workspace_name: prepared.source_workspace_name,
-      source_workspace_relative_path: source_relative_path,
+      source: source,
       state: state,
     ),
   )
 }
 
-fn relative_source_path(
+fn relative_source(
   run_root: String,
-  source_workspace_path: Option(String),
-) -> Result(Option(String), error.WorkspaceError) {
-  case source_workspace_path {
-    None -> Ok(None)
-    Some(source_path) ->
+  source: workspace.WorkspaceSource,
+) -> Result(workspace.WorkspaceSource, error.WorkspaceError) {
+  case source {
+    workspace.FreshWorkspace -> Ok(workspace.FreshWorkspace)
+    workspace.DerivedWorkspace(name, source_path) ->
       workspace_manifest.relative_path_from_run_root(run_root, source_path)
-      |> result.map(Some)
+      |> result.map(fn(relative_path) {
+        workspace.DerivedWorkspace(name, relative_path)
+      })
   }
 }
 

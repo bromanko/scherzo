@@ -17,6 +17,7 @@ import scherzo/workflow_contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_run/contract_io
 import scherzo/workflow_run/contract_io_error
+import scherzo/workspace
 import scherzo/workspace_run
 import simplifile
 
@@ -563,6 +564,17 @@ fn optional_detail(name: String, value: Option(String)) -> String {
   }
 }
 
+fn recollect_workspace_source(
+  source_workspace_name: Option(String),
+  source_workspace_path: Option(String),
+) -> Result(workspace.WorkspaceSource, RecollectionError) {
+  workspace.source_from_options(source_workspace_name, source_workspace_path)
+  |> result.replace_error(RecollectionError(
+    "workspace_recovery_failed",
+    Some("workspace source fields must both be present or both be absent"),
+  ))
+}
+
 fn artifact_read_reason(error: artifact_store.ArtifactError) -> String {
   case error {
     artifact_store.MissingStepArtifact(_) -> "missing"
@@ -653,7 +665,11 @@ fn recover_prepared_workspace(
       ..,
     ) ->
       case simplifile.is_directory(workspace_path) {
-        Ok(True) ->
+        Ok(True) -> {
+          use source <- result.try(recollect_workspace_source(
+            source_workspace_name,
+            source_workspace_path,
+          ))
           Ok(workspace_run.PreparedStepWorkspace(
             workflow_id: workflow_id,
             run_id: run_id,
@@ -662,10 +678,10 @@ fn recover_prepared_workspace(
             attempt_index: attempt_index,
             workspace_name: step.workspace.name,
             path: workspace_path,
-            source_workspace_name: source_workspace_name,
-            source_workspace_path: source_workspace_path,
+            source: source,
             workspace_profile: "",
           ))
+        }
         _ ->
           Error(RecollectionError(
             "workspace_recovery_failed",

@@ -22,6 +22,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_attempt
 import scherzo/workflow_dag
 import scherzo/workflow_outcome
+import scherzo/workspace
 import simplifile
 
 pub type RecoveredRetry {
@@ -74,8 +75,7 @@ pub type RecoveredWorkspaceSummary {
     run_root: String,
     workspace_name: String,
     path: String,
-    source_workspace_name: Option(String),
-    source_workspace_path: Option(String),
+    source: workspace.WorkspaceSource,
     attempt_index: Int,
   )
 }
@@ -1254,6 +1254,16 @@ fn is_ascii_letter(value: String) -> Bool {
   }
 }
 
+fn recover_workspace_source(
+  source_workspace_name: Option(String),
+  source_workspace_path: Option(String),
+) -> Result(workspace.WorkspaceSource, RecoveryError) {
+  workspace.source_from_options(source_workspace_name, source_workspace_path)
+  |> result.replace_error(WorkspaceRecoveryFailed(
+    "invalid_workspace_source_fields",
+  ))
+}
+
 fn recover_attempts_loop(
   attempts: List(projection.StepAttemptStatus),
   candidate: WorkflowRecoveryCandidate,
@@ -1323,10 +1333,14 @@ fn recover_attempts_loop(
             True -> candidate.run_root
             False -> run_root
           }
-          let workspaces = case
+          let workspaces_result = case
             outcome == "completed" || outcome == "failed_continued"
           {
             True -> {
+              use source <- result.try(recover_workspace_source(
+                source_workspace_name,
+                source_workspace_path,
+              ))
               let workspace =
                 RecoveredWorkspaceSummary(
                   workflow_id: workflow_id,
@@ -1334,14 +1348,14 @@ fn recover_attempts_loop(
                   run_root: run_root,
                   workspace_name: workspace_name,
                   path: workspace_path,
-                  source_workspace_name: source_workspace_name,
-                  source_workspace_path: source_workspace_path,
+                  source: source,
                   attempt_index: attempt_index,
                 )
-              dict.insert(workspaces, workspace_name, workspace)
+              Ok(dict.insert(workspaces, workspace_name, workspace))
             }
-            False -> workspaces
+            False -> Ok(workspaces)
           }
+          use workspaces <- result.try(workspaces_result)
           recover_attempts_loop(
             rest,
             candidate,

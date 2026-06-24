@@ -14,6 +14,7 @@ import scherzo/path
 import scherzo/state/ledger
 import scherzo/state/projection
 import scherzo/state/record
+import scherzo/workspace
 import scherzo/workspace_manifest
 import simplifile
 import support/test_helpers
@@ -410,8 +411,7 @@ fn create_manifest_run(
             workspace_profile: "dogfood-jj",
             driver_command: repo_abs <> "/driver.sh",
             driver_capabilities: ["status", "assert-only"],
-            source_workspace_name: None,
-            source_workspace_relative_path: None,
+            source: workspace.FreshWorkspace,
             state: workspace_manifest.Ready,
           ),
         ],

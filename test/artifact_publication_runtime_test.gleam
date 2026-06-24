@@ -11,6 +11,7 @@ import scherzo/path
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
+import scherzo/workspace
 import scherzo/workspace_manifest
 import simplifile
 import support/test_helpers
@@ -73,8 +74,7 @@ fn write_retained_workspace_manifest(run_root: String) -> Nil {
             workspace_profile: "dogfood-jj",
             driver_command: "fake-retained-driver",
             driver_capabilities: ["publish-commit-stack"],
-            source_workspace_name: Some("source"),
-            source_workspace_relative_path: Some("workspaces/source"),
+            source: workspace.DerivedWorkspace("source", "workspaces/source"),
             state: workspace_manifest.Ready,
           ),
         ],
