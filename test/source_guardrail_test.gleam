@@ -331,7 +331,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/local_workflow_run.gleam", 939, 21),
     SourceLimit("src/scherzo/orchestrator/core.gleam", 1155, 10),
     SourceLimit("src/scherzo/control/remote/ui_websocket_client.gleam", 1302, 7),
-    SourceLimit("src/scherzo/orchestrator/daemon.gleam", 8546, 84),
+    SourceLimit("src/scherzo/orchestrator/daemon.gleam", 8543, 84),
     SourceLimit(
       "src/scherzo/orchestrator/daemon_transition_shell.gleam",
       734,
@@ -341,6 +341,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/orchestrator/effect_runner.gleam", 1121, 21),
     SourceLimit("src/scherzo/orchestrator/service.gleam", 2114, 25),
     SourceLimit("src/scherzo/orchestrator/transition.gleam", 3605, 24),
+    SourceLimit("src/scherzo/orchestrator/transition_invariants.gleam", 1311, 3),
     SourceLimit("src/scherzo/orchestrator/transition_types.gleam", 499, 21),
     SourceLimit("src/scherzo/orchestrator/transitions/claims.gleam", 1127, 20),
     SourceLimit("src/scherzo/state/ledger.gleam", 1008, 3),

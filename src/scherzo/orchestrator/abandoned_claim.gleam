@@ -59,13 +59,7 @@ pub fn compensate(
     )
   let task_identity = orchestrator_state.task_ref_identity(task_ref)
   let runtime =
-    orchestrator_state.RuntimeState(
-      ..runtime,
-      running: dict.delete(runtime.running, task_identity),
-      claimed: dict.delete(runtime.claimed, task_identity),
-      retry_attempts: dict.delete(runtime.retry_attempts, task_identity),
-      parked: dict.insert(runtime.parked, task_identity, parked),
-    )
+    orchestrator_state.mark_task_parked(runtime, task_identity, parked)
   let report = release_report(parked, reason_text, source_run_id)
   let release_intent =
     outbox_effects.release_claim_intent(

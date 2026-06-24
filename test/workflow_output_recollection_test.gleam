@@ -243,6 +243,78 @@ pub fn recollect_outputs_rejects_issue_drift_test() {
   assert_error_code(result, "issue_drift")
 }
 
+pub fn recollect_outputs_rejects_issue_unavailable_current_workflow_test() {
+  let root = "test/tmp/workflow-output-recollection/issue-unavailable"
+  test_helpers.reset_dir(root)
+  let issue = issue()
+  let dag = stdout_dag()
+  let artifact = successful_artifact("collect_findings", "findings")
+  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+
+  let result =
+    execute_with_attempts(
+      root,
+      dag,
+      issue,
+      [attempt],
+      None,
+      recovery.IssueUnavailable,
+      "wf-1",
+    )
+
+  assert_error_code(result, "issue_unavailable")
+  assert_error_message_contains(result, "issue is unavailable")
+}
+
+pub fn recollect_outputs_rejects_tracker_refresh_unavailable_current_workflow_test() {
+  let root = "test/tmp/workflow-output-recollection/tracker-refresh-unavailable"
+  test_helpers.reset_dir(root)
+  let issue = issue()
+  let dag = stdout_dag()
+  let artifact = successful_artifact("collect_findings", "findings")
+  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+
+  let result =
+    execute_with_attempts(
+      root,
+      dag,
+      issue,
+      [attempt],
+      None,
+      recovery.TrackerRefreshUnavailable,
+      "wf-1",
+    )
+
+  assert_error_code(result, "tracker_refresh_unavailable")
+  assert_error_message_contains(result, "tracker refresh is unavailable")
+}
+
+pub fn recollect_outputs_rejects_workflow_unavailable_current_workflow_test() {
+  let root = "test/tmp/workflow-output-recollection/workflow-unavailable"
+  test_helpers.reset_dir(root)
+  let issue = issue()
+  let dag = stdout_dag()
+  let artifact = successful_artifact("collect_findings", "findings")
+  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+
+  let result =
+    execute_with_attempts(
+      root,
+      dag,
+      issue,
+      [attempt],
+      None,
+      recovery.WorkflowUnavailable("unknown_workflow_label: missing"),
+      "wf-1",
+    )
+
+  assert_error_code(result, "workflow_unavailable")
+  assert_error_message_contains(
+    result,
+    "workflow is unavailable: unknown_workflow_label: missing",
+  )
+}
+
 pub fn recollect_outputs_requires_every_workflow_step_completed_test() {
   let root = "test/tmp/workflow-output-recollection/run-not-complete"
   test_helpers.reset_dir(root)
@@ -300,6 +372,82 @@ pub fn recollect_outputs_rejects_failed_source_step_test() {
     run_recollection_with_statuses(root, dag, issue, [failed.status], None)
 
   assert_error_code(result, "source_step_failed")
+}
+
+pub fn recollect_outputs_rejects_latest_failed_attempt_after_completed_attempt_test() {
+  let root = "test/tmp/workflow-output-recollection/latest-failed-attempt"
+  test_helpers.reset_dir(root)
+  let issue = issue()
+  let dag = stdout_dag()
+  let first =
+    step_attempt_with_index(
+      root,
+      dag.id,
+      "collect_findings",
+      successful_artifact("collect_findings", "stale findings"),
+      "completed",
+      root <> "/workspace/collect_findings/attempt-1",
+      1,
+    )
+  let latest =
+    step_attempt_with_index(
+      root,
+      dag.id,
+      "collect_findings",
+      failed_artifact("collect_findings"),
+      "failed_fatal",
+      root <> "/workspace/collect_findings/attempt-2",
+      2,
+    )
+
+  let result =
+    run_recollection_with_statuses(
+      root,
+      dag,
+      issue,
+      [latest.status, first.status],
+      None,
+    )
+
+  assert_error_code(result, "source_step_failed")
+}
+
+pub fn recollect_outputs_uses_latest_completed_attempt_artifact_test() {
+  let root = "test/tmp/workflow-output-recollection/latest-completed-attempt"
+  test_helpers.reset_dir(root)
+  let issue = issue()
+  let dag = stdout_dag()
+  let first =
+    step_attempt_with_index(
+      root,
+      dag.id,
+      "collect_findings",
+      successful_artifact("collect_findings", "stale findings"),
+      "completed",
+      root <> "/workspace/collect_findings/attempt-1",
+      1,
+    )
+  let latest =
+    step_attempt_with_index(
+      root,
+      dag.id,
+      "collect_findings",
+      successful_artifact("collect_findings", "latest findings"),
+      "completed",
+      root <> "/workspace/collect_findings/attempt-2",
+      2,
+    )
+
+  let result = run_recollection(root, dag, issue, [latest, first], None)
+
+  let assert Ok(workflow_output_recollection.Recollected(recorded, _)) = result
+  assert recorded.ref == "runs/run-1/recollections/1/outputs.v1.json"
+  let assert Ok(contents) =
+    simplifile.read(
+      root
+      <> "/.scherzo-state/artifacts/runs/run-1/recollections/1/outputs/findings.md",
+    )
+  assert contents == "latest findings"
 }
 
 pub fn recollect_outputs_rejects_missing_artifact_test() {
@@ -617,6 +765,26 @@ fn step_attempt_with(
   outcome: String,
   workspace_path: String,
 ) -> StepAttempt {
+  step_attempt_with_index(
+    root,
+    workflow_id,
+    step_id,
+    artifact,
+    outcome,
+    workspace_path,
+    1,
+  )
+}
+
+fn step_attempt_with_index(
+  root: String,
+  workflow_id: String,
+  step_id: String,
+  artifact: step_artifact.StepArtifact,
+  outcome: String,
+  workspace_path: String,
+  attempt_index: Int,
+) -> StepAttempt {
   let store = artifact_store.new(root)
   let _ = simplifile.create_directory_all(workspace_path)
   let assert Ok(written) =
@@ -625,16 +793,17 @@ fn step_attempt_with(
       "run-1",
       workflow_id,
       step_id,
-      1,
+      attempt_index,
       artifact,
     )
-  StepAttempt(status: finished_status(
+  StepAttempt(status: finished_status_with_index(
     workflow_id,
     step_id,
     written.ref,
     written.sha256,
     workspace_path,
     outcome,
+    attempt_index,
   ))
 }
 
@@ -646,11 +815,31 @@ fn finished_status(
   workspace_path: String,
   outcome: String,
 ) -> projection.StepAttemptStatus {
+  finished_status_with_index(
+    workflow_id,
+    step_id,
+    artifact_ref,
+    artifact_sha256,
+    workspace_path,
+    outcome,
+    1,
+  )
+}
+
+fn finished_status_with_index(
+  workflow_id: String,
+  step_id: String,
+  artifact_ref: String,
+  artifact_sha256: String,
+  workspace_path: String,
+  outcome: String,
+  attempt_index: Int,
+) -> projection.StepAttemptStatus {
   projection.StepAttemptFinishedStatus(
     run_id: "run-1",
     workflow_id: workflow_id,
     step_id: step_id,
-    attempt_index: 1,
+    attempt_index: attempt_index,
     outcome: outcome,
     artifact_ref: artifact_ref,
     artifact_sha256: artifact_sha256,

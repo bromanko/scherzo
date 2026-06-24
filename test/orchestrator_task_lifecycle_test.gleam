@@ -197,7 +197,10 @@ pub fn adapter_projects_legacy_sources_into_typed_lifecycle_test() {
           ),
         ]),
         completed: dict.from_list([
-          #(orchestrator_state.issue_identity(completed_issue), completed_issue),
+          #(
+            orchestrator_state.issue_identity(completed_issue),
+            orchestrator_state.CompletedEntry(completed_issue, 10),
+          ),
         ]),
       ),
       workers: worker_directory_for(
@@ -311,7 +314,10 @@ pub fn completed_and_active_conflict_returns_explicit_error_test() {
       runtime: orchestrator_state.RuntimeState(
         ..orchestrator_transition_test.fixture_runtime(),
         completed: dict.from_list([
-          #(orchestrator_state.issue_identity(issue), issue),
+          #(
+            orchestrator_state.issue_identity(issue),
+            orchestrator_state.CompletedEntry(issue, 10),
+          ),
         ]),
       ),
     )

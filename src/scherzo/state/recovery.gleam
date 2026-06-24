@@ -2946,10 +2946,10 @@ fn restore_parked(
           )
         Build(
           ..build,
-          runtime: orchestrator_state.RuntimeState(
-            ..build.runtime,
-            parked: dict.insert(build.runtime.parked, identity, parked_entry),
-            claimed: dict.delete(build.runtime.claimed, identity),
+          runtime: orchestrator_state.mark_task_parked(
+            build.runtime,
+            identity,
+            parked_entry,
           ),
         )
       }
@@ -2958,11 +2958,8 @@ fn restore_parked(
         Build(
           ..build,
           runtime: orchestrator_state.RuntimeState(
-            ..build.runtime,
-            parked: dict.delete(build.runtime.parked, identity),
-            retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
+            ..orchestrator_state.clear_task_lifecycle(build.runtime, identity),
             issue_counters: dict.delete(build.runtime.issue_counters, identity),
-            claimed: dict.delete(build.runtime.claimed, identity),
           ),
           record_bodies: [
             record.IssueUnparked(
@@ -3050,11 +3047,10 @@ fn restore_recovered_park_record(
     )
   Build(
     ..build,
-    runtime: orchestrator_state.RuntimeState(
-      ..build.runtime,
-      parked: dict.insert(build.runtime.parked, identity, parked_entry),
-      claimed: dict.delete(build.runtime.claimed, identity),
-      retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
+    runtime: orchestrator_state.mark_task_parked(
+      build.runtime,
+      identity,
+      parked_entry,
     ),
   )
 }
@@ -3292,14 +3288,11 @@ fn restore_retry_timer(
     )
   Build(
     ..build,
-    runtime: orchestrator_state.RuntimeState(
-      ..build.runtime,
-      retry_attempts: dict.insert(build.runtime.retry_attempts, identity, retry),
-      claimed: dict.insert(
-        build.runtime.claimed,
-        identity,
-        context.issue_identifier,
-      ),
+    runtime: orchestrator_state.mark_task_retrying(
+      build.runtime,
+      identity,
+      retry,
+      context.issue_identifier,
     ),
     retry_timers: [
       RecoveredRetry(
@@ -3323,11 +3316,7 @@ fn cancel_recovered_retry(
 ) -> Build {
   Build(
     ..build,
-    runtime: orchestrator_state.RuntimeState(
-      ..build.runtime,
-      retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
-      claimed: dict.delete(build.runtime.claimed, identity),
-    ),
+    runtime: orchestrator_state.clear_task_lifecycle(build.runtime, identity),
     record_bodies: [
       record.RetryCancelled(issue_id, generation, reason),
       ..build.record_bodies
@@ -3639,11 +3628,10 @@ fn ensure_parked_after_worker_failure(
         )
       Build(
         ..build,
-        runtime: orchestrator_state.RuntimeState(
-          ..build.runtime,
-          parked: dict.insert(build.runtime.parked, identity, parked),
-          retry_attempts: dict.delete(build.runtime.retry_attempts, identity),
-          claimed: dict.delete(build.runtime.claimed, identity),
+        runtime: orchestrator_state.mark_task_parked(
+          build.runtime,
+          identity,
+          parked,
         ),
         record_bodies: [
           record.IssueParkedV2(

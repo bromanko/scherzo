@@ -7,7 +7,6 @@ import scherzo/orchestrator/task_lifecycle
 import scherzo/orchestrator/transition_types
 import scherzo/runtime/identity
 import scherzo/runtime/state as orchestrator_state
-import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 
 pub type LifecycleError =
@@ -499,12 +498,13 @@ fn insert_parked_entries(
 }
 
 fn insert_completed_entries(
-  entries: List(#(identity.TaskIdentity, tracker_issue.Issue)),
+  entries: List(#(identity.TaskIdentity, orchestrator_state.CompletedEntry)),
   directory: task_lifecycle.TaskDirectory,
 ) -> Result(task_lifecycle.TaskDirectory, task_lifecycle.LifecycleError) {
   case entries {
     [] -> Ok(directory)
-    [#(_, issue), ..rest] ->
+    [#(_, completed), ..rest] -> {
+      let issue = orchestrator_state.completed_issue(completed)
       case
         task_lifecycle.put(
           directory,
@@ -517,6 +517,7 @@ fn insert_completed_entries(
         Error(error) -> Error(error)
         Ok(next) -> insert_completed_entries(rest, next)
       }
+    }
   }
 }
 

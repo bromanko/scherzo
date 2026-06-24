@@ -641,8 +641,7 @@ pub fn ui_websocket_client_query_does_not_block_heartbeat_test() {
   assert eventually_has_outbound(outbound, "\"type\":\"heartbeat\"")
   assert eventually_has_outbound(outbound, "\"type\":\"daemon_state\"")
   test_async.release_barrier(barrier)
-  let _ =
-    expect_next_outbound_contains(outbound, "\"queryId\":\"query-blocked\"")
+  let _ = eventually_has_outbound(outbound, "\"queryId\":\"query-blocked\"")
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 

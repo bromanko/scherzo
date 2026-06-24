@@ -392,7 +392,8 @@ pub fn worker_finish_removes_running_and_reports_success_test() {
   let identity = orchestrator_state.issue_identity(issue)
   assert dict.get(next.runtime.running, identity) == Error(Nil)
   assert dict.get(next.workers.by_issue, identity) == Error(Nil)
-  assert dict.get(next.runtime.completed, identity) == Ok(issue)
+  let assert Ok(completed) = dict.get(next.runtime.completed, identity)
+  assert orchestrator_state.completed_issue(completed) == issue
   assert interpreter.data(shell)
     == [
       "remove:issue-1",
@@ -515,7 +516,8 @@ pub fn worker_finish_uses_task_ref_with_duplicate_remote_ids_test() {
   assert dict.get(next.runtime.running, memory_identity) == Error(Nil)
   assert dict.has_key(next.workers.by_issue, linear_identity)
   assert dict.get(next.workers.by_issue, memory_identity) == Error(Nil)
-  assert dict.get(next.runtime.completed, memory_identity) == Ok(memory_issue)
+  let assert Ok(completed) = dict.get(next.runtime.completed, memory_identity)
+  assert orchestrator_state.completed_issue(completed) == memory_issue
   assert dict.get(next.runtime.completed, linear_identity) == Error(Nil)
 }
 

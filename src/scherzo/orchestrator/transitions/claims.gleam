@@ -151,12 +151,12 @@ pub fn park_runtime(
   transition_types.State(
     ..state,
     runtime: orchestrator_state.RuntimeState(
-      ..state.runtime,
-      running: dict.delete(state.runtime.running, task_identity),
-      claimed: dict.delete(state.runtime.claimed, task_identity),
-      retry_attempts: dict.delete(state.runtime.retry_attempts, task_identity),
+      ..orchestrator_state.mark_task_parked(
+        state.runtime,
+        task_identity,
+        parked,
+      ),
       issue_counters: dict.delete(state.runtime.issue_counters, task_identity),
-      parked: dict.insert(state.runtime.parked, task_identity, parked),
     ),
     retry_refresh_generations: dict.delete(
       state.retry_refresh_generations,
@@ -179,7 +179,6 @@ pub fn complete_runtime_failure(
   let runtime =
     orchestrator_state.RuntimeState(
       ..state.runtime,
-      running: dict.delete(state.runtime.running, task_identity),
       aggregate_pi_totals: session_tokens.add(
         state.runtime.aggregate_pi_totals,
         tokens,
@@ -698,13 +697,10 @@ fn park_preflight_failure(
       parked_at_ms: now_ms,
     )
   let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      parked: dict.insert(
-        state.runtime.parked,
-        orchestrator_state.task_ref_identity(task_ref),
-        parked,
-      ),
+    orchestrator_state.mark_task_parked(
+      state.runtime,
+      orchestrator_state.task_ref_identity(task_ref),
+      parked,
     )
   #(transition_types.State(..state, runtime: runtime) |> sync_state, [
     effects_types.ParkIssue(parked, None),
@@ -930,24 +926,19 @@ fn schedule_claim_start_recovery_retry(
       pending.previous_retry_generation,
     )
   let delay_ms = core.backoff_delay(generation, core.default_max_backoff_ms())
+  let retry =
+    orchestrator_state.RetryEntry(
+      task_ref: pending.task_ref,
+      issue_id: pending.issue_id,
+      delay_ms: delay_ms,
+      timer_generation: generation,
+    )
   let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      retry_attempts: dict.insert(
-        state.runtime.retry_attempts,
-        task_identity,
-        orchestrator_state.RetryEntry(
-          task_ref: pending.task_ref,
-          issue_id: pending.issue_id,
-          delay_ms: delay_ms,
-          timer_generation: generation,
-        ),
-      ),
-      claimed: dict.insert(
-        state.runtime.claimed,
-        task_identity,
-        pending.issue.identifier,
-      ),
+    orchestrator_state.mark_task_retrying(
+      state.runtime,
+      task_identity,
+      retry,
+      pending.issue.identifier,
     )
   let state =
     transition_types.State(
