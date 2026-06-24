@@ -132,8 +132,16 @@
           "type": "string",
           "pattern": "^[a-z][a-z0-9_-]*$"
         },
-        "require_single": { "const": true },
-        "reject_sibling_tool_calls": { "const": true },
+        "require_single": {
+          "const": true,
+          "deprecated": true,
+          "description": "Deprecated compatibility key. Omit from new workflows; false is unsupported."
+        },
+        "reject_sibling_tool_calls": {
+          "const": true,
+          "deprecated": true,
+          "description": "Deprecated compatibility key. Omit from new workflows; false is unsupported."
+        },
         "parameters_schema_path": { "$ref": "#/$defs/RepositoryRelativePath" }
       }
     },

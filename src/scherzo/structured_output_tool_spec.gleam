@@ -30,8 +30,6 @@ pub type ToolSpec {
     parameters_schema_path: String,
     parameters_schema_sha256: String,
     parameters_schema: json_value.JsonValue,
-    require_single: Bool,
-    reject_sibling_tool_calls: Bool,
     terminate: Bool,
   )
 }
@@ -57,20 +55,9 @@ pub type ToolSpecError {
 
 pub fn for_step(input: BuildInput) -> Result(ToolSpec, ToolSpecError) {
   case input.spec.source {
-    structured_output_source.PiToolCallSource(
-      tool_name,
-      require_single,
-      reject_sibling_tool_calls,
-      Some(schema_path),
-    ) ->
-      build_for_pi_tool_call(
-        input,
-        tool_name,
-        require_single,
-        reject_sibling_tool_calls,
-        schema_path,
-      )
-    structured_output_source.PiToolCallSource(_, _, _, None) ->
+    structured_output_source.PiToolCallSource(tool_name, Some(schema_path)) ->
+      build_for_pi_tool_call(input, tool_name, schema_path)
+    structured_output_source.PiToolCallSource(_, None) ->
       Error(ToolSpecError(
         "structured_output_tool_spec_missing_schema_path",
         "generic structured-output tool spec requires structured_output.source.parameters_schema_path",
@@ -86,15 +73,9 @@ pub fn for_step(input: BuildInput) -> Result(ToolSpec, ToolSpecError) {
 fn build_for_pi_tool_call(
   input: BuildInput,
   tool_name: String,
-  require_single: Bool,
-  reject_sibling_tool_calls: Bool,
   schema_path: String,
 ) -> Result(ToolSpec, ToolSpecError) {
   use Nil <- result.try(validate_schema_path(schema_path))
-  use Nil <- result.try(validate_supported_policy(
-    require_single,
-    reject_sibling_tool_calls,
-  ))
   use schema <- result.try(read_schema(input.repository_root, schema_path))
   use parameters_schema <- result.try(provider_compatible_parameters_schema(
     schema.value,
@@ -115,29 +96,8 @@ fn build_for_pi_tool_call(
     parameters_schema_path: schema_path,
     parameters_schema_sha256: digest,
     parameters_schema: parameters_schema,
-    require_single: require_single,
-    reject_sibling_tool_calls: reject_sibling_tool_calls,
     terminate: True,
   ))
-}
-
-fn validate_supported_policy(
-  require_single: Bool,
-  reject_sibling_tool_calls: Bool,
-) -> Result(Nil, ToolSpecError) {
-  case require_single, reject_sibling_tool_calls {
-    True, True -> Ok(Nil)
-    False, _ ->
-      Error(ToolSpecError(
-        "structured_output_tool_spec_unsupported_require_single",
-        "generic structured-output tool specs require require_single: true",
-      ))
-    _, False ->
-      Error(ToolSpecError(
-        "structured_output_tool_spec_unsupported_reject_sibling_tool_calls",
-        "generic structured-output tool specs require reject_sibling_tool_calls: true",
-      ))
-  }
 }
 
 pub fn validate_schema_path(schema_path: String) -> Result(Nil, ToolSpecError) {
@@ -288,11 +248,6 @@ pub fn to_json(tool_spec: ToolSpec) -> json.Json {
       json.string(tool_spec.parameters_schema_sha256),
     ),
     #("parameters_schema", json_value.to_json(tool_spec.parameters_schema)),
-    #("require_single", json.bool(tool_spec.require_single)),
-    #(
-      "reject_sibling_tool_calls",
-      json.bool(tool_spec.reject_sibling_tool_calls),
-    ),
     #("terminate", json.bool(tool_spec.terminate)),
   ])
 }

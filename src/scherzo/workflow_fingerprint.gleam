@@ -357,17 +357,10 @@ fn structured_output_source_to_json(
   case source {
     structured_output_source.FinalResponseSource ->
       json.object([#("type", json.string("final_response"))])
-    structured_output_source.PiToolCallSource(
-      tool_name,
-      require_single,
-      reject_sibling_tool_calls,
-      parameters_schema_path,
-    ) ->
+    structured_output_source.PiToolCallSource(tool_name, parameters_schema_path) ->
       json.object([
         #("type", json.string("pi_tool_call")),
         #("tool_name", json.string(tool_name)),
-        #("require_single", json.bool(require_single)),
-        #("reject_sibling_tool_calls", json.bool(reject_sibling_tool_calls)),
         #(
           "parameters_schema_path",
           option_string_to_json(parameters_schema_path),

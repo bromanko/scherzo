@@ -784,6 +784,10 @@ pub fn workflow_removed_keys_and_invalid_shapes_are_rejected_test() {
       "version: 1\nid: sample\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n      validator: review_lane_draft\n      validators:\n        - type: command\n          argv: [python3]\n",
     ),
     #(
+      "legacy source require_single false",
+      "version: 1\nid: sample\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        require_single: false\n",
+    ),
+    #(
       "absolute parameters_schema_path",
       "version: 1\nid: sample\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: /tmp/schema.json\n",
     ),

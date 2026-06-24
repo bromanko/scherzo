@@ -56,8 +56,6 @@ fn assert_review_tool_source(
   assert spec.source
     == structured_output_source.PiToolCallSource(
       tool_name: submit_structured_output_tool,
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: Some(schema_path),
     )
 }
@@ -87,8 +85,6 @@ fn assert_disposition_tool_source(
   assert spec.source
     == structured_output_source.PiToolCallSource(
       tool_name: submit_dispositions_tool,
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: Some(disposition_provider_schema_path),
     )
 }

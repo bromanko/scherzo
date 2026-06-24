@@ -174,24 +174,14 @@ fn source_retry_instruction(spec: workflow_dag.StructuredOutputSpec) -> String {
   case spec.source {
     structured_output_source.FinalResponseSource ->
       "Return JSON only: no Markdown, code fences, commentary, transcripts, or prior full responses.\n"
-    structured_output_source.PiToolCallSource(
-      tool_name,
-      require_single,
-      reject_sibling_tool_calls,
-      _,
-    ) ->
+    structured_output_source.PiToolCallSource(tool_name, _) ->
       "Call the Pi tool `"
       <> tool_name
       <> "` with the structured artifact as object-valued JSON arguments. Do not submit final assistant JSON instead.\n"
-      <> case require_single {
-        True -> "Submit exactly one `" <> tool_name <> "` call.\n"
-        False -> "Submit the configured Pi tool call.\n"
-      }
-      <> case reject_sibling_tool_calls {
-        True ->
-          "Do not include sibling tool calls in the same assistant tool-call batch.\n"
-        False -> ""
-      }
+      <> "Submit exactly one `"
+      <> tool_name
+      <> "` call.\n"
+      <> "Do not include sibling tool calls in the same assistant tool-call batch.\n"
   }
 }
 

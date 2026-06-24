@@ -104,8 +104,6 @@ steps:
         type: pi_tool_call
         tool_name: submit_implementation_pack_submission
         parameters_schema_path: .scherzo/workflows/schemas/provider/implementation-pack-submission.v2.schema.json
-        require_single: true
-        reject_sibling_tool_calls: true
       required: true
       validators:
         - name: implementation_pack_submission_provider_shape
@@ -141,8 +139,6 @@ steps:
         type: pi_tool_call
         tool_name: submit_implementation_pack_submission
         parameters_schema_path: .scherzo/workflows/schemas/provider/implementation-pack-submission.v2.schema.json
-        require_single: true
-        reject_sibling_tool_calls: true
       required: true
       validators:
         - name: implementation_pack_submission_provider_shape
