@@ -5,4 +5,17 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 cd "$repo_root"
 
-exec gleam test -- --suite contract
+suite="${1:-contract}"
+case "$suite" in
+  runtime|orchestrator|tracker|workflow|repository)
+    suite="contract-$suite"
+    ;;
+  contract|contract-runtime|contract-orchestrator|contract-tracker|contract-workflow|contract-repository)
+    ;;
+  *)
+    echo "Usage: scripts/scherzo-test-contract [contract|runtime|orchestrator|tracker|workflow|repository]" >&2
+    exit 2
+    ;;
+esac
+
+exec gleam test -- --suite "$suite"

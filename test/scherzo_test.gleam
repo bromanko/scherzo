@@ -17,6 +17,16 @@ pub fn main() -> Nil {
     [] -> run_suite(Unit)
     ["unit"] | ["--suite", "unit"] -> run_suite(Unit)
     ["contract"] | ["--suite", "contract"] -> run_suite(Contract)
+    ["contract-runtime"] | ["--suite", "contract-runtime"] ->
+      run_suite(ContractRuntime)
+    ["contract-orchestrator"] | ["--suite", "contract-orchestrator"] ->
+      run_suite(ContractOrchestrator)
+    ["contract-tracker"] | ["--suite", "contract-tracker"] ->
+      run_suite(ContractTracker)
+    ["contract-workflow"] | ["--suite", "contract-workflow"] ->
+      run_suite(ContractWorkflow)
+    ["contract-repository"] | ["--suite", "contract-repository"] ->
+      run_suite(ContractRepository)
     ["local-integration"] | ["--suite", "local-integration"] ->
       run_suite(LocalIntegration)
     ["real-pi-validation"] | ["--suite", "real-pi-validation"] ->
@@ -36,6 +46,11 @@ pub fn main() -> Nil {
 type Suite {
   Unit
   Contract
+  ContractRuntime
+  ContractOrchestrator
+  ContractTracker
+  ContractWorkflow
+  ContractRepository
   LocalIntegration
   RealPiValidation
   All
@@ -78,6 +93,11 @@ fn file_belongs_to_suite(path: String, suite: Suite) -> Bool {
   case suite {
     Unit -> is_unit_file(path)
     Contract -> is_contract_file(path)
+    ContractRuntime -> is_contract_runtime_file(path)
+    ContractOrchestrator -> is_contract_orchestrator_file(path)
+    ContractTracker -> is_contract_tracker_file(path)
+    ContractWorkflow -> is_contract_workflow_file(path)
+    ContractRepository -> is_contract_repository_file(path)
     LocalIntegration -> string.starts_with(path, local_integration_prefix)
     RealPiValidation -> string.starts_with(path, real_pi_validation_prefix)
     All -> True
@@ -95,20 +115,54 @@ pub fn is_contract_file(path: String) -> Bool {
   || list.contains(contract_test_files(), path)
 }
 
+fn is_contract_runtime_file(path: String) -> Bool {
+  string.starts_with(path, contract_prefix)
+  || list.contains(contract_runtime_test_files(), path)
+}
+
+fn is_contract_orchestrator_file(path: String) -> Bool {
+  list.contains(contract_orchestrator_test_files(), path)
+}
+
+fn is_contract_tracker_file(path: String) -> Bool {
+  list.contains(contract_tracker_test_files(), path)
+}
+
+fn is_contract_workflow_file(path: String) -> Bool {
+  list.contains(contract_workflow_test_files(), path)
+}
+
+fn is_contract_repository_file(path: String) -> Bool {
+  list.contains(contract_repository_test_files(), path)
+}
+
 pub fn contract_test_files() -> List(String) {
+  contract_runtime_test_files()
+  |> list.append(contract_orchestrator_test_files())
+  |> list.append(contract_tracker_test_files())
+  |> list.append(contract_workflow_test_files())
+  |> list.append(contract_repository_test_files())
+}
+
+pub fn contract_runtime_test_files() -> List(String) {
   [
     "agent_helper_script_test.gleam",
     "command_step_test.gleam",
     "control_server_test.gleam",
-    "execplan_implementation_helper_test.gleam",
-    "execplan_html_renderer_test.gleam",
-    "execplan_v2_bundle_test.gleam",
-    "github_pr_conflict_scout_test.gleam",
-    "jj_origin_sync_test.gleam",
-    "jj_workspace_driver_test.gleam",
-    "jj_workspace_hook_test.gleam",
-    "linear_cli_wrapper_test.gleam",
-    "merge_conflict_helper_test.gleam",
+    "pi_client_test.gleam",
+    "port_test.gleam",
+    "scherzo_launcher_test.gleam",
+    "scherzoctl_wrapper_test.gleam",
+    "workspace_cleanup_helper_test.gleam",
+    "workspace_driver_contract_test.gleam",
+    "workspace_driver_discovery_test.gleam",
+    "workspace_driver_lifecycle_test.gleam",
+    "workspace_run_test.gleam",
+  ]
+}
+
+pub fn contract_orchestrator_test_files() -> List(String) {
+  [
     "orchestrator_daemon_control_test.gleam",
     "orchestrator_daemon_retry_step_test.gleam",
     "orchestrator_daemon_session_event_test.gleam",
@@ -116,14 +170,12 @@ pub fn contract_test_files() -> List(String) {
     "orchestrator_service_doctor_test.gleam",
     "orchestrator_service_lifecycle_test.gleam",
     "orchestrator_service_test.gleam",
-    "pi_client_test.gleam",
-    "port_test.gleam",
-    "portable_research_workflow_test.gleam",
-    "review_artifacts_test.gleam",
-    "review_lane_contract_test.gleam",
-    "scherzo_launcher_test.gleam",
-    "scherzoctl_wrapper_test.gleam",
-    "structured_output_contract_command_test.gleam",
+  ]
+}
+
+pub fn contract_tracker_test_files() -> List(String) {
+  [
+    "linear_cli_wrapper_test.gleam",
     "tracker_conformance_cli_test.gleam",
     "tracker_conformance_comments_pack_test.gleam",
     "tracker_conformance_fixture_probe_test.gleam",
@@ -134,25 +186,47 @@ pub fn contract_test_files() -> List(String) {
     "tracker_conformance_scheduled_failures_pack_test.gleam",
     "tracker_conformance_state_transition_pack_test.gleam",
     "tracker_conformance_task_source_test.gleam",
+  ]
+}
+
+pub fn contract_workflow_test_files() -> List(String) {
+  [
+    "portable_research_workflow_test.gleam",
+    "structured_output_contract_command_test.gleam",
     "workflow_portability_test.gleam",
     "workflow_run_test.gleam",
-    "workspace_cleanup_helper_test.gleam",
-    "workspace_driver_contract_test.gleam",
-    "workspace_driver_discovery_test.gleam",
-    "workspace_driver_lifecycle_test.gleam",
-    "workspace_run_test.gleam",
+  ]
+}
+
+pub fn contract_repository_test_files() -> List(String) {
+  [
+    "execplan_implementation_helper_test.gleam",
+    "execplan_html_renderer_test.gleam",
+    "execplan_v2_bundle_test.gleam",
+    "github_pr_conflict_scout_test.gleam",
+    "jj_origin_sync_test.gleam",
+    "jj_workspace_driver_test.gleam",
+    "jj_workspace_hook_test.gleam",
+    "merge_conflict_helper_test.gleam",
+    "review_artifacts_test.gleam",
+    "review_lane_contract_test.gleam",
   ]
 }
 
 fn test_usage() -> String {
-  "Usage: gleam test [-- --suite unit|contract|local-integration|real-pi-validation|all]\n"
-  <> "Default with no suite runs the deterministic unit suite. Contract runs shell-heavy script/workflow/daemon/process/driver coverage."
+  "Usage: gleam test [-- --suite unit|contract|contract-runtime|contract-orchestrator|contract-tracker|contract-workflow|contract-repository|local-integration|real-pi-validation|all]\n"
+  <> "Default with no suite runs the deterministic unit suite. Contract shards split shell-heavy coverage for CI timeouts."
 }
 
 fn suite_name(suite: Suite) -> String {
   case suite {
     Unit -> "unit"
     Contract -> "contract"
+    ContractRuntime -> "contract-runtime"
+    ContractOrchestrator -> "contract-orchestrator"
+    ContractTracker -> "contract-tracker"
+    ContractWorkflow -> "contract-workflow"
+    ContractRepository -> "contract-repository"
     LocalIntegration -> "local-integration"
     RealPiValidation -> "real-pi-validation"
     All -> "all"

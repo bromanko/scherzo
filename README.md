@@ -118,6 +118,8 @@ direnv exec . gleam test
 
 # Shell-heavy script/workflow/daemon/process/driver contract suite
 direnv exec . scherzo-test-contract
+# CI-friendly shards are also available, for example:
+direnv exec . gleam test -- --suite contract-runtime
 
 # Production lint gates
 direnv exec . gleam run -m glinter
@@ -153,7 +155,17 @@ Shell-heavy script, workflow-helper, renderer, daemon/service, port/process, pi-
 direnv exec . scherzo-test-contract
 ```
 
-Run the contract suite when changing helper scripts such as `.scherzo/workflows/scripts/scherzo-review` or `.scherzo/workflows/scripts/scherzo-implementation`, ExecPlan HTML rendering, daemon/service behavior, port/pi-client process boundaries, workspace driver scripts, or before relying on repository confidence from the final gate.
+For CI or local runners with per-command timeouts, run the contract shards separately and clean `test/tmp` between them:
+
+```sh
+direnv exec . gleam test -- --suite contract-runtime
+direnv exec . gleam test -- --suite contract-orchestrator
+direnv exec . gleam test -- --suite contract-tracker
+direnv exec . gleam test -- --suite contract-workflow
+direnv exec . gleam test -- --suite contract-repository
+```
+
+Run the contract suite or the relevant shards when changing helper scripts such as `.scherzo/workflows/scripts/scherzo-review` or `.scherzo/workflows/scripts/scherzo-implementation`, ExecPlan HTML rendering, daemon/service behavior, port/pi-client process boundaries, workspace driver scripts, or before relying on repository confidence from the final gate.
 
 The explicit integration suites are opt-in because they have required dependencies outside the normal unit and contract loops: `scherzo-test-local-integration` exercises local jj/workspace behavior, and `scherzo-test-real-pi-validation` uses the devenv-provided `pi` plus working model/provider credentials.
 

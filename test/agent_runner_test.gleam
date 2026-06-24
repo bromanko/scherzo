@@ -423,13 +423,19 @@ pub fn runner_completes_after_high_volume_streaming_message_updates_test() {
   let root = "test/tmp/runner-high-volume-message-updates"
   test_helpers.reset_dir(root)
   let command = "FAKE_PI_MESSAGE_UPDATE_COUNT=20000 " <> fake_pi()
+  let base_config = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base_config,
+      pi: config_types.PiConfig(..base_config.pi, turn_timeout_ms: 60_000),
+    )
 
   let assert Ok(success) =
     runner.run_attempt(
       issue("Todo"),
       None,
       workflow("Do it"),
-      config(root, command, False, 1),
+      cfg,
       tracker_returning(issue("Done")),
       emit,
     )

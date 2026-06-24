@@ -26,6 +26,24 @@ pub fn suite_selection_partitions_unit_and_contract_files_test() {
   )
 }
 
+pub fn contract_shards_cover_contract_file_inventory_test() {
+  let contract_files = scherzo_test.contract_test_files()
+  let shard_files =
+    scherzo_test.contract_runtime_test_files()
+    |> list.append(scherzo_test.contract_orchestrator_test_files())
+    |> list.append(scherzo_test.contract_tracker_test_files())
+    |> list.append(scherzo_test.contract_workflow_test_files())
+    |> list.append(scherzo_test.contract_repository_test_files())
+
+  assert list.length(shard_files) == list.length(contract_files)
+  list.each(contract_files, fn(file) {
+    assert list.contains(shard_files, file)
+  })
+  list.each(shard_files, fn(file) {
+    assert list.contains(contract_files, file)
+  })
+}
+
 pub fn contract_wrapper_invokes_contract_suite_test() {
   let dir = "test/tmp/contract-wrapper-dispatch"
   test_helpers.reset_dir(dir)

@@ -33,5 +33,14 @@ run_step "review lane contract offline (implementation)" direnv exec . .scherzo/
 run_step "review lane contract offline (execplan implementation)" direnv exec . .scherzo/workflows/scripts/scherzo-review-lane-contract offline --workflow .scherzo/workflows/execplan-implementation.yaml --fixtures test/fixtures/review-lane-contract --output-dir tmp/scherzo-review-lane-contract/selfci/execplan-implementation
 run_step "clean test/tmp" rm -rf test/tmp
 run_step "gleam unit test" direnv exec . scherzo-test-unit
-run_step "gleam contract test" direnv exec . scherzo-test-contract
+run_step "clean test/tmp (contract runtime)" rm -rf test/tmp
+run_step "gleam contract test runtime" direnv exec . gleam test -- --suite contract-runtime
+run_step "clean test/tmp (contract orchestrator)" rm -rf test/tmp
+run_step "gleam contract test orchestrator" direnv exec . gleam test -- --suite contract-orchestrator
+run_step "clean test/tmp (contract tracker)" rm -rf test/tmp
+run_step "gleam contract test tracker" direnv exec . gleam test -- --suite contract-tracker
+run_step "clean test/tmp (contract workflow)" rm -rf test/tmp
+run_step "gleam contract test workflow" direnv exec . gleam test -- --suite contract-workflow
+run_step "clean test/tmp (contract repository)" rm -rf test/tmp
+run_step "gleam contract test repository" direnv exec . gleam test -- --suite contract-repository
 run_step "nix flake check" nix flake check --print-build-logs

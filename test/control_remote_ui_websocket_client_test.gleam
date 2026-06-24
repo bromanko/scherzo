@@ -604,6 +604,7 @@ pub fn ui_websocket_client_rejects_ninth_in_flight_query_test() {
         ..settings,
         heartbeat_interval_ms: 60_000,
         state_interval_ms: 60_000,
+        query_timeout_ms: 60_000,
       ),
       deps,
     )

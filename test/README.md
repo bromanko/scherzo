@@ -4,6 +4,8 @@
 
 `direnv exec . gleam test` and `direnv exec . scherzo-test-unit` run the deterministic unit suite. Shell-heavy helper-script, workflow, renderer, daemon/service, port/process, pi-client, CLI, tracker-conformance, and workspace-driver contract tests are excluded from that default loop and run with `direnv exec . scherzo-test-contract` (or `gleam test -- --suite contract`).
 
+For CI systems with per-command timeouts, split the contract suite into shards: `contract-runtime`, `contract-orchestrator`, `contract-tracker`, `contract-workflow`, and `contract-repository`, for example `direnv exec . gleam test -- --suite contract-runtime`. Clean `test/tmp` between shards to avoid retained workspace artifacts coupling otherwise independent runs.
+
 The local integration and real pi validation suites remain explicit: use `direnv exec . scherzo-test-local-integration` for local jj/workspace integration and `direnv exec . scherzo-test-real-pi-validation` only when `pi` plus provider credentials are available.
 
 ## Async process synchronization
