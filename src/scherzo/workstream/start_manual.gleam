@@ -173,7 +173,8 @@ fn mapped_input_spec_named(
   specs
   |> list.filter(fn(spec) {
     spec.name == name
-    && spec.source == Some(workflow_contract.MappedOutputSource)
+    && workflow_contract.requirement_source(spec.source)
+    == Some(workflow_contract.MappedOutputSource)
   })
   |> list.first
 }

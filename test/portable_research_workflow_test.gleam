@@ -197,8 +197,8 @@ pub fn dogfood_research_workflow_exposes_retained_findings_output_test() {
   let assert [findings] = contract.outputs
   assert findings.name == "findings"
   assert findings.type_ == workflow_contract.DocumentMarkdown
-  assert findings.required
-  assert findings.source
+  assert workflow_contract.requirement_required(findings.source)
+  assert workflow_contract.requirement_source(findings.source)
     == Some(workflow_contract.StepField(
       "collect_findings",
       workflow_contract.Stdout,

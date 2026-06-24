@@ -1370,7 +1370,7 @@ fn validate_contract_output(
   output: workflow_contract.OutputSpec,
   steps: List(WorkflowStep),
 ) -> Result(Nil, DagError) {
-  case output.source {
+  case workflow_contract.requirement_source(output.source) {
     None -> Ok(Nil)
     Some(workflow_contract.StaticUrl(_))
     | Some(workflow_contract.StaticGitRef(_)) -> Ok(Nil)

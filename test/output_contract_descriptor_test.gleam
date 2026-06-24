@@ -71,9 +71,8 @@ pub fn retained_artifact_set_validation_uses_checkpoint_local_paths_test() {
       workflow_contract.OutputSpec(
         name: "visual_artifacts",
         type_: workflow_contract.GenericArtifactSet,
-        required: True,
         description: None,
-        source: None,
+        source: workflow_contract.Optional(None),
         descriptor: None,
       ),
       value,

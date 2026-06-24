@@ -233,6 +233,55 @@ pub fn start_from_handoff_queues_input_bundle_from_snapshot_refs_test() {
   assert dict.size(workstream.queued_phase_runs) == 1
 }
 
+pub fn start_from_handoff_omits_optional_missing_mapped_contract_input_test() {
+  let root = "test/tmp/workstream-start/optional-mapped-handoff-missing"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Ok(start.Queued(outcome)) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(optional_missing_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+
+  let assert Ok(input_bundle_json) =
+    checkpoint.read_artifact(outcome.input_bundle_ref)
+  let assert Ok(input_bundle) = artifacts.decode_input_bundle(input_bundle_json)
+  let assert [] = input_bundle.inputs
+  assert dict.size(outcome.contract_values.inputs) == 0
+}
+
+pub fn start_from_handoff_rejects_required_missing_mapped_contract_input_test() {
+  let root = "test/tmp/workstream-start/required-mapped-handoff-missing"
+  test_helpers.reset_dir(root)
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let assert Ok(handoff_snapshot) = write_recorded_handoff(checkpoint)
+  let assert Ok(projected) = load_projection(root)
+
+  let assert Error(error) =
+    start.from_handoff(
+      "execplan-implementation",
+      "implement_exec_plan",
+      handoff_snapshot.ref,
+      handoff_snapshot.sha256,
+      [],
+      Some(required_missing_bundle_contract()),
+      projected,
+      checkpoint,
+    )
+  let start.StartError(code, message) = error
+  assert code == "contract_input_missing"
+  assert string.contains(message, "missing_bundle")
+}
+
 pub fn start_from_handoff_accepts_legacy_snapshot_without_artifact_type_test() {
   let root = "test/tmp/workstream-start/from-handoff-legacy-artifact-type"
   test_helpers.reset_dir(root)
@@ -1620,25 +1669,52 @@ fn write_decision_for_manual_snapshot(
 }
 
 fn exec_plan_bundle_contract() -> workflow_contract.Contract {
+  contract_with_bundle_input(bundle_contract_input(
+    "exec_plan_bundle",
+    workflow_contract.Required(workflow_contract.MappedOutputSource),
+  ))
+}
+
+fn optional_missing_bundle_contract() -> workflow_contract.Contract {
+  contract_with_bundle_input(bundle_contract_input(
+    "optional_bundle",
+    workflow_contract.Optional(Some(workflow_contract.MappedOutputSource)),
+  ))
+}
+
+fn required_missing_bundle_contract() -> workflow_contract.Contract {
+  contract_with_bundle_input(bundle_contract_input(
+    "missing_bundle",
+    workflow_contract.Required(workflow_contract.MappedOutputSource),
+  ))
+}
+
+fn contract_with_bundle_input(
+  input: workflow_contract.InputSpec,
+) -> workflow_contract.Contract {
   workflow_contract.Contract(
     version: 1,
-    inputs: [
-      workflow_contract.InputSpec(
-        name: "exec_plan_bundle",
-        type_: workflow_contract.ExecPlanBundle,
-        required: True,
-        description: None,
-        source: Some(workflow_contract.MappedOutputSource),
-        descriptor: Some(workflow_contract.ContractDescriptorSpec(
-          kind: Some("artifact_set"),
-          ref_type: None,
-          media_type: Some("application/json"),
-          artifact_type: Some("scherzo.exec_plan_bundle.v2"),
-        )),
-      ),
-    ],
+    inputs: [input],
     context: [],
     outputs: [],
+  )
+}
+
+fn bundle_contract_input(
+  name: String,
+  source: workflow_contract.SourceRequirement(workflow_contract.InputSource),
+) -> workflow_contract.InputSpec {
+  workflow_contract.InputSpec(
+    name: name,
+    type_: workflow_contract.ExecPlanBundle,
+    description: None,
+    source: source,
+    descriptor: Some(workflow_contract.ContractDescriptorSpec(
+      kind: Some("artifact_set"),
+      ref_type: None,
+      media_type: Some("application/json"),
+      artifact_type: Some("scherzo.exec_plan_bundle.v2"),
+    )),
   )
 }
 

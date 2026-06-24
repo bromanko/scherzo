@@ -322,14 +322,14 @@ fn resolve_contract_input(
   issue: tracker_issue.Issue,
   invocation: RunInvocation,
 ) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
-  case spec.source {
+  case workflow_contract.requirement_source(spec.source) {
     Some(workflow_contract.IssueContext) ->
       Ok(inline_value(spec.type_, json_value.JString(issue_context_text(issue))))
     Some(workflow_contract.ScheduledContext) ->
       case invocation.scheduled_context {
         Some(scheduled) ->
           Ok(inline_value(spec.type_, scheduled_context_json(scheduled)))
-        None -> Error(contract_error.RequiredInputMissing(spec.name))
+        None -> optional_or_missing_input(spec)
       }
     Some(workflow_contract.LiteralInput(value)) ->
       Ok(inline_value(spec.type_, json_value.JString(value)))
@@ -338,7 +338,7 @@ fn resolve_contract_input(
         spec.name,
         spec.type_,
         spec.descriptor,
-        spec.required,
+        workflow_contract.requirement_required(spec.source),
         invocation.supplied_contract_values.inputs,
         InputValue,
       )
@@ -352,7 +352,7 @@ fn resolve_contract_context_value(
   orchestrator: config_types.OrchestratorConfig,
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
-  case spec.source {
+  case workflow_contract.requirement_source(spec.source) {
     Some(workflow_contract.WorkspaceDriverBase) ->
       case workspace_driver_base(orchestrator, profile) {
         Some(value) -> Ok(inline_value(spec.type_, json_value.JString(value)))
@@ -365,7 +365,7 @@ fn resolve_contract_context_value(
         spec.name,
         spec.type_,
         spec.descriptor,
-        spec.required,
+        workflow_contract.requirement_required(spec.source),
         invocation.supplied_contract_values.context,
         ContextValue,
       )
@@ -411,7 +411,7 @@ fn mapped_contract_value(
 fn optional_or_missing_input(
   spec: workflow_contract.InputSpec,
 ) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
-  case spec.required {
+  case workflow_contract.requirement_required(spec.source) {
     True -> Error(contract_error.RequiredInputMissing(spec.name))
     False ->
       Ok(contract_manifest.absent(
@@ -424,7 +424,7 @@ fn optional_or_missing_input(
 fn optional_or_missing_context(
   spec: workflow_contract.ContextSpec,
 ) -> Result(contract_manifest.ManifestValue, contract_error.ContractIoError) {
-  case spec.required {
+  case workflow_contract.requirement_required(spec.source) {
     True -> Error(contract_error.RequiredContextMissing(spec.name))
     False ->
       Ok(contract_manifest.absent(
@@ -613,7 +613,9 @@ fn materialize_output(
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
 ) -> #(contract_manifest.ManifestValue, List(String), Bool) {
-  let #(value, diagnostics) = case spec.source {
+  let #(value, diagnostics) = case
+    workflow_contract.requirement_source(spec.source)
+  {
     None -> #(
       contract_manifest.absent(spec.type_, Some("output source absent")),
       [
@@ -631,14 +633,12 @@ fn materialize_output(
         prepared_workspaces,
       )
   }
-  case
-    contract_manifest.validate_value(spec.name, value, required: spec.required)
-  {
+  let required = workflow_contract.requirement_required(spec.source)
+  case contract_manifest.validate_value(spec.name, value, required:) {
     Ok(Nil) -> #(value, diagnostics, False)
     Error(contract_manifest.ManifestError(_, message)) -> {
       let diagnostics = [message, ..diagnostics]
-      let missing = spec.required
-      #(value, diagnostics, missing)
+      #(value, diagnostics, required)
     }
   }
 }

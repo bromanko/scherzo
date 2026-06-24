@@ -915,7 +915,7 @@ pub fn validates_contract_output_step_sources_test() {
     )
   let assert Some(contract) = dag.contract
   let assert [output] = contract.outputs
-  assert output.source
+  assert workflow_contract.requirement_source(output.source)
     == Some(workflow_contract.StepField(
       "collect_findings",
       workflow_contract.Stdout,
@@ -943,12 +943,12 @@ pub fn validates_contract_structured_output_sources_test() {
     )
   let assert Some(contract) = dag.contract
   let assert [structured, inline] = contract.outputs
-  assert structured.source
+  assert workflow_contract.requirement_source(structured.source)
     == Some(workflow_contract.StructuredOutput(
       "summarize_change",
       "code_change",
     ))
-  assert inline.source
+  assert workflow_contract.requirement_source(inline.source)
     == Some(workflow_contract.InlineJson("summarize_change", "code_change"))
 }
 

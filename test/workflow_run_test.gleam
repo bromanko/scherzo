@@ -6209,6 +6209,39 @@ pub fn contracted_scheduled_context_records_metadata_test() {
   assert !string.contains(value_text, "ABC-123")
 }
 
+pub fn contracted_optional_scheduled_context_records_absent_for_normal_run_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-optional-scheduled-context"
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  inputs:\n    scheduled:\n      type: text\n      required: false\n      source: scheduled_context\nsteps:\n  - id: inspect\n    kind: command\n    run: echo inspect\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let manifest = read_input_manifest(root, "run-1")
+  let assert [scheduled_input] = manifest.inputs
+  assert scheduled_input.name == "scheduled"
+  assert scheduled_input.value.status == workflow_contract_manifest.Absent
+  assert scheduled_input.value.diagnostic
+    == Some("optional input source absent")
+}
+
 pub fn scheduled_command_step_receives_scheduled_env_test() {
   let root = "test/tmp/workflow-run/scheduled-command-env"
   test_helpers.reset_dir(root)
@@ -6299,6 +6332,35 @@ pub fn contracted_optional_workspace_driver_base_records_absent_test() {
   let assert [base_ref] = manifest.context
   assert base_ref.name == "base_ref"
   assert base_ref.value.status == workflow_contract_manifest.Absent
+}
+
+pub fn contracted_required_workspace_driver_base_missing_fails_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-required-driver-base"
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  context:\n    base_ref:\n      type: git_ref\n      required: true\n      source: workspace_driver_base\nsteps:\n  - id: implement\n    kind: command\n    run: echo should-not-run\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_required_context_missing:base_ref"
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn contracted_required_final_response_output_missing_fails_test() {

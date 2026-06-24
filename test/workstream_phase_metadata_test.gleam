@@ -129,16 +129,20 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
     list.find(revision_contract.inputs, fn(input) {
       input.name == "exec_plan_bundle"
     })
-  assert revision_bundle_input.required == False
-  assert revision_bundle_input.source
+  assert !workflow_contract.requirement_required(revision_bundle_input.source)
+  assert workflow_contract.requirement_source(revision_bundle_input.source)
     == Some(workflow_contract.MappedOutputSource)
   let assert Some(implementation_contract) = implementation.contract
   let assert Ok(implementation_bundle_input) =
     list.find(implementation_contract.inputs, fn(input) {
       input.name == "exec_plan_bundle"
     })
-  assert implementation_bundle_input.required == False
-  assert implementation_bundle_input.source
+  assert !workflow_contract.requirement_required(
+    implementation_bundle_input.source,
+  )
+  assert workflow_contract.requirement_source(
+      implementation_bundle_input.source,
+    )
     == Some(workflow_contract.MappedOutputSource)
   let assert Some(execplan_phase) = execplan.workstream_phase
   assert execplan_phase.phase_id == "execplan"
