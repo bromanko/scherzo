@@ -103,16 +103,10 @@ fn config() -> config_types.EffectiveConfig {
       acknowledge_success: True,
       acknowledge_rejection: True,
     ),
-    ui_server: config_types.UiServerConfig(
-      enabled: False,
+    ui_server: config_types.UiServerDisabled(
       endpoint: None,
       credential_ref: None,
       daemon_label: None,
-      command_bridge_enabled: False,
-      heartbeat_interval_ms: 5000,
-      state_interval_ms: 5000,
-      retry_initial_ms: 500,
-      retry_max_ms: 30_000,
     ),
   )
 }

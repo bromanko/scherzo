@@ -197,10 +197,9 @@ fn effective_config(
     handoff: config.default_handoff_config(),
     linear_contract: config.default_linear_contract_config(),
     linear_commands: config.default_linear_command_config(),
-    ui_server: config_types.UiServerConfig(
-      enabled: True,
-      endpoint: Some(server_url),
-      credential_ref: Some("work-laptop"),
+    ui_server: config_types.UiServerEnabled(
+      endpoint: server_url,
+      credential_ref: "work-laptop",
       daemon_label: Some("project-foo"),
       command_bridge_enabled: False,
       heartbeat_interval_ms: 25,

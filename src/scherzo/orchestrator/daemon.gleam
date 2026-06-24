@@ -12,7 +12,7 @@ import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/artifact_repository/command_runner
 import scherzo/config
-import scherzo/config/types as config_types
+import scherzo/config/types.{ui_server_enabled} as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
 import scherzo/control/query/backend as query_backend
@@ -666,7 +666,7 @@ fn update_read_model_remote_client_status(
 }
 
 fn restart_remote_client_if_enabled(state: State) -> State {
-  case state.workflow.effective.ui_server.enabled {
+  case ui_server_enabled(state.workflow.effective.ui_server) {
     False -> stop_remote_client_and_clear(state, read_model.Disabled)
     True ->
       case
@@ -937,7 +937,9 @@ pub fn start(
                           read_model: read_model.new(
                             daemon_id: daemon_identity.daemon_id,
                             boot_id: daemon_identity.boot_id,
-                            ui_server_enabled: effective.ui_server.enabled,
+                            ui_server_enabled: ui_server_enabled(
+                              effective.ui_server,
+                            ),
                           ),
                           ledger_projection: startup_recovery.projection,
                           remote_client: None,
@@ -3981,12 +3983,10 @@ fn reconcile_remote_client_after_reload(state: State) -> State {
   let state =
     State(
       ..state,
-      read_model: read_model.update_ui_server_enabled(
-        state.read_model,
-        ui_server.enabled,
-      ),
+      read_model: state.read_model
+        |> read_model.update_ui_server_enabled(ui_server_enabled(ui_server)),
     )
-  case ui_server.enabled {
+  case ui_server_enabled(ui_server) {
     False -> stop_remote_client_and_clear(state, read_model.Disabled)
     True ->
       case state.remote_client {

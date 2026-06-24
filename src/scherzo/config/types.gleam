@@ -252,10 +252,14 @@ pub type PiConfig {
 }
 
 pub type UiServerConfig {
-  UiServerConfig(
-    enabled: Bool,
+  UiServerDisabled(
     endpoint: Option(String),
     credential_ref: Option(String),
+    daemon_label: Option(String),
+  )
+  UiServerEnabled(
+    endpoint: String,
+    credential_ref: String,
     daemon_label: Option(String),
     command_bridge_enabled: Bool,
     heartbeat_interval_ms: Int,
@@ -263,6 +267,13 @@ pub type UiServerConfig {
     retry_initial_ms: Int,
     retry_max_ms: Int,
   )
+}
+
+pub fn ui_server_enabled(config: UiServerConfig) -> Bool {
+  case config {
+    UiServerDisabled(..) -> False
+    UiServerEnabled(..) -> True
+  }
 }
 
 pub type HandoffConfig {
