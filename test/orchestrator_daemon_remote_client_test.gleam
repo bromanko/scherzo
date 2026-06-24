@@ -1,5 +1,5 @@
 import gleam/erlang/process
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/config
 import scherzo/config/types as config_types
@@ -16,12 +16,35 @@ type QueryRequestCall {
   QueryRequestCall(query: query_types.QueryRequest, timeout_ms: Int)
 }
 
+pub fn daemon_remote_client_rejects_disabled_config_test() {
+  let root = "test/tmp/daemon-remote-client-disabled"
+  test_helpers.reset_dir(root)
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let effective =
+    effective_config_with_ui_server(
+      root,
+      config_types.UiServerDisabled(
+        endpoint: None,
+        credential_ref: None,
+        daemon_label: None,
+      ),
+    )
+
+  let assert Error(daemon_remote_client.StartError(code, message)) =
+    daemon_remote_client.start(effective, event_hub, [], fn(_, _, _, _) {
+      Ok(Nil)
+    })
+  assert code == "remote_client_config_disabled"
+  assert message == "ui_server is disabled"
+  hub.stop(event_hub)
+}
+
 pub fn daemon_remote_client_requires_stored_credential_test() {
   let root = "test/tmp/daemon-remote-client-missing-credential"
   test_helpers.reset_dir(root)
   let assert Ok(event_hub) = hub.start(20, fn() { 42 })
   let effective =
-    effective_config(root, Some("https://ui.example.test"), Some("work-laptop"))
+    effective_config(root, "https://ui.example.test", "work-laptop")
 
   let assert Error(daemon_remote_client.StartError(code, message)) =
     daemon_remote_client.start(effective, event_hub, [], fn(_, _, _, _) {
@@ -36,8 +59,7 @@ pub fn daemon_remote_client_rejects_invalid_loopback_endpoint_test() {
   let root = "test/tmp/daemon-remote-client-invalid-endpoint"
   test_helpers.reset_dir(root)
   let assert Ok(event_hub) = hub.start(20, fn() { 42 })
-  let effective =
-    effective_config(root, Some("http://0.0.0.0:3000"), Some("work-laptop"))
+  let effective = effective_config(root, "http://0.0.0.0:3000", "work-laptop")
 
   let assert Error(daemon_remote_client.StartError(code, _)) =
     daemon_remote_client.start(effective, event_hub, [], fn(_, _, _, _) {
@@ -66,8 +88,8 @@ pub fn daemon_remote_client_uses_websocket_authorization_handshake_test() {
   let effective =
     effective_config(
       root,
-      Some(remote_ui_test_server.server_url(server)),
-      Some("work-laptop"),
+      remote_ui_test_server.server_url(server),
+      "work-laptop",
     )
 
   let assert Ok(handle) =
@@ -174,8 +196,8 @@ pub fn daemon_remote_client_reports_agent_slots_from_metrics_bridge_test() {
   let effective =
     effective_config(
       root,
-      Some(remote_ui_test_server.server_url(server)),
-      Some("work-laptop"),
+      remote_ui_test_server.server_url(server),
+      "work-laptop",
     )
   let query_requests = process.new_subject()
 
@@ -276,8 +298,27 @@ fn metrics_dto(
 
 fn effective_config(
   root: String,
-  endpoint: Option(String),
-  credential_ref: Option(String),
+  endpoint: String,
+  credential_ref: String,
+) -> config_types.EffectiveConfig {
+  effective_config_with_ui_server(
+    root,
+    config_types.UiServerEnabled(
+      endpoint: endpoint,
+      credential_ref: credential_ref,
+      daemon_label: None,
+      command_bridge_enabled: False,
+      heartbeat_interval_ms: 1000,
+      state_interval_ms: 1000,
+      retry_initial_ms: 50,
+      retry_max_ms: 100,
+    ),
+  )
+}
+
+fn effective_config_with_ui_server(
+  root: String,
+  ui_server: config_types.UiServerConfig,
 ) -> config_types.EffectiveConfig {
   config_types.EffectiveConfig(
     tracker: config.default_tracker_config(),
@@ -290,16 +331,6 @@ fn effective_config(
     handoff: config.default_handoff_config(),
     linear_contract: config.default_linear_contract_config(),
     linear_commands: config.default_linear_command_config(),
-    ui_server: config_types.UiServerConfig(
-      enabled: True,
-      endpoint: endpoint,
-      credential_ref: credential_ref,
-      daemon_label: None,
-      command_bridge_enabled: False,
-      heartbeat_interval_ms: 1000,
-      state_interval_ms: 1000,
-      retry_initial_ms: 50,
-      retry_max_ms: 100,
-    ),
+    ui_server: ui_server,
   )
 }

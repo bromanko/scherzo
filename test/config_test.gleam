@@ -7,6 +7,7 @@ import scherzo/config
 import scherzo/config/linear_task_scope
 import scherzo/config/linear_task_scope_diagnostics
 import scherzo/config/types as config_types
+import scherzo/config/ui_server as ui_server_config
 import scherzo/control/file as control_file
 import scherzo/control/server as control_server
 import scherzo/error
@@ -160,15 +161,11 @@ pub fn default_values_test() {
   assert pi.compatibility_probe == True
 
   let ui_server = config.default_ui_server_config()
-  assert ui_server.enabled == False
-  assert ui_server.endpoint == None
-  assert ui_server.credential_ref == None
-  assert ui_server.daemon_label == None
-  assert ui_server.command_bridge_enabled == False
-  assert ui_server.heartbeat_interval_ms == 5000
-  assert ui_server.state_interval_ms == 5000
-  assert ui_server.retry_initial_ms == 500
-  assert ui_server.retry_max_ms == 30_000
+  let assert config_types.UiServerDisabled(..) = ui_server
+  assert config_types.ui_server_enabled(ui_server) == False
+  assert ui_server_config.endpoint(ui_server) == None
+  assert ui_server_config.credential_ref(ui_server) == None
+  assert ui_server_config.daemon_label(ui_server) == None
 }
 
 pub fn duration_string_fields_parse_to_milliseconds_test() {
@@ -336,15 +333,14 @@ pub fn ui_server_default_and_disabled_config_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert disabled.ui_server.enabled == False
-  assert disabled.ui_server.endpoint == Some("https://ui.example.test")
-  assert disabled.ui_server.credential_ref == Some("work-laptop")
-  assert disabled.ui_server.daemon_label == Some("Project Foo / MacBook")
-  assert disabled.ui_server.command_bridge_enabled == True
-  assert disabled.ui_server.heartbeat_interval_ms == 6000
-  assert disabled.ui_server.state_interval_ms == 7000
-  assert disabled.ui_server.retry_initial_ms == 800
-  assert disabled.ui_server.retry_max_ms == 9000
+  let assert config_types.UiServerDisabled(..) = disabled.ui_server
+  assert config_types.ui_server_enabled(disabled.ui_server) == False
+  assert ui_server_config.endpoint(disabled.ui_server)
+    == Some("https://ui.example.test")
+  assert ui_server_config.credential_ref(disabled.ui_server)
+    == Some("work-laptop")
+  assert ui_server_config.daemon_label(disabled.ui_server)
+    == Some("Project Foo / MacBook")
   assert config.resolved_secrets(disabled) == ["linearkey"]
 }
 
@@ -375,7 +371,9 @@ pub fn ui_server_enabled_validation_and_secret_resolution_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert loopback_http.ui_server.endpoint == Some("http://127.0.0.1:4000")
+  let assert config_types.UiServerEnabled(..) = loopback_http.ui_server
+  assert ui_server_config.endpoint(loopback_http.ui_server)
+    == Some("http://127.0.0.1:4000")
 
   let query_endpoint =
     invalid_config_message(
@@ -456,11 +454,18 @@ pub fn ui_server_enabled_validation_and_secret_resolution_test() {
       "test/tmp/scherzo.yaml",
       env,
     )
-  assert enabled.ui_server.enabled == True
-  assert enabled.ui_server.endpoint == Some("https://ui.example.test")
-  assert enabled.ui_server.credential_ref == Some("work-laptop")
-  assert enabled.ui_server.daemon_label == None
-  assert enabled.ui_server.command_bridge_enabled == False
+  let assert config_types.UiServerEnabled(
+    endpoint: enabled_endpoint,
+    credential_ref: enabled_credential_ref,
+    daemon_label: enabled_daemon_label,
+    command_bridge_enabled: enabled_command_bridge,
+    ..,
+  ) = enabled.ui_server
+  assert config_types.ui_server_enabled(enabled.ui_server) == True
+  assert enabled_endpoint == "https://ui.example.test"
+  assert enabled_credential_ref == "work-laptop"
+  assert enabled_daemon_label == None
+  assert enabled_command_bridge == False
   assert config.resolved_secrets(enabled) == ["linearkey"]
 }
 
@@ -482,9 +487,21 @@ pub fn ui_server_redaction_and_local_control_separation_test() {
       "ui_server_config",
       [
         #("enabled", "true"),
-        #("endpoint", option.unwrap(enabled.ui_server.endpoint, "")),
-        #("credential_ref", option.unwrap(enabled.ui_server.credential_ref, "")),
-        #("daemon_label", option.unwrap(enabled.ui_server.daemon_label, "")),
+        #(
+          "endpoint",
+          ui_server_config.endpoint(enabled.ui_server)
+            |> option.unwrap(""),
+        ),
+        #(
+          "credential_ref",
+          ui_server_config.credential_ref(enabled.ui_server)
+            |> option.unwrap(""),
+        ),
+        #(
+          "daemon_label",
+          ui_server_config.daemon_label(enabled.ui_server)
+            |> option.unwrap(""),
+        ),
         #("pairing_preview", "pair_preview_token"),
         #("credential_preview", "dcred_live_secret"),
       ],

@@ -5,6 +5,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
+import scherzo/config/ui_server as ui
 import scherzo/control/client
 import scherzo/control/command
 import scherzo/control/file as control_file
@@ -190,7 +191,7 @@ pub fn run_with_deps(
   )
   let resolved_daemon_label = case command.daemon_label {
     Some(_) -> command.daemon_label
-    None -> bundle.effective.ui_server.daemon_label
+    None -> ui.daemon_label(bundle.effective.ui_server)
   }
   use paired <- result.try(
     deps.exchange_pairing_token(
@@ -300,15 +301,15 @@ fn check_activation_conflicts(
 ) -> Result(Nil, ConfigActivationError) {
   use _ <- result.try(check_optional_conflict(
     "ui_server.endpoint",
-    ui_server.endpoint,
+    ui.endpoint(ui_server),
     desired.endpoint,
   ))
   use _ <- result.try(check_optional_conflict(
     "ui_server.credential_ref",
-    ui_server.credential_ref,
+    ui.credential_ref(ui_server),
     desired.credential_ref,
   ))
-  case desired.daemon_label, ui_server.daemon_label {
+  case desired.daemon_label, ui.daemon_label(ui_server) {
     Some(desired_label), Some(existing_label)
       if desired_label != existing_label
     ->
@@ -410,13 +411,14 @@ fn ui_server_already_active(
 ) -> Bool {
   let bridge_active = case command_bridge_setting {
     Some(False) -> True
-    Some(True) | None -> ui_server.command_bridge_enabled
+    Some(True) | None -> ui.command_bridge_enabled(ui_server)
   }
-  ui_server.enabled
-  && ui_server.endpoint == Some(desired.endpoint)
-  && ui_server.credential_ref == Some(desired.credential_ref)
+  let existing_label = ui.daemon_label(ui_server)
+  config_types.ui_server_enabled(ui_server)
+  && ui.endpoint(ui_server) == Some(desired.endpoint)
+  && ui.credential_ref(ui_server) == Some(desired.credential_ref)
   && bridge_active
-  && daemon_label_already_active(ui_server.daemon_label, desired.daemon_label)
+  && daemon_label_already_active(existing_label, desired.daemon_label)
 }
 
 fn daemon_label_already_active(
