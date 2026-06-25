@@ -71,70 +71,89 @@ pub fn start_with_control(
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
 ) -> Result(Handle, StartError) {
-  use identity <- result.try(load_daemon_identity(effective.workspace.root))
-  use validated <- result.try(required_validated_ui_server(effective))
-  use credential_ref <- result.try(required_credential_ref(effective))
-  use stored <- result.try(load_stored_credential(
-    credential_ref,
-    validated.base_url,
-    identity.daemon_id,
-  ))
-  let settings =
-    ui_websocket_client.Settings(
-      server_url: validated.base_url,
-      websocket_url: validated.websocket_url,
-      daemon_id: identity.daemon_id,
-      boot_id: identity.boot_id,
-      runtime_metadata: ui_protocol.RuntimeMetadata(
-        local_hostname(),
-        version.string(),
-        effective.ui_server.daemon_label,
-        effective.agent.max_concurrent_agents,
-      ),
-      credential: stored.secret,
-      heartbeat_interval_ms: effective.ui_server.heartbeat_interval_ms,
-      state_interval_ms: effective.ui_server.state_interval_ms,
-      retry_initial_ms: effective.ui_server.retry_initial_ms,
-      retry_max_ms: effective.ui_server.retry_max_ms,
-      connect_timeout_ms: 1000,
-      command_timeout_ms: effective.control.command_timeout_ms,
-      query_timeout_ms: effective.control.command_timeout_ms,
-      command_bridge_enabled: effective.ui_server.command_bridge_enabled,
-      redaction_secrets: [stored.secret, ..secrets],
-    )
-  let dependencies =
-    ui_websocket_client.Dependencies(
-      now_ms: wall_clock_ms,
-      connect: connect_endpoint,
-      send_text: socket_send_text,
-      recv_text: socket_recv_text,
-      close: socket_close,
-      send_after: process.send_after,
-      cancel_timer: fn(timer) {
-        let _ = process.cancel_timer(timer)
-        Nil
-      },
-      list_sessions: fn() { list_sessions_for_remote_snapshot(event_hub, 1000) },
-      agent_slot_occupancy: fn(timeout_ms) {
-        case agent_slot_occupancy_from_query(execute_query, timeout_ms) {
-          Ok(occupied_slots) -> Ok(occupied_slots)
-          Error(error) -> Error(agent_slot_occupancy_error_message(error))
-        }
-      },
-      dispatch_paused: fn(timeout_ms) {
-        case dispatch_paused(timeout_ms) {
-          Ok(paused) -> Ok(paused)
-          Error(Nil) -> Error("daemon_dispatch_paused_timeout")
-        }
-      },
-      apply_command: apply_command,
-      execute_query: execute_query,
-      logger: logger,
-    )
-  case ui_websocket_client.start(settings, dependencies) {
-    Ok(handle) -> Ok(Handle(handle))
-    Error(ui_websocket_client.ClientError(code: code, message: message)) ->
-      Error(StartError(code, message))
+  case effective.ui_server {
+    config_types.UiServerDisabled(..) ->
+      Error(StartError("remote_client_config_disabled", "ui_server is disabled"))
+    config_types.UiServerEnabled(
+      endpoint: endpoint,
+      credential_ref: credential_ref_name,
+      daemon_label: daemon_label,
+      command_bridge_enabled: command_bridge_enabled,
+      heartbeat_interval_ms: heartbeat_interval_ms,
+      state_interval_ms: state_interval_ms,
+      retry_initial_ms: retry_initial_ms,
+      retry_max_ms: retry_max_ms,
+    ) -> {
+      use identity <- result.try(load_daemon_identity(effective.workspace.root))
+      use validated <- result.try(validated_ui_server_endpoint(endpoint))
+      use credential_ref <- result.try(normalized_credential_ref(
+        credential_ref_name,
+      ))
+      use stored <- result.try(load_stored_credential(
+        credential_ref,
+        validated.base_url,
+        identity.daemon_id,
+      ))
+      let settings =
+        ui_websocket_client.Settings(
+          server_url: validated.base_url,
+          websocket_url: validated.websocket_url,
+          daemon_id: identity.daemon_id,
+          boot_id: identity.boot_id,
+          runtime_metadata: ui_protocol.RuntimeMetadata(
+            local_hostname(),
+            version.string(),
+            daemon_label,
+            effective.agent.max_concurrent_agents,
+          ),
+          credential: stored.secret,
+          heartbeat_interval_ms: heartbeat_interval_ms,
+          state_interval_ms: state_interval_ms,
+          retry_initial_ms: retry_initial_ms,
+          retry_max_ms: retry_max_ms,
+          connect_timeout_ms: 1000,
+          command_timeout_ms: effective.control.command_timeout_ms,
+          query_timeout_ms: effective.control.command_timeout_ms,
+          command_bridge_enabled: command_bridge_enabled,
+          redaction_secrets: [stored.secret, ..secrets],
+        )
+      let dependencies =
+        ui_websocket_client.Dependencies(
+          now_ms: wall_clock_ms,
+          connect: connect_endpoint,
+          send_text: socket_send_text,
+          recv_text: socket_recv_text,
+          close: socket_close,
+          send_after: process.send_after,
+          cancel_timer: fn(timer) {
+            let _ = process.cancel_timer(timer)
+            Nil
+          },
+          list_sessions: fn() {
+            list_sessions_for_remote_snapshot(event_hub, 1000)
+          },
+          agent_slot_occupancy: fn(timeout_ms) {
+            case agent_slot_occupancy_from_query(execute_query, timeout_ms) {
+              Ok(occupied_slots) -> Ok(occupied_slots)
+              Error(error) -> Error(agent_slot_occupancy_error_message(error))
+            }
+          },
+          dispatch_paused: fn(timeout_ms) {
+            case dispatch_paused(timeout_ms) {
+              Ok(paused) -> Ok(paused)
+              Error(Nil) -> Error("daemon_dispatch_paused_timeout")
+            }
+          },
+          apply_command: apply_command,
+          execute_query: execute_query,
+          logger: logger,
+        )
+      case ui_websocket_client.start(settings, dependencies) {
+        Ok(handle) -> Ok(Handle(handle))
+        Error(ui_websocket_client.ClientError(code: code, message: message)) ->
+          Error(StartError(code, message))
+      }
+    }
   }
 }
 
@@ -211,38 +230,22 @@ fn load_daemon_identity(
   }
 }
 
-fn required_validated_ui_server(
-  effective: config_types.EffectiveConfig,
+fn validated_ui_server_endpoint(
+  endpoint: String,
 ) -> Result(url.ValidatedUrl, StartError) {
-  case effective.ui_server.endpoint {
-    Some(endpoint) ->
-      url.validate_server_url(endpoint, allow_loopback: True)
-      |> result.map_error(fn(error) {
-        StartError(url.error_code(error), url.error_message(error))
-      })
-    None ->
-      Error(StartError(
-        "remote_client_config_missing",
-        "ui_server.endpoint is required when enabled",
-      ))
-  }
+  url.validate_server_url(endpoint, allow_loopback: True)
+  |> result.map_error(fn(error) {
+    StartError(url.error_code(error), url.error_message(error))
+  })
 }
 
-fn required_credential_ref(
-  effective: config_types.EffectiveConfig,
+fn normalized_credential_ref(
+  profile: String,
 ) -> Result(credential_store.CredentialRef, StartError) {
-  case effective.ui_server.credential_ref {
-    Some(profile) ->
-      credential_store.normalize_credential_ref(profile)
-      |> result.map_error(fn(message) {
-        StartError("invalid_credential_ref", message)
-      })
-    None ->
-      Error(StartError(
-        "remote_client_config_missing",
-        "ui_server.credential_ref is required when enabled",
-      ))
-  }
+  credential_store.normalize_credential_ref(profile)
+  |> result.map_error(fn(message) {
+    StartError("invalid_credential_ref", message)
+  })
 }
 
 fn load_stored_credential(

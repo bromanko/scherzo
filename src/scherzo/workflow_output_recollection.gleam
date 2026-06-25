@@ -313,7 +313,7 @@ fn required_sources(
     Some(contract) ->
       contract.outputs
       |> list.fold([], fn(acc, output) {
-        case output.source {
+        case workflow_contract.requirement_source(output.source) {
           Some(workflow_contract.StepField(step_id, _))
           | Some(workflow_contract.StructuredOutput(step_id, _))
           | Some(workflow_contract.InlineJson(step_id, _)) ->
@@ -600,7 +600,7 @@ fn recover_prepared_workspaces(
       contract.outputs
       |> list.fold(Ok(dict.new()), fn(acc, output) {
         use prepared <- result.try(acc)
-        case output.source {
+        case workflow_contract.requirement_source(output.source) {
           Some(workflow_contract.StepFile(step_id, _)) ->
             case
               dict.has_key(
@@ -751,7 +751,7 @@ fn manifest_outputs_valid(
           workflow_contract_manifest.validate_value(
             spec.name,
             named.value,
-            required: spec.required,
+            required: workflow_contract.requirement_required(spec.source),
           )
         {
           Ok(Nil) -> True

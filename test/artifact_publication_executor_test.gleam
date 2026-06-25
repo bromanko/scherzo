@@ -1364,10 +1364,7 @@ fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
         body_template: Some("templates/publication.md"),
       ),
     ),
-    mode: artifact_publication_config.FilePublication,
-    commit_stack: None,
-    target: artifact_publication_config.StableBranchTarget,
-    files: [
+    publication: artifact_publication_config.FilePublicationRoute(files: [
       artifact_publication_config.PublicationFileRoute(
         selector: artifact_publication_config.PublicationFileSelector(
           output: "review_doc",
@@ -1375,7 +1372,8 @@ fn route(required: Bool) -> artifact_publication_config.PublicationRoute {
         ),
         path: "docs/plans/{{ work.identifier }}{{ artifact.default_extension }}",
       ),
-    ],
+    ]),
+    target: artifact_publication_config.StableBranchTarget,
   )
 }
 
@@ -1387,10 +1385,8 @@ fn commit_stack_route(
     repository: "github.docs",
     required: required,
     pull_request: None,
-    mode: artifact_publication_config.CommitStackPublication,
-    files: [],
-    commit_stack: Some(
-      artifact_publication_config.PublicationCommitStackRoute(
+    publication: artifact_publication_config.CommitStackPublicationRoute(
+      commit_stack: artifact_publication_config.PublicationCommitStackRoute(
         selector: artifact_publication_config.PublicationCommitStackSelector(
           output: "commit_stack",
         ),
@@ -1412,10 +1408,8 @@ fn stable_commit_stack_route(
     repository: "github.docs",
     required: required,
     pull_request: None,
-    mode: artifact_publication_config.CommitStackPublication,
-    files: [],
-    commit_stack: Some(
-      artifact_publication_config.PublicationCommitStackRoute(
+    publication: artifact_publication_config.CommitStackPublicationRoute(
+      commit_stack: artifact_publication_config.PublicationCommitStackRoute(
         selector: artifact_publication_config.PublicationCommitStackSelector(
           output: "commit_stack",
         ),

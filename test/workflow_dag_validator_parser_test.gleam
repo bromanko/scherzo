@@ -363,7 +363,9 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
   let assert [drafting_route] = drafting.publication_routes
   assert drafting_route.id == "execplan_review_doc"
   assert drafting_route.repository == "github.code"
-  let assert Some(draft_commit_stack) = drafting_route.commit_stack
+  let assert artifact_publication_config.CommitStackPublicationRoute(
+    commit_stack: draft_commit_stack,
+  ) = drafting_route.publication
   assert draft_commit_stack.selector.output == "commit_stack"
   let assert artifact_publication_config.StableBranchTarget =
     drafting_route.target
@@ -374,7 +376,9 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
   let assert [revision_route] = revision.publication_routes
   assert revision_route.id == "execplan_review_doc"
   assert revision_route.repository == "github.code"
-  let assert Some(revision_commit_stack) = revision_route.commit_stack
+  let assert artifact_publication_config.CommitStackPublicationRoute(
+    commit_stack: revision_commit_stack,
+  ) = revision_route.publication
   assert revision_commit_stack.selector.output == "commit_stack"
   let assert artifact_publication_config.SourcedTarget(source) =
     revision_route.target

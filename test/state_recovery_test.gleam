@@ -327,7 +327,8 @@ pub fn unfinished_run_terminal_issue_resets_stale_counter_test() {
 
   let identity = orchestrator_state.linear_issue_id_identity("issue-1")
   assert !dict.has_key(plan.runtime.issue_counters, identity)
-  assert dict.get(plan.runtime.completed_at_ms, identity) == Ok(7000)
+  let assert Ok(completed) = dict.get(plan.runtime.completed, identity)
+  assert orchestrator_state.completed_timestamp_ms(completed) == 7000
   assert has_counter_reset(
     plan.records_to_append,
     "issue-1",
@@ -1575,16 +1576,10 @@ fn config() -> config_types.EffectiveConfig {
       acknowledge_success: True,
       acknowledge_rejection: True,
     ),
-    ui_server: config_types.UiServerConfig(
-      enabled: False,
+    ui_server: config_types.UiServerDisabled(
       endpoint: None,
       credential_ref: None,
       daemon_label: None,
-      command_bridge_enabled: False,
-      heartbeat_interval_ms: 5000,
-      state_interval_ms: 5000,
-      retry_initial_ms: 500,
-      retry_max_ms: 30_000,
     ),
   )
 }

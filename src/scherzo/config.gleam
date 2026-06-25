@@ -154,16 +154,10 @@ pub fn default_handoff_config() -> config_types.HandoffConfig {
 }
 
 pub fn default_ui_server_config() -> config_types.UiServerConfig {
-  config_types.UiServerConfig(
-    enabled: False,
+  config_types.UiServerDisabled(
     endpoint: None,
     credential_ref: None,
     daemon_label: None,
-    command_bridge_enabled: False,
-    heartbeat_interval_ms: 5000,
-    state_interval_ms: 5000,
-    retry_initial_ms: 500,
-    retry_max_ms: 30_000,
   )
 }
 
@@ -1351,22 +1345,17 @@ fn resolve_ui_server(
             "retry_max_ms",
             "ui_server.retry_max_ms",
           ))
-          let enabled = enabled_option |> bool_default(defaults.enabled)
+          let enabled = enabled_option |> bool_default(False)
           let endpoint = endpoint_option |> optional_non_empty_string
           let credential_ref =
             credential_ref_option |> optional_non_empty_string
           let command_bridge_enabled =
-            command_bridge_enabled_option
-            |> bool_default(defaults.command_bridge_enabled)
+            command_bridge_enabled_option |> bool_default(False)
           let heartbeat_interval_ms =
-            heartbeat_interval_ms_option
-            |> int_default(defaults.heartbeat_interval_ms)
-          let state_interval_ms =
-            state_interval_ms_option |> int_default(defaults.state_interval_ms)
-          let retry_initial_ms =
-            retry_initial_ms_option |> int_default(defaults.retry_initial_ms)
-          let retry_max_ms =
-            retry_max_ms_option |> int_default(defaults.retry_max_ms)
+            heartbeat_interval_ms_option |> int_default(5000)
+          let state_interval_ms = state_interval_ms_option |> int_default(5000)
+          let retry_initial_ms = retry_initial_ms_option |> int_default(500)
+          let retry_max_ms = retry_max_ms_option |> int_default(30_000)
           use _ <- result.try(validate_ui_server_timing(
             heartbeat_interval_ms,
             state_interval_ms,
@@ -1386,16 +1375,10 @@ fn resolve_ui_server(
           )
           case enabled {
             False ->
-              Ok(config_types.UiServerConfig(
-                enabled: False,
+              Ok(config_types.UiServerDisabled(
                 endpoint: endpoint,
                 credential_ref: credential_ref,
                 daemon_label: daemon_label,
-                command_bridge_enabled: command_bridge_enabled,
-                heartbeat_interval_ms: heartbeat_interval_ms,
-                state_interval_ms: state_interval_ms,
-                retry_initial_ms: retry_initial_ms,
-                retry_max_ms: retry_max_ms,
               ))
             True -> {
               use endpoint <- result.try(required_option(
@@ -1411,10 +1394,9 @@ fn resolve_ui_server(
                   "ui_server.credential_ref is required when enabled",
                 ),
               ))
-              Ok(config_types.UiServerConfig(
-                enabled: True,
-                endpoint: Some(endpoint),
-                credential_ref: Some(credential_ref),
+              Ok(config_types.UiServerEnabled(
+                endpoint: endpoint,
+                credential_ref: credential_ref,
                 daemon_label: daemon_label,
                 command_bridge_enabled: command_bridge_enabled,
                 heartbeat_interval_ms: heartbeat_interval_ms,

@@ -483,21 +483,18 @@ pub fn issue_reconcile_non_active_stop_appends_cancelled_workflow_record_test() 
 pub fn claim_start_recovery_retry_after_prior_retry_increments_generation_test() {
   let issue = orchestrator_transition_test.fixture_issue()
   let task_identity = orchestrator_state.issue_identity(issue)
-  let runtime = orchestrator_transition_test.fixture_runtime()
+  let task_ref = task.from_legacy_issue(issue).ref
   let runtime =
-    orchestrator_state.RuntimeState(
-      ..runtime,
-      retry_attempts: dict.insert(
-        runtime.retry_attempts,
-        task_identity,
-        orchestrator_state.RetryEntry(
-          task_ref: task.from_legacy_issue(issue).ref,
-          issue_id: issue.id,
-          delay_ms: 40_000,
-          timer_generation: 3,
-        ),
+    orchestrator_state.mark_task_retrying(
+      orchestrator_transition_test.fixture_runtime(),
+      task_identity,
+      orchestrator_state.RetryEntry(
+        task_ref: task_ref,
+        issue_id: issue.id,
+        delay_ms: 40_000,
+        timer_generation: 3,
       ),
-      claimed: dict.insert(runtime.claimed, task_identity, "ABC-1"),
+      "ABC-1",
     )
   let state =
     transition_types.State(

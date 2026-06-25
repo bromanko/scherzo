@@ -691,7 +691,7 @@ fn inputs_from_contract(
   case specs {
     [] -> Ok(list.reverse(acc))
     [spec, ..rest] -> {
-      case spec.source {
+      case workflow_contract.requirement_source(spec.source) {
         Some(workflow_contract.MappedOutputSource) ->
           case handoff_output_named(outputs, spec.name) {
             Ok(output) -> {
@@ -707,7 +707,7 @@ fn inputs_from_contract(
               inputs_from_contract(rest, outputs, [input, ..acc])
             }
             Error(Nil) ->
-              case spec.required {
+              case workflow_contract.requirement_required(spec.source) {
                 True ->
                   error(
                     "contract_input_missing",

@@ -12,7 +12,7 @@ import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/artifact_repository/command_runner
 import scherzo/config
-import scherzo/config/types as config_types
+import scherzo/config/types.{ui_server_enabled} as config_types
 import scherzo/control/command
 import scherzo/control/file as control_file
 import scherzo/control/query/backend as query_backend
@@ -666,7 +666,7 @@ fn update_read_model_remote_client_status(
 }
 
 fn restart_remote_client_if_enabled(state: State) -> State {
-  case state.workflow.effective.ui_server.enabled {
+  case ui_server_enabled(state.workflow.effective.ui_server) {
     False -> stop_remote_client_and_clear(state, read_model.Disabled)
     True ->
       case
@@ -937,7 +937,9 @@ pub fn start(
                           read_model: read_model.new(
                             daemon_id: daemon_identity.daemon_id,
                             boot_id: daemon_identity.boot_id,
-                            ui_server_enabled: effective.ui_server.enabled,
+                            ui_server_enabled: ui_server_enabled(
+                              effective.ui_server,
+                            ),
                           ),
                           ledger_projection: startup_recovery.projection,
                           remote_client: None,
@@ -3753,7 +3755,9 @@ fn issue_for_id(
               case dict.get(state.pending_review_lane_preflights, identity) {
                 Ok(pending) -> Ok(pending.issue)
                 Error(Nil) ->
-                  case dict.get(state.runtime.completed, identity) {
+                  case
+                    orchestrator_state.completed_for(state.runtime, identity)
+                  {
                     Ok(issue) -> Ok(issue)
                     Error(Nil) -> fetch_issue_by_id(state, issue_id)
                   }
@@ -3804,7 +3808,7 @@ fn local_issues_with_identifier(
     state.pending_review_lane_preflights
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
-  let completed = state.runtime.completed |> dict.values
+  let completed = orchestrator_state.completed_issues(state.runtime)
   list.append(
     running,
     list.append(
@@ -3980,12 +3984,10 @@ fn reconcile_remote_client_after_reload(state: State) -> State {
   let state =
     State(
       ..state,
-      read_model: read_model.update_ui_server_enabled(
-        state.read_model,
-        ui_server.enabled,
-      ),
+      read_model: state.read_model
+        |> read_model.update_ui_server_enabled(ui_server_enabled(ui_server)),
     )
-  case ui_server.enabled {
+  case ui_server_enabled(ui_server) {
     False -> stop_remote_client_and_clear(state, read_model.Disabled)
     True ->
       case state.remote_client {
@@ -4964,14 +4966,9 @@ fn park_dispatch_recovery_rejection(
       parked_at_ms: state.dependencies.now_ms(),
     )
   let identity = orchestrator_state.task_ref_identity(task_ref)
-  let state =
-    State(
-      ..state,
-      runtime: orchestrator_state.RuntimeState(
-        ..state.runtime,
-        parked: dict.insert(state.runtime.parked, identity, parked),
-      ),
-    )
+  let runtime =
+    orchestrator_state.mark_task_parked(state.runtime, identity, parked)
+  let state = State(..state, runtime: runtime)
   let state = transition_park_issue(state, parked, None)
   let state = case string.trim(message) == "" {
     True -> state

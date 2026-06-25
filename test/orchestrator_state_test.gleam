@@ -54,23 +54,57 @@ pub fn parked_issue_records_release_policy_test() {
 }
 
 pub fn runtime_state_holds_scheduler_collections_test() {
-  let state =
-    orchestrator_state.RuntimeState(
-      poll_interval_ms: 30_000,
-      max_concurrent_agents: 10,
-      running: dict.new(),
-      claimed: dict.new(),
-      retry_attempts: dict.new(),
-      issue_counters: dict.new(),
-      parked: dict.new(),
-      invalid_workflow_reports: dict.new(),
-      blocked_dependency_reports: dict.new(),
-      completed: dict.new(),
-      completed_at_ms: dict.new(),
-      aggregate_pi_totals: session_tokens.zero_token_totals(),
-      latest_rate_limit_payload: None,
-    )
+  let state = empty_runtime()
 
   assert state.poll_interval_ms == 30_000
   assert state.max_concurrent_agents == 10
+}
+
+pub fn task_lifecycle_helpers_replace_mutually_exclusive_states_test() {
+  let task_ref =
+    task.TaskRef(
+      backend_kind: "linear",
+      remote_id: "issue-id",
+      key: None,
+      url: None,
+    )
+  let identity = orchestrator_state.task_ref_identity(task_ref)
+  let claimed =
+    orchestrator_state.mark_task_claimed(empty_runtime(), identity, "ABC-123")
+  let parked_entry =
+    orchestrator_state.ParkedEntry(
+      task_ref: task_ref,
+      issue_id: "issue-id",
+      identifier: "ABC-123",
+      reason: reason.ParkMaxRetryAttempts,
+      release_policy: orchestrator_state.ExplicitUnparkOnly,
+      parked_at_ms: 1000,
+    )
+  let parked =
+    orchestrator_state.mark_task_parked(claimed, identity, parked_entry)
+
+  let assert Ok(orchestrator_state.TaskParked(actual)) =
+    orchestrator_state.task_lifecycle(parked, identity)
+  assert actual == parked_entry
+  assert dict.get(parked.claimed, identity) == Error(Nil)
+  assert dict.get(parked.parked, identity) == Ok(parked_entry)
+  assert dict.size(parked.task_lifecycles) == 1
+}
+
+fn empty_runtime() -> orchestrator_state.RuntimeState {
+  orchestrator_state.RuntimeState(
+    poll_interval_ms: 30_000,
+    max_concurrent_agents: 10,
+    task_lifecycles: dict.new(),
+    running: dict.new(),
+    claimed: dict.new(),
+    retry_attempts: dict.new(),
+    issue_counters: dict.new(),
+    parked: dict.new(),
+    invalid_workflow_reports: dict.new(),
+    blocked_dependency_reports: dict.new(),
+    completed: dict.new(),
+    aggregate_pi_totals: session_tokens.zero_token_totals(),
+    latest_rate_limit_payload: None,
+  )
 }

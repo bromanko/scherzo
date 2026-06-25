@@ -90,7 +90,9 @@ fn execute_status_query(
               daemon_id: identity.daemon_id,
               boot_id: identity.boot_id,
               dispatch_paused: dispatch_paused,
-              ui_server_enabled: effective.ui_server.enabled,
+              ui_server_enabled: config_types.ui_server_enabled(
+                effective.ui_server,
+              ),
               supported_queries: types.supported_queries(),
               local_control_token: "",
               enrollment_token: "",

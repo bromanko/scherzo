@@ -103,16 +103,10 @@ fn config() -> config_types.EffectiveConfig {
       acknowledge_success: True,
       acknowledge_rejection: True,
     ),
-    ui_server: config_types.UiServerConfig(
-      enabled: False,
+    ui_server: config_types.UiServerDisabled(
       endpoint: None,
       credential_ref: None,
       daemon_label: None,
-      command_bridge_enabled: False,
-      heartbeat_interval_ms: 5000,
-      state_interval_ms: 5000,
-      retry_initial_ms: 500,
-      retry_max_ms: 30_000,
     ),
   )
 }
@@ -263,13 +257,10 @@ fn state_with_parked(
   issue: tracker_issue.Issue,
   parked: orchestrator_state.ParkedEntry,
 ) -> orchestrator_state.RuntimeState {
-  orchestrator_state.RuntimeState(
-    ..state,
-    parked: dict.insert(
-      state.parked,
-      orchestrator_state.issue_identity(issue),
-      parked,
-    ),
+  orchestrator_state.mark_task_parked(
+    state,
+    orchestrator_state.issue_identity(issue),
+    parked,
   )
 }
 
@@ -318,7 +309,8 @@ pub fn worker_success_uses_task_ref_with_duplicate_remote_ids_test() {
   assert dict.has_key(next.running, linear_identity)
   assert !dict.has_key(next.running, memory_identity)
   assert !dict.has_key(next.completed, linear_identity)
-  assert dict.get(next.completed, memory_identity) == Ok(memory_issue)
+  let assert Ok(completed) = dict.get(next.completed, memory_identity)
+  assert orchestrator_state.completed_issue(completed) == memory_issue
   assert effects == [core.ReleaseClaim(memory_issue.id)]
 }
 
@@ -919,11 +911,9 @@ pub fn completed_cache_trims_oldest_completed_tasks_test() {
   let retained = orchestrator_state.linear_issue_id_identity("issue-1024")
 
   assert dict.size(next.completed) == 1024
-  assert dict.size(next.completed_at_ms) == 1024
   assert dict.get(next.completed, evicted) == Error(Nil)
-  assert dict.get(next.completed_at_ms, evicted) == Error(Nil)
-  assert dict.has_key(next.completed, retained)
-  assert dict.get(next.completed_at_ms, retained) == Ok(1024)
+  let assert Ok(completed) = dict.get(next.completed, retained)
+  assert orchestrator_state.completed_timestamp_ms(completed) == 1024
 }
 
 pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
@@ -974,7 +964,7 @@ pub fn worker_success_active_schedules_continuation_then_parks_at_cap_test() {
     ]
 }
 
-pub fn worker_success_in_progress_remains_lifecycle_active_test() {
+pub fn worker_success_in_progress_replaces_completed_with_retry_lifecycle_test() {
   let initial = issue("a", "ABC-1", "Todo", Some(1))
   let final =
     tracker_issue.Issue(
@@ -994,10 +984,10 @@ pub fn worker_success_in_progress_remains_lifecycle_active_test() {
       100,
     )
 
-  assert dict.has_key(
-    next.completed,
-    orchestrator_state.issue_identity(initial),
-  )
+  let identity = orchestrator_state.issue_identity(initial)
+  assert !dict.has_key(next.completed, identity)
+  let assert Ok(orchestrator_state.TaskRetrying(_, _)) =
+    orchestrator_state.task_lifecycle(next, identity)
   assert effects
     == [
       core.ScheduleRetry(

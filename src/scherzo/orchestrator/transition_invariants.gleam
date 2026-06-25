@@ -40,6 +40,8 @@ fn runtime_errors(
   runtime: orchestrator_state.RuntimeState,
 ) -> List(InvariantError) {
   list.flatten([
+    lifecycle_runtime_errors(runtime),
+    lifecycle_index_errors(runtime),
     running_runtime_errors(runtime),
     retry_runtime_errors(runtime),
     claimed_runtime_errors(runtime),
@@ -84,6 +86,353 @@ fn errors_to_result(
   }
 }
 
+fn lifecycle_runtime_errors(
+  runtime: orchestrator_state.RuntimeState,
+) -> List(InvariantError) {
+  runtime.task_lifecycles
+  |> dict.to_list
+  |> list.flat_map(fn(pair) {
+    let #(task_identity, lifecycle) = pair
+    case lifecycle {
+      orchestrator_state.TaskClaimed(identifier) ->
+        list.flatten([
+          when(
+            !claim_matches(runtime, task_identity, identifier),
+            invariant(
+              "lifecycle_claimed_index_missing",
+              task_identity,
+              "TaskClaimed lifecycle is not backed by a matching runtime.claimed entry",
+            ),
+          ),
+          no_running_index(runtime, task_identity, "claimed"),
+          no_retry_index(runtime, task_identity, "claimed"),
+          no_parked_index(runtime, task_identity, "claimed"),
+          no_completed_index(runtime, task_identity, "claimed"),
+        ])
+      orchestrator_state.TaskRunning(entry) ->
+        list.flatten([
+          when(
+            !dict.has_key(runtime.running, task_identity),
+            invariant(
+              "lifecycle_running_index_missing",
+              task_identity,
+              "TaskRunning lifecycle is not backed by runtime.running",
+            ),
+          ),
+          when(
+            !claim_matches(runtime, task_identity, entry.issue.identifier),
+            invariant(
+              "lifecycle_running_claim_missing",
+              task_identity,
+              "TaskRunning lifecycle is not backed by matching runtime.claimed entry",
+            ),
+          ),
+          no_retry_index(runtime, task_identity, "running"),
+          no_parked_index(runtime, task_identity, "running"),
+          no_completed_index(runtime, task_identity, "running"),
+        ])
+      orchestrator_state.TaskRetrying(_, identifier) ->
+        list.flatten([
+          when(
+            !dict.has_key(runtime.retry_attempts, task_identity),
+            invariant(
+              "lifecycle_retry_index_missing",
+              task_identity,
+              "TaskRetrying lifecycle is not backed by runtime.retry_attempts",
+            ),
+          ),
+          when(
+            !claim_matches(runtime, task_identity, identifier),
+            invariant(
+              "lifecycle_retry_claim_missing",
+              task_identity,
+              "TaskRetrying lifecycle is not backed by matching runtime.claimed entry",
+            ),
+          ),
+          no_running_index(runtime, task_identity, "retry"),
+          no_parked_index(runtime, task_identity, "retry"),
+          no_completed_index(runtime, task_identity, "retry"),
+        ])
+      orchestrator_state.TaskParked(_) ->
+        list.flatten([
+          when(
+            !dict.has_key(runtime.parked, task_identity),
+            invariant(
+              "lifecycle_parked_index_missing",
+              task_identity,
+              "TaskParked lifecycle is not backed by runtime.parked",
+            ),
+          ),
+          no_running_index(runtime, task_identity, "parked"),
+          no_retry_index(runtime, task_identity, "parked"),
+          no_claimed_index(runtime, task_identity, "parked"),
+          no_completed_index(runtime, task_identity, "parked"),
+        ])
+      orchestrator_state.TaskCompleted(_) ->
+        list.flatten([
+          when(
+            !dict.has_key(runtime.completed, task_identity),
+            invariant(
+              "lifecycle_completed_index_missing",
+              task_identity,
+              "TaskCompleted lifecycle is not backed by runtime.completed",
+            ),
+          ),
+          no_running_index(runtime, task_identity, "completed"),
+          no_retry_index(runtime, task_identity, "completed"),
+          no_claimed_index(runtime, task_identity, "completed"),
+          no_parked_index(runtime, task_identity, "completed"),
+        ])
+    }
+  })
+}
+
+fn lifecycle_index_errors(
+  runtime: orchestrator_state.RuntimeState,
+) -> List(InvariantError) {
+  list.flatten([
+    running_lifecycle_index_errors(runtime),
+    retry_lifecycle_index_errors(runtime),
+    claimed_lifecycle_index_errors(runtime),
+    parked_lifecycle_index_errors(runtime),
+    completed_lifecycle_index_errors(runtime),
+  ])
+}
+
+fn running_lifecycle_index_errors(
+  runtime: orchestrator_state.RuntimeState,
+) -> List(InvariantError) {
+  runtime.running
+  |> dict.to_list
+  |> list.flat_map(fn(pair) {
+    let #(task_identity, _) = pair
+    case dict.get(runtime.task_lifecycles, task_identity) {
+      Ok(orchestrator_state.TaskRunning(_)) -> []
+      Ok(_) -> [
+        invariant(
+          "running_lifecycle_mismatch",
+          task_identity,
+          "runtime.running entry is not backed by a TaskRunning lifecycle",
+        ),
+      ]
+      Error(Nil) -> [
+        invariant(
+          "running_lifecycle_missing",
+          task_identity,
+          "runtime.running entry is missing its TaskRunning lifecycle",
+        ),
+      ]
+    }
+  })
+}
+
+fn retry_lifecycle_index_errors(
+  runtime: orchestrator_state.RuntimeState,
+) -> List(InvariantError) {
+  runtime.retry_attempts
+  |> dict.to_list
+  |> list.flat_map(fn(pair) {
+    let #(task_identity, _) = pair
+    case dict.get(runtime.task_lifecycles, task_identity) {
+      Ok(orchestrator_state.TaskRetrying(_, _)) -> []
+      Ok(_) -> [
+        invariant(
+          "retry_lifecycle_mismatch",
+          task_identity,
+          "runtime.retry_attempts entry is not backed by a TaskRetrying lifecycle",
+        ),
+      ]
+      Error(Nil) -> [
+        invariant(
+          "retry_lifecycle_missing",
+          task_identity,
+          "runtime.retry_attempts entry is missing its TaskRetrying lifecycle",
+        ),
+      ]
+    }
+  })
+}
+
+fn claimed_lifecycle_index_errors(
+  runtime: orchestrator_state.RuntimeState,
+) -> List(InvariantError) {
+  runtime.claimed
+  |> dict.to_list
+  |> list.flat_map(fn(pair) {
+    let #(task_identity, identifier) = pair
+    case dict.get(runtime.task_lifecycles, task_identity) {
+      Ok(orchestrator_state.TaskClaimed(expected))
+      | Ok(orchestrator_state.TaskRetrying(_, expected)) ->
+        when(
+          identifier != expected,
+          invariant(
+            "claimed_lifecycle_identifier_mismatch",
+            task_identity,
+            "runtime.claimed identifier does not match its lifecycle",
+          ),
+        )
+      Ok(orchestrator_state.TaskRunning(entry)) ->
+        when(
+          identifier != entry.issue.identifier,
+          invariant(
+            "claimed_lifecycle_identifier_mismatch",
+            task_identity,
+            "runtime.claimed identifier does not match running issue identifier",
+          ),
+        )
+      Ok(orchestrator_state.TaskParked(_))
+      | Ok(orchestrator_state.TaskCompleted(_)) -> [
+        invariant(
+          "claimed_lifecycle_mismatch",
+          task_identity,
+          "runtime.claimed entry conflicts with its task lifecycle",
+        ),
+      ]
+      Error(Nil) -> []
+    }
+  })
+}
+
+fn parked_lifecycle_index_errors(
+  runtime: orchestrator_state.RuntimeState,
+) -> List(InvariantError) {
+  runtime.parked
+  |> dict.to_list
+  |> list.flat_map(fn(pair) {
+    let #(task_identity, _) = pair
+    case dict.get(runtime.task_lifecycles, task_identity) {
+      Ok(orchestrator_state.TaskParked(_)) -> []
+      Ok(_) -> [
+        invariant(
+          "parked_lifecycle_mismatch",
+          task_identity,
+          "runtime.parked entry is not backed by a TaskParked lifecycle",
+        ),
+      ]
+      Error(Nil) -> [
+        invariant(
+          "parked_lifecycle_missing",
+          task_identity,
+          "runtime.parked entry is missing its TaskParked lifecycle",
+        ),
+      ]
+    }
+  })
+}
+
+fn completed_lifecycle_index_errors(
+  runtime: orchestrator_state.RuntimeState,
+) -> List(InvariantError) {
+  runtime.completed
+  |> dict.to_list
+  |> list.flat_map(fn(pair) {
+    let #(task_identity, _) = pair
+    case dict.get(runtime.task_lifecycles, task_identity) {
+      Ok(orchestrator_state.TaskCompleted(_)) -> []
+      Ok(_) -> [
+        invariant(
+          "completed_lifecycle_mismatch",
+          task_identity,
+          "runtime.completed entry is not backed by a TaskCompleted lifecycle",
+        ),
+      ]
+      Error(Nil) -> [
+        invariant(
+          "completed_lifecycle_missing",
+          task_identity,
+          "runtime.completed entry is missing its TaskCompleted lifecycle",
+        ),
+      ]
+    }
+  })
+}
+
+fn claim_matches(
+  runtime: orchestrator_state.RuntimeState,
+  task_identity: identity.TaskIdentity,
+  identifier: String,
+) -> Bool {
+  case dict.get(runtime.claimed, task_identity) {
+    Ok(found) -> found == identifier
+    Error(Nil) -> False
+  }
+}
+
+fn no_running_index(
+  runtime: orchestrator_state.RuntimeState,
+  task_identity: identity.TaskIdentity,
+  lifecycle_kind: String,
+) -> List(InvariantError) {
+  when(
+    dict.has_key(runtime.running, task_identity),
+    invariant(
+      "lifecycle_" <> lifecycle_kind <> "_running_conflict",
+      task_identity,
+      "task lifecycle conflicts with runtime.running",
+    ),
+  )
+}
+
+fn no_retry_index(
+  runtime: orchestrator_state.RuntimeState,
+  task_identity: identity.TaskIdentity,
+  lifecycle_kind: String,
+) -> List(InvariantError) {
+  when(
+    dict.has_key(runtime.retry_attempts, task_identity),
+    invariant(
+      "lifecycle_" <> lifecycle_kind <> "_retry_conflict",
+      task_identity,
+      "task lifecycle conflicts with runtime.retry_attempts",
+    ),
+  )
+}
+
+fn no_claimed_index(
+  runtime: orchestrator_state.RuntimeState,
+  task_identity: identity.TaskIdentity,
+  lifecycle_kind: String,
+) -> List(InvariantError) {
+  when(
+    dict.has_key(runtime.claimed, task_identity),
+    invariant(
+      "lifecycle_" <> lifecycle_kind <> "_claimed_conflict",
+      task_identity,
+      "task lifecycle conflicts with runtime.claimed",
+    ),
+  )
+}
+
+fn no_parked_index(
+  runtime: orchestrator_state.RuntimeState,
+  task_identity: identity.TaskIdentity,
+  lifecycle_kind: String,
+) -> List(InvariantError) {
+  when(
+    dict.has_key(runtime.parked, task_identity),
+    invariant(
+      "lifecycle_" <> lifecycle_kind <> "_parked_conflict",
+      task_identity,
+      "task lifecycle conflicts with runtime.parked",
+    ),
+  )
+}
+
+fn no_completed_index(
+  runtime: orchestrator_state.RuntimeState,
+  task_identity: identity.TaskIdentity,
+  lifecycle_kind: String,
+) -> List(InvariantError) {
+  when(
+    dict.has_key(runtime.completed, task_identity),
+    invariant(
+      "lifecycle_" <> lifecycle_kind <> "_completed_conflict",
+      task_identity,
+      "task lifecycle conflicts with runtime.completed",
+    ),
+  )
+}
+
 fn running_runtime_errors(
   runtime: orchestrator_state.RuntimeState,
 ) -> List(InvariantError) {
@@ -92,8 +441,6 @@ fn running_runtime_errors(
   |> list.flat_map(fn(pair) {
     let #(task_identity, entry) = pair
     let expected_identity = orchestrator_state.task_identity(entry.task)
-    // runtime.completed is a historical/latest-completed cache, so a
-    // continuation worker may run for an identity that has completed before.
     list.flatten([
       when(
         expected_identity != task_identity,

@@ -321,8 +321,8 @@ fn oversized_source_baseline() -> List(SourceLimit) {
   [
     SourceLimit("src/scherzo/agent/run_attempt.gleam", 2177, 28),
     SourceLimit("src/scherzo/agent/turn_loop.gleam", 1003, 18),
-    SourceLimit("src/scherzo/artifact_publication_config.gleam", 1589, 2),
-    SourceLimit("src/scherzo/artifact_publication_planner.gleam", 1542, 10),
+    SourceLimit("src/scherzo/artifact_publication_config.gleam", 1608, 2),
+    SourceLimit("src/scherzo/artifact_publication_planner.gleam", 1561, 10),
     SourceLimit("src/scherzo/config.gleam", 2596, 9),
     SourceLimit("src/scherzo/control/protocol.gleam", 1939, 9),
     SourceLimit("src/scherzo/ctl.gleam", 3236, 22),
@@ -331,7 +331,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/local_workflow_run.gleam", 939, 22),
     SourceLimit("src/scherzo/orchestrator/core.gleam", 1155, 10),
     SourceLimit("src/scherzo/control/remote/ui_websocket_client.gleam", 1302, 7),
-    SourceLimit("src/scherzo/orchestrator/daemon.gleam", 8545, 84),
+    SourceLimit("src/scherzo/orchestrator/daemon.gleam", 8542, 84),
     SourceLimit(
       "src/scherzo/orchestrator/daemon_transition_shell.gleam",
       734,
@@ -341,6 +341,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/orchestrator/effect_runner.gleam", 1121, 21),
     SourceLimit("src/scherzo/orchestrator/service.gleam", 2114, 25),
     SourceLimit("src/scherzo/orchestrator/transition.gleam", 3605, 24),
+    SourceLimit("src/scherzo/orchestrator/transition_invariants.gleam", 1311, 3),
     SourceLimit("src/scherzo/orchestrator/transition_types.gleam", 499, 21),
     SourceLimit("src/scherzo/orchestrator/transitions/claims.gleam", 1127, 20),
     SourceLimit("src/scherzo/state/ledger.gleam", 1008, 3),

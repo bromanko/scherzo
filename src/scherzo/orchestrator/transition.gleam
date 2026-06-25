@@ -415,13 +415,7 @@ fn handle_shutdown_requested(
   state: transition_types.State,
   stop_effect_runner: Bool,
 ) -> transition_types.Outcome {
-  let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      running: dict.new(),
-      claimed: dict.new(),
-      retry_attempts: dict.new(),
-    )
+  let runtime = orchestrator_state.clear_active_task_lifecycles(state.runtime)
   transition_types.Outcome(
     state: transition_types.State(
       ..state,
@@ -2083,18 +2077,11 @@ fn retry_append_failed_outcome(
       let identity =
         orchestrator_state.task_ref_identity(previous_retry.task_ref)
       let runtime =
-        orchestrator_state.RuntimeState(
-          ..state.runtime,
-          retry_attempts: dict.insert(
-            state.runtime.retry_attempts,
-            identity,
-            previous_retry,
-          ),
-          claimed: dict.insert(
-            state.runtime.claimed,
-            identity,
-            retry_entry_identifier(previous_retry),
-          ),
+        orchestrator_state.mark_task_retrying(
+          state.runtime,
+          identity,
+          previous_retry,
+          retry_entry_identifier(previous_retry),
         )
       transition_types.Outcome(
         state: transition_types.State(..state, runtime: runtime),
@@ -2127,12 +2114,7 @@ fn remove_failed_retry_generation(
     let #(task_identity, retry) = entry
     case retry.issue_id == issue_id && retry.timer_generation == generation {
       False -> runtime
-      True ->
-        orchestrator_state.RuntimeState(
-          ..runtime,
-          retry_attempts: dict.delete(runtime.retry_attempts, task_identity),
-          claimed: dict.delete(runtime.claimed, task_identity),
-        )
+      True -> orchestrator_state.clear_task_lifecycle(runtime, task_identity)
     }
   })
 }
@@ -2225,11 +2207,7 @@ fn handle_worker_start_failed(
           let state = remove_worker_from_directory(state, entry)
           let identity = entry_identity(entry)
           let runtime =
-            orchestrator_state.RuntimeState(
-              ..state.runtime,
-              running: dict.delete(state.runtime.running, identity),
-              claimed: dict.delete(state.runtime.claimed, identity),
-            )
+            orchestrator_state.clear_task_lifecycle(state.runtime, identity)
           transition_types.Outcome(
             state: transition_types.State(..state, runtime: runtime),
             effects: [
@@ -2633,14 +2611,7 @@ fn finish_recovery_validation_failure_entry(
   let baseline_issue = baseline_issue_for_failure(entry, failure)
   let runtime_identity = entry_identity(entry)
   let runtime =
-    orchestrator_state.RuntimeState(
-      ..state.runtime,
-      running: dict.delete(state.runtime.running, runtime_identity),
-      retry_attempts: dict.delete(
-        state.runtime.retry_attempts,
-        runtime_identity,
-      ),
-    )
+    orchestrator_state.clear_task_lifecycle(state.runtime, runtime_identity)
   let state = transition_types.State(..state, runtime: runtime)
   let state =
     park_runtime(
@@ -3552,10 +3523,7 @@ fn clear_retry(
 ) -> orchestrator_state.RuntimeState {
   let identity =
     orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
-  orchestrator_state.RuntimeState(
-    ..state,
-    retry_attempts: dict.delete(state.retry_attempts, identity),
-  )
+  orchestrator_state.clear_task_retry(state, identity)
 }
 
 fn release_claim(
@@ -3565,11 +3533,7 @@ fn release_claim(
 ) -> orchestrator_state.RuntimeState {
   let identity =
     orchestrator_state.issue_id_identity_for_backend(issue_id, backend_kind)
-  orchestrator_state.RuntimeState(
-    ..state,
-    claimed: dict.delete(state.claimed, identity),
-    retry_attempts: dict.delete(state.retry_attempts, identity),
-  )
+  orchestrator_state.clear_task_lifecycle(state, identity)
 }
 
 fn identifier_for_runtime_ref(
@@ -3593,7 +3557,8 @@ fn identifier_for_identity(
     Ok(identifier) -> identifier
     Error(Nil) ->
       case dict.get(runtime.completed, identity) {
-        Ok(issue) -> issue.identifier
+        Ok(completed) ->
+          orchestrator_state.completed_issue(completed).identifier
         Error(Nil) ->
           case dict.get(runtime.parked, identity) {
             Ok(parked) -> parked.identifier

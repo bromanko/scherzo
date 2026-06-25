@@ -634,26 +634,27 @@ fn commit_stack_plan(
       title: Some("Implementation publication"),
       body: Some("Published by Scherzo"),
     ),
-    files: [],
-    commit_stack: Some(artifact_publication_planner.PlannedCommitStack(
-      output: "commit_stack",
-      manifest_ref: "runs/" <> run_id <> "/outputs/commit-stack.json",
-      manifest_sha256: hash.sha256_hex("{}"),
-      manifest_bytes: 2,
-      stack: commit_stack_artifact.CommitStackArtifact(
-        repository: "scherzo-systems/scherzo",
-        base_ref: "main",
-        base_sha: commit_stack_base_sha(),
-        head_sha: commit_stack_head_sha(),
-        head_tree: commit_stack_tree_sha(),
-        carrier: commit_stack_artifact.CommitStackCarrier(
-          ref: "runs/" <> run_id <> "/outputs/commit-stack.bundle",
-          sha256: hash.sha256_hex("bundle"),
-          bytes: 6,
-          media_type: commit_stack_artifact.bundle_media_type,
+    publication: artifact_publication_planner.PlannedCommitStackPublication(
+      commit_stack: artifact_publication_planner.PlannedCommitStack(
+        output: "commit_stack",
+        manifest_ref: "runs/" <> run_id <> "/outputs/commit-stack.json",
+        manifest_sha256: hash.sha256_hex("{}"),
+        manifest_bytes: 2,
+        stack: commit_stack_artifact.CommitStackArtifact(
+          repository: "scherzo-systems/scherzo",
+          base_ref: "main",
+          base_sha: commit_stack_base_sha(),
+          head_sha: commit_stack_head_sha(),
+          head_tree: commit_stack_tree_sha(),
+          carrier: commit_stack_artifact.CommitStackCarrier(
+            ref: "runs/" <> run_id <> "/outputs/commit-stack.bundle",
+            sha256: hash.sha256_hex("bundle"),
+            bytes: 6,
+            media_type: commit_stack_artifact.bundle_media_type,
+          ),
         ),
       ),
-    )),
+    ),
     work: artifact_publication_planner.PublicationWork(
       kind: artifact_publication_planner.TaskWork,
       id: "issue-id",

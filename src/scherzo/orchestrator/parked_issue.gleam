@@ -43,10 +43,7 @@ fn unpark_if_issue_changed_with_retry_intent(
             False -> state
             True ->
               orchestrator_state.RuntimeState(
-                ..state,
-                claimed: dict.delete(state.claimed, identity),
-                parked: dict.delete(state.parked, identity),
-                retry_attempts: dict.delete(state.retry_attempts, identity),
+                ..orchestrator_state.clear_task_lifecycle(state, identity),
                 issue_counters: dict.delete(state.issue_counters, identity),
               )
           }
