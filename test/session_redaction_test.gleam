@@ -1,9 +1,10 @@
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/agent/pi_event
 import scherzo/session/event
 import scherzo/session/json as session_json
 import scherzo/session/redaction
+import scherzo/session/tokens as session_tokens
 
 pub fn raw_json_redaction_removes_sensitive_keys_and_configured_secrets_test() {
   let raw =
@@ -39,12 +40,18 @@ pub fn raw_json_redaction_keeps_multibyte_truncation_json_encodable_test() {
 
   assert redacted.truncated == True
   let payload =
-    event.EventPayload(
-      ..event.empty_payload(
-        event.PiRaw,
-        event.PiName(pi_event.UnknownPiEvent("unknown_raw")),
-      ),
-      raw_json: Some(redacted),
+    event.pi_event_payload(
+      pi_event.UnknownPiEvent("unknown_raw"),
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      session_tokens.zero_token_totals(),
+      Some(redacted),
     )
   let encoded = session_json.payload_to_string(payload)
   assert string.contains(encoded, "\"truncated\":true")

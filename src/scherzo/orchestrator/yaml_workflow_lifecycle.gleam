@@ -1,7 +1,6 @@
 import gleam/erlang/process
 import gleam/int
 import gleam/option.{type Option, None, Some}
-import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config/types as config_types
@@ -197,12 +196,10 @@ fn register_step_session_with_recovery(
   hub.publish(
     event_hub,
     session_id,
-    session_event.EventPayload(
-      ..session_event.empty_payload(
-        session_event.Lifecycle,
-        session_event.LifecycleName(session_event.StepStarted),
-      ),
-      message: Some(step_id <> " attempt " <> int.to_string(attempt_index)),
+    session_event.lifecycle_payload(
+      session_event.StepStarted,
+      Some(step_id <> " attempt " <> int.to_string(attempt_index)),
+      None,
     ),
   )
 }
@@ -292,16 +289,13 @@ pub fn publish_command_failure(
   hub.publish(
     event_hub,
     session_id,
-    session_event.EventPayload(
-      ..session_event.empty_payload(
-        session_event.Error,
-        session_event.PiName(pi_event.UnknownPiEvent("command_failed")),
-      ),
-      message: Some(summary),
-      tool_name: Some("workflow command " <> artifact.step_id),
-      tool_input: artifact.command,
-      tool_output: Some(step_artifact.command_failure_details(artifact)),
-      tool_status: Some("failed"),
+    session_event.error_payload(
+      "command_failed",
+      Some(summary),
+      Some("workflow command " <> artifact.step_id),
+      artifact.command,
+      Some(step_artifact.command_failure_details(artifact)),
+      Some("failed"),
     ),
   )
 }

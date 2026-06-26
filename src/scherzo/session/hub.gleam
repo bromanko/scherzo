@@ -3,7 +3,6 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
-import gleam/string
 import scherzo/session/event
 import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
@@ -14,8 +13,6 @@ pub const default_max_events_per_session = 200
 pub const default_max_sessions = 100
 
 pub const default_max_exited_events_per_session = 25
-
-const max_exited_event_text_chars = 4096
 
 pub type HubError {
   HubUnavailable
@@ -618,7 +615,7 @@ fn apply_publish_payload(
   payload: event.EventPayload,
   now: Int,
 ) -> #(event.SessionSummary, event.EventPayload) {
-  case payload.kind {
+  case event.payload_kind(payload) {
     event.Turn -> apply_turn_payload(summary, payload, now)
     _ -> #(update_summary_after_payload(summary, payload, now), payload)
   }
@@ -629,15 +626,16 @@ fn update_summary_after_payload(
   payload: event.EventPayload,
   now: Int,
 ) -> event.SessionSummary {
-  let current_turn = case payload.turn {
+  let current_turn = case event.payload_turn(payload) {
     Some(turn) -> turn
     None -> summary.current_turn
   }
-  let token_totals = case token_totals_are_nonzero(payload.tokens) {
-    True -> payload.tokens
+  let tokens = event.payload_tokens(payload)
+  let token_totals = case token_totals_are_nonzero(tokens) {
+    True -> tokens
     False -> summary.token_totals
   }
-  let recovery = case payload.recovery {
+  let recovery = case event.payload_recovery(payload) {
     Some(recovery) -> Some(recovery)
     None -> summary.recovery
   }
@@ -655,8 +653,7 @@ fn apply_turn_payload(
   payload: event.EventPayload,
   now: Int,
 ) -> #(event.SessionSummary, event.EventPayload) {
-  let payload = sanitize_turn_payload(payload)
-  case payload.name {
+  case event.payload_name(payload) {
     event.TurnName(turn_telemetry.EventStarted) ->
       apply_turn_started(summary, payload, now)
     event.TurnName(turn_telemetry.EventFinished)
@@ -676,18 +673,9 @@ fn apply_turn_started(
   payload: event.EventPayload,
   now: Int,
 ) -> #(event.SessionSummary, event.EventPayload) {
-  let turn = turn_or_current(payload.turn, summary.current_turn)
+  let turn = turn_or_current(event.payload_turn(payload), summary.current_turn)
   let status = turn_status_for_payload(payload)
-  let payload =
-    event.EventPayload(
-      ..payload,
-      turn: Some(turn),
-      turn_status: status,
-      turn_started_at_ms: Some(now),
-      turn_finished_at_ms: None,
-      turn_duration_ms: None,
-      token_delta: session_tokens.zero_token_totals(),
-    )
+  let payload = event.with_turn_started_details(payload, turn, status, now)
   let summary =
     event.SessionSummary(
       ..summary,
@@ -705,22 +693,23 @@ fn apply_turn_terminal(
   payload: event.EventPayload,
   now: Int,
 ) -> #(event.SessionSummary, event.EventPayload) {
-  let turn = turn_or_current(payload.turn, summary.current_turn)
+  let turn = turn_or_current(event.payload_turn(payload), summary.current_turn)
   let status = turn_status_for_payload(payload)
-  let delta = clamped_token_delta(payload.tokens, summary.token_totals)
-  let token_totals = case token_totals_are_nonzero(payload.tokens) {
-    True -> payload.tokens
+  let tokens = event.payload_tokens(payload)
+  let delta = clamped_token_delta(tokens, summary.token_totals)
+  let token_totals = case token_totals_are_nonzero(tokens) {
+    True -> tokens
     False -> summary.token_totals
   }
   let duration = turn_duration(summary, turn, now)
   let payload =
-    event.EventPayload(
-      ..payload,
-      turn: Some(turn),
-      turn_status: status,
-      turn_finished_at_ms: Some(now),
-      turn_duration_ms: duration,
-      token_delta: delta,
+    event.with_turn_terminal_details(
+      payload,
+      turn,
+      status,
+      now,
+      duration,
+      delta,
     )
   let summary =
     event.SessionSummary(
@@ -730,40 +719,17 @@ fn apply_turn_terminal(
       last_turn_finished_at_ms: Some(now),
       last_turn_duration_ms: duration,
       last_turn_token_delta: delta,
-      last_turn_reason: payload.reason,
+      last_turn_reason: event.payload_reason(payload),
       token_totals: token_totals,
       last_event_at_ms: now,
     )
   #(summary, payload)
 }
 
-fn sanitize_turn_payload(payload: event.EventPayload) -> event.EventPayload {
-  event.EventPayload(
-    ..payload,
-    pi_type: None,
-    message: None,
-    request_id: None,
-    method: None,
-    tool_name: None,
-    tool_input: None,
-    tool_output: None,
-    tool_status: None,
-    turn_status: turn_status_for_payload(payload),
-    raw_json: None,
-  )
-}
-
 fn turn_status_for_payload(
   payload: event.EventPayload,
 ) -> Option(turn_telemetry.TurnStatus) {
-  case payload.name {
-    event.TurnName(name) ->
-      case turn_telemetry.status_for_event_name(name) {
-        Some(status) -> Some(status)
-        None -> payload.turn_status
-      }
-    _ -> payload.turn_status
-  }
+  event.turn_payload_status_for_name(payload)
 }
 
 fn turn_duration(
@@ -857,7 +823,7 @@ fn payload_for_retention(
   payload: event.EventPayload,
 ) -> event.EventPayload {
   case summary.status {
-    event.Exited(_) -> compact_exited_payload(payload)
+    event.Exited(_) -> event.compact_for_exit(payload)
     _ -> payload
   }
 }
@@ -873,34 +839,8 @@ fn compact_exited_event(
 ) -> event.SessionEvent {
   event.SessionEvent(
     ..stored_event,
-    payload: compact_exited_payload(stored_event.payload),
+    payload: event.compact_for_exit(stored_event.payload),
   )
-}
-
-fn compact_exited_payload(payload: event.EventPayload) -> event.EventPayload {
-  event.EventPayload(
-    ..payload,
-    message: compact_optional_text(payload.message),
-    tool_input: compact_optional_text(payload.tool_input),
-    tool_output: compact_optional_text(payload.tool_output),
-    raw_json: None,
-  )
-}
-
-fn compact_optional_text(value: Option(String)) -> Option(String) {
-  case value {
-    Some(value) -> Some(compact_text(value))
-    None -> None
-  }
-}
-
-fn compact_text(value: String) -> String {
-  case string.length(value) > max_exited_event_text_chars {
-    True ->
-      string.slice(value, 0, max_exited_event_text_chars)
-      <> "… [truncated after session exit]"
-    False -> value
-  }
 }
 
 fn retain_latest(

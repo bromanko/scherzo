@@ -1574,7 +1574,9 @@ fn find_event(
   case events {
     [] -> None
     [stored_event, ..rest] ->
-      case event.name_to_string(stored_event.payload.name) == name {
+      case
+        event.name_to_string(event.payload_name(stored_event.payload)) == name
+      {
         True -> Some(stored_event)
         False -> find_event(rest, name)
       }
@@ -4060,14 +4062,15 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
   let assert Ok(page) =
     hub.events_after(event_hub, step_session_id, 0, 20, 1000)
   let assert Some(command_event) = find_event(page.events, "command_failed")
-  assert command_event.payload.kind == event.Error
-  let assert Some(message) = command_event.payload.message
+  assert event.payload_kind(command_event.payload) == event.Error
+  let assert Some(message) = event.payload_message(command_event.payload)
   assert string.contains(message, "step=final_test")
   assert string.contains(message, "exit_code=9")
   assert string.contains(message, "stdout=")
   assert string.contains(message, "stderr=")
   assert string.contains(message, "[truncated]")
-  let assert Some(tool_output) = command_event.payload.tool_output
+  let assert Some(tool_output) =
+    event.payload_tool_output(command_event.payload)
   assert string.contains(tool_output, "full retained artifact:")
   assert string.contains(tool_output, "stdout_truncated: true")
   assert string.contains(tool_output, "stderr_truncated: true")

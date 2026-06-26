@@ -2,6 +2,7 @@ import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/control/command
 import scherzo/control/file
 import scherzo/control/protocol
@@ -67,17 +68,24 @@ fn evt(cursor: Int, payload: event.EventPayload) -> event.SessionEvent {
 }
 
 fn payload(kind: event.EventKind, name: String) -> event.EventPayload {
-  let assert Ok(event_name) = event.name_from_string(name)
-  event.empty_payload(kind, event_name)
+  event.decoded_empty_payload(kind, name)
 }
 
 fn assistant(cursor: Int, text: String) -> event.SessionEvent {
   evt(
     cursor,
-    event.EventPayload(
-      ..payload(event.AssistantMessage, "message_update"),
-      turn: Some(1),
-      message: Some(text),
+    event.pi_event_payload(
+      pi_event.MessageUpdate,
+      Some(1),
+      Some(text),
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      session_tokens.zero_token_totals(),
+      None,
     ),
   )
 }
@@ -85,11 +93,18 @@ fn assistant(cursor: Int, text: String) -> event.SessionEvent {
 fn tool(cursor: Int, output: String) -> event.SessionEvent {
   evt(
     cursor,
-    event.EventPayload(
-      ..payload(event.Tool, "tool_execution_update"),
-      turn: Some(1),
-      tool_name: Some("bash"),
-      tool_output: Some(output),
+    event.pi_event_payload(
+      pi_event.ToolExecutionUpdate,
+      Some(1),
+      None,
+      None,
+      None,
+      Some("bash"),
+      None,
+      Some(output),
+      None,
+      session_tokens.zero_token_totals(),
+      None,
     ),
   )
 }
@@ -366,5 +381,5 @@ pub fn events_pretty_uses_paginated_replay_helper_test() {
 }
 
 fn with_turn(payload: event.EventPayload, turn: Int) -> event.EventPayload {
-  event.EventPayload(..payload, turn: Some(turn))
+  event.with_payload_turn(payload, turn)
 }

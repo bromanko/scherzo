@@ -5,7 +5,6 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import scherzo/agent/pi_event
 import scherzo/control/command
 import scherzo/control/query/codec as query_codec
 import scherzo/control/query/types as query_types
@@ -1780,69 +1779,29 @@ fn event_payload_decoder() -> decode.Decoder(event.EventPayload) {
     decode.optional(redacted_raw_json_decoder()),
   )
   let payload =
-    event.EventPayload(
-      kind: kind,
-      name: event_name_decoder(kind, name_string),
-      turn: turn,
-      pi_type: pi_type,
-      message: message,
-      recovery: recovery,
-      request_id: request_id,
-      method: method,
-      tool_name: tool_name,
-      tool_input: tool_input,
-      tool_output: tool_output,
-      tool_status: tool_status,
-      tokens: tokens,
-      turn_status: turn_status_from_optional_string(turn_status_name),
-      turn_started_at_ms: turn_started_at_ms,
-      turn_finished_at_ms: turn_finished_at_ms,
-      turn_duration_ms: turn_duration_ms,
-      token_delta: token_delta,
-      reason: turn_reason_from_optional_string(reason_name),
-      raw_json: raw_json,
+    event.decoded_payload(
+      kind,
+      name_string,
+      turn,
+      pi_type,
+      message,
+      recovery,
+      request_id,
+      method,
+      tool_name,
+      tool_input,
+      tool_output,
+      tool_status,
+      tokens,
+      turn_status_from_optional_string(turn_status_name),
+      turn_started_at_ms,
+      turn_finished_at_ms,
+      turn_duration_ms,
+      token_delta,
+      turn_reason_from_optional_string(reason_name),
+      raw_json,
     )
-  decode.success(sanitize_decoded_turn_payload(payload))
-}
-
-fn sanitize_decoded_turn_payload(
-  payload: event.EventPayload,
-) -> event.EventPayload {
-  case payload.kind {
-    event.Turn ->
-      event.EventPayload(
-        ..payload,
-        pi_type: None,
-        message: None,
-        request_id: None,
-        method: None,
-        tool_name: None,
-        tool_input: None,
-        tool_output: None,
-        tool_status: None,
-        raw_json: None,
-      )
-    _ -> payload
-  }
-}
-
-fn event_name_decoder(
-  kind: event.EventKind,
-  name_string: String,
-) -> event.EventName {
-  case kind {
-    event.Lifecycle ->
-      case event.lifecycle_name_from_string(name_string) {
-        Some(name) -> event.LifecycleName(name)
-        None -> event.PiName(pi_event.UnknownPiEvent(name_string))
-      }
-    event.Turn ->
-      case turn_telemetry.event_name_from_string(name_string) {
-        Some(name) -> event.TurnName(name)
-        None -> event.TurnName(turn_telemetry.EventUnknown(name_string))
-      }
-    _ -> event.PiName(pi_event.from_string(name_string))
-  }
+  decode.success(payload)
 }
 
 fn token_totals_decoder() -> decode.Decoder(session_tokens.TokenTotals) {

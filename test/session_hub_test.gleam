@@ -3,6 +3,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/json as session_json
@@ -35,8 +36,7 @@ fn summary(session_id: String) -> event.SessionSummary {
 }
 
 fn payload(name: String) -> event.EventPayload {
-  let assert Ok(event_name) = event.name_from_string(name)
-  event.empty_payload(event.Lifecycle, event_name)
+  event.decoded_empty_payload(event.Lifecycle, name)
 }
 
 fn interrupted_recovery(run_id: String) -> event.RecoveryInfo {
@@ -106,10 +106,8 @@ pub fn hub_aggregates_child_step_progress_into_parent_summary_test() {
   hub.publish(
     subject,
     "child-step",
-    event.EventPayload(
-      ..turn_payload(turn_telemetry.EventFinished, 1),
-      tokens: token_totals(3, 4, 5, 6, 18),
-    ),
+    turn_payload(turn_telemetry.EventFinished, 1)
+      |> event.with_payload_tokens(token_totals(3, 4, 5, 6, 18)),
   )
 
   let assert Ok(Some(parent)) = hub.get_session(subject, "parent-run", 1000)
@@ -245,10 +243,10 @@ pub fn hub_updates_summary_recovery_from_payload_test() {
   hub.publish(
     subject,
     "session-1",
-    event.EventPayload(
-      ..payload("recovery_interrupted"),
-      recovery: Some(recovery),
-      message: Some("daemon_restart"),
+    event.lifecycle_payload(
+      event.RecoveryInterrupted,
+      Some("daemon_restart"),
+      Some(recovery),
     ),
   )
 
@@ -260,7 +258,7 @@ pub fn hub_updates_summary_recovery_from_payload_test() {
 
   let assert Ok(page) = hub.events_after(subject, "session-1", 0, 10, 1000)
   let assert [stored_event] = page.events
-  let assert Some(event_recovery) = stored_event.payload.recovery
+  let assert Some(event_recovery) = event.payload_recovery(stored_event.payload)
   assert event_recovery.source == "projection.run_interrupted"
   hub.stop(subject)
 }
@@ -322,13 +320,18 @@ pub fn hub_compacts_exited_session_heavy_event_fields_test() {
   hub.publish(
     subject,
     "session-1",
-    event.EventPayload(
-      ..payload("heavy"),
-      kind: event.Tool,
-      message: Some(long_text),
-      tool_input: Some(long_text),
-      tool_output: Some(long_text),
-      raw_json: Some(event.RedactedRawJson(value: long_text, truncated: False)),
+    event.pi_event_payload(
+      pi_event.ToolExecutionUpdate,
+      None,
+      Some(long_text),
+      None,
+      None,
+      None,
+      Some(long_text),
+      Some(long_text),
+      None,
+      session_tokens.zero_token_totals(),
+      None,
     ),
   )
 
@@ -338,10 +341,13 @@ pub fn hub_compacts_exited_session_heavy_event_fields_test() {
   let assert [stored_event] = page.events
   let expected_compacted_text =
     string.slice(long_text, 0, 4096) <> "… [truncated after session exit]"
-  assert stored_event.payload.message == Some(expected_compacted_text)
-  assert stored_event.payload.tool_input == Some(expected_compacted_text)
-  assert stored_event.payload.tool_output == Some(expected_compacted_text)
-  assert stored_event.payload.raw_json == None
+  assert event.payload_message(stored_event.payload)
+    == Some(expected_compacted_text)
+  assert event.payload_tool_input(stored_event.payload)
+    == Some(expected_compacted_text)
+  assert event.payload_tool_output(stored_event.payload)
+    == Some(expected_compacted_text)
+  assert event.payload_raw_json(stored_event.payload) == None
   hub.stop(subject)
 }
 
@@ -406,10 +412,8 @@ pub fn turn_finished_computes_duration_and_token_delta_test() {
   hub.publish(
     subject,
     "session-1",
-    event.EventPayload(
-      ..turn_payload(turn_telemetry.EventFinished, 1),
-      tokens: token_totals(10, 5, 0, 0, 15),
-    ),
+    turn_payload(turn_telemetry.EventFinished, 1)
+      |> event.with_payload_tokens(token_totals(10, 5, 0, 0, 15)),
   )
 
   let assert Ok(Some(summary)) = hub.get_session(subject, "session-1", 1000)
@@ -419,8 +423,8 @@ pub fn turn_finished_computes_duration_and_token_delta_test() {
   assert summary.last_turn_token_delta.total == 15
   let assert Ok(page) = hub.events_after(subject, "session-1", 0, 10, 1000)
   let assert [finished] = page.events
-  assert finished.payload.turn_duration_ms == Some(1500)
-  assert finished.payload.token_delta.total == 15
+  assert event.payload_turn_duration_ms(finished.payload) == Some(1500)
+  assert event.payload_token_delta(finished.payload).total == 15
   hub.stop(subject)
 }
 
@@ -442,35 +446,24 @@ pub fn turn_terminal_paths_set_status_reason_and_sanitize_test() {
   )
 }
 
-pub fn turn_payload_sanitization_strips_message_tool_and_raw_json_test() {
+pub fn turn_payload_cannot_carry_message_tool_or_raw_json_test() {
   let assert Ok(subject) = hub.start(10, fn() { 1000 })
   hub.register_session(subject, summary("session-1"))
   hub.publish(
     subject,
     "session-1",
-    event.EventPayload(
-      ..turn_payload(turn_telemetry.EventStarted, 1),
-      message: Some("SECRET_PROMPT"),
-      tool_input: Some("tool_input_value"),
-      tool_output: Some("full transcript"),
-      tool_status: Some("secret status"),
-      raw_json: Some(event.RedactedRawJson(
-        value: "{\"secret\":true}",
-        truncated: False,
-      )),
-    ),
+    turn_payload(turn_telemetry.EventStarted, 1),
   )
 
   let assert Ok(page) = hub.events_after(subject, "session-1", 0, 10, 1000)
   let assert [stored_event] = page.events
-  assert stored_event.payload.message == None
-  assert stored_event.payload.tool_input == None
-  assert stored_event.payload.raw_json == None
+  assert event.payload_message(stored_event.payload) == None
+  assert event.payload_tool_input(stored_event.payload) == None
+  assert event.payload_raw_json(stored_event.payload) == None
   let encoded = session_json.event_to_string(stored_event)
-  assert !string.contains(encoded, "SECRET_PROMPT")
-  assert !string.contains(encoded, "full transcript")
-  assert !string.contains(encoded, "tool_input_value")
-  assert !string.contains(encoded, "{\"secret\":true}")
+  assert string.contains(encoded, "\"message\":null")
+  assert string.contains(encoded, "\"tool_input\":null")
+  assert string.contains(encoded, "\"raw_json\":null")
   hub.stop(subject)
 }
 
@@ -492,13 +485,11 @@ fn assert_terminal(
   hub.publish(
     subject,
     "session-terminal",
-    event.EventPayload(
-      ..turn_payload(name, 1),
-      reason: Some(reason),
-      raw_json: Some(event.RedactedRawJson(
-        value: "SECRET_PROMPT",
-        truncated: False,
-      )),
+    event.turn_payload(
+      name,
+      1,
+      session_tokens.zero_token_totals(),
+      Some(reason),
     ),
   )
   let assert Ok(Some(summary)) =
@@ -508,8 +499,8 @@ fn assert_terminal(
   let assert Ok(page) =
     hub.events_after(subject, "session-terminal", 0, 10, 1000)
   let assert [terminal] = page.events
-  assert terminal.payload.reason == Some(reason)
-  assert terminal.payload.raw_json == None
+  assert event.payload_reason(terminal.payload) == Some(reason)
+  assert event.payload_raw_json(terminal.payload) == None
   hub.stop(subject)
 }
 
@@ -517,11 +508,7 @@ fn turn_payload(
   name: turn_telemetry.TurnEventName,
   turn: Int,
 ) -> event.EventPayload {
-  event.EventPayload(
-    ..event.empty_payload(event.Turn, event.TurnName(name)),
-    turn: Some(turn),
-    turn_status: turn_telemetry.status_for_event_name(name),
-  )
+  event.turn_payload(name, turn, session_tokens.zero_token_totals(), None)
 }
 
 fn token_totals(

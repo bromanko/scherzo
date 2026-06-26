@@ -75,50 +75,34 @@ pub fn page_to_json(page: event.EventPage) -> json.Json {
 }
 
 fn payload_entries(payload: event.EventPayload) -> List(#(String, json.Json)) {
-  let payload = sanitize_turn_payload_for_json(payload)
   [
-    #("kind", json.string(event.kind_to_string(payload.kind))),
-    #("name", json.string(event.name_to_string(payload.name))),
-    #("turn", optional_int(payload.turn)),
-    #("pi_type", optional_string(payload.pi_type)),
-    #("message", optional_string(payload.message)),
-    #("recovery", optional_recovery(payload.recovery)),
-    #("request_id", optional_string(payload.request_id)),
-    #("method", optional_string(payload.method)),
-    #("tool_name", optional_string(payload.tool_name)),
-    #("tool_input", optional_string(payload.tool_input)),
-    #("tool_output", optional_string(payload.tool_output)),
-    #("tool_status", optional_string(payload.tool_status)),
-    #("tokens", tokens_to_json(payload.tokens)),
-    #("turn_status", optional_turn_status(payload.turn_status)),
-    #("turn_started_at_ms", optional_int(payload.turn_started_at_ms)),
-    #("turn_finished_at_ms", optional_int(payload.turn_finished_at_ms)),
-    #("turn_duration_ms", optional_int(payload.turn_duration_ms)),
-    #("token_delta", tokens_to_json(payload.token_delta)),
-    #("reason", optional_turn_reason(payload.reason)),
-    #("raw_json", optional_raw_json(payload.raw_json)),
+    #("kind", json.string(event.kind_to_string(event.payload_kind(payload)))),
+    #("name", json.string(event.payload_name_to_string(payload))),
+    #("turn", optional_int(event.payload_turn(payload))),
+    #("pi_type", optional_string(event.payload_pi_type(payload))),
+    #("message", optional_string(event.payload_message(payload))),
+    #("recovery", optional_recovery(event.payload_recovery(payload))),
+    #("request_id", optional_string(event.payload_request_id(payload))),
+    #("method", optional_string(event.payload_method(payload))),
+    #("tool_name", optional_string(event.payload_tool_name(payload))),
+    #("tool_input", optional_string(event.payload_tool_input(payload))),
+    #("tool_output", optional_string(event.payload_tool_output(payload))),
+    #("tool_status", optional_string(event.payload_tool_status(payload))),
+    #("tokens", tokens_to_json(event.payload_tokens(payload))),
+    #("turn_status", optional_turn_status(event.payload_turn_status(payload))),
+    #(
+      "turn_started_at_ms",
+      optional_int(event.payload_turn_started_at_ms(payload)),
+    ),
+    #(
+      "turn_finished_at_ms",
+      optional_int(event.payload_turn_finished_at_ms(payload)),
+    ),
+    #("turn_duration_ms", optional_int(event.payload_turn_duration_ms(payload))),
+    #("token_delta", tokens_to_json(event.payload_token_delta(payload))),
+    #("reason", optional_turn_reason(event.payload_reason(payload))),
+    #("raw_json", optional_raw_json(event.payload_raw_json(payload))),
   ]
-}
-
-fn sanitize_turn_payload_for_json(
-  payload: event.EventPayload,
-) -> event.EventPayload {
-  case payload.kind {
-    event.Turn ->
-      event.EventPayload(
-        ..payload,
-        pi_type: None,
-        message: None,
-        request_id: None,
-        method: None,
-        tool_name: None,
-        tool_input: None,
-        tool_output: None,
-        tool_status: None,
-        raw_json: None,
-      )
-    _ -> payload
-  }
 }
 
 fn tokens_to_json(tokens: session_tokens.TokenTotals) -> json.Json {

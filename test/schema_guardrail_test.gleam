@@ -2049,13 +2049,10 @@ fn sample_event_page() -> event.EventPage {
         at_ms: 2400,
         session_id: "session-1",
         issue_id: "issue-1",
-        payload: event.EventPayload(
-          ..event.empty_payload(
-            event.Lifecycle,
-            event.LifecycleName(event.RecoveryInterrupted),
-          ),
-          message: Some("daemon_restart"),
-          recovery: Some(sample_recovery()),
+        payload: event.lifecycle_payload(
+          event.RecoveryInterrupted,
+          Some("daemon_restart"),
+          Some(sample_recovery()),
         ),
       ),
     ],

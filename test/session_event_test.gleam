@@ -117,11 +117,7 @@ pub fn recovery_safe_text_redacts_and_bounds_messages_test() {
 }
 
 pub fn event_page_serializes_cursor_and_truncation_test() {
-  let payload =
-    event.empty_payload(
-      event.Lifecycle,
-      event.LifecycleName(event.WorkerStarted),
-    )
+  let payload = event.lifecycle_payload(event.WorkerStarted, None, None)
   let page =
     event.EventPage(
       events: [
@@ -137,10 +133,7 @@ pub fn event_page_serializes_cursor_and_truncation_test() {
           at_ms: 101,
           session_id: "session-1",
           issue_id: "issue-1",
-          payload: event.EventPayload(
-            ..payload,
-            name: event.LifecycleName(event.WorkerExited),
-          ),
+          payload: event.lifecycle_payload(event.WorkerExited, None, None),
         ),
       ],
       next_cursor: 2,
@@ -157,11 +150,18 @@ pub fn event_page_serializes_cursor_and_truncation_test() {
 
 pub fn event_payload_has_no_cursor_or_timestamp_test() {
   let payload =
-    event.EventPayload(
-      ..event.empty_payload(event.Pi, event.PiName(pi_event.MessageUpdate)),
-      turn: Some(1),
-      pi_type: Some("message_update"),
-      message: Some("hello"),
+    event.pi_event_payload(
+      pi_event.MessageUpdate,
+      Some(1),
+      Some("hello"),
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      session_tokens.zero_token_totals(),
+      None,
     )
 
   let encoded = session_json.payload_to_string(payload)
@@ -203,22 +203,13 @@ pub fn summary_json_includes_bounded_turn_fields_test() {
   assert !string.contains(encoded, "raw_json")
 }
 
-pub fn turn_event_json_strips_sensitive_generic_fields_test() {
+pub fn turn_event_json_has_no_generic_payload_fields_test() {
   let payload =
-    event.EventPayload(
-      ..event.empty_payload(
-        event.Turn,
-        event.TurnName(turn_telemetry.EventStarted),
-      ),
-      turn: Some(2),
-      message: Some("SECRET_PROMPT"),
-      tool_input: Some("tool_input_value"),
-      tool_output: Some("full transcript"),
-      tool_status: Some("secret status"),
-      raw_json: Some(event.RedactedRawJson(
-        value: "{\"secret\":true}",
-        truncated: False,
-      )),
+    event.turn_payload(
+      turn_telemetry.EventStarted,
+      2,
+      session_tokens.zero_token_totals(),
+      None,
     )
 
   let encoded = session_json.payload_to_string(payload)
@@ -226,11 +217,39 @@ pub fn turn_event_json_strips_sensitive_generic_fields_test() {
   assert string.contains(encoded, "\"kind\":\"turn\"")
   assert string.contains(encoded, "\"name\":\"turn_started\"")
   assert string.contains(encoded, "\"turn\":2")
-  assert !string.contains(encoded, "SECRET_PROMPT")
-  assert !string.contains(encoded, "full transcript")
-  assert !string.contains(encoded, "tool_input_value")
-  assert !string.contains(encoded, "secret status")
-  assert !string.contains(encoded, "{\"secret\":true}")
+  assert string.contains(encoded, "\"message\":null")
+  assert string.contains(encoded, "\"tool_input\":null")
+  assert string.contains(encoded, "\"raw_json\":null")
+}
+
+pub fn decoded_turn_payload_drops_tool_or_raw_pi_fields_test() {
+  let payload =
+    event.decoded_payload(
+      event.Turn,
+      "turn_started",
+      Some(2),
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      Some("secret"),
+      None,
+      None,
+      session_tokens.zero_token_totals(),
+      None,
+      None,
+      None,
+      None,
+      session_tokens.zero_token_totals(),
+      None,
+      Some(event.RedactedRawJson("{\"x\":1}", False)),
+    )
+
+  assert event.payload_kind(payload) == event.Turn
+  assert event.payload_tool_input(payload) == None
+  assert event.payload_raw_json(payload) == None
 }
 
 type SummaryJson {

@@ -334,20 +334,21 @@ pub fn decode_events_response_accepts_missing_and_new_tool_fields_test() {
     "{\"version\":1,\"id\":\"events-1\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":1,\"at_ms\":100,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"tool\",\"name\":\"tool_execution_start\",\"turn\":1,\"pi_type\":null,\"message\":null,\"request_id\":null,\"method\":null,\"tool_name\":\"bash\",\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0},\"raw_json\":null}],\"next_cursor\":1,\"truncated\":false}}"
   let assert Ok(old_page) = protocol.decode_get_events_response(old_json)
   let assert [old_event] = old_page.events
-  assert old_event.payload.tool_name == Some("bash")
-  assert old_event.payload.tool_input == None
-  assert old_event.payload.tool_output == None
-  assert old_event.payload.tool_status == None
-  assert old_event.payload.token_delta == session_tokens.zero_token_totals()
-  assert old_event.payload.turn_status == None
+  assert event.payload_tool_name(old_event.payload) == Some("bash")
+  assert event.payload_tool_input(old_event.payload) == None
+  assert event.payload_tool_output(old_event.payload) == None
+  assert event.payload_tool_status(old_event.payload) == None
+  assert event.payload_token_delta(old_event.payload)
+    == session_tokens.zero_token_totals()
+  assert event.payload_turn_status(old_event.payload) == None
 
   let new_json =
     "{\"version\":1,\"id\":\"events-2\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":2,\"at_ms\":101,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"tool\",\"name\":\"tool_execution_end\",\"turn\":1,\"pi_type\":null,\"message\":null,\"request_id\":null,\"method\":null,\"tool_name\":\"bash\",\"tool_input\":\"gleam test\",\"tool_output\":\"ok\",\"tool_status\":\"success\",\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0},\"raw_json\":null}],\"next_cursor\":2,\"truncated\":false}}"
   let assert Ok(new_page) = protocol.decode_get_events_response(new_json)
   let assert [new_event] = new_page.events
-  assert new_event.payload.tool_input == Some("gleam test")
-  assert new_event.payload.tool_output == Some("ok")
-  assert new_event.payload.tool_status == Some("success")
+  assert event.payload_tool_input(new_event.payload) == Some("gleam test")
+  assert event.payload_tool_output(new_event.payload) == Some("ok")
+  assert event.payload_tool_status(new_event.payload) == Some("success")
 }
 
 pub fn decode_events_response_uses_kind_when_decoding_event_name_test() {
@@ -355,7 +356,7 @@ pub fn decode_events_response_uses_kind_when_decoding_event_name_test() {
     "{\"version\":1,\"id\":\"events-kind\",\"ok\":true,\"data\":{\"events\":[{\"cursor\":1,\"at_ms\":100,\"session_id\":\"session-1\",\"issue_id\":\"issue-1\",\"kind\":\"tool\",\"name\":\"worker_started\",\"tokens\":{\"input\":0,\"output\":0,\"cache_read\":0,\"cache_write\":0,\"total\":0}}],\"next_cursor\":1,\"truncated\":false}}"
   let assert Ok(tool_page) = protocol.decode_get_events_response(tool_json)
   let assert [tool_event] = tool_page.events
-  assert tool_event.payload.name
+  assert event.payload_name(tool_event.payload)
     == event.PiName(pi_event.UnknownPiEvent("worker_started"))
 
   let lifecycle_json =
@@ -363,7 +364,7 @@ pub fn decode_events_response_uses_kind_when_decoding_event_name_test() {
   let assert Ok(lifecycle_page) =
     protocol.decode_get_events_response(lifecycle_json)
   let assert [lifecycle_event] = lifecycle_page.events
-  assert lifecycle_event.payload.name
+  assert event.payload_name(lifecycle_event.payload)
     == event.LifecycleName(event.WorkerStarted)
 }
 
@@ -373,12 +374,13 @@ pub fn decode_turn_event_response_with_token_delta_and_reason_test() {
 
   let assert Ok(page) = protocol.decode_get_events_response(line)
   let assert [stored_event] = page.events
-  assert stored_event.payload.kind == event.Turn
-  assert stored_event.payload.name
+  assert event.payload_kind(stored_event.payload) == event.Turn
+  assert event.payload_name(stored_event.payload)
     == event.TurnName(turn_telemetry.EventFinished)
-  assert stored_event.payload.turn_status == Some(turn_telemetry.StatusFinished)
-  assert stored_event.payload.token_delta.total == 15
-  assert stored_event.payload.reason
+  assert event.payload_turn_status(stored_event.payload)
+    == Some(turn_telemetry.StatusFinished)
+  assert event.payload_token_delta(stored_event.payload).total == 15
+  assert event.payload_reason(stored_event.payload)
     == Some(turn_telemetry.ReasonOperatorStopAfterCurrentTurn)
 }
 
@@ -388,9 +390,9 @@ pub fn decode_turn_event_rejects_free_form_secret_reason_test() {
 
   let assert Ok(page) = protocol.decode_get_events_response(line)
   let assert [stored_event] = page.events
-  assert stored_event.payload.reason == None
-  assert stored_event.payload.message == None
-  assert stored_event.payload.raw_json == None
+  assert event.payload_reason(stored_event.payload) == None
+  assert event.payload_message(stored_event.payload) == None
+  assert event.payload_raw_json(stored_event.payload) == None
   let encoded = protocol.event_page_data(page) |> json.to_string
   assert !string.contains(encoded, "SECRET_PROMPT")
 }
@@ -401,8 +403,8 @@ pub fn decode_unknown_future_turn_name_stays_turn_event_test() {
 
   let assert Ok(page) = protocol.decode_get_events_response(line)
   let assert [stored_event] = page.events
-  assert stored_event.payload.kind == event.Turn
-  assert stored_event.payload.name
+  assert event.payload_kind(stored_event.payload) == event.Turn
+  assert event.payload_name(stored_event.payload)
     == event.TurnName(turn_telemetry.EventUnknown("turn_paused"))
 }
 
@@ -517,10 +519,7 @@ pub fn encode_events_response_contains_cursor_and_session_test() {
           at_ms: 100,
           session_id: "session-1",
           issue_id: "issue-1",
-          payload: event.empty_payload(
-            event.Lifecycle,
-            event.LifecycleName(event.WorkerStarted),
-          ),
+          payload: event.lifecycle_payload(event.WorkerStarted, None, None),
         ),
       ],
       next_cursor: 7,
@@ -575,13 +574,10 @@ pub fn lifecycle_event_response_carries_nullable_recovery_test() {
           at_ms: 101,
           session_id: "session-1",
           issue_id: "issue-1",
-          payload: event.EventPayload(
-            ..event.empty_payload(
-              event.Lifecycle,
-              event.LifecycleName(event.RecoveryInterrupted),
-            ),
-            recovery: Some(recovery),
-            message: Some("daemon_restart"),
+          payload: event.lifecycle_payload(
+            event.RecoveryInterrupted,
+            Some("daemon_restart"),
+            Some(recovery),
           ),
         ),
       ],
@@ -599,7 +595,8 @@ pub fn lifecycle_event_response_carries_nullable_recovery_test() {
 
   let assert Ok(decoded) = protocol.decode_get_events_response(encoded)
   let assert [stored_event] = decoded.events
-  let assert Some(decoded_recovery) = stored_event.payload.recovery
+  let assert Some(decoded_recovery) =
+    event.payload_recovery(stored_event.payload)
   assert decoded_recovery.status == event.Interrupted
   assert decoded_recovery.workflow_run_id == Some("run-1")
 }
