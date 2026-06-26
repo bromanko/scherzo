@@ -5,6 +5,7 @@ import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/workflow_dag
 import scherzo/workflow_run/step_worker_pool
+import scherzo/workspace
 import scherzo/workspace_run
 import test_async
 
@@ -36,8 +37,7 @@ fn prepared_start(step_id: String) -> step_worker_pool.PreparedStart {
       attempt_index: 1,
       workspace_name: "main",
       path: "test/tmp/step-worker-pool-timeout/workspace",
-      source_workspace_name: None,
-      source_workspace_path: None,
+      source: workspace.FreshWorkspace,
       workspace_profile: "default",
     )
   step_worker_pool.prepared_start(step, workspace)

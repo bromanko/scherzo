@@ -12,6 +12,7 @@ import scherzo/error
 import scherzo/path
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
+import scherzo/workspace as workspace_core
 import scherzo/workspace_driver_context
 import scherzo/workspace_manifest
 import scherzo/workspace_profile
@@ -279,11 +280,15 @@ fn publication_driver_generated_env(
     #("SCHERZO_WORKSPACE_PATH", workspace.path),
     #(
       "SCHERZO_SOURCE_WORKSPACE_NAME",
-      optional_publication_env_value(workspace.source_workspace_name),
+      optional_publication_env_value(workspace_core.source_name(
+        workspace.source,
+      )),
     ),
     #(
       "SCHERZO_SOURCE_WORKSPACE_PATH",
-      optional_publication_env_value(workspace.source_workspace_path),
+      optional_publication_env_value(workspace_core.source_path(
+        workspace.source,
+      )),
     ),
   ]
 }
@@ -312,13 +317,13 @@ fn retained_publication_driver_generated_env(
     #("SCHERZO_WORKSPACE_PATH", workspace_path),
     #(
       "SCHERZO_SOURCE_WORKSPACE_NAME",
-      optional_publication_env_value(entry.source_workspace_name),
+      optional_publication_env_value(workspace_core.source_name(entry.source)),
     ),
     #(
       "SCHERZO_SOURCE_WORKSPACE_PATH",
       optional_publication_env_value(optional_source_workspace_path(
         run_root,
-        entry.source_workspace_relative_path,
+        workspace_core.source_path(entry.source),
       )),
     ),
   ]

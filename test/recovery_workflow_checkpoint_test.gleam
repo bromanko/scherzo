@@ -14,6 +14,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
 import scherzo/workflow_outcome
+import scherzo/workspace
 import simplifile
 import support/test_helpers
 
@@ -1036,6 +1037,67 @@ pub fn workflow_recovery_parks_missing_recovered_source_workspace_test() {
   expect_workflow_interrupted(finalized, scenario.run_id)
 }
 
+pub fn workflow_recovery_parks_name_only_source_fields_test() {
+  let scenario =
+    recovery_scenario(
+      "test/tmp/recovery-workflow-name-only-source",
+      "run-source-name-only",
+    )
+  ensure_workspace(scenario, "seed")
+  let artifact = command_artifact("seed", 0, "done", "")
+  let stored = write_artifact(scenario, "seed", artifact)
+  let folded =
+    projection.fold([
+      given_workflow_started(scenario, 1),
+      given_step_prepared(scenario, 2, "seed", "seed", Some("upstream"), None),
+      given_step_finished(scenario, 3, "seed", "completed", stored, "seed"),
+    ])
+
+  let finalized = finalize_resume(scenario, folded, source_dag())
+
+  expect_no_resumption(finalized)
+  expect_park_reason(finalized, "workspace_recovery_failed")
+  expect_workflow_interrupted(finalized, scenario.run_id)
+  assert finalized.warnings
+    == [
+      "workflow_recovery_parked_workspace_recovery_failed:run-source-name-only:invalid_workspace_source_fields",
+    ]
+}
+
+pub fn workflow_recovery_parks_path_only_source_fields_test() {
+  let scenario =
+    recovery_scenario(
+      "test/tmp/recovery-workflow-path-only-source",
+      "run-source-path-only",
+    )
+  ensure_workspace(scenario, "seed")
+  let artifact = command_artifact("seed", 0, "done", "")
+  let stored = write_artifact(scenario, "seed", artifact)
+  let folded =
+    projection.fold([
+      given_workflow_started(scenario, 1),
+      given_step_prepared(
+        scenario,
+        2,
+        "seed",
+        "seed",
+        None,
+        Some(workspace_path(scenario, "upstream")),
+      ),
+      given_step_finished(scenario, 3, "seed", "completed", stored, "seed"),
+    ])
+
+  let finalized = finalize_resume(scenario, folded, source_dag())
+
+  expect_no_resumption(finalized)
+  expect_park_reason(finalized, "workspace_recovery_failed")
+  expect_workflow_interrupted(finalized, scenario.run_id)
+  assert finalized.warnings
+    == [
+      "workflow_recovery_parked_workspace_recovery_failed:run-source-path-only:invalid_workspace_source_fields",
+    ]
+}
+
 pub fn workflow_recovery_validates_failed_fatal_artifact_without_promoting_workspace_test() {
   let scenario =
     recovery_scenario("test/tmp/recovery-workflow-failed-fatal", "run-fatal")
@@ -1090,8 +1152,10 @@ fn expect_recovered_workspace(
     dict.get(resumption.completed_workspaces, workspace_name)
   assert recovered_workspace.path == expected_path
   assert recovered_workspace.run_root == expected_run_root
-  assert recovered_workspace.source_workspace_name == expected_source_name
-  assert recovered_workspace.source_workspace_path == expected_source_path
+  assert workspace.source_name(recovered_workspace.source)
+    == expected_source_name
+  assert workspace.source_path(recovered_workspace.source)
+    == expected_source_path
 }
 
 fn expect_no_recovered_workspace(

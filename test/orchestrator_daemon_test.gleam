@@ -42,11 +42,22 @@ import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_fingerprint
 import scherzo/workflow_run
+import scherzo/workspace
 import scherzo/workspace_run
 import simplifile
 import support/expected_crash
 import support/test_helpers
 import test_async
+
+fn workspace_source(
+  from: Option(String),
+  run_root: String,
+) -> workspace.WorkspaceSource {
+  case from {
+    None -> workspace.FreshWorkspace
+    Some(name) -> workspace.DerivedWorkspace(name, run_root <> "/" <> name)
+  }
+}
 
 fn prompt_text(mode: workflow_attempt.AgentPromptMode) -> String {
   case mode {
@@ -1026,8 +1037,7 @@ fn fake_workflow_run_dependencies(
         attempt_index: attempt_index,
         workspace_name: workspace_ref.name,
         path: run_root <> "/" <> workspace_ref.name,
-        source_workspace_name: workspace_ref.from,
-        source_workspace_path: None,
+        source: workspace_source(workspace_ref.from, run_root),
         workspace_profile: profile.name,
       ))
     },
@@ -1051,8 +1061,7 @@ fn fake_workflow_run_dependencies(
         attempt_index: attempt_index,
         workspace_name: workspace_ref.name,
         path: expected_run_root <> "/" <> workspace_ref.name,
-        source_workspace_name: workspace_ref.from,
-        source_workspace_path: None,
+        source: workspace_source(workspace_ref.from, expected_run_root),
         workspace_profile: profile.name,
       ))
     },

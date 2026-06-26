@@ -1459,19 +1459,18 @@ fn recovered_workspaces_to_prepared(
   workspaces
   |> dict.to_list
   |> list.map(fn(entry) {
-    let #(workspace_name, workspace) = entry
+    let #(workspace_name, w) = entry
     #(
       workspace_name,
       workspace_run.PreparedStepWorkspace(
-        workflow_id: workspace.workflow_id,
-        run_id: workspace.run_id,
-        run_root: workspace.run_root,
+        workflow_id: w.workflow_id,
+        run_id: w.run_id,
+        run_root: w.run_root,
         workflow_bundle_dir: "",
-        attempt_index: workspace.attempt_index,
-        workspace_name: workspace.workspace_name,
-        path: workspace.path,
-        source_workspace_name: workspace.source_workspace_name,
-        source_workspace_path: workspace.source_workspace_path,
+        attempt_index: w.attempt_index,
+        workspace_name: w.workspace_name,
+        path: w.path,
+        source: w.source,
         workspace_profile: profile_name,
       ),
     )

@@ -45,6 +45,7 @@ import scherzo/workflow_outcome
 import scherzo/workflow_run
 import scherzo/workflow_run/contract_io
 import scherzo/workflow_scheduler
+import scherzo/workspace
 import scherzo/workspace_driver_context
 import scherzo/workspace_driver_discovery
 import scherzo/workspace_run
@@ -615,6 +616,14 @@ fn prepare_fake_step(
         Error(_) -> name <> "=missing"
       }
   }
+  let source_value = case workspace_ref.from {
+    None -> workspace.FreshWorkspace
+    Some(name) ->
+      case dict.get(known, name) {
+        Ok(prepared) -> workspace.DerivedWorkspace(name, prepared.path)
+        Error(_) -> workspace.DerivedWorkspace(name, "")
+      }
+  }
   let workspace_path =
     "test/tmp/workflow-run/workspaces/implementation/ABC-123/"
     <> workspace_ref.name
@@ -631,15 +640,7 @@ fn prepare_fake_step(
     attempt_index: attempt_index,
     workspace_name: workspace_ref.name,
     path: workspace_path,
-    source_workspace_name: workspace_ref.from,
-    source_workspace_path: case workspace_ref.from {
-      None -> None
-      Some(name) ->
-        case dict.get(known, name) {
-          Ok(prepared) -> Some(prepared.path)
-          Error(_) -> None
-        }
-    },
+    source: source_value,
     workspace_profile: profile.name,
   ))
 }

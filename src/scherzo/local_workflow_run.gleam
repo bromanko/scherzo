@@ -25,6 +25,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workflow_run
+import scherzo/workspace
 import scherzo/workspace_run
 import simplifile
 
@@ -283,12 +284,12 @@ fn prepare_local_step(
         ),
       )
     Ok(Nil) -> {
-      let source_path = case workspace_ref.from {
-        None -> None
+      let source = case workspace_ref.from {
+        None -> workspace.FreshWorkspace
         Some(name) ->
           case dict.get(known, name) {
-            Ok(prepared) -> Some(prepared.path)
-            Error(Nil) -> Some(".")
+            Ok(prepared) -> workspace.DerivedWorkspace(name, prepared.path)
+            Error(Nil) -> workspace.DerivedWorkspace(name, ".")
           }
       }
       Ok(workspace_run.PreparedStepWorkspace(
@@ -302,8 +303,7 @@ fn prepare_local_step(
         attempt_index: attempt_index,
         workspace_name: workspace_ref.name,
         path: ".",
-        source_workspace_name: workspace_ref.from,
-        source_workspace_path: source_path,
+        source: source,
         workspace_profile: profile.name,
       ))
     }

@@ -31,6 +31,7 @@ import scherzo/terminal/style
 import scherzo/turn_telemetry
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
+import scherzo/workspace
 import scherzo/workspace_manifest
 import simplifile
 import support/test_helpers
@@ -3482,8 +3483,7 @@ fn write_commit_stack_retained_workspace_manifest(root: String) -> Nil {
             workspace_profile: "retained",
             driver_command: "retained-driver",
             driver_capabilities: ["publish-commit-stack"],
-            source_workspace_name: None,
-            source_workspace_relative_path: None,
+            source: workspace.FreshWorkspace,
             state: workspace_manifest.Ready,
           ),
         ],

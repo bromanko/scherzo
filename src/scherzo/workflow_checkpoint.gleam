@@ -17,6 +17,7 @@ import scherzo/structured_output_metadata
 import scherzo/workflow_attempt
 import scherzo/workflow_contract_manifest
 import scherzo/workflow_identity
+import scherzo/workspace as workspace_core
 import scherzo/workspace_run
 import scherzo/workstream/artifact_store as workstream_artifact_store
 
@@ -549,8 +550,8 @@ pub fn ledger_writer_with_artifact_store(
           workspace.workspace_name,
           workspace.path,
           workspace.run_root,
-          workspace.source_workspace_name,
-          workspace.source_workspace_path,
+          workspace_core.source_name(workspace.source),
+          workspace_core.source_path(workspace.source),
         ),
       )
     },

@@ -13,10 +13,21 @@ import scherzo/runtime_bundle
 import scherzo/smoke
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workspace
 import scherzo/workspace_run
 import simplifile
 import support/test_helpers
 import test_async
+
+fn workspace_source(
+  from: Option(String),
+  run_root: String,
+) -> workspace.WorkspaceSource {
+  case from {
+    None -> workspace.FreshWorkspace
+    Some(name) -> workspace.DerivedWorkspace(name, run_root <> "/" <> name)
+  }
+}
 
 pub type DoctorAction {
   LockAcquired(String)
@@ -206,8 +217,7 @@ fn successful_deps(
         attempt_index: 1,
         workspace_name: workspace_ref.name,
         path: workspace_path,
-        source_workspace_name: workspace_ref.from,
-        source_workspace_path: None,
+        source: workspace_source(workspace_ref.from, run_root),
         workspace_profile: profile.name,
       ))
     },

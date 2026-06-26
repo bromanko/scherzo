@@ -6,6 +6,7 @@ import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/hooks
+import scherzo/workspace as workspace_core
 import scherzo/workspace_driver_command
 import scherzo/workspace_driver_env
 import scherzo/workspace_manifest
@@ -198,7 +199,10 @@ fn remove_env(
     #("SCHERZO_WORKSPACE_PROFILE", entry.workspace_profile),
     #("SCHERZO_WORKSPACE_NAME", entry.workspace_name),
     #("SCHERZO_WORKSPACE_PATH", workspace_path),
-    #("SCHERZO_SOURCE_WORKSPACE_NAME", unwrap(entry.source_workspace_name, "")),
+    #(
+      "SCHERZO_SOURCE_WORKSPACE_NAME",
+      unwrap(workspace_core.source_name(entry.source), ""),
+    ),
     #("SCHERZO_SOURCE_WORKSPACE_PATH", unwrap(source_workspace_path, "")),
   ]
 }

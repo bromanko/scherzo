@@ -1,4 +1,5 @@
 import gleam/dict
+import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/command_step
@@ -10,6 +11,7 @@ import scherzo/step_artifact
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_dag
+import scherzo/workspace
 import scherzo/workspace_driver_discovery
 import scherzo/workspace_manifest
 import scherzo/workspace_run
@@ -438,8 +440,7 @@ pub fn scheduled_run_paths_and_hook_env_are_issue_free_test() {
       attempt_index: 1,
       workspace_name: "main",
       path: workspace_path,
-      source_workspace_name: None,
-      source_workspace_path: None,
+      source: workspace.FreshWorkspace,
       workspace_profile: "default",
     )
   let env =
@@ -484,8 +485,7 @@ pub fn recovered_workspace_validation_rejects_paths_outside_run_root_test() {
       attempt_index: 1,
       workspace_name: "main",
       path: other_run_workspace,
-      source_workspace_name: None,
-      source_workspace_path: None,
+      source: workspace.FreshWorkspace,
       workspace_profile: "default",
     )
   let known = dict.from_list([#("main", recovered_workspace)])
@@ -645,8 +645,7 @@ pub fn managed_workspace_manifest_round_trip_and_upsert_test() {
           workspace_profile: "dogfood-jj",
           driver_command: "driver.sh",
           driver_capabilities: ["status", "assert-only"],
-          source_workspace_name: Some("main"),
-          source_workspace_relative_path: Some("workspaces/main"),
+          source: workspace.DerivedWorkspace("main", "workspaces/main"),
           state: workspace_manifest.Ready,
         ),
       ],
@@ -656,7 +655,7 @@ pub fn managed_workspace_manifest_round_trip_and_upsert_test() {
   let assert Ok([entry]) = workspace_manifest.decode_manifest(contents)
   assert entry.step_id == "review"
   assert entry.attempt_index == 2
-  assert entry.source_workspace_relative_path == Some("workspaces/main")
+  assert workspace.source_path(entry.source) == Some("workspaces/main")
 
   let dir = "test/tmp/workspace-run-manifest-upsert"
   test_helpers.reset_dir(dir)
@@ -673,8 +672,7 @@ pub fn managed_workspace_manifest_round_trip_and_upsert_test() {
       workspace_profile: "dogfood-jj",
       driver_command: "driver.sh",
       driver_capabilities: ["status"],
-      source_workspace_name: None,
-      source_workspace_relative_path: None,
+      source: workspace.FreshWorkspace,
       state: workspace_manifest.Planned,
     )
   let ready =
@@ -688,8 +686,7 @@ pub fn managed_workspace_manifest_round_trip_and_upsert_test() {
       workspace_profile: planned.workspace_profile,
       driver_command: planned.driver_command,
       driver_capabilities: planned.driver_capabilities,
-      source_workspace_name: planned.source_workspace_name,
-      source_workspace_relative_path: planned.source_workspace_relative_path,
+      source: planned.source,
       state: workspace_manifest.Ready,
     )
   let assert Ok(Nil) =
@@ -700,6 +697,56 @@ pub fn managed_workspace_manifest_round_trip_and_upsert_test() {
     simplifile.read(workspace_manifest.manifest_path(run_root))
   let assert Ok([written]) = workspace_manifest.decode_manifest(contents)
   assert written.state == workspace_manifest.Ready
+}
+
+pub fn managed_workspace_manifest_rejects_source_name_without_path_test() {
+  let contents =
+    manifest_json_with_source_fields(json.string("main"), json.null())
+  let assert Error(Nil) = workspace_manifest.decode_manifest(contents)
+}
+
+pub fn managed_workspace_manifest_rejects_source_path_without_name_test() {
+  let contents =
+    manifest_json_with_source_fields(
+      json.null(),
+      json.string("workspaces/main"),
+    )
+  let assert Error(Nil) = workspace_manifest.decode_manifest(contents)
+}
+
+fn manifest_json_with_source_fields(
+  source_workspace_name: json.Json,
+  source_workspace_relative_path: json.Json,
+) -> String {
+  json.object([
+    #("schema_version", json.int(workspace_manifest.schema_version)),
+    #("artifact_type", json.string(workspace_manifest.artifact_type)),
+    #("run_id", json.string("run-1")),
+    #("workflow_id", json.string("implementation")),
+    #(
+      "entries",
+      json.array(
+        [
+          json.object([
+            #("run_id", json.string("run-1")),
+            #("workflow_id", json.string("implementation")),
+            #("step_id", json.string("review")),
+            #("attempt_index", json.int(1)),
+            #("workspace_name", json.string("main")),
+            #("relative_path", json.string("workspaces/main")),
+            #("workspace_profile", json.string("dogfood-jj")),
+            #("driver_command", json.string("driver.sh")),
+            #("driver_capabilities", json.array([], of: json.string)),
+            #("source_workspace_name", source_workspace_name),
+            #("source_workspace_relative_path", source_workspace_relative_path),
+            #("state", json.string("ready")),
+          ]),
+        ],
+        of: fn(entry) { entry },
+      ),
+    ),
+  ])
+  |> json.to_string
 }
 
 pub fn prepare_create_failure_leaves_planned_manifest_entry_test() {
@@ -865,8 +912,7 @@ pub fn cleanup_invalid_manifest_path_returns_error_and_keeps_run_root_test() {
             workspace_profile: "dogfood-jj",
             driver_command: "./driver.sh",
             driver_capabilities: ["status", "assert-only"],
-            source_workspace_name: None,
-            source_workspace_relative_path: None,
+            source: workspace.FreshWorkspace,
             state: workspace_manifest.Ready,
           ),
         ],
@@ -895,8 +941,7 @@ fn ready_manifest_entry(
     workspace_profile: "dogfood-jj",
     driver_command: "./driver.sh",
     driver_capabilities: ["status", "assert-only"],
-    source_workspace_name: None,
-    source_workspace_relative_path: None,
+    source: workspace.FreshWorkspace,
     state: workspace_manifest.Ready,
   )
 }
