@@ -443,8 +443,6 @@ pub fn parses_agent_structured_output_defaults_test() {
   assert spec.source
     == structured_output_source.PiToolCallSource(
       tool_name: "submit_review_json",
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: None,
     )
   assert spec.schema == workflow_dag.StructuredObjectSchema([])
@@ -468,8 +466,6 @@ pub fn parses_agent_structured_output_json_contract_test() {
   assert spec.source
     == structured_output_source.PiToolCallSource(
       tool_name: "submit_review_result",
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: None,
     )
   assert spec.schema
@@ -503,8 +499,6 @@ pub fn parses_agent_structured_output_pi_tool_call_source_test() {
   assert spec.source
     == structured_output_source.PiToolCallSource(
       tool_name: "submit_example_artifact",
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: None,
     )
 }

@@ -55,18 +55,11 @@ pub fn validate_agent_result(
         secrets,
         validator_runner,
       )
-    structured_output_source.PiToolCallSource(
-      tool_name,
-      require_single,
-      reject_sibling_tool_calls,
-      _,
-    ) ->
+    structured_output_source.PiToolCallSource(tool_name, _) ->
       validate_tool_call_source(
         spec,
         result,
         tool_name,
-        require_single,
-        reject_sibling_tool_calls,
         secrets,
         validator_runner,
       )
@@ -309,8 +302,6 @@ fn validate_tool_call_source(
   spec: workflow_dag.StructuredOutputSpec,
   agent_result: result_artifact.ResultArtifact,
   tool_name: String,
-  require_single: Bool,
-  reject_sibling_tool_calls: Bool,
   secrets: List(String),
   validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
@@ -322,31 +313,19 @@ fn validate_tool_call_source(
         spec,
         call,
         tool_name,
-        reject_sibling_tool_calls,
         secrets,
         validator_runner,
       )
     [_, ..] ->
-      case require_single {
-        True ->
-          Error(tool_source_error(
-            spec,
-            "structured_output_tool_call_multiple",
-            "expected exactly one successful Pi tool call named `"
-              <> tool_name
-              <> "` for structured artifact `"
-              <> spec.artifact_name
-              <> "`, but multiple matching calls were observed",
-          ))
-        False ->
-          Error(tool_source_error(
-            spec,
-            "structured_output_tool_call_multiple",
-            "multiple Pi tool calls named `"
-              <> tool_name
-              <> "` were observed; Scherzo only supports single-call structured-output sources",
-          ))
-      }
+      Error(tool_source_error(
+        spec,
+        "structured_output_tool_call_multiple",
+        "expected exactly one successful Pi tool call named `"
+          <> tool_name
+          <> "` for structured artifact `"
+          <> spec.artifact_name
+          <> "`, but multiple matching calls were observed",
+      ))
   }
 }
 
@@ -354,11 +333,10 @@ fn validate_single_tool_call(
   spec: workflow_dag.StructuredOutputSpec,
   call: result_artifact.ToolCallSubmission,
   tool_name: String,
-  reject_sibling_tool_calls: Bool,
   secrets: List(String),
   validator_runner: ValidatorRunner,
 ) -> Result(StructuredOutputValidation, StructuredOutputError) {
-  case reject_sibling_tool_calls && call.sibling_count > 1 {
+  case call.sibling_count > 1 {
     True ->
       Error(tool_source_error(
         spec,

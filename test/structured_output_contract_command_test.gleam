@@ -82,7 +82,7 @@ pub fn structured_output_contract_check_workflow_reports_prompt_mismatch_test() 
   let assert Ok(Nil) =
     simplifile.write(
       workflow_path,
-      "version: 1\nid: prompt-mismatch\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompt.md\n    structured_output:\n      artifact_name: correctness_submission\n      required: true\n      format: json\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        type: object\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n      validators:\n        - name: provider_schema\n          type: json_schema\n          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n          draft: '2020-12'\n",
+      "version: 1\nid: prompt-mismatch\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompt.md\n    structured_output:\n      artifact_name: correctness_submission\n      required: true\n      format: json\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      schema:\n        type: object\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n      validators:\n        - name: provider_schema\n          type: json_schema\n          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n          draft: '2020-12'\n",
     )
 
   let artifact =

@@ -100,8 +100,6 @@ pub fn structured_output_artifact_store_writes_json_schema_metadata_test() {
       required: True,
       source: structured_output_source.PiToolCallSource(
         tool_name: "submit_review_lane_draft",
-        require_single: True,
-        reject_sibling_tool_calls: True,
         parameters_schema_path: None,
       ),
       format: workflow_dag.StructuredJson,

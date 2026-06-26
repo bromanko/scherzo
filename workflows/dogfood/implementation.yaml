@@ -98,8 +98,6 @@ steps:
         type: pi_tool_call
         tool_name: submit_review_lane_draft
         parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json
-        require_single: true
-        reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_submission_shape
@@ -131,8 +129,6 @@ steps:
         type: pi_tool_call
         tool_name: submit_review_lane_draft
         parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.test-quality.v1.schema.json
-        require_single: true
-        reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_submission_shape
@@ -164,8 +160,6 @@ steps:
         type: pi_tool_call
         tool_name: submit_review_lane_draft
         parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.idioms-maintainability.v1.schema.json
-        require_single: true
-        reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_submission_shape
@@ -195,8 +189,6 @@ steps:
         type: pi_tool_call
         tool_name: submit_review_lane_draft
         parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.security-performance.v1.schema.json
-        require_single: true
-        reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_lane_submission_shape
@@ -351,8 +343,6 @@ steps:
         type: pi_tool_call
         tool_name: submit_review_finding_dispositions
         parameters_schema_path: .scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json
-        require_single: true
-        reject_sibling_tool_calls: true
       required: true
       validators:
         - name: review_finding_disposition_input_semantics

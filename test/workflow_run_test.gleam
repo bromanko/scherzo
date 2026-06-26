@@ -937,7 +937,7 @@ fn structured_output_dag(required: Bool) -> workflow_dag.WorkflowDag {
 fn tool_call_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
   dag
 }
@@ -4808,7 +4808,7 @@ fn unsetenv(name: String) -> Nil
 fn generic_tool_call_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =
     workflow_dag.parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    run_in: main\n    structured_output:\n      artifact_name: review_lane_submission\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n        require_single: true\n        reject_sibling_tool_calls: true\n      validators:\n        - name: review_lane_submission_shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: example prompt\n    run_in: main\n    structured_output:\n      artifact_name: review_lane_submission\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      validators:\n        - name: review_lane_submission_shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n",
     )
   dag
 }

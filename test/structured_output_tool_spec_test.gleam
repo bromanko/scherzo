@@ -13,8 +13,6 @@ fn spec(schema_path: String) -> workflow_dag.StructuredOutputSpec {
     required: True,
     source: structured_output_source.PiToolCallSource(
       tool_name: "submit_structured_output",
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: Some(schema_path),
     ),
     format: workflow_dag.StructuredJson,
@@ -114,14 +112,14 @@ pub fn structured_output_tool_spec_builds_provider_schema_spec_test() {
   assert json_object_field(tool_spec.parameters_schema, "allOf") == None
   assert json_object_field(tool_spec.parameters_schema, "enum") == None
   assert json_object_field(tool_spec.parameters_schema, "not") == None
-  assert tool_spec.require_single
-  assert tool_spec.reject_sibling_tool_calls
   assert tool_spec.terminate
 
   let encoded = structured_output_tool_spec.to_string(tool_spec)
   let assert Ok(_) = json_value.parse(encoded)
   assert string.contains(encoded, "\"parameters_schema\":")
   assert string.contains(encoded, "\"terminate\":true")
+  assert !string.contains(encoded, "\"require_single\"")
+  assert !string.contains(encoded, "\"reject_sibling_tool_calls\"")
 }
 
 pub fn structured_output_tool_spec_rejects_unsafe_schema_paths_test() {
@@ -325,8 +323,6 @@ pub fn structured_output_tool_spec_requires_generic_schema_path_test() {
       required: True,
       source: structured_output_source.PiToolCallSource(
         tool_name: "submit_structured_output",
-        require_single: True,
-        reject_sibling_tool_calls: True,
         parameters_schema_path: None,
       ),
       format: workflow_dag.StructuredJson,

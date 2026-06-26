@@ -7,12 +7,7 @@ import yay
 
 pub type StructuredOutputSource {
   FinalResponseSource
-  PiToolCallSource(
-    tool_name: String,
-    require_single: Bool,
-    reject_sibling_tool_calls: Bool,
-    parameters_schema_path: Option(String),
-  )
+  PiToolCallSource(tool_name: String, parameters_schema_path: Option(String))
 }
 
 pub type SourceError {
@@ -26,14 +21,14 @@ pub fn default() -> StructuredOutputSource {
 pub fn type_to_string(source: StructuredOutputSource) -> String {
   case source {
     FinalResponseSource -> "final_response"
-    PiToolCallSource(_, _, _, _) -> "pi_tool_call"
+    PiToolCallSource(_, _) -> "pi_tool_call"
   }
 }
 
 pub fn tool_name(source: StructuredOutputSource) -> Option(String) {
   case source {
     FinalResponseSource -> None
-    PiToolCallSource(name, _, _, _) -> Some(name)
+    PiToolCallSource(name, _) -> Some(name)
   }
 }
 
@@ -42,7 +37,7 @@ pub fn parameters_schema_path(
 ) -> Option(String) {
   case source {
     FinalResponseSource -> None
-    PiToolCallSource(_, _, _, path) -> path
+    PiToolCallSource(_, path) -> path
   }
 }
 
@@ -99,32 +94,16 @@ fn read_pi_tool_call_source(
   node: yay.Node,
 ) -> Result(StructuredOutputSource, SourceError) {
   use name <- result.try(read_tool_name(node))
-  use require_single <- result.try(read_bool(node, "require_single", True))
-  use reject_sibling_tool_calls <- result.try(read_bool(
+  use Nil <- result.try(read_legacy_true_policy(node, "require_single"))
+  use Nil <- result.try(read_legacy_true_policy(
     node,
     "reject_sibling_tool_calls",
-    True,
   ))
   use parameters_schema_path <- result.try(read_optional_schema_path(node))
-  case require_single, reject_sibling_tool_calls {
-    False, _ ->
-      error(
-        "unsupported_structured_output_source_require_single",
-        "structured_output.source.require_single must be true",
-      )
-    _, False ->
-      error(
-        "unsupported_structured_output_source_reject_sibling_tool_calls",
-        "structured_output.source.reject_sibling_tool_calls must be true",
-      )
-    True, True ->
-      Ok(PiToolCallSource(
-        tool_name: name,
-        require_single: require_single,
-        reject_sibling_tool_calls: reject_sibling_tool_calls,
-        parameters_schema_path: parameters_schema_path,
-      ))
-  }
+  Ok(PiToolCallSource(
+    tool_name: name,
+    parameters_schema_path: parameters_schema_path,
+  ))
 }
 
 fn read_optional_schema_path(
@@ -210,14 +189,20 @@ fn read_tool_name(node: yay.Node) -> Result(String, SourceError) {
   }
 }
 
-fn read_bool(
+fn read_legacy_true_policy(
   node: yay.Node,
   field: String,
-  default: Bool,
-) -> Result(Bool, SourceError) {
+) -> Result(Nil, SourceError) {
   case get_node(node, field) {
-    None -> Ok(default)
-    Some(yay.NodeBool(value)) -> Ok(value)
+    None -> Ok(Nil)
+    Some(yay.NodeBool(True)) -> Ok(Nil)
+    Some(yay.NodeBool(False)) ->
+      error(
+        "unsupported_structured_output_source_" <> field,
+        "structured_output.source."
+          <> field
+          <> " is deprecated; omit it from new workflow YAML. If present for compatibility, it must be true",
+      )
     Some(_) ->
       error(
         "structured_output_source_" <> field <> "_not_bool",

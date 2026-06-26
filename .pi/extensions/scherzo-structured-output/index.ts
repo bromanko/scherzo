@@ -19,8 +19,6 @@ export interface StructuredOutputToolSpec {
 	parameters_schema_path: string;
 	parameters_schema_sha256: string;
 	parameters_schema: JsonObject;
-	require_single: true;
-	reject_sibling_tool_calls: true;
 	terminate: true;
 }
 
@@ -115,8 +113,6 @@ export function validateSpec(value: unknown): StructuredOutputToolSpec {
 		parameters_schema_path: schemaPath,
 		parameters_schema_sha256: requireString(value, "parameters_schema_sha256"),
 		parameters_schema: schemaValue,
-		require_single: requireBooleanTrue(value, "require_single"),
-		reject_sibling_tool_calls: requireBooleanTrue(value, "reject_sibling_tool_calls"),
 		terminate: requireBooleanTrue(value, "terminate"),
 	};
 }

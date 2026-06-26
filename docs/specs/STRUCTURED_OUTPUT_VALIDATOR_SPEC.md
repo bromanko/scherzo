@@ -156,13 +156,11 @@ A production Pi tool-call source has this shape:
 source:
   type: pi_tool_call
   tool_name: submit_artifact
-  require_single: true
-  reject_sibling_tool_calls: true
 ```
 
 **SOV-SRC-005:** For `source.type: pi_tool_call`, `tool_name` MUST be present, MUST be a valid tool identifier, and MUST name the Pi tool whose JSON arguments are the candidate structured output.
 
-**SOV-SRC-006:** Version 1 supports only `require_single: true` and `reject_sibling_tool_calls: true`. If either field is omitted, Scherzo MUST default it to `true`. If either field is explicitly `false`, Scherzo MUST reject the workflow declaration until broader semantics are specified.
+**SOV-SRC-006:** Version 1 supports only the single-tool/no-sibling policy. Scherzo MUST require exactly one matching tool call and MUST reject sibling tool calls by construction. The legacy `require_single` and `reject_sibling_tool_calls` YAML keys are deprecated compatibility keys: Scherzo MAY accept and ignore an explicit `true`, but MUST reject an explicit `false` until broader semantics are specified. New workflow YAML MUST omit both keys.
 
 **SOV-SRC-007:** Scherzo MUST require exactly one successful Pi tool call with the configured name. It MUST reject missing calls, only-wrong-name calls, failed calls, duplicate matching calls, and matching calls submitted with sibling tool calls in the same assistant tool-call batch.
 
@@ -347,6 +345,8 @@ Scherzo starts command validators from a clean environment. It may copy a small 
 **SOV-COMPAT-004:** Structured artifact readers MUST decode older retained structured artifacts that contain the old baseline schema shape and no generic validator metadata. Older artifacts SHOULD be interpreted as baseline admission metadata with an empty validator list when possible.
 
 **SOV-COMPAT-005:** Removing legacy `validator` parsing is a separate migration decision. Before removal, the repository MUST inventory current usage and provide a clear diagnostic or migration path for remaining workflows.
+
+**SOV-COMPAT-006:** The legacy Pi tool-call source policy keys `require_single` and `reject_sibling_tool_calls` are accepted only as explicit `true` during a compatibility window and MUST NOT be represented in runtime source types, workflow fingerprints, provider tool specs, or retained tool-spec JSON. New declarations MUST omit them.
 
 ## 15. Conformance expectations and test requirements
 

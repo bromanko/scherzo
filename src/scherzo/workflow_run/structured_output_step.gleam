@@ -622,7 +622,7 @@ fn receipt_json_for_source(
   tool_calls: List(result_artifact.ToolCallSubmission),
 ) -> Option(String) {
   case source {
-    structured_output_source.PiToolCallSource(tool_name, _, _, _) ->
+    structured_output_source.PiToolCallSource(tool_name, _) ->
       receipt_json_for_tool(tool_calls, tool_name)
     structured_output_source.FinalResponseSource -> None
   }

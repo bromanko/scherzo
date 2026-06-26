@@ -42,8 +42,6 @@ pub fn parses_json_schema_and_command_validators_test() {
   assert spec.source
     == structured_output_source.PiToolCallSource(
       tool_name: "submit_review",
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: None,
     )
   assert spec.schema
@@ -87,8 +85,6 @@ pub fn parses_validator_defaults_test() {
   assert spec.source
     == structured_output_source.PiToolCallSource(
       tool_name: "submit_review",
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: None,
     )
   assert spec.schema == workflow_dag.StructuredObjectSchema([])

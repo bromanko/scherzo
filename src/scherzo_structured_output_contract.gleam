@@ -257,13 +257,11 @@ fn source_summary_fields(
   source: structured_output_source.StructuredOutputSource,
 ) -> #(String, String) {
   case source {
-    structured_output_source.PiToolCallSource(
+    structured_output_source.PiToolCallSource(tool_name, Some(schema_path)) -> #(
       tool_name,
-      _,
-      _,
-      Some(schema_path),
-    ) -> #(tool_name, schema_path)
-    structured_output_source.PiToolCallSource(tool_name, _, _, None) -> #(
+      schema_path,
+    )
+    structured_output_source.PiToolCallSource(tool_name, None) -> #(
       tool_name,
       "",
     )

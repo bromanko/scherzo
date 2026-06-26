@@ -30,8 +30,8 @@ assert spec['tool_name'] == 'submit_structured_output'
 assert spec['parameters_schema_path'] == '.scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json'
 assert spec['parameters_schema'].get('type') == 'object'
 assert 'validation_schema' not in spec
-assert spec['require_single'] is True
-assert spec['reject_sibling_tool_calls'] is True
+assert 'require_single' not in spec
+assert 'reject_sibling_tool_calls' not in spec
 assert spec['terminate'] is True
 PY
 

@@ -51,8 +51,6 @@ fn tool_source_spec() -> workflow_dag.StructuredOutputSpec {
     required: True,
     source: structured_output_source.PiToolCallSource(
       tool_name: "submit_example_artifact",
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: None,
     ),
     format: workflow_dag.StructuredJson,
@@ -294,8 +292,6 @@ pub fn json_schema_validator_runs_for_pi_tool_call_source_test() {
   let source =
     structured_output_source.PiToolCallSource(
       tool_name: "submit_review_lane_draft",
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: None,
     )
   let spec =
@@ -617,8 +613,6 @@ pub fn pi_tool_call_source_still_runs_downstream_json_schema_after_acceptance_te
   let source =
     structured_output_source.PiToolCallSource(
       tool_name: "submit_structured_output",
-      require_single: True,
-      reject_sibling_tool_calls: True,
       parameters_schema_path: Some(
         ".scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json",
       ),

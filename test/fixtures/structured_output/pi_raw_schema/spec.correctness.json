@@ -157,8 +157,6 @@
     "Do not call sibling tools."
   ],
   "prompt_snippet": "Submit review_lane_draft by calling submit_structured_output exactly once",
-  "reject_sibling_tool_calls": true,
-  "require_single": true,
   "run_id": "raw-schema-smoke",
   "schema_version": 1,
   "step_id": "lane_correctness",

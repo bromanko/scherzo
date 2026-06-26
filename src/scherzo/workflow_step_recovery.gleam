@@ -103,8 +103,6 @@ pub fn tool_spec(
       required: True,
       source: structured_output_source.PiToolCallSource(
         tool_name: tool_name,
-        require_single: True,
-        reject_sibling_tool_calls: True,
         parameters_schema_path: Some(provider_schema_path),
       ),
       format: workflow_dag.StructuredJson,

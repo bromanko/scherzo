@@ -23,17 +23,8 @@ pub fn validate_source(
         "structured_output_source_not_pi_tool_call",
         "structured_output.source.type must be pi_tool_call",
       ))
-    structured_output_source.PiToolCallSource(
-      tool_name,
-      require_single,
-      reject_sibling_tool_calls,
-      parameters_schema_path,
-    ) -> {
+    structured_output_source.PiToolCallSource(tool_name, parameters_schema_path) -> {
       use path <- result.try(required_schema_path(parameters_schema_path))
-      use Nil <- result.try(validate_supported_policy(
-        require_single: require_single,
-        reject_sibling_tool_calls: reject_sibling_tool_calls,
-      ))
       use Nil <- result.try(validate_schema_path(path))
       Ok(SourceContract(tool_name: tool_name, parameters_schema_path: path))
     }
@@ -49,25 +40,6 @@ fn required_schema_path(
       Error(ContractPolicyError(
         "structured_output_missing_parameters_schema_path",
         "structured_output.source.parameters_schema_path is required",
-      ))
-  }
-}
-
-pub fn validate_supported_policy(
-  require_single require_single: Bool,
-  reject_sibling_tool_calls reject_sibling_tool_calls: Bool,
-) -> Result(Nil, ContractPolicyError) {
-  case require_single, reject_sibling_tool_calls {
-    True, True -> Ok(Nil)
-    False, _ ->
-      Error(ContractPolicyError(
-        "structured_output_unsupported_require_single",
-        "structured_output.source.require_single must be true",
-      ))
-    _, False ->
-      Error(ContractPolicyError(
-        "structured_output_unsupported_reject_sibling_tool_calls",
-        "structured_output.source.reject_sibling_tool_calls must be true",
       ))
   }
 }

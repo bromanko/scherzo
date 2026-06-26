@@ -272,15 +272,25 @@ pub fn workflow_fingerprint_changes_for_structured_output_contract_test() {
 pub fn workflow_fingerprint_changes_for_structured_output_source_test() {
   let first_tool_call =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
   let second_tool_call =
     parse(
-      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_other_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_other_artifact\n      schema:\n        required: [schema_version, artifact_type]\n",
+    )
+  let legacy_true_tool_call =
+    parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    run_in: main\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
 
   assert workflow_fingerprint.for_dag("implementation", first_tool_call)
     != workflow_fingerprint.for_dag("implementation", second_tool_call)
+  assert workflow_fingerprint.for_dag("implementation", first_tool_call)
+    == workflow_fingerprint.for_dag("implementation", legacy_true_tool_call)
+  assert !string.contains(
+    workflow_fingerprint.canonical_input(first_tool_call),
+    "require_single",
+  )
   assert string.contains(
     workflow_fingerprint.canonical_input(first_tool_call),
     "submit_example_artifact",
