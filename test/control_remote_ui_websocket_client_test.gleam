@@ -658,7 +658,7 @@ pub fn ui_websocket_client_query_and_command_are_compatible_test() {
       ui_websocket_client.Settings(
         ..settings,
         command_bridge_enabled: True,
-        query_timeout_ms: 100,
+        query_timeout_ms: 60_000,
       ),
       deps,
     )

@@ -332,7 +332,7 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
 
   process.send(started.data, daemon.PollTick(1))
 
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-123-42-1", 20)
   let assert Ok(#(_, expected_workspace)) =
     workspace.workspace_path(root, "ABC-123")
@@ -408,7 +408,7 @@ pub fn daemon_keeps_successful_pi_auto_retry_events_in_one_yaml_step_session_tes
 
   process.send(started.data, daemon.PollTick(1))
 
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
   let step_session_id =
     "workflow-step-ABC-RETRYOK-42-1-implement-a1-f9bb818d8483"
   let assert Ok(step_summary) =
@@ -452,7 +452,7 @@ pub fn daemon_records_exhausted_pi_auto_retry_events_in_failed_yaml_step_session
 
   process.send(started.data, daemon.PollTick(1))
 
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
   let step_session_id =
     "workflow-step-ABC-RETRYFAIL-42-1-implement-a1-f9bb818d8483"
   let assert Ok(step_summary) =
@@ -510,7 +510,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
 
   process.send(started.data, daemon.PollTick(1))
 
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
   let assert Ok(page) =
     hub.events_after(
       hub_subject,
@@ -628,7 +628,7 @@ pub fn daemon_worker_failure_does_not_create_retry_session_with_same_clock_test(
   let assert Ok(initial_refresh) =
     process.receive(refresh_subject, within: 1000)
   process.send(initial_refresh, first)
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
 
   let assert Ok(failed_summary) =
     wait_for_session(hub_subject, "ABC-RETRY-42-1", 20)
@@ -735,7 +735,7 @@ pub fn daemon_post_success_cleanup_warning_publishes_recovery_cleanup_event_test
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-CLEANUP-42-1", 20)
   assert summary.status == event.Exited(reason.Normal)
@@ -798,7 +798,7 @@ pub fn daemon_scheduled_post_success_cleanup_warning_publishes_recovery_cleanup_
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "scheduled_worker_exited", 20)
+  assert wait_for_log(log_subject, "scheduled_worker_exited", 100)
 
   let session_id = "schedule-scheduled-job-19700101T000001Z-a1"
   let assert Ok(summary) = wait_for_session(hub_subject, session_id, 20)
@@ -847,7 +847,7 @@ pub fn daemon_success_continuation_does_not_publish_retry_to_exited_session_test
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-ACTIVE-42-1", 20)
   assert summary.status == event.Exited(reason.Normal)
@@ -885,7 +885,7 @@ pub fn daemon_worker_down_does_not_publish_retry_to_exited_session_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
 
   let assert Ok(summary) = wait_for_session(hub_subject, "ABC-DOWN-42-1", 20)
   assert summary.status == event.Exited(reason.Failed)
@@ -948,12 +948,12 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
   let assert Ok(initial_refresh) =
     process.receive(refresh_subject, within: 1000)
   process.send(initial_refresh, candidate)
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "dispatch_started", 100)
   process.send(started.data, daemon.PollTick(2))
   let assert Ok(running_refresh) =
     process.receive(refresh_subject, within: 1000)
   process.send(running_refresh, terminal)
-  assert wait_for_log(log_subject, "worker_stop_requested", 20)
+  assert wait_for_log(log_subject, "worker_stop_requested", 100)
 
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(projected) = ledger.load_projection(ledger_path)

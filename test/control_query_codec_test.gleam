@@ -360,10 +360,116 @@ pub fn work_item_query_response_roundtrips_subtask_parent_test() {
   assert decoded_child.parent == Some(parent.source)
 }
 
-pub fn supported_queries_include_work_item_queries_test() {
+pub fn workflow_query_request_response_roundtrip_test() {
+  let list_request = types.WorkflowList
+  let detail_request =
+    types.WorkflowDetail(types.WorkflowDetailQuery(
+      workflow_id: "implementation",
+    ))
+
+  assert codec.decode_request(codec.request_to_string(list_request))
+    == Ok(list_request)
+  assert codec.decode_request(codec.request_to_string(detail_request))
+    == Ok(detail_request)
+
+  let list_response =
+    types.WorkflowListResponse(
+      types.WorkflowListDto(
+        schema_version: types.workflow_query_schema_version,
+        freshness: workflow_freshness(),
+        diagnostics: [],
+        workflows: [workflow_summary()],
+      ),
+    )
+  let detail_response =
+    types.WorkflowDetailResponse(types.WorkflowDetailDto(
+      schema_version: types.workflow_query_schema_version,
+      summary: workflow_summary(),
+      yaml_sources: [workflow_yaml_source()],
+      diagnostics: [],
+      freshness: workflow_freshness(),
+      graph: types.WorkflowGraphDto(
+        nodes: [
+          types.WorkflowGraphNodeDto(
+            id: "implement",
+            label: "implement",
+            kind: "agent",
+          ),
+        ],
+        edges: [],
+      ),
+    ))
+
+  let encoded_list = codec.response_to_string(list_response)
+  assert string.contains(encoded_list, "\"type\":\"workflow_list\"")
+  assert string.contains(encoded_list, "\"schema_version\":1")
+  assert codec.decode_response(encoded_list) == Ok(list_response)
+
+  let encoded_detail = codec.response_to_string(detail_response)
+  assert string.contains(encoded_detail, "\"yaml_sources\"")
+  assert string.contains(encoded_detail, "workflows/implementation.yaml")
+  assert string.contains(encoded_detail, "\"contents_truncated\":false")
+  assert codec.decode_response(encoded_detail) == Ok(detail_response)
+}
+
+pub fn malformed_workflow_response_payloads_are_rejected_test() {
+  let malformed_list =
+    codec.response_to_string(workflow_list_response())
+    |> string.replace(
+      each: "\"workflows\":[",
+      with: "\"workflows\":\"not-a-list\",\"ignored\":[",
+    )
+
+  let assert Error(types.QueryError(code: list_code, message: list_message)) =
+    codec.decode_response(malformed_list)
+  assert list_code == types.QueryBackendFailed
+  assert list_message == "invalid workflow list query payload"
+
+  let malformed_detail =
+    codec.response_to_string(workflow_detail_response())
+    |> string.replace(
+      each: "\"contents_truncated\":false",
+      with: "\"contents_truncated\":\"no\"",
+    )
+
+  let assert Error(types.QueryError(code: detail_code, message: detail_message)) =
+    codec.decode_response(malformed_detail)
+  assert detail_code == types.QueryBackendFailed
+  assert detail_message == "invalid workflow detail query payload"
+}
+
+pub fn workflow_response_rejects_unsupported_schema_versions_test() {
+  let invalid_list_schema =
+    codec.response_to_string(workflow_list_response())
+    |> string.replace(
+      each: "\"schema_version\":1",
+      with: "\"schema_version\":2",
+    )
+
+  let assert Error(types.QueryError(code: list_code, message: list_message)) =
+    codec.decode_response(invalid_list_schema)
+  assert list_code == types.QueryBackendFailed
+  assert list_message == "unsupported workflow query schema version"
+
+  let invalid_detail_schema =
+    codec.response_to_string(workflow_detail_response())
+    |> string.replace(
+      each: "\"schema_version\":1",
+      with: "\"schema_version\":2",
+    )
+
+  let assert Error(types.QueryError(code: detail_code, message: detail_message)) =
+    codec.decode_response(invalid_detail_schema)
+  assert detail_code == types.QueryBackendFailed
+  assert detail_message == "unsupported workflow query schema version"
+}
+
+pub fn supported_queries_include_work_item_and_workflow_queries_test() {
   let queries = types.supported_queries()
   assert list.contains(queries, "work_item_list")
   assert list.contains(queries, "work_item_show")
+  assert list.contains(queries, "workflow_list")
+  assert list.contains(queries, "workflow_detail")
 }
 
 pub fn malformed_work_item_response_payload_is_rejected_test() {
@@ -550,6 +656,65 @@ fn work_item_summary(
         ),
       ),
     ],
+  )
+}
+
+fn workflow_list_response() -> types.QueryResponse {
+  types.WorkflowListResponse(
+    types.WorkflowListDto(
+      schema_version: types.workflow_query_schema_version,
+      freshness: workflow_freshness(),
+      diagnostics: [],
+      workflows: [workflow_summary()],
+    ),
+  )
+}
+
+fn workflow_detail_response() -> types.QueryResponse {
+  types.WorkflowDetailResponse(types.WorkflowDetailDto(
+    schema_version: types.workflow_query_schema_version,
+    summary: workflow_summary(),
+    yaml_sources: [workflow_yaml_source()],
+    diagnostics: [],
+    freshness: workflow_freshness(),
+    graph: types.WorkflowGraphDto(
+      nodes: [
+        types.WorkflowGraphNodeDto(
+          id: "implement",
+          label: "implement",
+          kind: "agent",
+        ),
+      ],
+      edges: [],
+    ),
+  ))
+}
+
+fn workflow_summary() -> types.WorkflowSummaryDto {
+  types.WorkflowSummaryDto(
+    id: "implementation",
+    name: "implementation",
+    route: Some("implementation"),
+    label: Some("workflow:implementation"),
+    yaml_paths: ["scherzo.yaml", "workflows/implementation.yaml"],
+    step_count: 1,
+    status: "valid",
+  )
+}
+
+fn workflow_yaml_source() -> types.WorkflowYamlSourceDto {
+  types.WorkflowYamlSourceDto(
+    path: "workflows/implementation.yaml",
+    contents: "version: 1\nid: implementation\n",
+    contents_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    contents_truncated: False,
+  )
+}
+
+fn workflow_freshness() -> types.WorkflowFreshnessDto {
+  types.WorkflowFreshnessDto(
+    source_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    reload_status: "valid",
   )
 }
 

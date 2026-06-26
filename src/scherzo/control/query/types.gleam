@@ -13,6 +13,8 @@ pub type QueryRequest {
   WorkItemShow(WorkItemShowQuery)
   OutboxList(OutboxListQuery)
   OutboxShow(OutboxShowQuery)
+  WorkflowList
+  WorkflowDetail(WorkflowDetailQuery)
 }
 
 pub type QueryResponse {
@@ -24,6 +26,8 @@ pub type QueryResponse {
   WorkItemShowResponse(work_item: work_item.WorkItemDetail)
   OutboxListResponse(outbox: OutboxListDto)
   OutboxShowResponse(outbox: OutboxRecordDto)
+  WorkflowListResponse(workflows: WorkflowListDto)
+  WorkflowDetailResponse(workflow: WorkflowDetailDto)
 }
 
 pub type TaskListQuery {
@@ -63,6 +67,10 @@ pub type OutboxListQuery {
 
 pub type OutboxShowQuery {
   OutboxShowQuery(outbox_id: String)
+}
+
+pub type WorkflowDetailQuery {
+  WorkflowDetailQuery(workflow_id: String)
 }
 
 pub type TaskQueryRef {
@@ -180,6 +188,75 @@ pub type OutboxListDto {
   OutboxListDto(items: List(OutboxRecordDto), page: PageDto)
 }
 
+pub type WorkflowDiagnosticDto {
+  WorkflowDiagnosticDto(
+    severity: String,
+    code: String,
+    message: String,
+    path: Option(String),
+  )
+}
+
+pub type WorkflowFreshnessDto {
+  WorkflowFreshnessDto(source_hash: String, reload_status: String)
+}
+
+pub type WorkflowSummaryDto {
+  WorkflowSummaryDto(
+    id: String,
+    name: String,
+    route: Option(String),
+    label: Option(String),
+    yaml_paths: List(String),
+    step_count: Int,
+    status: String,
+  )
+}
+
+pub type WorkflowYamlSourceDto {
+  WorkflowYamlSourceDto(
+    path: String,
+    contents: String,
+    contents_sha256: String,
+    contents_truncated: Bool,
+  )
+}
+
+pub type WorkflowGraphNodeDto {
+  WorkflowGraphNodeDto(id: String, label: String, kind: String)
+}
+
+pub type WorkflowGraphEdgeDto {
+  WorkflowGraphEdgeDto(from: String, to: String)
+}
+
+pub type WorkflowGraphDto {
+  WorkflowGraphDto(
+    nodes: List(WorkflowGraphNodeDto),
+    edges: List(WorkflowGraphEdgeDto),
+  )
+}
+
+pub type WorkflowListDto {
+  WorkflowListDto(
+    schema_version: Int,
+    freshness: WorkflowFreshnessDto,
+    diagnostics: List(WorkflowDiagnosticDto),
+    workflows: List(WorkflowSummaryDto),
+  )
+}
+
+pub type WorkflowDetailDto {
+  WorkflowDetailDto(
+    schema_version: Int,
+    summary: WorkflowSummaryDto,
+    yaml_sources: List(WorkflowYamlSourceDto),
+    diagnostics: List(WorkflowDiagnosticDto),
+    freshness: WorkflowFreshnessDto,
+    graph: WorkflowGraphDto,
+  )
+}
+
 pub type StatusSource {
   StatusSource(
     daemon_id: String,
@@ -289,6 +366,10 @@ pub type OperationalMetricsSource {
 
 pub const operational_metrics_schema_version = 1
 
+pub const workflow_query_schema_version = 1
+
+pub const workflow_detail_schema_version = workflow_query_schema_version
+
 pub fn supported_queries() -> List(String) {
   [
     "status",
@@ -299,7 +380,16 @@ pub fn supported_queries() -> List(String) {
     "work_item_show",
     "outbox_list",
     "outbox_show",
+    "workflow_list",
+    "workflow_detail",
   ]
+}
+
+pub fn supported_queries_without_workflows() -> List(String) {
+  supported_queries()
+  |> list.filter(fn(query) {
+    query != "workflow_list" && query != "workflow_detail"
+  })
 }
 
 pub fn operational_metrics_agent_slot_occupancy(
@@ -356,6 +446,8 @@ pub fn query_type(request: QueryRequest) -> String {
     WorkItemShow(_) -> "work_item_show"
     OutboxList(_) -> "outbox_list"
     OutboxShow(_) -> "outbox_show"
+    WorkflowList -> "workflow_list"
+    WorkflowDetail(_) -> "workflow_detail"
   }
 }
 
@@ -369,6 +461,8 @@ pub fn response_type(response: QueryResponse) -> String {
     WorkItemShowResponse(_) -> "work_item_show"
     OutboxListResponse(_) -> "outbox_list"
     OutboxShowResponse(_) -> "outbox_show"
+    WorkflowListResponse(_) -> "workflow_list"
+    WorkflowDetailResponse(_) -> "workflow_detail"
   }
 }
 

@@ -47,6 +47,16 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
       cursor: Some("cursor:10"),
     )),
   ))
+  assert_roundtrip(remote_envelope.RemoteQueryRequest(
+    "query-workflow-list",
+    query_types.WorkflowList,
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryRequest(
+    "query-workflow-detail",
+    query_types.WorkflowDetail(query_types.WorkflowDetailQuery(
+      workflow_id: "implementation",
+    )),
+  ))
   assert_roundtrip(remote_envelope.RemoteCommandReceipt(
     "cmd-2",
     True,
@@ -99,10 +109,66 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
       )),
     ),
   ))
+  assert_roundtrip(remote_envelope.RemoteQueryResponse(
+    "query-workflow-list-response",
+    Ok(
+      query_types.WorkflowListResponse(
+        query_types.WorkflowListDto(
+          schema_version: query_types.workflow_query_schema_version,
+          freshness: query_types.WorkflowFreshnessDto(
+            source_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            reload_status: "valid",
+          ),
+          diagnostics: [],
+          workflows: [],
+        ),
+      ),
+    ),
+  ))
   assert_roundtrip(remote_envelope.RemoteQueryRequest(
     "query-work-item-show",
     query_types.WorkItemShow(
       query_types.WorkItemShowQuery(ref: query_types.TaskDisplayId("LIV-1")),
+    ),
+  ))
+  assert_roundtrip(remote_envelope.RemoteQueryResponse(
+    "query-workflow-detail-response",
+    Ok(
+      query_types.WorkflowDetailResponse(query_types.WorkflowDetailDto(
+        schema_version: query_types.workflow_query_schema_version,
+        summary: query_types.WorkflowSummaryDto(
+          id: "implementation",
+          name: "implementation",
+          route: Some("implementation"),
+          label: Some("workflow:implementation"),
+          yaml_paths: ["scherzo.yaml", "workflows/implementation.yaml"],
+          step_count: 1,
+          status: "valid",
+        ),
+        yaml_sources: [
+          query_types.WorkflowYamlSourceDto(
+            path: "workflows/implementation.yaml",
+            contents: "version: 1\nid: implementation\n",
+            contents_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            contents_truncated: False,
+          ),
+        ],
+        diagnostics: [],
+        freshness: query_types.WorkflowFreshnessDto(
+          source_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          reload_status: "valid",
+        ),
+        graph: query_types.WorkflowGraphDto(
+          nodes: [
+            query_types.WorkflowGraphNodeDto(
+              id: "implement",
+              label: "implement",
+              kind: "agent",
+            ),
+          ],
+          edges: [],
+        ),
+      )),
     ),
   ))
   assert_roundtrip(remote_envelope.RemoteQueryResponse(

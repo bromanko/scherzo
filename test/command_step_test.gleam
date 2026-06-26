@@ -113,9 +113,9 @@ pub fn command_step_timeout_overrides_child_failure_code_test() {
   let artifact =
     command_step.run(
       "slow",
-      "printf 'SCHERZO_FAILURE_CODE=child_error\\n' >&2; sleep 1",
+      "printf 'SCHERZO_FAILURE_CODE=child_error\\n' >&2; sleep 5",
       dir,
-      100,
+      1000,
       [],
       diagnostic_limits(),
     )

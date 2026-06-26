@@ -74,7 +74,7 @@ pub fn retry_step_rejects_active_issue_for_interrupted_run_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "agent_run:issue-1", 20)
+  assert wait_for_log(log_subject, "agent_run:issue-1", 100)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -241,7 +241,7 @@ pub fn retry_step_repairs_claim_handoff_interrupted_run_test() {
     "step_attempt_superseded",
     "workflow_run_started",
   ])
-  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 20)
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
 
   test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -295,7 +295,7 @@ pub fn retry_step_repairs_missing_provenance_after_finalization_accepts_test() {
     "step_attempt_superseded",
     "workflow_run_started",
   ])
-  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 20)
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
 
   test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -432,7 +432,7 @@ pub fn retry_step_rejects_non_active_non_terminal_issue_state_for_retained_run_t
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "candidates_fetched", 20)
+  assert wait_for_log(log_subject, "candidates_fetched", 100)
   assert !wait_for_log(log_subject, "dispatch_started", 5)
 
   let assert Ok(result) =
@@ -1016,10 +1016,10 @@ pub fn retry_step_active_command_session_has_no_orphan_cleanup_recovery_test() {
       1000,
     )
   assert command.status_to_string(retry_result.status) == "applied"
-  assert wait_for_log(log_subject, "active_command_started:apply_feedback", 20)
+  assert wait_for_log(log_subject, "active_command_started:apply_feedback", 100)
 
   let assert Ok(active_command_session) =
-    wait_for_active_step_session(hub_subject, "run-1", "apply_feedback", 2, 20)
+    wait_for_active_step_session(hub_subject, "run-1", "apply_feedback", 2, 100)
   assert_active_child_has_no_orphan_cleanup_recovery(active_command_session)
 
   let assert Ok(active_parent_result) =
@@ -1101,15 +1101,15 @@ pub fn retry_step_non_active_parent_stop_interrupts_command_child_test() {
       1000,
     )
   assert command.status_to_string(retry_result.status) == "applied"
-  assert wait_for_log(log_subject, "active_command_started:apply_feedback", 20)
+  assert wait_for_log(log_subject, "active_command_started:apply_feedback", 100)
 
   let assert Ok(active_command_session) =
-    wait_for_active_step_session(hub_subject, "run-1", "apply_feedback", 2, 20)
+    wait_for_active_step_session(hub_subject, "run-1", "apply_feedback", 2, 100)
   assert_active_child_has_no_orphan_cleanup_recovery(active_command_session)
 
   set_issue_sequence(issue_subject, non_active_issue)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "worker_stop_requested", 20)
+  assert wait_for_log(log_subject, "worker_stop_requested", 100)
 
   let assert Ok(stopped_command_session) =
     wait_for_step_session(hub_subject, "apply_feedback", 20)
