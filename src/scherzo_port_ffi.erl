@@ -90,9 +90,9 @@ validate_argv_start(Executable, Args, Cwd, Env) ->
 
 resolve_bash(Env) ->
     Find = case lists:keyfind("PATH", 1, Env) of
-        false -> os:find_executable("bash"); {_, Path} -> os:find_executable("bash", Path)
+        false -> os:find_executable("bash"); {_, Path} -> case os:find_executable("bash", Path) of false -> os:find_executable("bash"); CandidatePath -> CandidatePath end
     end,
-    case Find of false -> {error, tagged_error(spawn_failed, <<"bash executable not found on PATH">>)}; BashPath -> {ok, BashPath} end.
+    case Find of false -> {error, tagged_error(spawn_failed, <<"bash executable not found on PATH">>)}; ResolvedPath -> {ok, ResolvedPath} end.
 
 start_shell(Cmd, Dir, Env) ->
     case resolve_bash(Env) of

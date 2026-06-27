@@ -283,6 +283,7 @@ fn acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
           halt(1)
         }
         False -> {
+          // nolint: scherzo_no_process_sleep_in_tests -- shared tmp lock polling waits for another EUnit suite process outside this test harness
           process.sleep(shared_tmp_lock_wait_ms)
           acquire_shared_tmp_lock(suite, attempts - 1)
         }

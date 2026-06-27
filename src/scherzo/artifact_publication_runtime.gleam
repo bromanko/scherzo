@@ -268,7 +268,7 @@ fn publication_driver_generated_env(
 ) -> List(#(String, String)) {
   [
     #("SCHERZO_CONFIG_DIR", orchestrator.config_dir),
-    #("SCHERZO_WORKFLOW_ID", dag.id),
+    #("SCHERZO_WORKFLOW_ID", workflow_dag.id(dag)),
     #("SCHERZO_WORKFLOW_BUNDLE_DIR", workspace.workflow_bundle_dir),
     #("SCHERZO_RUN_ID", workspace.run_id),
     #("SCHERZO_RUN_ROOT", workspace.run_root),
@@ -305,7 +305,7 @@ fn retained_publication_driver_generated_env(
 ) -> List(#(String, String)) {
   [
     #("SCHERZO_CONFIG_DIR", orchestrator.config_dir),
-    #("SCHERZO_WORKFLOW_ID", dag.id),
+    #("SCHERZO_WORKFLOW_ID", workflow_dag.id(dag)),
     #("SCHERZO_WORKFLOW_BUNDLE_DIR", workflow_bundle_dir),
     #("SCHERZO_RUN_ID", run_id),
     #("SCHERZO_RUN_ROOT", run_root),

@@ -116,7 +116,7 @@ pub fn finish_fatal_step_failure(
     input.runtime.checkpoint.workflow_finished(
       workflow_checkpoint.WorkflowFinished(
         run_id: input.run_id,
-        workflow_id: input.dag.id,
+        workflow_id: workflow_dag.id(input.dag),
         issue_id: input.issue.id,
         task_ref: task_ref(input.issue),
         outcome: workflow_outcome.terminal_failed_fatal(input.recovery_evidence),

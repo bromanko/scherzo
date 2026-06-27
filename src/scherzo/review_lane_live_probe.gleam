@@ -138,7 +138,7 @@ fn run_provider_probe(
   output_dir: String,
 ) -> Result(ProbeReport, ProbeError) {
   use tools <- result.try(
-    review_lane_tools.for_workflow(dag.id, dag, repository_root)
+    review_lane_tools.for_workflow(workflow_dag.id(dag), dag, repository_root)
     |> result.map_error(fn(err) {
       ProbeError(code: err.code, message: err.message)
     }),

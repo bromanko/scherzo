@@ -86,18 +86,20 @@ fn write_retained_workspace_manifest(run_root: String) -> Nil {
 }
 
 fn workflow() -> workflow_dag.WorkflowDag {
-  workflow_dag.WorkflowDag(
-    id: "implementation",
-    description: None,
-    workspace_profile: None,
-    workspace_capabilities: [],
-    max_parallel_steps: 1,
-    recover: None,
-    steps: [],
-    contract: None,
-    publication_routes: [],
-    workstream_phase: None,
-  )
+  let assert Ok(dag) =
+    workflow_dag.new(
+      id: "implementation",
+      description: None,
+      workspace_profile: None,
+      workspace_capabilities: [],
+      max_parallel_steps: 1,
+      recover: None,
+      steps: [],
+      contract: None,
+      publication_routes: [],
+      workstream_phase: None,
+    )
+  dag
 }
 
 fn orchestrator(root: String) -> config_types.OrchestratorConfig {

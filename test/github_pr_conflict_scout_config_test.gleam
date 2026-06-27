@@ -56,9 +56,9 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
     "github-pr-conflict-scout",
   )
   let assert Ok(dag) = dict.get(bundle.workflows, "github-pr-conflict-scout")
-  assert dag.id == "github-pr-conflict-scout"
-  assert dag.workspace_profile == Some("noop")
-  let assert [step] = dag.steps
+  assert workflow_dag.id(dag) == "github-pr-conflict-scout"
+  assert workflow_dag.workspace_profile(dag) == Some("noop")
+  let assert [step] = workflow_dag.steps(dag)
   assert step.id == "scan_open_prs"
   assert step.workspace.name == "main"
   let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
@@ -120,9 +120,9 @@ pub fn checked_in_origin_sync_schedule_loads_test() {
 
   assert dict.has_key(bundle.orchestrator.routing.workflows, "origin-sync")
   let assert Ok(dag) = dict.get(bundle.workflows, "origin-sync")
-  assert dag.id == "origin-sync"
-  assert dag.workspace_profile == Some("origin-sync")
-  let assert [step] = dag.steps
+  assert workflow_dag.id(dag) == "origin-sync"
+  assert workflow_dag.workspace_profile(dag) == Some("origin-sync")
+  let assert [step] = workflow_dag.steps(dag)
   assert step.id == "sync_origin"
   assert step.workspace.name == "main"
   let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
@@ -149,9 +149,9 @@ pub fn checked_in_workspace_cleanup_schedule_loads_test() {
     "workspace-cleanup",
   )
   let assert Ok(dag) = dict.get(bundle.workflows, "workspace-cleanup")
-  assert dag.id == "workspace-cleanup"
-  assert dag.workspace_profile == Some("noop")
-  let assert [step] = dag.steps
+  assert workflow_dag.id(dag) == "workspace-cleanup"
+  assert workflow_dag.workspace_profile(dag) == Some("noop")
+  let assert [step] = workflow_dag.steps(dag)
   assert step.id == "cleanup"
   assert step.workspace.name == "main"
   let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
@@ -188,9 +188,9 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   )
 
   let assert Ok(scout) = dict.get(bundle.workflows, "github-pr-conflict-scout")
-  assert scout.id == "github-pr-conflict-scout"
-  assert scout.workspace_profile == Some("noop")
-  let assert [step] = scout.steps
+  assert workflow_dag.id(scout) == "github-pr-conflict-scout"
+  assert workflow_dag.workspace_profile(scout) == Some("noop")
+  let assert [step] = workflow_dag.steps(scout)
   assert step.id == "scan_open_prs"
   assert step.workspace.name == "main"
   let assert workflow_dag.CommandStep(run, timeout_ms) = step.kind
@@ -212,13 +212,13 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
 
   let assert Ok(resolver) =
     dict.get(bundle.workflows, "merge-conflict-resolution")
-  assert resolver.id == "merge-conflict-resolution"
-  assert resolver.workspace_profile == Some("isolated")
+  assert workflow_dag.id(resolver) == "merge-conflict-resolution"
+  assert workflow_dag.workspace_profile(resolver) == Some("isolated")
   assert list.contains(
-    resolver.workspace_capabilities,
+    workflow_dag.workspace_capabilities(resolver),
     config_types.WorkspacePublishCommitStack,
   )
-  let assert [route] = resolver.publication_routes
+  let assert [route] = workflow_dag.publication_routes(resolver)
   assert route.id == "merge_conflict_resolution_commit_stack"
   assert route.repository == "github.code"
   assert route.required == True
@@ -236,7 +236,7 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
     source
   assert target_output == "merge_target"
   let assert [prepare, resolve, validate, project_validation, publish] =
-    resolver.steps
+    workflow_dag.steps(resolver)
   let prepare_run =
     assert_command_step(
       prepare,

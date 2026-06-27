@@ -242,7 +242,7 @@ pub fn workflow_fingerprint(
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
 ) -> String {
-  fingerprint.for_execution(dag.id, dag, orchestrator)
+  fingerprint.for_execution(workflow_dag.id(dag), dag, orchestrator)
   |> result.unwrap("workflow_fingerprint_failed")
 }
 

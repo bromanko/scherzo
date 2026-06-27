@@ -513,7 +513,7 @@ pub fn execute_with_resume(
     tracker_client,
     secrets,
     RecoveredRun(RecoveredRunContext(
-      workflow_id: dag.id,
+      workflow_id: workflow_dag.id(dag),
       workflow_fingerprint: workflow_attempt.workflow_fingerprint(
         dag,
         orchestrator,
@@ -725,7 +725,7 @@ pub fn execute_with_context(
                     dependencies.checkpoint.workflow_finished(
                       workflow_checkpoint.WorkflowFinished(
                         run_id: invocation.run_id,
-                        workflow_id: dag.id,
+                        workflow_id: workflow_dag.id(dag),
                         issue_id: issue.id,
                         task_ref: task_ref(issue),
                         outcome: workflow_outcome.terminal_failed_fatal(
@@ -772,7 +772,7 @@ pub fn execute_with_context(
               }
           }
         RecoveredRun(recovered) ->
-          case recovered.workflow_id != dag.id {
+          case recovered.workflow_id != workflow_dag.id(dag) {
             True ->
               Error(WorkflowRunFailure(
                 reason: "workflow_recovery_invalid:workflow_id_mismatch",
@@ -814,7 +814,7 @@ pub fn execute_with_context(
                         dependencies.checkpoint.workflow_finished(
                           workflow_checkpoint.WorkflowFinished(
                             run_id: recovered.run_id,
-                            workflow_id: dag.id,
+                            workflow_id: workflow_dag.id(dag),
                             issue_id: issue.id,
                             task_ref: task_ref(issue),
                             outcome: workflow_outcome.terminal_failed_fatal(
@@ -971,7 +971,7 @@ fn ensure_workflow_started(
       None ->
         workspace_run.run_root_for(
           issue,
-          dag.id,
+          workflow_dag.id(dag),
           invocation.run_id,
           orchestrator,
         )
@@ -980,7 +980,7 @@ fn ensure_workflow_started(
   )
   dependencies.checkpoint.workflow_started(workflow_checkpoint.WorkflowStarted(
     run_id: invocation.run_id,
-    workflow_id: dag.id,
+    workflow_id: workflow_dag.id(dag),
     workflow_fingerprint: invocation.workflow_fingerprint,
     issue_id: issue.id,
     issue_identifier: issue.identifier,
@@ -1126,11 +1126,14 @@ fn record_publications_if_configured(
   case outputs.manifest {
     Some(output_manifest) -> {
       let workflow_bundle_dir =
-        workflow_identity.workflow_bundle_dir(orchestrator, dag.id)
+        workflow_identity.workflow_bundle_dir(
+          orchestrator,
+          workflow_dag.id(dag),
+        )
       case recovered_execution {
         True ->
           artifact_publication_executor.execute_recovered_routes_with_runner_and_state_root_and_publication_driver(
-            dag.publication_routes,
+            workflow_dag.publication_routes(dag),
             orchestrator.artifact_repositories,
             orchestrator.config_dir,
             workflow_bundle_dir,
@@ -1150,7 +1153,7 @@ fn record_publications_if_configured(
           )
         False ->
           artifact_publication_executor.execute_routes_with_runner_and_state_root_and_publication_driver(
-            dag.publication_routes,
+            workflow_dag.publication_routes(dag),
             orchestrator.artifact_repositories,
             orchestrator.config_dir,
             workflow_bundle_dir,
@@ -1353,7 +1356,7 @@ fn record_required_publication_retention_diagnostic(
         dependencies.checkpoint.workflow_diagnostic(
           workflow_checkpoint.WorkflowDiagnostic(
             run_id: run_id,
-            workflow_id: dag.id,
+            workflow_id: workflow_dag.id(dag),
             issue_id: issue.id,
             reason: "workflow_publication_workspace_retained_for_commit_stack_publication_failure",
           ),
@@ -1481,7 +1484,7 @@ fn loop(
                     append_optional_publication_diagnostics(
                       publication_result.optional_failures,
                       run_id,
-                      dag.id,
+                      workflow_dag.id(dag),
                       issue.id,
                       dependencies,
                     )
@@ -1509,7 +1512,7 @@ fn loop(
                             dependencies.checkpoint.workflow_finished(
                               workflow_checkpoint.WorkflowFinished(
                                 run_id: run_id,
-                                workflow_id: dag.id,
+                                workflow_id: workflow_dag.id(dag),
                                 issue_id: issue.id,
                                 task_ref: task_ref(issue),
                                 outcome: workflow_outcome.terminal_success(
@@ -1558,7 +1561,7 @@ fn loop(
                                 dependencies.checkpoint.workflow_diagnostic(
                                   workflow_checkpoint.WorkflowDiagnostic(
                                     run_id: run_id,
-                                    workflow_id: dag.id,
+                                    workflow_id: workflow_dag.id(dag),
                                     issue_id: issue.id,
                                     reason: cleanup_reason,
                                   ),
@@ -1597,7 +1600,7 @@ fn loop(
                             dependencies.checkpoint.workflow_finished(
                               workflow_checkpoint.WorkflowFinished(
                                 run_id: run_id,
-                                workflow_id: dag.id,
+                                workflow_id: workflow_dag.id(dag),
                                 issue_id: issue.id,
                                 task_ref: task_ref(issue),
                                 outcome: workflow_outcome.terminal_failed_fatal(
@@ -1636,7 +1639,7 @@ fn loop(
                         dependencies.checkpoint.workflow_finished(
                           workflow_checkpoint.WorkflowFinished(
                             run_id: run_id,
-                            workflow_id: dag.id,
+                            workflow_id: workflow_dag.id(dag),
                             issue_id: issue.id,
                             task_ref: task_ref(issue),
                             outcome: workflow_outcome.terminal_failed_fatal(
@@ -1674,7 +1677,7 @@ fn loop(
                   let retain_workspace =
                     cleanup_allowed
                     && artifact_publication_runtime.failures_require_workspace_retention(
-                      dag.publication_routes,
+                      workflow_dag.publication_routes(dag),
                       publication_result.required_failures,
                     )
                   let Nil =
@@ -1689,7 +1692,7 @@ fn loop(
                     dependencies.checkpoint.workflow_finished(
                       workflow_checkpoint.WorkflowFinished(
                         run_id: run_id,
-                        workflow_id: dag.id,
+                        workflow_id: workflow_dag.id(dag),
                         issue_id: issue.id,
                         task_ref: task_ref(issue),
                         outcome: workflow_outcome.terminal_failed_fatal(
@@ -1716,7 +1719,7 @@ fn loop(
                   let retention_suffix = case retain_workspace {
                     True ->
                       artifact_publication_runtime.retention_reason_suffix(
-                        dag.publication_routes,
+                        workflow_dag.publication_routes(dag),
                         publication_result.required_failures,
                       )
                     False -> ""
@@ -1740,7 +1743,7 @@ fn loop(
                 dependencies.checkpoint.workflow_finished(
                   workflow_checkpoint.WorkflowFinished(
                     run_id: run_id,
-                    workflow_id: dag.id,
+                    workflow_id: workflow_dag.id(dag),
                     issue_id: issue.id,
                     task_ref: task_ref(issue),
                     outcome: workflow_outcome.terminal_failed_fatal(
@@ -1782,7 +1785,7 @@ fn loop(
             dependencies.checkpoint.workflow_finished(
               workflow_checkpoint.WorkflowFinished(
                 run_id: run_id,
-                workflow_id: dag.id,
+                workflow_id: workflow_dag.id(dag),
                 issue_id: issue.id,
                 task_ref: task_ref(issue),
                 outcome: workflow_outcome.terminal_failed_fatal(
@@ -1819,7 +1822,7 @@ fn loop(
             dependencies.checkpoint.workflow_finished(
               workflow_checkpoint.WorkflowFinished(
                 run_id: run_id,
-                workflow_id: dag.id,
+                workflow_id: workflow_dag.id(dag),
                 issue_id: issue.id,
                 task_ref: task_ref(issue),
                 outcome: workflow_outcome.terminal_failed_fatal(
@@ -1872,7 +1875,7 @@ fn loop(
         dependencies.checkpoint.workflow_finished(
           workflow_checkpoint.WorkflowFinished(
             run_id: run_id,
-            workflow_id: dag.id,
+            workflow_id: workflow_dag.id(dag),
             issue_id: issue.id,
             task_ref: task_ref(issue),
             outcome: workflow_outcome.terminal_failed_fatal(recovery_evidence),
@@ -1908,7 +1911,7 @@ fn loop(
             dependencies,
             recovery_evidence,
             run_id,
-            dag.id,
+            workflow_dag.id(dag),
             issue.id,
             task_ref(issue),
             tokens.total,
@@ -1937,7 +1940,7 @@ fn loop(
               steps,
               workspace_preparation.Context(
                 issue: issue,
-                workflow_id: dag.id,
+                workflow_id: workflow_dag.id(dag),
                 run_id: run_id,
                 orchestrator: orchestrator,
                 secrets: secrets,
@@ -1966,7 +1969,7 @@ fn loop(
                 dependencies,
                 recovery_evidence,
                 run_id,
-                dag.id,
+                workflow_dag.id(dag),
                 issue.id,
                 task_ref(issue),
                 tokens.total,
@@ -2120,7 +2123,7 @@ fn execute_prepared_steps(
             dependencies,
             recovery_evidence,
             run_id,
-            dag.id,
+            workflow_dag.id(dag),
             issue.id,
             task_ref(issue),
             tokens.total,
@@ -2528,7 +2531,7 @@ fn finish_fatal_batch_result(
       let finished =
         workflow_checkpoint.StepFinished(
           run_id: run_id,
-          workflow_id: dag.id,
+          workflow_id: workflow_dag.id(dag),
           step_id: step.id,
           attempt_index: workspace.attempt_index,
           outcome: workflow_outcome.failed_fatal,
@@ -2781,7 +2784,7 @@ fn terminal_fatal_batch_failure(
           starts,
           interrupted_step_ids,
           dependencies,
-          dag.id,
+          workflow_dag.id(dag),
           "fatal_sibling_finished",
         )
       },
@@ -3112,7 +3115,7 @@ fn apply_prepared_results_state(
             dependencies,
             recovery_evidence,
             run_id,
-            dag.id,
+            workflow_dag.id(dag),
             issue.id,
             task_ref(issue),
             tokens.total,
@@ -3149,7 +3152,7 @@ fn apply_prepared_results_state(
           let finished =
             workflow_checkpoint.StepFinished(
               run_id: run_id,
-              workflow_id: dag.id,
+              workflow_id: workflow_dag.id(dag),
               step_id: step.id,
               attempt_index: workspace.attempt_index,
               outcome: outcome,
@@ -3169,7 +3172,7 @@ fn apply_prepared_results_state(
                 dependencies,
                 recovery_evidence,
                 run_id,
-                dag.id,
+                workflow_dag.id(dag),
                 issue.id,
                 task_ref(issue),
                 tokens.total + result_tokens.total,
@@ -3211,7 +3214,7 @@ fn apply_prepared_results_state(
                     dependencies,
                     recovery_evidence,
                     run_id,
-                    dag.id,
+                    workflow_dag.id(dag),
                     issue.id,
                     task_ref(issue),
                     tokens.total + result_tokens.total,
@@ -3246,7 +3249,7 @@ fn apply_prepared_results_state(
                         dependencies,
                         recovery_evidence,
                         run_id,
-                        dag.id,
+                        workflow_dag.id(dag),
                         issue.id,
                         task_ref(issue),
                         tokens.total + result_tokens.total,

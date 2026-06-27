@@ -730,7 +730,7 @@ pub fn current_workflow_observation(
   case runtime_bundle.select_workflow(bundle, issue) {
     Error(runtime_bundle.BundleError(code, message)) ->
       recovery.WorkflowUnavailable(code <> ":" <> message)
-    Ok(#(_, dag)) ->
+    Ok(#(workflow_id, dag)) ->
       case
         workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
       {
@@ -741,7 +741,7 @@ pub fn current_workflow_observation(
         Ok(fingerprint) ->
           recovery.CurrentWorkflow(
             issue,
-            dag.id,
+            workflow_id,
             fingerprint,
             core.issue_fingerprint(issue),
             dag,

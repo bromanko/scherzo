@@ -475,8 +475,8 @@ pub fn redacts_fake_secret_before_exposing_artifacts_test() {
 }
 
 pub fn workflow_result_uses_terminal_step_and_summary_test() {
-  let dag =
-    workflow_dag.WorkflowDag(
+  let assert Ok(dag) =
+    workflow_dag.new(
       id: "implementation",
       description: None,
       workspace_profile: None,

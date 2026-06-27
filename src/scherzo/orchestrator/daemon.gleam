@@ -1454,7 +1454,7 @@ fn recovered_workflow_identity_matches(
   orchestrator: config_types.OrchestratorConfig,
   recovered: recovery.RecoveredWorkflowRun,
 ) -> Result(Bool, workflow_fingerprint.FingerprintError) {
-  case dag.id == recovered.workflow_id {
+  case workflow_dag.id(dag) == recovered.workflow_id {
     False -> Ok(False)
     True ->
       case workflow_fingerprint.fingerprint_for_execution(dag, orchestrator) {
@@ -6123,7 +6123,7 @@ fn workflow_run_started_body_for_claim(
   let snapshot = pending.workflow_snapshot
   record.WorkflowRunStartedWithTask(
     pending.run_id,
-    snapshot.dag.id,
+    workflow_dag.id(snapshot.dag),
     snapshot.fingerprint,
     pending.issue.id,
     pending.issue.identifier,
@@ -7423,7 +7423,7 @@ fn workflow_id_for_issue_from_bundle(
   issue: tracker_issue.Issue,
 ) -> Result(String, Nil) {
   case runtime_bundle.select_workflow(state.workflow.bundle, issue) {
-    Ok(#(_, dag)) -> Ok(dag.id)
+    Ok(#(_, dag)) -> Ok(workflow_dag.id(dag))
     Error(runtime_bundle.BundleError(_, _)) -> Error(Nil)
   }
 }

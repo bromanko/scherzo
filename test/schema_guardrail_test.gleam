@@ -130,11 +130,12 @@ pub fn workflow_dag_yaml_fixture_parses_documented_schema_shape_test() {
     simplifile.read(fixture_root <> "/workflow_dag_complete.yaml")
   let assert Ok(dag) = workflow_dag.parse(source)
 
-  assert dag.id == "implementation"
-  assert dag.description == Some("Two-step implementation workflow fixture")
-  assert dag.max_parallel_steps == 2
+  assert workflow_dag.id(dag) == "implementation"
+  assert workflow_dag.description(dag)
+    == Some("Two-step implementation workflow fixture")
+  assert workflow_dag.max_parallel_steps(dag) == 2
 
-  let assert [implement_step, test_step] = dag.steps
+  let assert [implement_step, test_step] = workflow_dag.steps(dag)
   assert implement_step.id == "implement"
   assert implement_step.workspace == workflow_dag.WorkspaceRef("main", None)
   assert implement_step.model_settings.model

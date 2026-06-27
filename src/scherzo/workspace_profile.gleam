@@ -75,7 +75,7 @@ pub fn selected_name(
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
 ) -> String {
-  case dag.workspace_profile {
+  case workflow_dag.workspace_profile(dag) {
     Some(profile) -> profile
     None -> orchestrator.workspace_profiles.default_profile
   }
@@ -93,7 +93,7 @@ pub fn resolve(
     }
     Error(_) ->
       Error(UnknownWorkspaceProfile(
-        workflow_id: dag.id,
+        workflow_id: workflow_dag.id(dag),
         profile_name: profile_name,
         available: available_names(orchestrator),
       ))
@@ -105,14 +105,15 @@ pub fn validate_capabilities(
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, ProfileResolutionError) {
   let provided = provided_capabilities(profile)
-  let missing = missing_capabilities(dag.workspace_capabilities, provided, [])
+  let missing =
+    missing_capabilities(workflow_dag.workspace_capabilities(dag), provided, [])
   case missing {
     [] -> Ok(Nil)
     _ ->
       Error(WorkspaceCapabilitiesUnavailable(
-        workflow_id: dag.id,
+        workflow_id: workflow_dag.id(dag),
         profile_name: profile.name,
-        required: dag.workspace_capabilities,
+        required: workflow_dag.workspace_capabilities(dag),
         provided: provided,
         missing: missing,
       ))

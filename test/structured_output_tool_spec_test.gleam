@@ -372,11 +372,15 @@ fn validate_workflow_parameters_schemas(path: String) -> Nil {
   let assert Ok(contents) = simplifile.read(path)
   let assert Ok(dag) = workflow_dag.parse(contents)
 
-  dag.steps
+  workflow_dag.steps(dag)
   |> list.each(fn(step) {
     case step.kind {
       workflow_dag.AgentStep(_, Some(spec)) ->
-        validate_structured_output_parameters_schema(dag.id, step.id, spec)
+        validate_structured_output_parameters_schema(
+          workflow_dag.id(dag),
+          step.id,
+          spec,
+        )
       _ -> Nil
     }
   })

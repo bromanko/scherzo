@@ -308,7 +308,7 @@ fn task_ref_matches_issue(
 fn required_sources(
   dag: workflow_dag.WorkflowDag,
 ) -> List(OutputSourceRequirement) {
-  case dag.contract {
+  case workflow_dag.contract(dag) {
     None -> []
     Some(contract) ->
       contract.outputs
@@ -380,7 +380,7 @@ fn require_all_steps_completed(
   dag: workflow_dag.WorkflowDag,
   latest_statuses: Dict(String, projection.StepAttemptStatus),
 ) -> Result(Nil, RecollectionError) {
-  dag.steps
+  workflow_dag.steps(dag)
   |> list.map(fn(step) { step.id })
   |> require_all_steps_completed_loop(latest_statuses)
 }
@@ -594,7 +594,7 @@ fn recover_prepared_workspaces(
   Dict(String, workspace_run.PreparedStepWorkspace),
   RecollectionError,
 ) {
-  case dag.contract {
+  case workflow_dag.contract(dag) {
     None -> Ok(dict.new())
     Some(contract) ->
       contract.outputs
@@ -605,13 +605,13 @@ fn recover_prepared_workspaces(
             case
               dict.has_key(
                 prepared,
-                workspace_name_for_step(dag.steps, step_id),
+                workspace_name_for_step(workflow_dag.steps(dag), step_id),
               )
             {
               True -> Ok(prepared)
               False -> {
                 use workspace <- result.try(recover_prepared_workspace(
-                  dag.steps,
+                  workflow_dag.steps(dag),
                   step_id,
                   source_steps.statuses,
                 ))
@@ -721,17 +721,17 @@ fn latest_manifest_is_valid(
         True ->
           case
             workflow_contract_manifest.decode_output_manifest(contents),
-            dag.contract
+            workflow_dag.contract(dag)
           {
             Ok(manifest), Some(contract) ->
               manifest.run_id == run_id
-              && manifest.workflow_id == dag.id
+              && manifest.workflow_id == workflow_dag.id(dag)
               && manifest.workflow_fingerprint == workflow_fingerprint
               && manifest.diagnostics == []
               && manifest_outputs_valid(contract.outputs, manifest.outputs)
             Ok(manifest), None ->
               manifest.run_id == run_id
-              && manifest.workflow_id == dag.id
+              && manifest.workflow_id == workflow_dag.id(dag)
               && manifest.workflow_fingerprint == workflow_fingerprint
             _, _ -> False
           }

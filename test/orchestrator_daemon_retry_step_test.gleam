@@ -39,6 +39,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
+import scherzo/workflow_dag
 import scherzo/workflow_fingerprint as workflow_fingerprint_module
 import scherzo/workflow_run
 import scherzo/workspace
@@ -2762,17 +2763,17 @@ fn seed_failed_publication_retry_run(
     runtime_bundle.workflow_by_id(bundle, "execplan")
   let assert Ok(body_templates) =
     artifact_publication_recording.load_body_templates(
-      workflow.publication_routes,
+      workflow_dag.publication_routes(workflow),
       bundle.orchestrator.artifact_repositories,
       bundle.orchestrator.config_dir,
-      runtime_bundle.workflow_bundle_dir(bundle, workflow.id),
+      runtime_bundle.workflow_bundle_dir(bundle, workflow_dag.id(workflow)),
     )
   let assert Ok(fingerprint) =
     workflow_fingerprint_module.fingerprint_for_execution(
       workflow,
       bundle.orchestrator,
     )
-  let assert [route] = workflow.publication_routes
+  let assert [route] = workflow_dag.publication_routes(workflow)
   let assert Ok(planned) =
     artifact_publication_planner.plan_publication(
       output_manifest,
@@ -2980,17 +2981,17 @@ fn seed_recovered_published_publication_run(
     runtime_bundle.workflow_by_id(bundle, "execplan")
   let assert Ok(body_templates) =
     artifact_publication_recording.load_body_templates(
-      workflow.publication_routes,
+      workflow_dag.publication_routes(workflow),
       bundle.orchestrator.artifact_repositories,
       bundle.orchestrator.config_dir,
-      runtime_bundle.workflow_bundle_dir(bundle, workflow.id),
+      runtime_bundle.workflow_bundle_dir(bundle, workflow_dag.id(workflow)),
     )
   let assert Ok(fingerprint) =
     workflow_fingerprint_module.fingerprint_for_execution(
       workflow,
       bundle.orchestrator,
     )
-  let assert [route] = workflow.publication_routes
+  let assert [route] = workflow_dag.publication_routes(workflow)
   let assert Ok(planned) =
     artifact_publication_planner.plan_publication(
       output_manifest,

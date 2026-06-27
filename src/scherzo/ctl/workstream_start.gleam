@@ -10,6 +10,7 @@ import scherzo/runtime_bundle
 import scherzo/terminal/sanitize as terminal_sanitize
 import scherzo/workflow_checkpoint
 import scherzo/workflow_contract
+import scherzo/workflow_dag
 import scherzo/workstream/start
 
 pub fn run_from_handoff(
@@ -167,7 +168,7 @@ fn load_workflow_contract(
   workflow_id: String,
 ) -> Result(Option(workflow_contract.Contract), #(String, String)) {
   case runtime_bundle.load_workflow_by_id(None, workflow_id) {
-    Ok(#(_, dag)) -> Ok(dag.contract)
+    Ok(#(_, dag)) -> Ok(workflow_dag.contract(dag))
     Error(runtime_bundle.BundleError(code, message)) ->
       case code == "unknown_workflow_label" {
         True -> Error(#("workflow_lookup_failed:" <> code, message))

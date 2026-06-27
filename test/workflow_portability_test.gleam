@@ -213,7 +213,7 @@ pub fn workflow_command_bundle_dir_references_are_initialized_test() {
   list.each(workflow_paths_with_packaged_helper_commands(), fn(path) {
     let assert Ok(source) = simplifile.read(path)
     let assert Ok(dag) = workflow_dag.parse(source)
-    list.each(dag.steps, fn(step) {
+    list.each(workflow_dag.steps(dag), fn(step) {
       assert_bundle_dir_initialized_when_referenced(path, step)
     })
   })

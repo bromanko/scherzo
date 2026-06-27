@@ -357,7 +357,7 @@ fn retry_selected_publications(
   ))
   let routes = list.map(resolved, fn(entry) { entry.route })
   let workflow_bundle_dir =
-    runtime_bundle.workflow_bundle_dir(bundle, workflow.id)
+    runtime_bundle.workflow_bundle_dir(bundle, workflow_dag.id(workflow))
   use publication_driver <- result.try(retry_publication_driver(
     routes,
     workflow,
@@ -468,7 +468,7 @@ fn resolve_retry_routes(
 ) -> Result(List(RetryResolvedRoute), #(String, String)) {
   resolve_retry_routes_loop(
     targets,
-    workflow.publication_routes,
+    workflow_dag.publication_routes(workflow),
     bundle,
     output_manifest,
     root,

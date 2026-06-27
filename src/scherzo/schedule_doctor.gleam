@@ -74,7 +74,12 @@ pub fn issue_references(
 ) -> List(IssueReference) {
   case dict.get(bundle.workflows, job.workflow) {
     Error(Nil) -> []
-    Ok(dag) -> issue_references_in_steps(job, dag.id, dag.steps)
+    Ok(dag) ->
+      issue_references_in_steps(
+        job,
+        workflow_dag.id(dag),
+        workflow_dag.steps(dag),
+      )
   }
 }
 

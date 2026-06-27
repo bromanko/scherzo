@@ -365,10 +365,10 @@ pub fn plan_run(input: PlannerInput) -> RecoveryPlan {
     validate_attempts(input.run, input.dag, input.run.step_attempts)
   let drift_errors = list.append(base_drift_errors, attempt_drift_errors)
   let StepClassification(step_states, classification_warnings) =
-    classify_steps(input.dag.steps, valid_attempts)
+    classify_steps(workflow_dag.steps(input.dag), valid_attempts)
   let preserved_artifacts = preserve_artifacts(step_states)
   let interruption_records =
-    interruption_intents(input.dag.steps, input.run, step_states)
+    interruption_intents(workflow_dag.steps(input.dag), input.run, step_states)
   let session_recovery_candidates =
     session_candidates(input, step_states, drift_errors)
   let inspection_requests =
@@ -440,7 +440,7 @@ fn validate_attempts(
   dag: workflow_dag.WorkflowDag,
   attempts: List(StepAttemptFacts),
 ) -> AttemptValidation {
-  let step_ids = list.map(dag.steps, fn(step) { step.id })
+  let step_ids = list.map(workflow_dag.steps(dag), fn(step) { step.id })
   let result =
     list.fold(attempts, AttemptValidation([], [], []), fn(validation, attempt) {
       validate_attempt(run, step_ids, validation, attempt)
@@ -706,7 +706,7 @@ fn session_candidates(
     workflow_definition_matches(input.run, input.current)
   {
     RunActive, True, True ->
-      input.dag.steps
+      workflow_dag.steps(input.dag)
       |> list.filter_map(fn(step) {
         case step_state(states, step.id) {
           StepNeedsInterruptionAfterStart(
@@ -746,7 +746,7 @@ fn inspection_requests(
         False -> [inspection_request(input.run, DriftRequiresInspection)]
       }
       let step_requests =
-        input.dag.steps
+        workflow_dag.steps(input.dag)
         |> list.filter_map(fn(step) {
           case step_state(states, step.id) {
             StepNeedsInterruptionAfterStart(step_id, attempt_index, _, _, _) ->
@@ -798,7 +798,7 @@ fn park_requests(
         False -> [park_request(input.run, ParkDriftBlocked, fingerprint)]
       }
       let step_requests =
-        input.dag.steps
+        workflow_dag.steps(input.dag)
         |> list.filter_map(fn(step) {
           case step_state(states, step.id) {
             StepNeedsInterruptionAfterStart(step_id, attempt_index, _, _, _) ->
@@ -874,13 +874,13 @@ fn scheduler_state(
   states: Dict(String, StepRecoveryState),
 ) -> workflow_scheduler.SchedulerState {
   let statuses =
-    dag.steps
+    workflow_dag.steps(dag)
     |> list.map(fn(step) {
       #(step.id, scheduler_runtime_for_state(step_state(states, step.id)))
     })
     |> dict.from_list
   let failure_policies =
-    dag.steps
+    workflow_dag.steps(dag)
     |> list.map(fn(step) { #(step.id, step.on_failure) })
     |> dict.from_list
   workflow_scheduler.SchedulerState(
@@ -908,6 +908,7 @@ fn finish_decision(
   drift_errors: List(DriftError),
   start_steps: List(StartStep),
 ) -> FinishDecision {
+  let steps = workflow_dag.steps(dag)
   case run.run_status {
     RunFinished(WorkflowCompleted, _, _)
     | RunFinished(WorkflowSucceededAfterRecovery, _, _) ->
@@ -934,7 +935,7 @@ fn finish_decision(
                 ),
               ])
             False ->
-              case all_steps_dependency_complete(dag.steps, states) {
+              case all_steps_dependency_complete(steps, states) {
                 True ->
                   FinishDecision(TerminalRecordNeeded, [
                     WorkflowFinishRecordIntent(
@@ -998,7 +999,7 @@ fn blocked_steps(
   drift_errors: List(DriftError),
 ) -> List(BlockedStep) {
   let workflow_fatal = has_fatal_state(states)
-  dag.steps
+  workflow_dag.steps(dag)
   |> list.filter_map(fn(step) {
     let blockers = blockers_for_step(step, states, drift_errors, workflow_fatal)
     case blockers {

@@ -62,14 +62,15 @@ pub fn ready_steps(
     True -> []
     False -> {
       let capacity =
-        dag.max_parallel_steps - running_count(dict.values(state.statuses))
+        workflow_dag.max_parallel_steps(dag)
+        - running_count(dict.values(state.statuses))
       case capacity <= 0 {
         True -> []
         False ->
           select_ready(
-            dag.steps,
+            workflow_dag.steps(dag),
             state,
-            running_workspaces(dag.steps, state, []),
+            running_workspaces(workflow_dag.steps(dag), state, []),
             [],
             capacity,
             [],
@@ -123,7 +124,7 @@ pub fn outcome(
   case has_fatal_failure(dict.values(state.statuses)) {
     True -> WorkflowFailed
     False ->
-      case all_steps_terminal(dag.steps, state) {
+      case all_steps_terminal(workflow_dag.steps(dag), state) {
         True -> WorkflowSucceeded
         False -> WorkflowInProgress
       }
@@ -138,7 +139,7 @@ pub fn status_of(
 }
 
 fn fresh_statuses(dag: workflow_dag.WorkflowDag) -> Dict(String, StepRuntime) {
-  dag.steps
+  workflow_dag.steps(dag)
   |> list.map(fn(step) { #(step.id, Pending) })
   |> dict.from_list
 }
@@ -146,7 +147,7 @@ fn fresh_statuses(dag: workflow_dag.WorkflowDag) -> Dict(String, StepRuntime) {
 fn failure_policies(
   dag: workflow_dag.WorkflowDag,
 ) -> Dict(String, workflow_dag.FailurePolicy) {
-  dag.steps
+  workflow_dag.steps(dag)
   |> list.map(fn(step) { #(step.id, step.on_failure) })
   |> dict.from_list
 }
@@ -155,7 +156,7 @@ fn validate_recovered_step_ids(
   dag: workflow_dag.WorkflowDag,
   recovered: Dict(String, StepRuntime),
 ) -> Result(Nil, String) {
-  let dag_step_ids = list.map(dag.steps, fn(step) { step.id })
+  let dag_step_ids = list.map(workflow_dag.steps(dag), fn(step) { step.id })
   validate_recovered_step_ids_loop(dict.keys(recovered), dag_step_ids)
 }
 

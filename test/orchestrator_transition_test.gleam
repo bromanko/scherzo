@@ -161,28 +161,30 @@ pub fn fixture_workflow_snapshot(
 }
 
 pub fn fixture_workflow_dag(id: String) -> workflow_dag.WorkflowDag {
-  workflow_dag.WorkflowDag(
-    id: id,
-    description: None,
-    workspace_profile: None,
-    workspace_capabilities: [],
-    max_parallel_steps: 1,
-    recover: None,
-    contract: None,
-    publication_routes: [],
-    workstream_phase: None,
-    steps: [
-      workflow_dag.WorkflowStep(
-        id: "noop",
-        kind: workflow_dag.CommandStep(run: "true", timeout_ms: None),
-        depends_on: [],
-        workspace: workflow_dag.WorkspaceRef(name: "default", from: None),
-        on_failure: workflow_dag.FailWorkflow,
-        model_settings: model_config.default_settings(),
-        recover: None,
-      ),
-    ],
-  )
+  let assert Ok(dag) =
+    workflow_dag.new(
+      id: id,
+      description: None,
+      workspace_profile: None,
+      workspace_capabilities: [],
+      max_parallel_steps: 1,
+      recover: None,
+      contract: None,
+      publication_routes: [],
+      workstream_phase: None,
+      steps: [
+        workflow_dag.WorkflowStep(
+          id: "noop",
+          kind: workflow_dag.CommandStep(run: "true", timeout_ms: None),
+          depends_on: [],
+          workspace: workflow_dag.WorkspaceRef(name: "default", from: None),
+          on_failure: workflow_dag.FailWorkflow,
+          model_settings: model_config.default_settings(),
+          recover: None,
+        ),
+      ],
+    )
+  dag
 }
 
 pub fn fixture_state() -> transition_types.State {

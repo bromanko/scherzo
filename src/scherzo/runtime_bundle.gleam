@@ -366,16 +366,14 @@ fn workflow_completion_override(
 }
 
 fn workflow_requires_review(dag: workflow_dag.WorkflowDag) -> Bool {
-  list.contains(dag.workspace_capabilities, config_types.WorkspacePublishChange)
-  || list.contains(
-    dag.workspace_capabilities,
-    config_types.WorkspacePublishCommitStack,
-  )
+  let capabilities = workflow_dag.workspace_capabilities(dag)
+  list.contains(capabilities, config_types.WorkspacePublishChange)
+  || list.contains(capabilities, config_types.WorkspacePublishCommitStack)
   || workflow_declares_outputs(dag)
 }
 
 fn workflow_declares_outputs(dag: workflow_dag.WorkflowDag) -> Bool {
-  case dag.contract {
+  case workflow_dag.contract(dag) {
     Some(contract) -> !list.is_empty(contract.outputs)
     None -> False
   }
@@ -393,7 +391,8 @@ fn load_workflow_map(
     [] -> Ok(#(acc, acc_dependencies))
     [#(id, workflow_path), ..rest] -> {
       use #(dag, dependencies) <- result.try(load_workflow_dag(workflow_path))
-      case dag.id == id {
+      let actual_id = workflow_dag.id(dag)
+      case actual_id == id {
         True ->
           load_workflow_map(
             rest,
@@ -403,7 +402,7 @@ fn load_workflow_map(
         False ->
           Error(BundleError(
             "workflow_id_mismatch",
-            "routing key " <> id <> " points to workflow id " <> dag.id,
+            "routing key " <> id <> " points to workflow id " <> actual_id,
           ))
       }
     }
@@ -437,16 +436,17 @@ fn resolve_prompt_files(
   workflow_path: String,
 ) -> Result(#(workflow_dag.WorkflowDag, List(BundleDependency)), BundleError) {
   use #(recover, recover_dependencies) <- result.try(resolve_recover_prompt(
-    dag.recover,
+    workflow_dag.recovery_config(dag),
     workflow_path,
   ))
   use #(steps, step_dependencies) <- result.try(
-    resolve_step_prompts(dag.steps, workflow_path, [], []),
+    resolve_step_prompts(workflow_dag.steps(dag), workflow_path, [], []),
   )
-  Ok(#(
-    workflow_dag.WorkflowDag(..dag, recover: recover, steps: steps),
-    list.append(recover_dependencies, step_dependencies),
-  ))
+  use dag <- result.try(
+    workflow_dag.with_recovery_and_steps(dag, recover: recover, steps: steps)
+    |> map_dag_error(workflow_path),
+  )
+  Ok(#(dag, list.append(recover_dependencies, step_dependencies)))
 }
 
 fn resolve_step_prompts(
@@ -560,7 +560,7 @@ fn validate_workflow_publication_repositories(
     [#(workflow_id, dag), ..rest] -> {
       use _ <- result.try(validate_publication_repository_routes(
         workflow_id,
-        dag.publication_routes,
+        workflow_dag.publication_routes(dag),
         repositories,
       ))
       validate_workflow_publication_repositories(rest, repositories)
@@ -697,7 +697,7 @@ fn validate_scheduled_workflow(
   job: config_types.ScheduledJobConfig,
   dag: workflow_dag.WorkflowDag,
 ) -> Result(Nil, BundleError) {
-  validate_scheduled_steps(job, dag.id, dag.steps)
+  validate_scheduled_steps(job, workflow_dag.id(dag), workflow_dag.steps(dag))
 }
 
 fn validate_scheduled_steps(
@@ -770,7 +770,8 @@ fn validate_workflow_model_entries(
   case workflows {
     [] -> Ok(Nil)
     [#(id, dag), ..rest] -> {
-      use _ <- result.try(validate_step_model_settings(id, dag.steps, defaults))
+      let steps = workflow_dag.steps(dag)
+      use _ <- result.try(validate_step_model_settings(id, steps, defaults))
       validate_workflow_model_entries(rest, defaults)
     }
   }

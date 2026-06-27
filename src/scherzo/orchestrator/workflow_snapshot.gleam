@@ -86,7 +86,14 @@ fn from_dag(
         "workflow fingerprint failed for workflow " <> workflow_id,
       ))
     Ok(fingerprint) ->
-      case workspace_run.run_root_for(issue, dag.id, run_id, orchestrator) {
+      case
+        workspace_run.run_root_for(
+          issue,
+          workflow_dag.id(dag),
+          run_id,
+          orchestrator,
+        )
+      {
         Error(err) ->
           Error(SnapshotError(
             "workflow_run_root_failed",

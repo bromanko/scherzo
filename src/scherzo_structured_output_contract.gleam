@@ -160,7 +160,7 @@ fn check_single_workflow(workflow_path: String) -> Result(Report, CliError) {
   use contents <- result.try(read_text_file(workflow_path))
   use dag <- result.try(parse_workflow(contents, workflow_path))
   use checked <- result.try(
-    check_steps(workflow_path, contents, dag.steps, [], []),
+    check_steps(workflow_path, contents, workflow_dag.steps(dag), [], []),
   )
   let #(summaries, errors) = checked
   let workflow_summary =

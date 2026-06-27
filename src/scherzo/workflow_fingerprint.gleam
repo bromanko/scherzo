@@ -24,14 +24,14 @@ pub type FingerprintError {
 pub fn fingerprint(
   dag: workflow_dag.WorkflowDag,
 ) -> Result(String, FingerprintError) {
-  Ok(for_dag(dag.id, dag))
+  Ok(for_dag(workflow_dag.id(dag), dag))
 }
 
 pub fn fingerprint_for_execution(
   dag: workflow_dag.WorkflowDag,
   orchestrator: config_types.OrchestratorConfig,
 ) -> Result(String, FingerprintError) {
-  for_execution(dag.id, dag, orchestrator)
+  for_execution(workflow_dag.id(dag), dag, orchestrator)
 }
 
 pub fn for_dag(workflow_id: String, dag: workflow_dag.WorkflowDag) -> String {
@@ -114,7 +114,7 @@ fn for_execution_profile_options_with_schema_root(
 }
 
 pub fn canonical_input(dag: workflow_dag.WorkflowDag) -> String {
-  canonical_input_for(dag.id, dag)
+  canonical_input_for(workflow_dag.id(dag), dag)
 }
 
 pub fn canonical_input_for(
@@ -229,14 +229,14 @@ fn dag_to_json_with_schema_root(
 ) -> json.Json {
   let prefix = [
     #("id", json.string(workflow_id)),
-    #("description", option_string_to_json(dag.description)),
+    #("description", option_string_to_json(workflow_dag.description(dag))),
   ]
-  let prefix = case dag.workspace_profile {
+  let prefix = case workflow_dag.workspace_profile(dag) {
     None -> prefix
     Some(profile) ->
       list.append(prefix, [#("workspace_profile", json.string(profile))])
   }
-  let prefix = case dag.workspace_capabilities {
+  let prefix = case workflow_dag.workspace_capabilities(dag) {
     [] -> prefix
     capabilities ->
       list.append(prefix, [
@@ -248,21 +248,24 @@ fn dag_to_json_with_schema_root(
   }
   let fields =
     list.append(prefix, [
-      #("max_parallel_steps", json.int(dag.max_parallel_steps)),
-      #("recover", recovery_config_to_json(dag.recover)),
+      #("max_parallel_steps", json.int(workflow_dag.max_parallel_steps(dag))),
+      #("recover", recovery_config_to_json(workflow_dag.recovery_config(dag))),
       #(
         "steps",
-        json.array(sorted_steps(dag.steps), of: step_to_json(_, schema_root)),
+        json.array(sorted_steps(workflow_dag.steps(dag)), of: step_to_json(
+          _,
+          schema_root,
+        )),
       ),
     ])
-  let fields = case dag.contract {
+  let fields = case workflow_dag.contract(dag) {
     None -> fields
     Some(contract) ->
       list.append(fields, [
         #("contract", workflow_contract.contract_to_canonical_json(contract)),
       ])
   }
-  let fields = case dag.workstream_phase {
+  let fields = case workflow_dag.workstream_phase(dag) {
     None -> fields
     Some(metadata) ->
       list.append(fields, [
