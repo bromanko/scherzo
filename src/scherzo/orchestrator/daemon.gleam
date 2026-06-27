@@ -140,6 +140,7 @@ pub type Message {
   GetReadModelSnapshot(process.Subject(read_model.Snapshot))
   GetProjectionSnapshot(process.Subject(projection.Projection))
   GetOutboxSnapshot(process.Subject(List(#(String, projection.OutboxStatus))))
+  GetWorkflowSnapshot(process.Subject(workflow_reloader.State))
   GetRemoteDispatchPaused(process.Subject(Bool))
   StartRemoteClient
   ApplyOperatorCommand(
@@ -445,6 +446,9 @@ fn start_query_service(
     },
     get_outbox_snapshot: fn(timeout_ms) {
       get_outbox_snapshot(daemon_subject, timeout_ms)
+    },
+    get_workflow_snapshot: fn(timeout_ms) {
+      get_workflow_snapshot(daemon_subject, timeout_ms)
     },
   )
   |> result.map_error(fn(error) {
@@ -1067,6 +1071,15 @@ pub fn get_outbox_snapshot(
 ) -> Result(List(#(String, projection.OutboxStatus)), Nil) {
   let reply = process.new_subject()
   process.send(subject, GetOutboxSnapshot(reply))
+  process.receive(reply, within: timeout_ms)
+}
+
+pub fn get_workflow_snapshot(
+  subject: process.Subject(Message),
+  timeout_ms: Int,
+) -> Result(workflow_reloader.State, Nil) {
+  let reply = process.new_subject()
+  process.send(subject, GetWorkflowSnapshot(reply))
   process.receive(reply, within: timeout_ms)
 }
 
@@ -1759,6 +1772,10 @@ fn handle_message(
     }
     GetOutboxSnapshot(reply) -> {
       process.send(reply, dict.to_list(state.ledger_projection.outbox))
+      actor.continue(state)
+    }
+    GetWorkflowSnapshot(reply) -> {
+      process.send(reply, state.workflow)
       actor.continue(state)
     }
     GetRemoteDispatchPaused(reply) -> {

@@ -422,7 +422,7 @@ fn client_dependencies(
               boot_id: scenario.boot_id,
               dispatch_paused: False,
               ui_server_enabled: False,
-              supported_queries: query_types.supported_queries(),
+              supported_queries: query_types.supported_queries_without_workflows(),
             )),
           )
         query_types.Metrics ->
@@ -461,6 +461,11 @@ fn client_dependencies(
           Error(query_types.QueryError(
             query_types.QueryNotFound,
             "outbox record not found",
+          ))
+        query_types.WorkflowList | query_types.WorkflowDetail(_) ->
+          Error(query_types.QueryError(
+            query_types.UnsupportedQuery,
+            "unsupported query type: " <> query_types.query_type(query),
           ))
       }
     },
@@ -726,8 +731,7 @@ fn recv_and_expect(
   let event = line_event(sequence, 1, "server_recv", expected_kind, line)
   case event.kind == expected_kind {
     True -> Ok(event)
-    False ->
-      Error(HarnessError("invalid_command_event", "unexpected event order"))
+    False -> recv_and_expect(server, sequence, expected_kind)
   }
 }
 

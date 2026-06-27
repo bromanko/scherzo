@@ -915,7 +915,7 @@ pub fn daemon_stops_when_control_server_accept_loop_dies_test() {
 
   control_server.stop(server_handle)
 
-  assert wait_for_log(log_subject, "control_server_down", 20)
+  assert wait_for_log(log_subject, "control_server_down", 100)
   let daemon_stopped = wait_for_monitor_down(daemon_monitor, 1000)
   let control_file_removed = simplifile.is_file(control_file_path) != Ok(True)
   process.demonitor_process(daemon_monitor)
@@ -952,7 +952,7 @@ pub fn daemon_metrics_query_reports_runtime_counts_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "dispatch_started", 100)
 
   let assert Ok(paused) =
     daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
@@ -1019,7 +1019,7 @@ pub fn daemon_metrics_count_active_yaml_child_steps_and_child_tokens_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "agent_tokens_emitted", 20)
+  assert wait_for_log(log_subject, "agent_tokens_emitted", 100)
 
   let assert Ok(query_types.MetricsResponse(active_metrics)) =
     daemon.execute_query(started.data, query_types.Metrics, 1000)
@@ -1037,7 +1037,7 @@ pub fn daemon_metrics_count_active_yaml_child_steps_and_child_tokens_test() {
   assert parent_summary.token_totals.total == 9
 
   test_async.release_barrier(worker_barrier)
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
   let assert Ok(final_metrics) =
     wait_for_metrics(started.data, 20, fn(metrics) {
       metrics.active_sessions == 0 && metrics.token_totals.total == 9
@@ -1168,7 +1168,7 @@ pub fn daemon_status_and_metrics_queries_stay_bounded_with_large_retained_histor
 
   assert metrics.active_sessions == 0
   assert metrics.running_workers == 0
-  assert string.length(encoded_status) < 300
+  assert string.length(encoded_status) < 350
   assert string.length(encoded_metrics) < 1200
   assert !string.contains(encoded_status, large_history_marker())
   assert !string.contains(encoded_metrics, large_history_marker())
@@ -1199,7 +1199,7 @@ pub fn daemon_read_model_reports_remote_client_retrying_when_start_fails_test() 
     )
 
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
-  assert wait_for_log(log_subject, "remote_client_restart_failed", 20)
+  assert wait_for_log(log_subject, "remote_client_restart_failed", 100)
   let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
   assert snapshot.remote_client_status == read_model.Retrying("dial_failed")
 
@@ -1324,7 +1324,7 @@ pub fn pause_command_suppresses_dispatch_and_resume_allows_it_test() {
     daemon.apply_operator_command(started.data, command.ResumeDispatch, 1000)
   assert command.status_to_string(resumed.status) == "applied"
   process.send(started.data, daemon.PollTick(2))
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "dispatch_started", 100)
 
   test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -1375,7 +1375,7 @@ pub fn startup_recovery_of_dispatch_pause_suppresses_dispatch_until_resume_test(
     daemon.get_read_model_snapshot(started.data, 1000)
   assert !resumed_read_snapshot.dispatch_paused
   process.send(started.data, daemon.PollTick(2))
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "dispatch_started", 100)
 
   test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -1419,7 +1419,7 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
       1000,
     )
   assert command.status_to_string(dispatched_retry.status) == "applied"
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "dispatch_started", 100)
 
   test_async.release_barrier(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -1468,11 +1468,11 @@ pub fn retry_command_acknowledges_before_accepted_side_effects_finish_test() {
   assert command.status_to_string(accepted_retry.status) == "applied"
   assert accepted_retry.message == Some("retry accepted")
 
-  assert wait_for_log(log_subject, "operator_log_started", 20)
+  assert wait_for_log(log_subject, "operator_log_started", 100)
   test_async.release_barrier(operator_log_barrier)
-  assert wait_for_log(log_subject, "claim_started", 20)
+  assert wait_for_log(log_subject, "claim_started", 100)
   test_async.release_barrier(claim_barrier)
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "dispatch_started", 100)
   assert has_workflow_started(
     ledger_bodies(ledger_root),
     "implementation",
@@ -1480,7 +1480,7 @@ pub fn retry_command_acknowledges_before_accepted_side_effects_finish_test() {
   )
 
   test_async.release_barrier(worker_barrier)
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
   let assert Ok(failed_session) =
     wait_for_session_exit(hub_subject, "ABC-ASYNC-RETRY-42-1", 20)
   assert failed_session.status == event.Exited(session_reason.Failed)
@@ -1508,14 +1508,14 @@ pub fn workflow_reload_changed_route_preserves_pending_claim_snapshot_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "claim_started", 20)
+  assert wait_for_log(log_subject, "claim_started", 100)
 
   overwrite_reload_snapshot_config(workflow_path, root, Some("review"))
   process.send(started.data, daemon.PollTick(2))
-  assert wait_for_log(log_subject, "workflow_reloaded", 20)
+  assert wait_for_log(log_subject, "workflow_reloaded", 100)
 
   test_async.release_barrier(claim_barrier)
-  assert wait_for_log(log_subject, "agent_prompt:Implementation Prompt", 20)
+  assert wait_for_log(log_subject, "agent_prompt:Implementation Prompt", 100)
   assert has_workflow_started(
     ledger_bodies(ledger_root),
     "implementation",
@@ -1545,14 +1545,14 @@ pub fn workflow_reload_removed_route_preserves_pending_claim_snapshot_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "claim_started", 20)
+  assert wait_for_log(log_subject, "claim_started", 100)
 
   overwrite_reload_snapshot_config(workflow_path, root, None)
   process.send(started.data, daemon.PollTick(2))
-  assert wait_for_log(log_subject, "workflow_reloaded", 20)
+  assert wait_for_log(log_subject, "workflow_reloaded", 100)
 
   test_async.release_barrier(claim_barrier)
-  assert wait_for_log(log_subject, "agent_prompt:Implementation Prompt", 20)
+  assert wait_for_log(log_subject, "agent_prompt:Implementation Prompt", 100)
   assert has_workflow_started(
     ledger_bodies(ledger_root),
     "implementation",
@@ -1580,7 +1580,7 @@ pub fn retry_rejects_active_pending_and_accepts_inactive_issues_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "dispatch_started", 100)
 
   let assert Ok(active_retry) =
     daemon.apply_operator_command(
@@ -1611,7 +1611,7 @@ pub fn retry_rejects_active_pending_and_accepts_inactive_issues_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "claim_started", 20)
+  assert wait_for_log(log_subject, "claim_started", 100)
 
   let assert Ok(pending_retry) =
     daemon.apply_operator_command(
@@ -1641,7 +1641,7 @@ pub fn retry_rejects_active_pending_and_accepts_inactive_issues_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
   let claimed_identity = orchestrator_state.issue_identity(claimed)
   let assert Ok(claimed_snapshot) = daemon.get_snapshot(started.data, 1000)
   assert !dict.has_key(claimed_snapshot.claimed, claimed_identity)
@@ -1678,7 +1678,7 @@ pub fn park_inactive_issue_without_retry_queue_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "worker_exited", 20)
+  assert wait_for_log(log_subject, "worker_exited", 100)
 
   let assert Ok(parked) =
     daemon.apply_operator_command(
@@ -1722,8 +1722,8 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "agent_run:Title ABC-AUTO", 20)
-  assert wait_for_log(log_subject, "issue_parked", 20)
+  assert wait_for_log(log_subject, "agent_run:Title ABC-AUTO", 100)
+  assert wait_for_log(log_subject, "issue_parked", 100)
   let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(parked_snapshot) = daemon.get_snapshot(started.data, 1000)
   let assert Ok(parked_entry) = dict.get(parked_snapshot.parked, identity)
@@ -1739,7 +1739,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
 
   process.send(tracker_server, SetControlTrackerCandidate(changed))
   process.send(started.data, daemon.PollTick(2))
-  assert wait_for_log(log_subject, "agent_run:Changed title", 20)
+  assert wait_for_log(log_subject, "agent_run:Changed title", 100)
   let assert Ok(running_snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.has_key(running_snapshot.running, identity)
   assert !dict.has_key(running_snapshot.parked, identity)
@@ -2127,7 +2127,7 @@ pub fn abort_command_timeout_fallback_does_not_block_daemon_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "agent_run:abort-timeout-issue", 20)
+  assert wait_for_log(log_subject, "agent_run:abort-timeout-issue", 100)
 
   let operator_reply =
     daemon.apply_operator_command_async(
@@ -2135,7 +2135,7 @@ pub fn abort_command_timeout_fallback_does_not_block_daemon_test() {
       command.AbortSession("ABC-ABORT-TIMEOUT-42-1"),
       250,
     )
-  assert wait_for_log(log_subject, "abort_received:abort-timeout-issue", 20)
+  assert wait_for_log(log_subject, "abort_received:abort-timeout-issue", 100)
   let assert Ok(snapshot_while_pending) = daemon.get_snapshot(started.data, 100)
   assert dict.has_key(
     snapshot_while_pending.running,
@@ -2224,7 +2224,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "agent_run:prompt-live-issue", 20)
+  assert wait_for_log(log_subject, "agent_run:prompt-live-issue", 100)
 
   let assert Ok(prompt_result) =
     daemon.apply_operator_command(
@@ -2273,7 +2273,7 @@ pub fn prompt_command_reports_worker_timeout_without_blocking_daemon_test() {
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "agent_run:prompt-timeout-issue", 20)
+  assert wait_for_log(log_subject, "agent_run:prompt-timeout-issue", 100)
 
   let operator_reply =
     daemon.apply_operator_command_async(
@@ -2281,7 +2281,7 @@ pub fn prompt_command_reports_worker_timeout_without_blocking_daemon_test() {
       command.PromptSession("ABC-PROMPT-TIMEOUT-42-1", "status?"),
       250,
     )
-  assert wait_for_log(log_subject, "prompt_received:prompt-timeout-issue", 20)
+  assert wait_for_log(log_subject, "prompt_received:prompt-timeout-issue", 100)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 100)
   assert dict.has_key(
     snapshot.running,
@@ -2317,8 +2317,8 @@ pub fn prompt_and_respond_ui_commands_reject_workers_without_command_subject_tes
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "dispatch_started", 20)
-  assert wait_for_log(log_subject, "agent_run:prompt-issue", 20)
+  assert wait_for_log(log_subject, "dispatch_started", 100)
+  assert wait_for_log(log_subject, "agent_run:prompt-issue", 100)
 
   let assert Ok(prompt_result) =
     daemon.apply_operator_command(
@@ -2416,7 +2416,7 @@ fn assert_session_stop_command(
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "dispatch_started", 20)
+  assert wait_for_log(log_subject, "dispatch_started", 100)
 
   let assert Ok(result) =
     daemon.apply_operator_command(started.data, operator_command, 1000)

@@ -1105,10 +1105,12 @@ pub fn run_with_deps(
               Ok(Nil)
             }
             Ok(query_types.WorkItemListResponse(_))
-            | Ok(query_types.WorkItemShowResponse(_)) ->
+            | Ok(query_types.WorkItemShowResponse(_))
+            | Ok(query_types.WorkflowListResponse(_))
+            | Ok(query_types.WorkflowDetailResponse(_)) ->
               Error(Failed(
                 "unsupported_query_response",
-                "work item query output is not available yet",
+                "query output is not available yet",
               ))
             Ok(query_types.OutboxListResponse(outbox)) -> {
               task_output.print_outbox_list(outbox, output.line)

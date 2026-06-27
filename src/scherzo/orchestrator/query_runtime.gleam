@@ -4,8 +4,10 @@ import scherzo/control/query/metrics as query_metrics
 import scherzo/control/query/outbox as query_outbox
 import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
+import scherzo/control/query/workflow as query_workflow
 import scherzo/daemon_identity
 import scherzo/orchestrator/read_model
+import scherzo/orchestrator/workflow_reloader
 import scherzo/state/projection
 import scherzo/tracker/adapter
 
@@ -20,6 +22,8 @@ pub fn start(
     Result(projection.Projection, Nil),
   get_outbox_snapshot get_outbox_snapshot: fn(Int) ->
     Result(List(#(String, projection.OutboxStatus)), Nil),
+  get_workflow_snapshot get_workflow_snapshot: fn(Int) ->
+    Result(workflow_reloader.State, Nil),
 ) -> Result(query_service.Handle, query_service.StartError) {
   query_service.start(
     query_service.default_settings(),
@@ -51,7 +55,34 @@ pub fn start(
             get_outbox: get_outbox_snapshot,
             query: outbox_query,
           )
+        query_types.WorkflowList ->
+          execute_workflow_query(
+            get_snapshot: get_workflow_snapshot,
+            run: query_workflow.execute_list,
+          )
+        query_types.WorkflowDetail(workflow_query) ->
+          execute_workflow_query(
+            get_snapshot: get_workflow_snapshot,
+            run: fn(snapshot) {
+              query_workflow.execute_detail(snapshot, workflow_query)
+            },
+          )
       }
     }),
   )
+}
+
+fn execute_workflow_query(
+  get_snapshot get_snapshot: fn(Int) -> Result(workflow_reloader.State, Nil),
+  run run: fn(workflow_reloader.State) ->
+    Result(query_types.QueryResponse, query_types.QueryError),
+) -> Result(query_types.QueryResponse, query_types.QueryError) {
+  case get_snapshot(100) {
+    Ok(snapshot) -> run(snapshot)
+    Error(Nil) ->
+      Error(query_types.QueryError(
+        query_types.QueryTimeout,
+        "workflow query timed out",
+      ))
+  }
 }

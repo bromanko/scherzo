@@ -8,6 +8,7 @@ import gleam/string
 import scherzo/control/query/dto
 import scherzo/control/query/types
 import scherzo/control/query/work_item_dto
+import scherzo/control/query/workflow_dto
 import scherzo/task
 import scherzo/work_item
 
@@ -46,6 +47,11 @@ fn request_entries(request: types.QueryRequest) -> List(#(String, json.Json)) {
       )
     types.OutboxShow(query) -> [
       #("outbox_id", json.string(query.outbox_id)),
+      ..base_request_entries(types.query_type(request))
+    ]
+    types.WorkflowList -> base_request_entries(types.query_type(request))
+    types.WorkflowDetail(query) -> [
+      #("workflow_id", json.string(query.workflow_id)),
       ..base_request_entries(types.query_type(request))
     ]
   }
@@ -210,6 +216,20 @@ pub fn response_to_json(response: types.QueryResponse) -> json.Json {
         #("type", json.string(types.response_type(response))),
         #("outbox_record", dto.outbox_record_to_json(outbox)),
       ])
+    types.WorkflowListResponse(workflows) ->
+      json.object([
+        #("version", json.int(version)),
+        #("ok", json.bool(True)),
+        #("type", json.string(types.response_type(response))),
+        #("workflow_list", workflow_dto.workflow_list_to_json(workflows)),
+      ])
+    types.WorkflowDetailResponse(workflow) ->
+      json.object([
+        #("version", json.int(version)),
+        #("ok", json.bool(True)),
+        #("type", json.string(types.response_type(response))),
+        #("workflow", workflow_dto.workflow_detail_to_json(workflow)),
+      ])
   }
 }
 
@@ -273,6 +293,7 @@ type RequestFields {
     kinds: List(String),
     ref: Option(TaskRefFields),
     outbox_id: Option(String),
+    workflow_id: Option(String),
   )
 }
 
@@ -298,6 +319,8 @@ type ResponseFields {
     work_item: Option(Dynamic),
     outbox: Option(Dynamic),
     outbox_record: Option(Dynamic),
+    workflow_list: Option(Dynamic),
+    workflow: Option(Dynamic),
     error: Option(ErrorFields),
   )
 }
@@ -355,6 +378,11 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.string),
   )
+  use workflow_id <- decode.optional_field(
+    "workflow_id",
+    None,
+    decode.optional(decode.string),
+  )
   decode.success(RequestFields(
     version: version,
     type_: type_,
@@ -368,6 +396,7 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     kinds: kinds,
     ref: ref,
     outbox_id: outbox_id,
+    workflow_id: workflow_id,
   ))
 }
 
@@ -448,6 +477,16 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     None,
     decode.optional(decode.dynamic),
   )
+  use workflow_list <- decode.optional_field(
+    "workflow_list",
+    None,
+    decode.optional(decode.dynamic),
+  )
+  use workflow <- decode.optional_field(
+    "workflow",
+    None,
+    decode.optional(decode.dynamic),
+  )
   use error <- decode.optional_field(
     "error",
     None,
@@ -465,6 +504,8 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     work_item: work_item,
     outbox: outbox,
     outbox_record: outbox_record,
+    workflow_list: workflow_list,
+    workflow: workflow,
     error: error,
   ))
 }
@@ -498,6 +539,8 @@ fn request_from_fields(
         Some("work_item_show") -> work_item_show_request_from_fields(fields)
         Some("outbox_list") -> outbox_list_request_from_fields(fields)
         Some("outbox_show") -> outbox_show_request_from_fields(fields)
+        Some("workflow_list") -> Ok(types.WorkflowList)
+        Some("workflow_detail") -> workflow_detail_request_from_fields(fields)
         Some(other) ->
           Error(types.QueryError(
             types.UnsupportedQuery,
@@ -602,6 +645,19 @@ fn outbox_show_request_from_fields(
       Ok(types.OutboxShow(types.OutboxShowQuery(outbox_id: outbox_id)))
     None ->
       Error(types.QueryError(types.QueryBackendFailed, "missing outbox id"))
+  }
+}
+
+fn workflow_detail_request_from_fields(
+  fields: RequestFields,
+) -> Result(types.QueryRequest, types.QueryError) {
+  case fields.workflow_id {
+    Some(workflow_id) ->
+      Ok(
+        types.WorkflowDetail(types.WorkflowDetailQuery(workflow_id: workflow_id)),
+      )
+    None ->
+      Error(types.QueryError(types.QueryBackendFailed, "missing workflow id"))
   }
 }
 
@@ -834,6 +890,20 @@ fn decode_success_response(
         Some(outbox_record) ->
           dto.decode_outbox_record_dynamic(outbox_record)
           |> result.map(types.OutboxShowResponse)
+        None -> missing_response_payload()
+      }
+    Some("workflow_list") ->
+      case fields.workflow_list {
+        Some(workflow_list) ->
+          workflow_dto.decode_workflow_list_dynamic(workflow_list)
+          |> result.map(types.WorkflowListResponse)
+        None -> missing_response_payload()
+      }
+    Some("workflow_detail") ->
+      case fields.workflow {
+        Some(workflow) ->
+          workflow_dto.decode_workflow_detail_dynamic(workflow)
+          |> result.map(types.WorkflowDetailResponse)
         None -> missing_response_payload()
       }
     Some(other) ->

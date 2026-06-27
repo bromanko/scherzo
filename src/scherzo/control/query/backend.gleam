@@ -68,7 +68,10 @@ pub fn run_with_projection(
         read_projection,
         work_item_query,
       )
-    types.OutboxList(_) | types.OutboxShow(_) ->
+    types.OutboxList(_)
+    | types.OutboxShow(_)
+    | types.WorkflowList
+    | types.WorkflowDetail(_) ->
       Error(types.QueryError(
         types.UnsupportedQuery,
         "unsupported query type: " <> types.query_type(query),
