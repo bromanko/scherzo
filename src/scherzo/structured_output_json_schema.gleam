@@ -37,6 +37,25 @@ pub fn run_json_schema_validator(
   structured_output_validator.ValidatorPass,
   structured_output_validator.ValidatorFailure,
 ) {
+  run_json_schema_validator_with_env(
+    declaration,
+    value,
+    context,
+    secrets,
+    path.env,
+  )
+}
+
+pub fn run_json_schema_validator_with_env(
+  declaration: workflow_dag.StructuredOutputValidator,
+  value: json_value.JsonValue,
+  context: structured_output_validator.ValidatorContext,
+  secrets: List(String),
+  env_reader: fn(String) -> Option(String),
+) -> Result(
+  structured_output_validator.ValidatorPass,
+  structured_output_validator.ValidatorFailure,
+) {
   case declaration {
     workflow_dag.JsonSchemaValidator(path: schema_path, draft: draft, ..) -> {
       let effective_draft = draft |> option_string("2020-12")
@@ -52,6 +71,7 @@ pub fn run_json_schema_validator(
         effective_draft,
         json_value.to_string(value) <> "\n",
         secrets,
+        env_reader,
       )
     }
     workflow_dag.CommandValidator(..) ->
@@ -284,17 +304,18 @@ fn run_helper(
   draft: String,
   payload_json: String,
   secrets: List(String),
+  env_reader: fn(String) -> Option(String),
 ) -> Result(
   structured_output_validator.ValidatorPass,
   structured_output_validator.ValidatorFailure,
 ) {
-  let helper = helper_executable()
+  let helper = helper_executable(env_reader)
   case
     port.start_argv_with_input(
       helper,
       ["--schema", schema_path, "--draft", draft],
       context.repository_root,
-      allowlisted_parent_env(),
+      allowlisted_parent_env(env_reader),
       payload_json,
     )
   {
@@ -312,7 +333,8 @@ fn run_helper(
         False,
         secrets,
       ))
-    Ok(process) -> read_helper_result(process, context, schema_path, secrets)
+    Ok(process) ->
+      read_helper_result(process, context, schema_path, secrets, env_reader)
   }
 }
 
@@ -321,14 +343,15 @@ fn read_helper_result(
   context: structured_output_validator.ValidatorContext,
   schema_path: String,
   secrets: List(String),
+  env_reader: fn(String) -> Option(String),
 ) -> Result(
   structured_output_validator.ValidatorPass,
   structured_output_validator.ValidatorFailure,
 ) {
-  let timeout_ms = helper_timeout()
+  let timeout_ms = helper_timeout(env_reader)
   case port.read_stdout_line(process, timeout_ms) {
     Ok(line) -> {
-      let status = await_status(process)
+      let status = await_status(process, env_reader)
       finish_helper_result(status, line, context, schema_path, secrets)
     }
     Error(port.ProcessExited(status)) ->
@@ -365,8 +388,11 @@ fn read_helper_result(
   }
 }
 
-fn await_status(process: port.Process) -> Int {
-  case port.await_exit(process, helper_timeout()) {
+fn await_status(
+  process: port.Process,
+  env_reader: fn(String) -> Option(String),
+) -> Int {
+  case port.await_exit(process, helper_timeout(env_reader)) {
     Ok(status) -> status
     Error(await_error) -> {
       let _reason = port.port_error_to_string(await_error)
@@ -497,15 +523,15 @@ fn read_stderr(process: port.Process) -> String {
   }
 }
 
-fn helper_executable() -> String {
-  case path.env("SCHERZO_JSON_SCHEMA_HELPER") {
+fn helper_executable(env_reader: fn(String) -> Option(String)) -> String {
+  case env_reader("SCHERZO_JSON_SCHEMA_HELPER") {
     Some(value) -> value
     None -> "scripts/scherzo-json-schema-validate"
   }
 }
 
-fn helper_timeout() -> Int {
-  case path.env(helper_timeout_env) {
+fn helper_timeout(env_reader: fn(String) -> Option(String)) -> Int {
+  case env_reader(helper_timeout_env) {
     Some(raw) ->
       case int.parse(raw) {
         Ok(value) ->
@@ -519,20 +545,28 @@ fn helper_timeout() -> Int {
   }
 }
 
-fn allowlisted_parent_env() -> List(#(String, String)) {
-  allowlisted_parent_env_loop(["PATH", "LANG", "LC_ALL", "TMPDIR"], [])
+fn allowlisted_parent_env(
+  env_reader: fn(String) -> Option(String),
+) -> List(#(String, String)) {
+  allowlisted_parent_env_loop(
+    ["PATH", "LANG", "LC_ALL", "TMPDIR"],
+    [],
+    env_reader,
+  )
 }
 
 fn allowlisted_parent_env_loop(
   keys: List(String),
   acc: List(#(String, String)),
+  env_reader: fn(String) -> Option(String),
 ) -> List(#(String, String)) {
   case keys {
     [] -> list.reverse(acc)
     [key, ..rest] ->
-      case path.env(key) {
-        Some(value) -> allowlisted_parent_env_loop(rest, [#(key, value), ..acc])
-        None -> allowlisted_parent_env_loop(rest, acc)
+      case env_reader(key) {
+        Some(value) ->
+          allowlisted_parent_env_loop(rest, [#(key, value), ..acc], env_reader)
+        None -> allowlisted_parent_env_loop(rest, acc, env_reader)
       }
   }
 }

@@ -76,21 +76,13 @@ fn write_control_file_for_root(path: String, root: String) -> Nil {
   Nil
 }
 
-fn with_caller_cwd(cwd: String, action: fn() -> a) -> a {
-  let previous = path.env(path.caller_cwd_env)
-  let _ = path.set_env(path.caller_cwd_env, cwd)
-  let result = action()
-  case previous {
-    Some(value) -> {
-      let _ = path.set_env(path.caller_cwd_env, value)
-      Nil
-    }
-    None -> {
-      let _ = path.unset_env(path.caller_cwd_env)
-      Nil
+fn caller_cwd_env(cwd: String) -> fn(String) -> Option(String) {
+  fn(name) {
+    case name == path.caller_cwd_env {
+      True -> Some(cwd)
+      False -> path.env(name)
     }
   }
-  result
 }
 
 fn session_summary(
@@ -1363,13 +1355,12 @@ pub fn schedules_doctor_root_resolves_config_path_from_caller_cwd_test() {
   let subject = process.new_subject()
 
   let result =
-    with_caller_cwd(caller_abs, fn() {
-      ctl.run_with_deps(
-        ctl.SchedulesDoctor(None, Some(".scherzo/workspaces"), False, "nightly"),
-        ps_deps([], ps_now_ms, ""),
-        output(subject),
-      )
-    })
+    ctl.run_with_deps_and_env(
+      ctl.SchedulesDoctor(None, Some(".scherzo/workspaces"), False, "nightly"),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+      caller_cwd_env(caller_abs),
+    )
 
   assert result == Ok(Nil)
   let transcript = drain_output(subject)
@@ -1802,13 +1793,12 @@ pub fn control_file_option_resolves_relative_to_caller_cwd_test() {
   let subject = process.new_subject()
 
   let result =
-    with_caller_cwd(caller_abs, fn() {
-      ctl.run_with_deps(
-        ctl.Ps(Some(control_rel), True),
-        ps_deps([], ps_now_ms, raw_response),
-        output(subject),
-      )
-    })
+    ctl.run_with_deps_and_env(
+      ctl.Ps(Some(control_rel), True),
+      ps_deps([], ps_now_ms, raw_response),
+      output(subject),
+      caller_cwd_env(caller_abs),
+    )
 
   assert result == Ok(Nil)
   let transcript = drain_output(subject)
@@ -1830,13 +1820,12 @@ pub fn root_option_resolves_relative_to_caller_cwd_test() {
   let subject = process.new_subject()
 
   let result =
-    with_caller_cwd(caller_abs, fn() {
-      ctl.run_with_deps(
-        ctl.StateStatus(".scherzo/workspaces", True),
-        ps_deps([], ps_now_ms, ""),
-        output(subject),
-      )
-    })
+    ctl.run_with_deps_and_env(
+      ctl.StateStatus(".scherzo/workspaces", True),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+      caller_cwd_env(caller_abs),
+    )
 
   assert result == Ok(Nil)
   let transcript = drain_output(subject)
@@ -2253,19 +2242,18 @@ pub fn artifact_publication_retry_without_root_uses_discovered_daemon_test() {
     )
 
   let result =
-    with_caller_cwd(caller, fn() {
-      ctl.run_with_deps(
-        ctl.ArtifactPublicationRetry(
-          None,
-          None,
-          False,
-          "run-1",
-          Some("execplan_review_doc"),
-        ),
-        deps,
-        output(subject),
-      )
-    })
+    ctl.run_with_deps_and_env(
+      ctl.ArtifactPublicationRetry(
+        None,
+        None,
+        False,
+        "run-1",
+        Some("execplan_review_doc"),
+      ),
+      deps,
+      output(subject),
+      caller_cwd_env(caller),
+    )
 
   assert result == Ok(Nil)
   let assert Ok(#(called_control_file, called_command)) =

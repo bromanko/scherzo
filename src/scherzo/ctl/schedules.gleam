@@ -73,8 +73,26 @@ pub fn run_doctor(
   json_output json_output: Bool,
   line output_line: fn(String) -> Nil,
 ) -> Result(Nil, #(String, String)) {
+  run_doctor_with_env(
+    workspace_root,
+    explicit_root,
+    job_id,
+    json_output: json_output,
+    line: output_line,
+    env: path.env,
+  )
+}
+
+pub fn run_doctor_with_env(
+  workspace_root: Result(String, #(String, String)),
+  explicit_root: Option(String),
+  job_id: String,
+  json_output json_output: Bool,
+  line output_line: fn(String) -> Nil,
+  env env: fn(String) -> Option(String),
+) -> Result(Nil, #(String, String)) {
   let report =
-    build_schedule_doctor_report(workspace_root, explicit_root, job_id)
+    build_schedule_doctor_report(workspace_root, explicit_root, job_id, env)
   case json_output {
     True ->
       output_line(schedule_doctor_report_to_json(report) |> json.to_string)
@@ -133,8 +151,9 @@ fn build_schedule_doctor_report(
   workspace_root: Result(String, #(String, String)),
   explicit_root: Option(String),
   job_id: String,
+  env: fn(String) -> Option(String),
 ) -> ScheduleDoctorReport {
-  let config_path = schedule_config_path(explicit_root)
+  let config_path = schedule_config_path(explicit_root, env)
   let config_diagnostics =
     schedule_state.config_diagnostics(config_path, job_id)
   let projection_diagnostics =
@@ -280,17 +299,23 @@ fn scheduled_projection_status_diagnostics(
   list.reverse(base)
 }
 
-fn schedule_config_path(explicit_root: Option(String)) -> Option(String) {
-  schedule_config_candidates(explicit_root)
+fn schedule_config_path(
+  explicit_root: Option(String),
+  env: fn(String) -> Option(String),
+) -> Option(String) {
+  schedule_config_candidates(explicit_root, env)
   |> first_existing_file
 }
 
-fn schedule_config_candidates(explicit_root: Option(String)) -> List(String) {
-  let caller_config = resolve_path_option("scherzo.yaml")
+fn schedule_config_candidates(
+  explicit_root: Option(String),
+  env: fn(String) -> Option(String),
+) -> List(String) {
+  let caller_config = resolve_path_option("scherzo.yaml", env)
   case explicit_root {
     None -> [caller_config]
     Some(root) -> {
-      let root = resolve_path_option(root)
+      let root = resolve_path_option(root, env)
       list.append(
         [path.join(root, "scherzo.yaml")],
         list.append(parent_config_candidates(root), [caller_config]),
@@ -636,8 +661,11 @@ fn optional_string_json(value: Option(String)) -> json.Json {
   }
 }
 
-fn resolve_path_option(value: String) -> String {
-  path.resolve_from_caller_cwd(value, path.env)
+fn resolve_path_option(
+  value: String,
+  env: fn(String) -> Option(String),
+) -> String {
+  path.resolve_from_caller_cwd(value, env)
 }
 
 fn pair_error(code: String, message: String) -> #(String, String) {

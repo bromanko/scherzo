@@ -445,16 +445,6 @@ fn path_with_prefix(prefix: String, original: Option(String)) -> String {
   }
 }
 
-fn restore_path(original: Option(String)) -> Nil {
-  case original {
-    Some(value) -> {
-      let assert Ok(Nil) = setenv("PATH", value)
-      Nil
-    }
-    None -> unsetenv("PATH")
-  }
-}
-
 fn deps(
   subject: process.Subject(String),
   failing_command: Option(String),
@@ -1379,8 +1369,6 @@ pub fn packaged_noop_command_name_discovers_and_runs_driver_lifecycle_test() {
   let root = "test/tmp/workflow-run-packaged-noop-driver"
   test_helpers.reset_dir(root)
   let bin = write_noop_path_shim(root, root <> "/driver.log")
-  let original_path = path.env("PATH")
-  let assert Ok(Nil) = setenv("PATH", path_with_prefix(bin, original_path))
 
   let base = orchestrator()
   let profile =
@@ -1397,7 +1385,7 @@ pub fn packaged_noop_command_name_discovers_and_runs_driver_lifecycle_test() {
           ],
           capabilities: [],
           timeout_ms: 5000,
-          env: [],
+          env: [#("PATH", path_with_prefix(bin, path.env("PATH")))],
         ),
       ),
       source: config_types.ConfiguredWorkspaceDriver,
@@ -1440,8 +1428,6 @@ pub fn packaged_noop_command_name_discovers_and_runs_driver_lifecycle_test() {
     }
     Error(error) -> Error(workspace_driver_discovery.error_message(error))
   }
-  restore_path(original_path)
-
   let assert Ok(enriched) = discovery_result
   let assert Ok(enriched_profile) =
     dict.get(enriched.workspace_profiles.profiles, "noop")
@@ -4798,12 +4784,6 @@ fn release_command_by_id(starts: List(CommandStart), step_id: String) -> Nil {
       }
   }
 }
-
-@external(erlang, "scherzo_test_ffi", "setenv")
-fn setenv(name: String, value: String) -> Result(Nil, Nil)
-
-@external(erlang, "scherzo_test_ffi", "unsetenv")
-fn unsetenv(name: String) -> Nil
 
 fn generic_tool_call_structured_output_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(dag) =

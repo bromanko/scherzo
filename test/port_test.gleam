@@ -78,20 +78,17 @@ pub fn port_start_preserves_current_path_across_shell_rewrites_test() {
   let assert Ok(tool_bin_path) = scherzo_path.absolute(tool_bin)
   let assert Ok(bash_log_path) = scherzo_path.absolute(bash_log)
 
-  let original_path = scherzo_path.env("PATH")
-  let original_real_bash = scherzo_path.env("SCHERZO_TEST_REAL_BASH")
-  let original_bash_log = scherzo_path.env("SCHERZO_TEST_FAKE_BASH_LOG")
   let test_path =
-    fake_bin_path <> ":" <> prepend_path(tool_bin_path, original_path)
-  let _ = scherzo_path.set_env("PATH", test_path)
-  let _ = scherzo_path.set_env("SCHERZO_TEST_REAL_BASH", real_bash)
-  let _ = scherzo_path.set_env("SCHERZO_TEST_FAKE_BASH_LOG", bash_log_path)
+    fake_bin_path
+    <> ":"
+    <> prepend_path(tool_bin_path, scherzo_path.env("PATH"))
 
-  let start_result = port.start("path-sensitive-tool", cwd)
-
-  restore_env_var("PATH", original_path)
-  restore_env_var("SCHERZO_TEST_REAL_BASH", original_real_bash)
-  restore_env_var("SCHERZO_TEST_FAKE_BASH_LOG", original_bash_log)
+  let start_result =
+    port.start_with_env("path-sensitive-tool", cwd, [
+      #("PATH", test_path),
+      #("SCHERZO_TEST_REAL_BASH", real_bash),
+      #("SCHERZO_TEST_FAKE_BASH_LOG", bash_log_path),
+    ])
 
   let assert Ok(process) = start_result
   assert_process_output(process, "tool-ok")
@@ -112,20 +109,12 @@ pub fn port_launchers_resolve_bash_from_path_test() {
   let assert Ok(bash_log_path) = scherzo_path.absolute(bash_log)
 
   let original_path = scherzo_path.env("PATH")
-  let original_test_original_path =
-    scherzo_path.env("SCHERZO_TEST_ORIGINAL_PATH")
-  let original_test_bash_log = scherzo_path.env("SCHERZO_TEST_FAKE_BASH_LOG")
   let original_path_value = optional_env_value(original_path)
   let fake_env = [
-    #("PATH", original_path_value),
+    #("PATH", prepend_path(fake_bin_path, original_path)),
     #("SCHERZO_TEST_ORIGINAL_PATH", original_path_value),
     #("SCHERZO_TEST_FAKE_BASH_LOG", bash_log_path),
   ]
-  let _ =
-    scherzo_path.set_env("SCHERZO_TEST_ORIGINAL_PATH", original_path_value)
-  let _ = scherzo_path.set_env("SCHERZO_TEST_FAKE_BASH_LOG", bash_log_path)
-  let _ =
-    scherzo_path.set_env("PATH", prepend_path(fake_bin_path, original_path))
 
   let shell_result =
     port.start_with_env("printf '%s\n' shell-ok", cwd, fake_env)
@@ -139,10 +128,6 @@ pub fn port_launchers_resolve_bash_from_path_test() {
       fake_env,
       "input-ok\n",
     )
-
-  restore_env_var("PATH", original_path)
-  restore_env_var("SCHERZO_TEST_ORIGINAL_PATH", original_test_original_path)
-  restore_env_var("SCHERZO_TEST_FAKE_BASH_LOG", original_test_bash_log)
 
   let assert Ok(shell_process) = shell_result
   assert_process_output(shell_process, "shell-ok")
@@ -166,20 +151,17 @@ pub fn port_start_argv_with_input_preserves_current_path_for_child_test() {
   chmod_executable(fake_tool)
   let assert Ok(tool_bin_path) = scherzo_path.absolute(tool_bin)
 
-  let original_path = scherzo_path.env("PATH")
-  let _ =
-    scherzo_path.set_env("PATH", prepend_path(tool_bin_path, original_path))
-
   let start_result =
     port.start_argv_with_input(
       "path-sensitive-tool",
       [],
       cwd,
-      [#("SCHERZO_TEST_ENV", "kept")],
+      [
+        #("PATH", prepend_path(tool_bin_path, scherzo_path.env("PATH"))),
+        #("SCHERZO_TEST_ENV", "kept"),
+      ],
       "payload\n",
     )
-
-  restore_env_var("PATH", original_path)
 
   let assert Ok(process) = start_result
   assert_process_output(process, "tool-ok payload kept")
@@ -238,19 +220,6 @@ fn optional_env_value(value: Option(String)) -> String {
   case value {
     Some(value) -> value
     None -> ""
-  }
-}
-
-fn restore_env_var(name: String, original_value: Option(String)) -> Nil {
-  case original_value {
-    Some(value) -> {
-      let _ = scherzo_path.set_env(name, value)
-      Nil
-    }
-    None -> {
-      let _ = scherzo_path.unset_env(name)
-      Nil
-    }
   }
 }
 

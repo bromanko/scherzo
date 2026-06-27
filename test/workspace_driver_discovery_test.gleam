@@ -1,5 +1,5 @@
 import gleam/dict
-import gleam/option.{type Option, None, Some}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/artifact_publication_config
 import scherzo/config
@@ -163,28 +163,11 @@ pub fn builtin_driver_placeholder_falls_back_to_packaged_command_test() {
 fn resolve_driver_with_repo_root_unset(
   orchestrator: config_types.OrchestratorConfig,
 ) -> String {
-  let previous_repo_root = path.env("SCHERZO_REPO_ROOT")
-  let assert Ok(Nil) = path.unset_env("SCHERZO_REPO_ROOT")
-  let resolved =
-    workspace_driver_command.resolve(
-      selected_driver(orchestrator).command,
-      orchestrator,
-    )
-  restore_env("SCHERZO_REPO_ROOT", previous_repo_root)
-  resolved
-}
-
-fn restore_env(key: String, previous: Option(String)) -> Nil {
-  case previous {
-    Some(value) -> {
-      let assert Ok(Nil) = path.set_env(key, value)
-      Nil
-    }
-    None -> {
-      let assert Ok(Nil) = path.unset_env(key)
-      Nil
-    }
-  }
+  workspace_driver_command.resolve_with_env(
+    selected_driver(orchestrator).command,
+    orchestrator,
+    fn(_) { None },
+  )
 }
 
 pub fn enrich_orchestrator_keeps_known_capabilities_without_describe_test() {

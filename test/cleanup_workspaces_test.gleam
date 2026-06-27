@@ -255,10 +255,7 @@ pub fn workspace_cleanup_apply_delegates_remove_and_reports_failures_test() {
   let assert Ok(Nil) =
     simplifile.write(repo <> "/remove-fail-workspace", "review\n")
 
-  let report =
-    with_env("SCHERZO_TEST_LINEAR_API_KEY", "linearkey", fn() {
-      cleanup.apply(workspace_root, 0)
-    })
+  let report = cleanup.apply(workspace_root, 0)
   let items = workspace_items(report)
 
   assert item_status(items, eligible) == Some("deleted")
@@ -268,10 +265,7 @@ pub fn workspace_cleanup_apply_delegates_remove_and_reports_failures_test() {
   let assert Ok(True) = simplifile.is_directory(failing)
   let assert Ok(True) = simplifile.is_file(outside <> "/sentinel")
 
-  let second =
-    with_env("SCHERZO_TEST_LINEAR_API_KEY", "linearkey", fn() {
-      cleanup.apply(workspace_root, 0)
-    })
+  let second = cleanup.apply(workspace_root, 0)
   let second_items = workspace_items(second)
   assert item_status(second_items, failing) == Some("failed")
   assert item_status(second_items, eligible) == None
@@ -292,10 +286,7 @@ pub fn workspace_cleanup_apply_retains_all_when_active_ledger_unreadable_test() 
       "not-json\n",
     )
 
-  let report =
-    with_env("SCHERZO_TEST_LINEAR_API_KEY", "linearkey", fn() {
-      cleanup.apply(workspace_root, 0)
-    })
+  let report = cleanup.apply(workspace_root, 0)
   let provider = workspace_provider(report)
   let items = provider.items
 
@@ -371,7 +362,7 @@ esac\n",
   let assert Ok(Nil) =
     simplifile.write(
       repo <> "/.scherzo/scherzo.yaml",
-      "version: 1\ntracker:\n  linear:\n    api_key_env: SCHERZO_TEST_LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: dogfood-jj\n  drivers:\n    dogfood-jj:\n      type: custom\n      command: "
+      "version: 1\ntracker:\n  linear:\n    api_key: linearkey\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: dogfood-jj\n  drivers:\n    dogfood-jj:\n      type: custom\n      command: "
         <> repo_abs
         <> "/driver.sh\n      timeout: 5s\nworkflows:\n  workspace-cleanup: workflows/workspace-cleanup.yaml\n",
     )
@@ -751,21 +742,4 @@ fn item_reason_contains(
     Ok(item) -> string.contains(item.reason, expected)
     Error(Nil) -> False
   }
-}
-
-fn with_env(name: String, value: String, action: fn() -> a) -> a {
-  let previous = path.env(name)
-  let _ = path.set_env(name, value)
-  let result = action()
-  case previous {
-    Some(existing) -> {
-      let _ = path.set_env(name, existing)
-      Nil
-    }
-    None -> {
-      let _ = path.unset_env(name)
-      Nil
-    }
-  }
-  result
 }

@@ -153,14 +153,18 @@ pub fn cli_driver_preserves_parent_path_for_env_shebangs_test() {
   test_helpers.chmod_executable(script)
 
   let assert Ok(bin_path) = scherzo_path.absolute(bin)
-  let original_path = scherzo_path.env("PATH")
-  let _ = scherzo_path.set_env("PATH", prepend_path(bin_path, original_path))
   let result =
     driver.invoke(
-      fixture_manifest(executable: script, args: [], timeout_ms: 5000),
+      fixture_manifest_with_env(
+        executable: script,
+        args: [],
+        timeout_ms: 5000,
+        env: [
+          types.EnvVar("PATH", prepend_path(bin_path, scherzo_path.env("PATH"))),
+        ],
+      ),
       fetch_request("req-driver-path"),
     )
-  restore_env_var("PATH", original_path)
 
   let assert Ok(driver.DriverInvocation(response: response, ..)) = result
   assert response
@@ -188,23 +192,19 @@ fn prepend_path(path: String, original_path: Option(String)) -> String {
   }
 }
 
-fn restore_env_var(name: String, original_value: Option(String)) -> Nil {
-  case original_value {
-    Some(value) -> {
-      let _ = scherzo_path.set_env(name, value)
-      Nil
-    }
-    None -> {
-      let _ = scherzo_path.unset_env(name)
-      Nil
-    }
-  }
-}
-
 fn fixture_manifest(
   executable executable: String,
   args args: List(String),
   timeout_ms timeout_ms: Int,
+) -> types.Manifest {
+  fixture_manifest_with_env(executable:, args:, timeout_ms:, env: [])
+}
+
+fn fixture_manifest_with_env(
+  executable executable: String,
+  args args: List(String),
+  timeout_ms timeout_ms: Int,
+  env env: List(types.EnvVar),
 ) -> types.Manifest {
   types.Manifest(
     schema_version: 1,
@@ -214,7 +214,7 @@ fn fixture_manifest(
         executable: executable,
         args: args,
         cwd: ".",
-        env: [],
+        env: env,
       ),
       timeout_ms: timeout_ms,
     ),

@@ -30,7 +30,11 @@ pub type Runner {
 }
 
 pub fn production() -> Runner {
-  Runner(run: run_command)
+  production_with_env(path.env)
+}
+
+pub fn production_with_env(env: fn(String) -> Option(String)) -> Runner {
+  Runner(run: fn(spec) { run_command(spec, env) })
 }
 
 pub fn command_error(message: String) -> CommandError {
@@ -42,7 +46,10 @@ pub fn error_message(error: CommandError) -> String {
   message
 }
 
-fn run_command(spec: CommandSpec) -> Result(CommandOutput, CommandError) {
+fn run_command(
+  spec: CommandSpec,
+  env_reader: fn(String) -> Option(String),
+) -> Result(CommandOutput, CommandError) {
   let CommandSpec(
     executable: executable,
     args: args,
@@ -63,7 +70,7 @@ fn run_command(spec: CommandSpec) -> Result(CommandOutput, CommandError) {
   )
   case timeout_ms {
     Some(timeout_ms) -> run_command_with_timeout(process, timeout_ms)
-    None -> run_command_with_idle_stdout(process)
+    None -> run_command_with_idle_stdout(process, env_reader)
   }
 }
 
@@ -101,8 +108,9 @@ fn run_command_with_timeout(
 
 fn run_command_with_idle_stdout(
   process: port.Process,
+  env_reader: fn(String) -> Option(String),
 ) -> Result(CommandOutput, CommandError) {
-  let stdout = read_stdout(process, [], stdout_idle_timeouts())
+  let stdout = read_stdout(process, [], stdout_idle_timeouts(env_reader))
   case port.await_exit_with_stdout(process, 10_000) {
     Ok(#(status, late_stdout)) -> {
       let stdout = append_stdout(stdout, string.trim(late_stdout))
@@ -141,8 +149,8 @@ fn terminate_process(process: port.Process) -> String {
   }
 }
 
-fn stdout_idle_timeouts() -> Int {
-  case path.env("SCHERZO_COMMAND_RUNNER_STDOUT_IDLE_TIMEOUTS") {
+fn stdout_idle_timeouts(env_reader: fn(String) -> Option(String)) -> Int {
+  case env_reader("SCHERZO_COMMAND_RUNNER_STDOUT_IDLE_TIMEOUTS") {
     Some(value) ->
       case int.parse(value) {
         Ok(parsed) if parsed >= 0 -> parsed

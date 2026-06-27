@@ -1030,13 +1030,22 @@ pub fn run_with_deps(
   deps: ControlClient,
   output: Output,
 ) -> Result(Nil, Error) {
+  run_with_deps_and_env(command, deps, output, file.get_env)
+}
+
+pub fn run_with_deps_and_env(
+  command: Command,
+  deps: ControlClient,
+  output: Output,
+  env: fn(String) -> Option(String),
+) -> Result(Nil, Error) {
   case command {
     Help -> {
       output.line(usage())
       Ok(Nil)
     }
     Ping(control_path, json) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       let control_file = target.control_file
       case json {
         True -> print_raw_request(target, protocol.Ping("1", ""), deps, output)
@@ -1051,7 +1060,7 @@ pub fn run_with_deps(
       }
     }
     Ps(control_path, json) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       let control_file = target.control_file
       case json {
         True ->
@@ -1076,7 +1085,7 @@ pub fn run_with_deps(
       }
     }
     Query(control_path, json, query) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       let control_file = target.control_file
       case json {
         True ->
@@ -1125,7 +1134,7 @@ pub fn run_with_deps(
       }
     }
     TaskList(control_path, json, states, limit, cursor) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       let query =
         query_types.TaskList(query_types.TaskListQuery(
           states: states,
@@ -1146,7 +1155,7 @@ pub fn run_with_deps(
       }
     }
     TaskShow(control_path, json, ref) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       let query = query_types.TaskShow(query_types.TaskShowQuery(ref: ref))
       case deps.query(target.control_file, query) {
         Ok(query_types.TaskShowResponse(task_detail)) -> {
@@ -1162,7 +1171,7 @@ pub fn run_with_deps(
       }
     }
     Outbox(control_path, json, outbox_id, statuses, kinds, limit, cursor) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       let query = case outbox_id {
         Some(outbox_id) ->
           query_types.OutboxShow(query_types.OutboxShowQuery(
@@ -1197,7 +1206,7 @@ pub fn run_with_deps(
       }
     }
     Session(control_path, json, session_ref) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       let control_file = target.control_file
       use session_id <- try_ctl(resolve_session_ref(
         control_file,
@@ -1229,7 +1238,7 @@ pub fn run_with_deps(
       }
     }
     Events(control_path, mode, color, since_cursor, verbose, session_id) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       run_events(
         target,
         deps,
@@ -1242,7 +1251,7 @@ pub fn run_with_deps(
       )
     }
     Attach(control_path, mode, color, follow, since_cursor, verbose, session_id) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       run_attach(
         target.control_file,
         deps,
@@ -1256,7 +1265,7 @@ pub fn run_with_deps(
       )
     }
     Operator(control_path, json, operator_command) -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       let control_file = target.control_file
       use resolved_command <- try_ctl(resolve_operator_command(
         control_file,
@@ -1282,11 +1291,11 @@ pub fn run_with_deps(
       }
     }
     Cleanup(control_path, root, json, dry_run, yes) ->
-      run_cleanup(control_path, root, json, dry_run, yes, output)
+      run_cleanup(control_path, root, json, dry_run, yes, output, env)
     SchedulesStatus(control_path, root, json, job_id) ->
-      run_schedules_status(control_path, root, json, job_id, output)
+      run_schedules_status(control_path, root, json, job_id, output, env)
     SchedulesHistory(control_path, root, json, job_id) ->
-      run_schedules_history(control_path, root, json, job_id, output)
+      run_schedules_history(control_path, root, json, job_id, output, env)
     SchedulesLogs(control_path, root, json, color, verbose, job_id) ->
       run_schedules_logs(
         control_path,
@@ -1297,16 +1306,24 @@ pub fn run_with_deps(
         deps,
         job_id,
         output,
+        env,
       )
     SchedulesDoctor(control_path, root, json, job_id) ->
-      run_schedules_doctor(control_path, root, json, job_id, output)
+      run_schedules_doctor(control_path, root, json, job_id, output, env)
     Workstream(command) ->
       case ctl_workstream.run(command, output.line, output.inline) {
         Ok(Nil) -> Ok(Nil)
         Error(#(code, message)) -> Error(Failed(code, message))
       }
     ArtifactPublicationList(control_path, root, json, run_id) ->
-      run_artifact_publication_list(control_path, root, json, run_id, output)
+      run_artifact_publication_list(
+        control_path,
+        root,
+        json,
+        run_id,
+        output,
+        env,
+      )
     ArtifactPublicationShow(control_path, root, json, run_id, publication_id) ->
       run_artifact_publication_show(
         control_path,
@@ -1315,6 +1332,7 @@ pub fn run_with_deps(
         run_id,
         publication_id,
         output,
+        env,
       )
     ArtifactPublicationRetry(control_path, root, json, run_id, publication_id) ->
       run_artifact_publication_retry(
@@ -1325,6 +1343,7 @@ pub fn run_with_deps(
         run_id,
         publication_id,
         output,
+        env,
       )
     ArtifactPublicationAbandon(
       control_path,
@@ -1342,17 +1361,18 @@ pub fn run_with_deps(
         publication_id,
         reason,
         output,
+        env,
       )
     StateStatus(root, json) ->
       ctl_state_handlers.run_status(
-        resolve_path_option(root),
+        resolve_path_option(root, env),
         json_output: json,
         line: output.line,
       )
       |> result.map_error(pair_error_to_failed)
     StateArchiveOld(root, json, yes) ->
       ctl_state_handlers.run_archive_old(
-        resolve_path_option(root),
+        resolve_path_option(root, env),
         json_output: json,
         yes: yes,
         line: output.line,
@@ -1360,7 +1380,7 @@ pub fn run_with_deps(
       |> result.map_error(pair_error_to_failed)
     StateDiscardOld(root, json, yes) ->
       ctl_state_handlers.run_discard_old(
-        resolve_path_option(root),
+        resolve_path_option(root, env),
         json_output: json,
         yes: yes,
         line: output.line,
@@ -1368,7 +1388,7 @@ pub fn run_with_deps(
       |> result.map_error(pair_error_to_failed)
     StateReinitialize(root, json, yes) ->
       ctl_state_handlers.run_reinitialize(
-        resolve_path_option(root),
+        resolve_path_option(root, env),
         json_output: json,
         yes: yes,
         line: output.line,
@@ -1376,7 +1396,7 @@ pub fn run_with_deps(
       |> result.map_error(pair_error_to_failed)
     StateCompact(root, json, dry_run, yes) ->
       ctl_state_handlers.run_compact(
-        resolve_path_option(root),
+        resolve_path_option(root, env),
         json_output: json,
         dry_run: dry_run,
         yes: yes,
@@ -1385,7 +1405,7 @@ pub fn run_with_deps(
       |> result.map_error(pair_error_to_failed)
     StateRepairRunProvenance(root, json, run_id, dry_run, yes) ->
       ctl_state_handlers.run_repair_run_provenance(
-        resolve_path_option(root),
+        resolve_path_option(root, env),
         run_id,
         json_output: json,
         dry_run: dry_run,
@@ -1412,10 +1432,12 @@ fn run_cleanup(
   dry_run: Bool,
   yes: Bool,
   output: Output,
+  env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
   use workspace_root <- try_ctl(cleanup_workspace_root(
     control_path,
     explicit_root,
+    env,
   ))
   let now_ms = local_artifacts.now_ms()
   let result = case dry_run || !yes {
@@ -1433,11 +1455,12 @@ fn run_cleanup(
 fn cleanup_workspace_root(
   control_path: Option(String),
   explicit_root: Option(String),
+  env: fn(String) -> Option(String),
 ) -> Result(String, Error) {
   case explicit_root {
-    Some(root) -> Ok(resolve_path_option(root))
+    Some(root) -> Ok(resolve_path_option(root, env))
     None -> {
-      use control_file <- try_ctl(load_control_file(control_path))
+      use control_file <- try_ctl(load_control_file(control_path, env))
       Ok(control_file.workspace_root)
     }
   }
@@ -1508,8 +1531,9 @@ fn run_schedules_status(
   json_output: Bool,
   job_id: Option(String),
   output: Output,
+  env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
-  use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
+  use root <- try_ctl(schedule_workspace_root(control_path, explicit_root, env))
   ctl_schedules.run_status(
     root,
     job_id,
@@ -1525,8 +1549,9 @@ fn run_schedules_history(
   json_output: Bool,
   job_id: String,
   output: Output,
+  env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
-  use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
+  use root <- try_ctl(schedule_workspace_root(control_path, explicit_root, env))
   ctl_schedules.run_history(
     root,
     job_id,
@@ -1545,8 +1570,9 @@ fn run_schedules_logs(
   deps: ControlClient,
   job_id: String,
   output: Output,
+  env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
-  use root <- try_ctl(schedule_workspace_root(control_path, explicit_root))
+  use root <- try_ctl(schedule_workspace_root(control_path, explicit_root, env))
   use projected <- try_ctl(
     ctl_schedules.load_projection(root)
     |> result.map_error(pair_error_to_failed),
@@ -1567,7 +1593,7 @@ fn run_schedules_logs(
     False ->
       case run.session_id {
         Some(session_id) ->
-          case load_control_target(control_path) {
+          case load_control_target(control_path, env) {
             Ok(target) ->
               run_events(
                 target,
@@ -1603,14 +1629,16 @@ fn run_schedules_doctor(
   json_output: Bool,
   job_id: String,
   output: Output,
+  env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
-  ctl_schedules.run_doctor(
-    schedule_workspace_root(control_path, explicit_root)
+  ctl_schedules.run_doctor_with_env(
+    schedule_workspace_root(control_path, explicit_root, env)
       |> result.map_error(error_to_pair),
     explicit_root,
     job_id,
     json_output: json_output,
     line: output.line,
+    env: env,
   )
   |> result.map_error(pair_error_to_failed)
 }
@@ -1618,11 +1646,12 @@ fn run_schedules_doctor(
 fn schedule_workspace_root(
   control_path: Option(String),
   explicit_root: Option(String),
+  env: fn(String) -> Option(String),
 ) -> Result(String, Error) {
   case explicit_root {
-    Some(root) -> Ok(resolve_path_option(root))
+    Some(root) -> Ok(resolve_path_option(root, env))
     None -> {
-      use control_file <- try_ctl(load_control_file(control_path))
+      use control_file <- try_ctl(load_control_file(control_path, env))
       Ok(control_file.workspace_root)
     }
   }
@@ -1631,8 +1660,9 @@ fn schedule_workspace_root(
 fn artifact_workspace_root(
   control_path: Option(String),
   explicit_root: Option(String),
+  env: fn(String) -> Option(String),
 ) -> Result(String, Error) {
-  schedule_workspace_root(control_path, explicit_root)
+  schedule_workspace_root(control_path, explicit_root, env)
 }
 
 fn run_artifact_publication_list(
@@ -1641,8 +1671,9 @@ fn run_artifact_publication_list(
   json_output: Bool,
   run_id: String,
   output: Output,
+  env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
-  use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
+  use root <- try_ctl(artifact_workspace_root(control_path, explicit_root, env))
   ctl_artifact_publication.list(root, json_output, run_id, output.line)
   |> result.map_error(fn(error) {
     let #(code, message) = error
@@ -1657,8 +1688,9 @@ fn run_artifact_publication_show(
   run_id: String,
   publication_id: String,
   output: Output,
+  env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
-  use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
+  use root <- try_ctl(artifact_workspace_root(control_path, explicit_root, env))
   ctl_artifact_publication.show(
     root,
     json_output,
@@ -1680,8 +1712,9 @@ fn run_artifact_publication_abandon(
   publication_id: String,
   reason: String,
   output: Output,
+  env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
-  use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
+  use root <- try_ctl(artifact_workspace_root(control_path, explicit_root, env))
   ctl_artifact_publication_abandon.abandon(
     root,
     json_output,
@@ -1704,10 +1737,11 @@ fn run_artifact_publication_retry(
   run_id: String,
   publication_id: Option(String),
   output: Output,
+  env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
   case explicit_root {
     None -> {
-      use target <- try_ctl(load_control_target(control_path))
+      use target <- try_ctl(load_control_target(control_path, env))
       let operator_command =
         control_command.RetryArtifactPublication(run_id, publication_id)
       case json_output {
@@ -1729,7 +1763,11 @@ fn run_artifact_publication_retry(
       }
     }
     Some(_) -> {
-      use root <- try_ctl(artifact_workspace_root(control_path, explicit_root))
+      use root <- try_ctl(artifact_workspace_root(
+        control_path,
+        explicit_root,
+        env,
+      ))
       ctl_artifact_publication_retry.retry(
         root,
         json_output,
@@ -2166,20 +2204,25 @@ fn real_output() -> Output {
   Output(line: io.println, inline: io.print)
 }
 
-fn resolve_path_option(value: String) -> String {
-  file.resolve_cli_path(value, file.get_env)
+fn resolve_path_option(
+  value: String,
+  env: fn(String) -> Option(String),
+) -> String {
+  file.resolve_cli_path(value, env)
 }
 
 fn load_control_target(
   explicit_path: Option(String),
+  env: fn(String) -> Option(String),
 ) -> Result(client.ControlTarget, Error) {
-  client.discover_target(explicit_path, file.get_env) |> map_file_error
+  client.discover_target(explicit_path, env) |> map_file_error
 }
 
 fn load_control_file(
   explicit_path: Option(String),
+  env: fn(String) -> Option(String),
 ) -> Result(file.ControlFile, Error) {
-  use target <- try_ctl(load_control_target(explicit_path))
+  use target <- try_ctl(load_control_target(explicit_path, env))
   Ok(target.control_file)
 }
 

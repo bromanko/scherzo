@@ -75,48 +75,32 @@ fn run_validator(
   structured_output_validator.ValidatorPass,
   structured_output_validator.ValidatorFailure,
 ) {
-  structured_output_json_schema.run_json_schema_validator(
+  run_validator_with_env(validator, parent_env([]))
+}
+
+fn run_validator_with_env(
+  validator: workflow_dag.StructuredOutputValidator,
+  env_reader: fn(String) -> Option(String),
+) -> Result(
+  structured_output_validator.ValidatorPass,
+  structured_output_validator.ValidatorFailure,
+) {
+  structured_output_json_schema.run_json_schema_validator_with_env(
     validator,
     valid_payload(),
     context(validator),
     [],
+    env_reader,
   )
 }
 
-fn with_env(key: String, value: String, run: fn() -> a) -> a {
-  let previous = scherzo_path.env(key)
-  let assert Ok(Nil) = scherzo_path.set_env(key, value)
-  let result = run()
-  restore_env(key, previous)
-  result
-}
-
-fn with_two_envs(
-  first_key: String,
-  first_value: String,
-  second_key: String,
-  second_value: String,
-  run: fn() -> a,
-) -> a {
-  let first_previous = scherzo_path.env(first_key)
-  let second_previous = scherzo_path.env(second_key)
-  let assert Ok(Nil) = scherzo_path.set_env(first_key, first_value)
-  let assert Ok(Nil) = scherzo_path.set_env(second_key, second_value)
-  let result = run()
-  restore_env(second_key, second_previous)
-  restore_env(first_key, first_previous)
-  result
-}
-
-fn restore_env(key: String, previous: Option(String)) -> Nil {
-  case previous {
-    Some(value) -> {
-      let assert Ok(Nil) = scherzo_path.set_env(key, value)
-      Nil
-    }
-    None -> {
-      let assert Ok(Nil) = scherzo_path.unset_env(key)
-      Nil
+fn parent_env(
+  overrides: List(#(String, String)),
+) -> fn(String) -> Option(String) {
+  fn(name) {
+    case list.find(overrides, fn(entry) { entry.0 == name }) {
+      Ok(entry) -> Some(entry.1)
+      Error(Nil) -> scherzo_path.env(name)
     }
   }
 }
@@ -285,23 +269,23 @@ pub fn json_schema_accepts_repo_local_symlinked_workflow_schema_test() {
   let assert Ok(helper_path) =
     scherzo_path.absolute("scripts/scherzo-json-schema-validate")
   let validator = schema_validator(schema_path)
-  let #(valid_result, missing_required_result) =
-    with_env(helper_env, helper_path, fn() {
-      #(
-        structured_output_json_schema.run_json_schema_validator(
-          validator,
-          valid_payload(),
-          context_with_repo(validator, repo),
-          [],
-        ),
-        structured_output_json_schema.run_json_schema_validator(
-          validator,
-          json_value.JObject([]),
-          context_with_repo(validator, repo),
-          [],
-        ),
-      )
-    })
+  let env = parent_env([#(helper_env, helper_path)])
+  let valid_result =
+    structured_output_json_schema.run_json_schema_validator_with_env(
+      validator,
+      valid_payload(),
+      context_with_repo(validator, repo),
+      [],
+      env,
+    )
+  let missing_required_result =
+    structured_output_json_schema.run_json_schema_validator_with_env(
+      validator,
+      json_value.JObject([]),
+      context_with_repo(validator, repo),
+      [],
+      env,
+    )
 
   assert valid_result == Ok(structured_output_validator.ValidatorPass)
   let assert Error(error) = missing_required_result
@@ -438,9 +422,12 @@ pub fn json_schema_helper_start_failure_is_non_retryable_config_error_test() {
       "test/fixtures/structured_output/review_lane_draft.schema.json",
     )
   let result =
-    with_env(helper_env, "test/fixtures/structured_output/does-not-exist", fn() {
-      run_validator(validator)
-    })
+    run_validator_with_env(
+      validator,
+      parent_env([
+        #(helper_env, "test/fixtures/structured_output/does-not-exist"),
+      ]),
+    )
   let assert Error(error) = result
 
   assert error.code == "structured_output_json_schema_config_error"
@@ -453,12 +440,15 @@ pub fn json_schema_helper_timeout_is_non_retryable_config_error_test() {
       "test/fixtures/structured_output/review_lane_draft.schema.json",
     )
   let result =
-    with_two_envs(
-      helper_env,
-      "test/fixtures/structured_output/json_schema_helper_timeout.sh",
-      helper_timeout_env,
-      "25",
-      fn() { run_validator(validator) },
+    run_validator_with_env(
+      validator,
+      parent_env([
+        #(
+          helper_env,
+          "test/fixtures/structured_output/json_schema_helper_timeout.sh",
+        ),
+        #(helper_timeout_env, "25"),
+      ]),
     )
   let assert Error(error) = result
 
@@ -473,10 +463,14 @@ pub fn json_schema_helper_malformed_diagnostic_is_non_retryable_config_error_tes
       "test/fixtures/structured_output/review_lane_draft.schema.json",
     )
   let result =
-    with_env(
-      helper_env,
-      "test/fixtures/structured_output/json_schema_helper_malformed.py",
-      fn() { run_validator(validator) },
+    run_validator_with_env(
+      validator,
+      parent_env([
+        #(
+          helper_env,
+          "test/fixtures/structured_output/json_schema_helper_malformed.py",
+        ),
+      ]),
     )
   let assert Error(error) = result
 
@@ -491,10 +485,14 @@ pub fn json_schema_helper_import_failure_is_non_retryable_config_error_test() {
       "test/fixtures/structured_output/review_lane_draft.schema.json",
     )
   let result =
-    with_env(
-      helper_env,
-      "test/fixtures/structured_output/json_schema_helper_import_failure.py",
-      fn() { run_validator(validator) },
+    run_validator_with_env(
+      validator,
+      parent_env([
+        #(
+          helper_env,
+          "test/fixtures/structured_output/json_schema_helper_import_failure.py",
+        ),
+      ]),
     )
   let assert Error(error) = result
 

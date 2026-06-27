@@ -88,14 +88,14 @@ validate_argv_start(Executable, Args, Cwd, Env) ->
         {error, Error} -> {error, Error}
     end.
 
-resolve_bash() ->
-    case os:find_executable("bash") of
-        false -> {error, tagged_error(spawn_failed, <<"bash executable not found on PATH">>)};
-        BashPath -> {ok, BashPath}
-    end.
+resolve_bash(Env) ->
+    Find = case lists:keyfind("PATH", 1, Env) of
+        false -> os:find_executable("bash"); {_, Path} -> os:find_executable("bash", Path)
+    end,
+    case Find of false -> {error, tagged_error(spawn_failed, <<"bash executable not found on PATH">>)}; BashPath -> {ok, BashPath} end.
 
 start_shell(Cmd, Dir, Env) ->
-    case resolve_bash() of
+    case resolve_bash(Env) of
         {ok, BashPath} -> start_shell(Cmd, Dir, Env, BashPath);
         {error, Error} -> {error, Error}
     end.
@@ -124,7 +124,7 @@ start_shell(Cmd, Dir, Env, BashPath) ->
     end.
 
 start_argv_checked(Exe, ArgList, Dir, Env) ->
-    case resolve_bash() of
+    case resolve_bash(Env) of
         {ok, BashPath} -> start_argv_checked(Exe, ArgList, Dir, Env, BashPath);
         {error, Error} -> {error, Error}
     end.
@@ -153,7 +153,7 @@ start_argv_checked(Exe, ArgList, Dir, Env, BashPath) ->
     end.
 
 start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes) ->
-    case resolve_bash() of
+    case resolve_bash(Env) of
         {ok, BashPath} -> start_argv_checked_with_input(Exe, ArgList, Dir, Env, StdinBytes, BashPath);
         {error, Error} -> {error, Error}
     end.

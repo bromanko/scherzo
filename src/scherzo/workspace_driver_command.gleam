@@ -18,8 +18,16 @@ pub fn resolve(
   command: String,
   orchestrator: config_types.OrchestratorConfig,
 ) -> String {
+  resolve_with_env(command, orchestrator, path.env)
+}
+
+pub fn resolve_with_env(
+  command: String,
+  orchestrator: config_types.OrchestratorConfig,
+  env: fn(String) -> Option(String),
+) -> String {
   case command == repo_root_placeholder {
-    True -> default_repo_root(orchestrator)
+    True -> default_repo_root_with_env(orchestrator, env)
     False ->
       case string.starts_with(command, repo_root_placeholder <> "/") {
         True ->
@@ -27,6 +35,7 @@ pub fn resolve(
             command,
             string.drop_start(command, string.length(repo_root_placeholder)),
             orchestrator,
+            env,
           )
         False -> command
       }
@@ -37,8 +46,9 @@ fn resolve_repo_root_command(
   command: String,
   suffix: String,
   orchestrator: config_types.OrchestratorConfig,
+  env: fn(String) -> Option(String),
 ) -> String {
-  let resolved = default_repo_root(orchestrator) <> suffix
+  let resolved = default_repo_root_with_env(orchestrator, env) <> suffix
   case packaged_builtin_driver_command(command, resolved) {
     Some(fallback) -> fallback
     None -> resolved
@@ -68,7 +78,14 @@ fn packaged_builtin_driver_command(
 pub fn default_repo_root(
   orchestrator: config_types.OrchestratorConfig,
 ) -> String {
-  case path.env("SCHERZO_REPO_ROOT") {
+  default_repo_root_with_env(orchestrator, path.env)
+}
+
+pub fn default_repo_root_with_env(
+  orchestrator: config_types.OrchestratorConfig,
+  env: fn(String) -> Option(String),
+) -> String {
+  case env("SCHERZO_REPO_ROOT") {
     Some(root) -> root
     None -> default_repo_root_for_config_dir(orchestrator.config_dir)
   }
