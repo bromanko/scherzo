@@ -70,7 +70,8 @@ fn wait_for_daemons_status_update(
       case process.receive(updates, within: 200) {
         Ok(next) ->
           wait_for_daemons_status_update(updates, needle, attempts - 1, next)
-        Error(_) -> latest
+        Error(_) ->
+          wait_for_daemons_status_update(updates, needle, attempts - 1, latest)
       }
   }
 }

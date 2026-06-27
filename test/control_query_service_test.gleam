@@ -71,17 +71,28 @@ pub fn query_service_stop_reports_timeout_when_caller_does_not_wait_test() {
 }
 
 pub fn query_service_timeout_test() {
+  let started = process.new_subject()
+  let barrier = test_async.new_barrier()
+  let result = process.new_subject()
   let assert Ok(handle) =
     service.start(
-      service.Settings(max_concurrent: 1, max_queued: 1, timeout_ms: 10),
+      service.Settings(max_concurrent: 1, max_queued: 1, timeout_ms: 50),
       service.Backend(run: fn(_) {
-        process.sleep(50)
+        process.send(started, Nil)
+        test_async.block_until_released(barrier)
         Ok(status_response())
       }),
     )
 
-  assert service.query(handle, types.Status)
+  let _ =
+    process.spawn(fn() {
+      process.send(result, service.query(handle, types.Status))
+      Nil
+    })
+  let _ = test_async.expect_message(started)
+  assert test_async.expect_message(result)
     == Error(types.QueryError(types.QueryTimeout, "query timed out"))
+  test_async.release_barrier_if_waiting(barrier)
   assert service.stop(handle, 1000) == Ok(Nil)
 }
 
@@ -117,23 +128,34 @@ pub fn query_service_overload_test() {
 pub fn query_service_stale_completion_is_ignored_after_timeout_test() {
   let path = "test/tmp/query-service-first-call"
   let _ = simplifile.delete(path)
+  let started = process.new_subject()
+  let barrier = test_async.new_barrier()
+  let first_result = process.new_subject()
   let assert Ok(handle) =
     service.start(
-      service.Settings(max_concurrent: 1, max_queued: 1, timeout_ms: 10),
+      service.Settings(max_concurrent: 1, max_queued: 1, timeout_ms: 50),
       service.Backend(run: fn(_) {
         case simplifile.read(path) {
           Ok(_) -> Ok(status_response())
           Error(_) -> {
             let assert Ok(Nil) = simplifile.write(path, "first")
-            process.sleep(50)
+            process.send(started, Nil)
+            test_async.block_until_released(barrier)
             Ok(status_response())
           }
         }
       }),
     )
 
-  assert service.query(handle, types.Status)
+  let _ =
+    process.spawn(fn() {
+      process.send(first_result, service.query(handle, types.Status))
+      Nil
+    })
+  let _ = test_async.expect_message(started)
+  assert test_async.expect_message(first_result)
     == Error(types.QueryError(types.QueryTimeout, "query timed out"))
+  test_async.release_barrier_if_waiting(barrier)
   assert service.query(handle, types.Status) == Ok(status_response())
 
   assert service.stop(handle, 1000) == Ok(Nil)

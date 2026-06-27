@@ -18,6 +18,7 @@ import scherzo/session/reason
 import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/work_item
+import test_async
 
 fn summary(session_id: String) -> event.SessionSummary {
   event.SessionSummary(
@@ -129,18 +130,18 @@ fn backend_with_command(
   )
 }
 
-fn slow_session_backend(sleep_ms: Int) -> server.Backend {
+fn blocking_session_backend(barrier: test_async.Barrier) -> server.Backend {
   server.Backend(
     list_sessions: fn(_) {
-      process.sleep(sleep_ms)
+      test_async.block_until_released(barrier)
       Ok(event.SessionList(sessions: [], now_ms: 100))
     },
     get_session: fn(_, _) {
-      process.sleep(sleep_ms)
+      test_async.block_until_released(barrier)
       Ok(None)
     },
     events_after: fn(_, cursor, _, _) {
-      process.sleep(sleep_ms)
+      test_async.block_until_released(barrier)
       Ok(event.EventPage(events: [], next_cursor: cursor, truncated: False))
     },
     query: fn(_) { Error(server_query_unsupported()) },
@@ -437,32 +438,35 @@ pub fn server_rejects_bad_token_before_mutating_backend_test() {
 
 pub fn server_times_out_slow_mutating_backend_test() {
   let subject = start_hub_with_session("session-command-timeout")
+  let barrier = test_async.new_barrier()
   let backend =
     server.Backend(
       ..server.event_hub_store(subject),
       apply_command: fn(operator_command, _) {
         let _ = operator_command
-        process.sleep(200)
+        test_async.block_until_released(barrier)
         Ok(command.applied(command.PauseDispatch, None))
       },
     )
   let #(server_handle, control_file) =
-    start_server_for_backend(backend, "token", 20)
+    start_server_for_backend(backend, "token", 50)
 
   let assert Error(client.RequestFailed(code, _)) =
     client.apply_command(control_file, command.PauseDispatch)
   assert code == "command_timeout"
+  test_async.release_barrier(barrier)
 
   server.stop(server_handle)
   hub.stop(subject)
 }
 
 pub fn server_returns_structured_timeout_when_session_backend_does_not_reply_test() {
+  let barrier = test_async.new_barrier()
   let #(server_handle, control_file) =
     start_server_for_backend_with_event_timeout(
-      slow_session_backend(200),
+      blocking_session_backend(barrier),
       "token",
-      20,
+      50,
       500,
     )
 
@@ -472,21 +476,25 @@ pub fn server_returns_structured_timeout_when_session_backend_does_not_reply_tes
   assert string.contains(raw, "\"ok\":false")
   assert string.contains(raw, "\"code\":\"session_backend_timeout\"")
   assert string.contains(raw, "control server is reachable")
+  test_async.release_barrier(barrier)
 
   let assert Error(client.RequestFailed(list_code, list_message)) =
     client.list_sessions_snapshot(control_file)
   assert list_code == "session_backend_timeout"
   assert_session_backend_timeout_message(list_message)
+  test_async.release_barrier(barrier)
 
   let assert Error(client.RequestFailed(session_code, session_message)) =
     client.get_session(control_file, "session-timeout")
   assert session_code == "session_backend_timeout"
   assert_session_backend_timeout_message(session_message)
+  test_async.release_barrier(barrier)
 
   let assert Error(client.RequestFailed(events_code, events_message)) =
     client.get_events(control_file, "session-timeout", 0, 10)
   assert events_code == "session_backend_timeout"
   assert_session_backend_timeout_message(events_message)
+  test_async.release_barrier(barrier)
 
   server.stop(server_handle)
 }
