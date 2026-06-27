@@ -490,6 +490,13 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
         <> "      type: noop\n"
         <> "      capabilities: [status]\n",
     ),
+  ]
+
+  assert_config_cases_rejected(cases)
+}
+
+pub fn config_removed_tasks_and_update_shapes_are_rejected_test() {
+  let cases = [
     #(
       "workflows list instead of map",
       "version: 1\ntracker:\n  linear:\n    project: demo-project\nworkflows: []\n",
@@ -617,6 +624,13 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
         <> "  endpoint: http://scherzo.example\n"
         <> "  credential_ref: work-laptop\n",
     ),
+  ]
+
+  assert_config_cases_rejected(cases)
+}
+
+pub fn config_removed_ui_server_shapes_are_rejected_test() {
+  let cases = [
     #(
       "ui_server.endpoint rejects userinfo",
       minimal_config()
@@ -673,6 +687,10 @@ pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
     ),
   ]
 
+  assert_config_cases_rejected(cases)
+}
+
+fn assert_config_cases_rejected(cases: List(#(String, String))) -> Nil {
   list.each(cases, fn(case_) {
     let #(_, yaml) = case_
     assert_config_rejected(yaml)

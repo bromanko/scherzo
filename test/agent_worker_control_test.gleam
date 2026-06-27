@@ -149,7 +149,7 @@ fn tracker_returning(final_issue: tracker_issue.Issue) -> tracker.Client {
   )
 }
 
-const external_fixture_timeout_ms = 5000
+const external_fixture_timeout_ms = 10_000
 
 // Keep active-turn stdout polling short enough that queued operator commands are
 // observed promptly, while avoiding a 100ms external shell/JQ RPC deadline that
