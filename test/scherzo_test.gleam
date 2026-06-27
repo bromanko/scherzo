@@ -1,7 +1,9 @@
+import gleam/erlang/process
 import gleam/io
 import gleam/list
 import gleam/result
 import gleam/string
+import simplifile
 
 // gleeunit.main runs every *_test function under test/. Scherzo keeps
 // explicit non-unit suites under test/ so they compile with the project, but
@@ -11,6 +13,16 @@ const contract_prefix = "contract/"
 const local_integration_prefix = "local_integration/"
 
 const real_pi_validation_prefix = "real_pi_validation/"
+
+const shared_tmp_dir = "test/tmp"
+
+const shared_tmp_lock_dir = "test/.tmp-suite-lock"
+
+const shared_tmp_lock_owner = "test/.tmp-suite-lock/owner"
+
+const shared_tmp_lock_wait_ms = 100
+
+const shared_tmp_lock_attempts = 600
 
 pub fn main() -> Nil {
   case args() {
@@ -75,11 +87,7 @@ fn run_suite(suite: Suite) -> Nil {
       halt(1)
     }
     _ -> {
-      let result =
-        files
-        |> list.map(gleam_to_erlang_module_name)
-        |> list.map(dangerously_convert_string_to_atom(_, Utf8))
-        |> run_eunit(options)
+      let result = run_files_with_shared_tmp_guard(files, options, suite)
 
       case result {
         Ok(_) -> halt(0)
@@ -231,6 +239,103 @@ fn suite_name(suite: Suite) -> String {
     RealPiValidation -> "real-pi-validation"
     All -> "all"
   }
+}
+
+fn run_files_with_shared_tmp_guard(
+  files: List(String),
+  options: List(EunitOption),
+  suite: Suite,
+) -> Result(Nil, a) {
+  let suite = suite_name(suite)
+  acquire_shared_tmp_lock(suite, shared_tmp_lock_attempts)
+  reset_shared_tmp_or_halt(suite)
+  let result = run_files(files, options)
+  release_shared_tmp_lock()
+  result
+}
+
+fn run_files(
+  files: List(String),
+  options: List(EunitOption),
+) -> Result(Nil, a) {
+  files
+  |> list.map(gleam_to_erlang_module_name)
+  |> list.map(dangerously_convert_string_to_atom(_, Utf8))
+  |> run_eunit(options)
+}
+
+fn acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
+  case simplifile.create_directory(shared_tmp_lock_dir) {
+    Ok(Nil) -> {
+      let _ = simplifile.write(shared_tmp_lock_owner, "suite=" <> suite <> "\n")
+      Nil
+    }
+    Error(simplifile.Eexist) -> {
+      case attempts <= 0 {
+        True -> {
+          io.println_error(
+            "Timed out waiting for "
+            <> shared_tmp_lock_dir
+            <> "; another test suite may still be using "
+            <> shared_tmp_dir
+            <> ". Remove the lock directory only if no test suite is running.",
+          )
+          halt(1)
+        }
+        False -> {
+          process.sleep(shared_tmp_lock_wait_ms)
+          acquire_shared_tmp_lock(suite, attempts - 1)
+        }
+      }
+    }
+    Error(error) -> {
+      io.println_error(
+        "Could not acquire "
+        <> shared_tmp_lock_dir
+        <> ": "
+        <> simplifile.describe_error(error),
+      )
+      halt(1)
+    }
+  }
+}
+
+fn reset_shared_tmp_or_halt(suite: String) -> Nil {
+  case simplifile.delete_all([shared_tmp_dir]) {
+    Ok(Nil) ->
+      case simplifile.create_directory_all(shared_tmp_dir) {
+        Ok(Nil) -> Nil
+        Error(error) -> {
+          release_shared_tmp_lock()
+          io.println_error(
+            "Could not recreate "
+            <> shared_tmp_dir
+            <> " for suite "
+            <> suite
+            <> ": "
+            <> simplifile.describe_error(error),
+          )
+          halt(1)
+        }
+      }
+    Error(error) -> {
+      release_shared_tmp_lock()
+      io.println_error(
+        "Could not reset "
+        <> shared_tmp_dir
+        <> " for suite "
+        <> suite
+        <> ": "
+        <> simplifile.describe_error(error),
+      )
+      halt(1)
+    }
+  }
+}
+
+fn release_shared_tmp_lock() -> Nil {
+  let _ = simplifile.delete_all([shared_tmp_lock_dir])
+  Nil
 }
 
 fn gleam_to_erlang_module_name(path: String) -> String {
