@@ -390,10 +390,7 @@ pub fn ui_websocket_client_reconnects_after_reader_failure_test() {
   let _ = test_async.expect_message(fixture.connects)
   expect_initial_outbound(fixture.outbound)
   append_inbound_line(fixture.inbound_path, "FAIL:down")
-  let delay = test_async.expect_message(fixture.delays)
-  assert delay == 0 || delay == 1000 || delay == 50
-  let delays = test_async.drain_subject(fixture.delays)
-  assert list.contains(delays, 50)
+  expect_delay(fixture.delays, 50, 10)
   let _ = test_async.expect_message(fixture.connects)
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
@@ -1113,6 +1110,19 @@ fn expect_initial_outbound(outbound: process.Subject(String)) -> Nil {
   assert string.contains(test_async.expect_message(outbound), "daemon_hello")
   assert string.contains(test_async.expect_message(outbound), "heartbeat")
   assert string.contains(test_async.expect_message(outbound), "daemon_state")
+}
+
+fn expect_delay(
+  subject: process.Subject(Int),
+  expected: Int,
+  attempts_remaining: Int,
+) -> Nil {
+  assert attempts_remaining > 0
+  let delay = test_async.expect_message(subject)
+  case delay == expected {
+    True -> Nil
+    False -> expect_delay(subject, expected, attempts_remaining - 1)
+  }
 }
 
 fn expect_next_outbound_contains(

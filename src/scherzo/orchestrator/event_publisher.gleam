@@ -70,54 +70,36 @@ pub fn lifecycle_with_recovery(
   message: Option(String),
   recovery: Option(session_event.RecoveryInfo),
 ) -> Nil {
-  let payload =
-    session_event.EventPayload(
-      ..session_event.empty_payload(
-        session_event.Lifecycle,
-        session_event.LifecycleName(name),
-      ),
-      message: message,
-      recovery: recovery,
-      tokens: session_tokens.zero_token_totals(),
-    )
+  let payload = session_event.lifecycle_payload(name, message, recovery)
   hub.publish(event_hub, session_id, payload)
 }
 
 pub fn update_payload(
   update: agent_types.PiUpdate,
 ) -> session_event.EventPayload {
-  session_event.EventPayload(
-    ..session_event.empty_payload(
-      kind_for_update(update),
-      session_event.PiName(update.event),
-    ),
-    turn: update.turn,
-    pi_type: pi_type_for_update(update),
-    message: update.message,
-    recovery: None,
-    request_id: update.request_id,
-    method: update.method,
-    tool_name: update.tool_name,
-    tool_input: update.tool_input,
-    tool_output: update.tool_output,
-    tool_status: update.tool_status,
-    tokens: update.tokens,
-    raw_json: update.raw_json,
+  session_event.pi_event_payload(
+    update.event,
+    update.turn,
+    update.message,
+    update.request_id,
+    update.method,
+    update.tool_name,
+    update.tool_input,
+    update.tool_output,
+    update.tool_status,
+    update.tokens,
+    update.raw_json,
   )
 }
 
 pub fn turn_update_payload(
   update: turn_telemetry.TurnLifecycleUpdate,
 ) -> session_event.EventPayload {
-  session_event.EventPayload(
-    ..session_event.empty_payload(
-      session_event.Turn,
-      session_event.TurnName(update.name),
-    ),
-    turn: Some(update.turn),
-    turn_status: turn_telemetry.status_for_event_name(update.name),
-    tokens: update.tokens,
-    reason: update.reason,
+  session_event.turn_payload(
+    update.name,
+    update.turn,
+    update.tokens,
+    update.reason,
   )
 }
 

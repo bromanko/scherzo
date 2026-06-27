@@ -213,13 +213,13 @@ fn render_fresh_event(
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
   let payload = stored_event.payload
-  case payload.name {
+  case event.payload_name(payload) {
     event.PiName(pi_event.TurnStart) ->
       render_pi_cycle_start(state, payload, options)
     event.PiName(pi_event.TurnEnd) ->
       render_pi_cycle_end(state, payload, options)
     _ ->
-      case payload.kind {
+      case event.payload_kind(payload) {
         event.AssistantMessage -> render_assistant(state, payload, options)
         event.Tool -> render_tool(state, payload, options)
         event.UiRequest -> render_ui_request(state, payload, options)
@@ -308,7 +308,7 @@ fn render_assistant(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  let delta = option.unwrap(payload.message, "")
+  let delta = option.unwrap(event.payload_message(payload), "")
   case delta == "" {
     True -> #(observe_pass(state, payload), [])
     False -> {
@@ -356,7 +356,7 @@ fn render_tool(
   let suppress_structured_input =
     should_suppress_structured_tool_input(state, label, payload)
   let payload = case suppress_structured_input {
-    True -> event.EventPayload(..payload, tool_input: None)
+    True -> event.without_tool_input(payload)
     False -> payload
   }
   let detailless_structured_tool_seen =
@@ -440,13 +440,13 @@ fn render_ui_request(
   let #(state, tool_close_chunks) =
     close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
-  let method = safe_option_string(payload.method, "unknown")
-  let request = safe_option_string(payload.request_id, "")
+  let method = safe_option_string(event.payload_method(payload), "unknown")
+  let request = safe_option_string(event.payload_request_id(payload), "")
   let suffix = case request == "" {
     True -> ""
     False -> " #" <> request
   }
-  let message_chunks = case payload.message {
+  let message_chunks = case event.payload_message(payload) {
     Some(message) -> plain_block_chunks("  ", message)
     None -> []
   }
@@ -478,7 +478,10 @@ fn render_ui_response(
     close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let method =
-    safe_option_string(payload.method, event.name_to_string(payload.name))
+    safe_option_string(
+      event.payload_method(payload),
+      event.payload_name_to_string(payload),
+    )
   #(
     RenderState(..state, assistant_active: False, assistant_line_open: False),
     list.flatten([
@@ -511,21 +514,21 @@ fn render_turn(
 }
 
 fn turn_event_line(payload: event.EventPayload) -> String {
-  let turn = case payload.turn {
+  let turn = case event.payload_turn(payload) {
     Some(turn) -> int.to_string(turn)
     None -> "?"
   }
-  let status = case payload.turn_status {
+  let status = case event.payload_turn_status(payload) {
     Some(status) -> turn_telemetry.status_to_string(status)
-    None -> event.name_to_string(payload.name)
+    None -> event.payload_name_to_string(payload)
   }
   "turn "
   <> turn
   <> " "
   <> status
-  <> turn_duration_suffix(payload.turn_duration_ms)
-  <> turn_token_delta_suffix(payload.token_delta.total)
-  <> turn_reason_suffix(payload.reason)
+  <> turn_duration_suffix(event.payload_turn_duration_ms(payload))
+  <> turn_token_delta_suffix(event.payload_token_delta(payload).total)
+  <> turn_reason_suffix(event.payload_reason(payload))
 }
 
 fn turn_duration_suffix(duration_ms: Option(Int)) -> String {
@@ -569,7 +572,7 @@ fn render_tokens(
   let #(state, close_chunks) = close_assistant(state, options.color_mode)
   let #(state, tool_close_chunks) =
     close_tool_with_gap(state, options.color_mode)
-  case tokens_are_nonzero(payload.tokens) {
+  case tokens_are_nonzero(event.payload_tokens(payload)) {
     False -> #(
       observe_pass(state, payload),
       list.append(close_chunks, tool_close_chunks),
@@ -589,7 +592,10 @@ fn render_tokens(
           tool_close_chunks,
           heading_chunks,
           [
-            Line(style.dim(options.color_mode, token_line(payload.tokens, pass))),
+            Line(style.dim(
+              options.color_mode,
+              token_line(event.payload_tokens(payload), pass),
+            )),
             Line(""),
           ],
         ]),
@@ -619,8 +625,14 @@ fn render_unknown(
     close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let name =
-    safe_option_string(payload.pi_type, event.name_to_string(payload.name))
-  let raw_chunks = case options.show_raw_unknown, payload.raw_json {
+    safe_option_string(
+      event.payload_pi_type(payload),
+      event.payload_name_to_string(payload),
+    )
+  let raw_chunks = case
+    options.show_raw_unknown,
+    event.payload_raw_json(payload)
+  {
     True, Some(raw) -> [
       Line(style.raw_label(
         options.color_mode,
@@ -652,7 +664,10 @@ fn render_error_event(
     close_tool_with_gap(state, options.color_mode)
   let #(state, heading_chunks) = ensure_pass_heading(state, payload, options)
   let message =
-    safe_option_string(payload.message, event.name_to_string(payload.name))
+    safe_option_string(
+      event.payload_message(payload),
+      event.payload_name_to_string(payload),
+    )
   let #(_, detail_chunks) =
     tool_detail_chunks(None, payload, options.color_mode)
   #(
@@ -673,11 +688,15 @@ fn render_pi_or_lifecycle(
   payload: event.EventPayload,
   options: RenderOptions,
 ) -> #(RenderState, List(RenderChunk)) {
-  case payload.kind, payload.message, options.show_lifecycle {
+  case
+    event.payload_kind(payload),
+    event.payload_message(payload),
+    options.show_lifecycle
+  {
     event.Pi, Some(_), _ ->
       render_assistant(
         state,
-        event.EventPayload(..payload, kind: event.AssistantMessage),
+        event.as_assistant_message_payload(payload),
         options,
       )
     _, _, True -> render_unknown(state, payload, options)
@@ -712,7 +731,7 @@ fn observe_pass(
   state: RenderState,
   payload: event.EventPayload,
 ) -> RenderState {
-  case payload.turn {
+  case event.payload_turn(payload) {
     Some(pass) -> observe_visible_pass(state, pass)
     None -> state
   }
@@ -736,7 +755,7 @@ fn visible_pass(
   state: RenderState,
   payload: event.EventPayload,
 ) -> Option(Int) {
-  case payload.turn {
+  case event.payload_turn(payload) {
     Some(pass) -> Some(pass)
     None -> state.current_pass
   }
@@ -847,8 +866,8 @@ fn tool_needs_label(
     False -> True
     True ->
       case
-        event.name_to_string(payload.name),
-        has_text(payload.tool_input),
+        event.payload_name_to_string(payload),
+        has_text(event.payload_tool_input(payload)),
         state.active_tool_section
       {
         "tool_execution_start", _, _ -> True
@@ -864,7 +883,7 @@ fn should_suppress_structured_tool_input(
   label: String,
   payload: event.EventPayload,
 ) -> Bool {
-  case payload.tool_input {
+  case event.payload_tool_input(payload) {
     Some(value) ->
       value == structured_tool_input_placeholder
       && list.contains(state.structured_tool_input_labels, label)
@@ -878,7 +897,7 @@ fn mark_structured_tool_input_displayed(
   payload: event.EventPayload,
   suppressed: Bool,
 ) -> RenderState {
-  case payload.tool_input, suppressed {
+  case event.payload_tool_input(payload), suppressed {
     Some(value), False ->
       case
         value == structured_tool_input_placeholder,
@@ -896,9 +915,9 @@ fn mark_structured_tool_input_displayed(
 }
 
 fn tool_has_visible_details(payload: event.EventPayload) -> Bool {
-  has_text(payload.tool_input)
-  || has_text(payload.tool_output)
-  || has_text(payload.tool_status)
+  has_text(event.payload_tool_input(payload))
+  || has_text(event.payload_tool_output(payload))
+  || has_text(event.payload_tool_status(payload))
 }
 
 fn tool_detail_chunks(
@@ -911,7 +930,7 @@ fn tool_detail_chunks(
       active_section,
       ToolInput,
       "input",
-      payload.tool_input,
+      event.payload_tool_input(payload),
       color_mode,
     )
   let #(active_section, output_chunks) =
@@ -919,10 +938,10 @@ fn tool_detail_chunks(
       active_section,
       ToolOutput,
       "output",
-      payload.tool_output,
+      event.payload_tool_output(payload),
       color_mode,
     )
-  let status_chunks = case payload.tool_status {
+  let status_chunks = case event.payload_tool_status(payload) {
     Some(status) ->
       case status == "" {
         True -> []
@@ -1030,8 +1049,8 @@ fn body_block_lines(value: String) -> List(String) {
 
 fn tool_closes(payload: event.EventPayload) -> Bool {
   case
-    payload.tool_status,
-    string.ends_with(event.name_to_string(payload.name), "_end")
+    event.payload_tool_status(payload),
+    string.ends_with(event.payload_name_to_string(payload), "_end")
   {
     Some(_), _ -> True
     None, True -> True
@@ -1040,9 +1059,9 @@ fn tool_closes(payload: event.EventPayload) -> Bool {
 }
 
 fn tool_label(payload: event.EventPayload) -> String {
-  case payload.tool_name {
+  case event.payload_tool_name(payload) {
     Some(name) -> "tool " <> sanitize.text(name)
-    None -> "tool " <> sanitize.text(event.name_to_string(payload.name))
+    None -> "tool " <> sanitize.text(event.payload_name_to_string(payload))
   }
 }
 

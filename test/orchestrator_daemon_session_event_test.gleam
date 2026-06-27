@@ -373,7 +373,7 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
   assert event_names(step_page.events) == ["step_started", "message_update"]
   let assert Some(message_event) =
     find_event(step_page.events, "message_update")
-  assert message_event.payload.kind == event.AssistantMessage
+  assert event.payload_kind(message_event.payload) == event.AssistantMessage
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -520,9 +520,9 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
       1000,
     )
   let assert Some(tool_event) = find_event(page.events, "message")
-  assert tool_event.payload.kind == event.Tool
-  assert tool_event.payload.tool_name == Some("bash")
-  assert tool_event.payload.tool_input == Some("gleam test")
+  assert event.payload_kind(tool_event.payload) == event.Tool
+  assert event.payload_tool_name(tool_event.payload) == Some("bash")
+  assert event.payload_tool_input(tool_event.payload) == Some("gleam test")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -746,7 +746,8 @@ pub fn daemon_post_success_cleanup_warning_publishes_recovery_cleanup_event_test
   let assert Ok(page) =
     wait_for_event_name(hub_subject, "ABC-CLEANUP-42-1", "recovery_cleanup", 20)
   let assert Some(cleanup_event) = find_event(page.events, "recovery_cleanup")
-  let assert Some(event_recovery) = cleanup_event.payload.recovery
+  let assert Some(event_recovery) =
+    event.payload_recovery(cleanup_event.payload)
   assert event_recovery.status == event.Cleanup
   assert event_recovery.source == "workflow.post_success_cleanup"
   assert list.contains(event_names(page.events), "worker_exited")
@@ -809,7 +810,8 @@ pub fn daemon_scheduled_post_success_cleanup_warning_publishes_recovery_cleanup_
   let assert Ok(page) =
     wait_for_event_name(hub_subject, session_id, "recovery_cleanup", 20)
   let assert Some(cleanup_event) = find_event(page.events, "recovery_cleanup")
-  let assert Some(event_recovery) = cleanup_event.payload.recovery
+  let assert Some(event_recovery) =
+    event.payload_recovery(cleanup_event.payload)
   assert event_recovery.status == event.Cleanup
   assert event_recovery.source == "workflow.post_success_cleanup"
   assert list.contains(event_names(page.events), "worker_exited")
@@ -1087,7 +1089,9 @@ fn find_event(
   case events {
     [] -> None
     [stored_event, ..rest] ->
-      case event.name_to_string(stored_event.payload.name) == name {
+      case
+        event.name_to_string(event.payload_name(stored_event.payload)) == name
+      {
         True -> Some(stored_event)
         False -> find_event(rest, name)
       }
@@ -1096,7 +1100,7 @@ fn find_event(
 
 fn event_names(events: List(event.SessionEvent)) -> List(String) {
   list.map(events, fn(stored_event) {
-    event.name_to_string(stored_event.payload.name)
+    event.name_to_string(event.payload_name(stored_event.payload))
   })
 }
 

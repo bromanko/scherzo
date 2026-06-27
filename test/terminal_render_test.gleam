@@ -1,5 +1,6 @@
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/agent/pi_event
 import scherzo/session/event
 import scherzo/session/tokens as session_tokens
 import scherzo/terminal/render
@@ -42,8 +43,7 @@ fn evt(cursor: Int, payload: event.EventPayload) -> event.SessionEvent {
 }
 
 fn payload(kind: event.EventKind, name: String) -> event.EventPayload {
-  let assert Ok(event_name) = event.name_from_string(name)
-  event.empty_payload(kind, event_name)
+  event.decoded_empty_payload(kind, name)
 }
 
 fn options() -> render.RenderOptions {
@@ -167,14 +167,12 @@ pub fn render_sanitizes_untrusted_text_and_keeps_own_ansi_test() {
     ),
     evt(
       5,
-      event.EventPayload(
-        ..payload(event.PiRaw, "unknown" <> escape_probe),
-        pi_type: Some("mystery" <> escape_probe),
-        raw_json: Some(event.RedactedRawJson(
+      payload(event.PiRaw, "unknown" <> escape_probe)
+        |> with_pi_type("mystery" <> escape_probe)
+        |> with_raw_json(event.RedactedRawJson(
           value: "{\"x\":\"" <> escape_probe <> "\"}",
           truncated: False,
         )),
-      ),
     ),
     evt(
       6,
@@ -273,16 +271,14 @@ pub fn render_defaults_to_scherzo_pass_and_hides_pi_cycles_test() {
     ),
     evt(
       10,
-      event.EventPayload(
-        ..payload(event.TokenStats, "turn_finished"),
-        tokens: session_tokens.TokenTotals(
+      payload(event.TokenStats, "turn_finished")
+        |> event.with_payload_tokens(session_tokens.TokenTotals(
           input: 10,
           output: 20,
           cache_read: 3,
           cache_write: 4,
           total: 37,
-        ),
-      ),
+        )),
     ),
     evt(11, payload(event.Lifecycle, "turn_end") |> with_turn(1)),
   ]
@@ -298,26 +294,56 @@ pub fn render_defaults_to_scherzo_pass_and_hides_pi_cycles_test() {
   assert !string.contains(transcript, "pi cycle")
 }
 
+pub fn render_default_hides_operator_lifecycle_pi_messages_test() {
+  let events = [
+    evt(
+      1,
+      event.pi_event_payload(
+        pi_event.OperatorPromptSent,
+        Some(1),
+        Some("operator prompt secret"),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        session_tokens.zero_token_totals(),
+        None,
+      ),
+    ),
+  ]
+
+  let #(_, chunks) =
+    render.render_events(render.initial_state(0), events, options())
+  let transcript = render.chunks_to_string(chunks)
+
+  assert transcript == ""
+}
+
 pub fn render_turn_events_are_visible_by_default_test() {
   let events = [
     evt(
       1,
-      event.EventPayload(
-        ..event.empty_payload(
-          event.Turn,
-          event.TurnName(turn_telemetry.EventFinished),
+      event.turn_payload(
+        turn_telemetry.EventFinished,
+        3,
+        session_tokens.zero_token_totals(),
+        None,
+      )
+        |> event.with_turn_terminal_details(
+          3,
+          Some(turn_telemetry.StatusFinished),
+          100,
+          Some(1500),
+          session_tokens.TokenTotals(
+            input: 10,
+            output: 5,
+            cache_read: 0,
+            cache_write: 0,
+            total: 15,
+          ),
         ),
-        turn: Some(3),
-        turn_status: Some(turn_telemetry.StatusFinished),
-        turn_duration_ms: Some(1500),
-        token_delta: session_tokens.TokenTotals(
-          input: 10,
-          output: 5,
-          cache_read: 0,
-          cache_write: 0,
-          total: 15,
-        ),
-      ),
     ),
   ]
 
@@ -642,17 +668,15 @@ pub fn render_ui_request_body_and_pass_token_summary_test() {
     ),
     evt(
       3,
-      event.EventPayload(
-        ..payload(event.TokenStats, "turn_finished")
-        |> with_turn(1),
-        tokens: session_tokens.TokenTotals(
+      payload(event.TokenStats, "turn_finished")
+        |> with_turn(1)
+        |> event.with_payload_tokens(session_tokens.TokenTotals(
           input: 1,
           output: 2,
           cache_read: 0,
           cache_write: 0,
           total: 3,
-        ),
-      ),
+        )),
     ),
   ]
 
@@ -668,11 +692,9 @@ pub fn render_unknown_event_fallback_can_show_raw_excerpt_test() {
   let stored_event =
     evt(
       1,
-      event.EventPayload(
-        ..payload(event.PiRaw, "unknown"),
-        pi_type: Some("mystery"),
-        raw_json: Some(event.RedactedRawJson(value: raw, truncated: False)),
-      ),
+      payload(event.PiRaw, "unknown")
+        |> with_pi_type("mystery")
+        |> with_raw_json(event.RedactedRawJson(value: raw, truncated: False)),
     )
   let opts =
     render.RenderOptions(
@@ -689,55 +711,154 @@ pub fn render_unknown_event_fallback_can_show_raw_excerpt_test() {
     == "event mystery\n  raw: {\"type\":\"mystery\",\"detail\":\"one\\ntwo\"}\n\n"
 }
 
+type PayloadPatch {
+  PayloadPatch(
+    turn: Option(Int),
+    pi_type: Option(String),
+    message: Option(String),
+    request_id: Option(String),
+    method: Option(String),
+    tool_name: Option(String),
+    tool_input: Option(String),
+    tool_output: Option(String),
+    tool_status: Option(String),
+    raw_json: Option(event.RedactedRawJson),
+  )
+}
+
+fn payload_patch(payload: event.EventPayload) -> PayloadPatch {
+  PayloadPatch(
+    turn: event.payload_turn(payload),
+    pi_type: event.payload_pi_type(payload),
+    message: event.payload_message(payload),
+    request_id: event.payload_request_id(payload),
+    method: event.payload_method(payload),
+    tool_name: event.payload_tool_name(payload),
+    tool_input: event.payload_tool_input(payload),
+    tool_output: event.payload_tool_output(payload),
+    tool_status: event.payload_tool_status(payload),
+    raw_json: event.payload_raw_json(payload),
+  )
+}
+
+fn apply_patch(
+  payload: event.EventPayload,
+  patch: PayloadPatch,
+) -> event.EventPayload {
+  event.decoded_payload(
+    event.payload_kind(payload),
+    event.payload_name_to_string(payload),
+    patch.turn,
+    patch.pi_type,
+    patch.message,
+    event.payload_recovery(payload),
+    patch.request_id,
+    patch.method,
+    patch.tool_name,
+    patch.tool_input,
+    patch.tool_output,
+    patch.tool_status,
+    event.payload_tokens(payload),
+    event.payload_turn_status(payload),
+    event.payload_turn_started_at_ms(payload),
+    event.payload_turn_finished_at_ms(payload),
+    event.payload_turn_duration_ms(payload),
+    event.payload_token_delta(payload),
+    event.payload_reason(payload),
+    patch.raw_json,
+  )
+}
+
 fn with_turn(payload: event.EventPayload, turn: Int) -> event.EventPayload {
-  event.EventPayload(..payload, turn: Some(turn))
+  apply_patch(payload, PayloadPatch(..payload_patch(payload), turn: Some(turn)))
+}
+
+fn with_pi_type(
+  payload: event.EventPayload,
+  pi_type: String,
+) -> event.EventPayload {
+  apply_patch(
+    payload,
+    PayloadPatch(..payload_patch(payload), pi_type: Some(pi_type)),
+  )
 }
 
 fn with_message(
   payload: event.EventPayload,
   message: String,
 ) -> event.EventPayload {
-  event.EventPayload(..payload, message: Some(message))
+  apply_patch(
+    payload,
+    PayloadPatch(..payload_patch(payload), message: Some(message)),
+  )
 }
 
 fn with_tool_name(
   payload: event.EventPayload,
   name: String,
 ) -> event.EventPayload {
-  event.EventPayload(..payload, tool_name: Some(name))
+  apply_patch(
+    payload,
+    PayloadPatch(..payload_patch(payload), tool_name: Some(name)),
+  )
 }
 
 fn with_tool_input(
   payload: event.EventPayload,
   input: String,
 ) -> event.EventPayload {
-  event.EventPayload(..payload, tool_input: Some(input))
+  apply_patch(
+    payload,
+    PayloadPatch(..payload_patch(payload), tool_input: Some(input)),
+  )
 }
 
 fn with_tool_output(
   payload: event.EventPayload,
   output: String,
 ) -> event.EventPayload {
-  event.EventPayload(..payload, tool_output: Some(output))
+  apply_patch(
+    payload,
+    PayloadPatch(..payload_patch(payload), tool_output: Some(output)),
+  )
 }
 
 fn with_tool_status(
   payload: event.EventPayload,
   status: String,
 ) -> event.EventPayload {
-  event.EventPayload(..payload, tool_status: Some(status))
+  apply_patch(
+    payload,
+    PayloadPatch(..payload_patch(payload), tool_status: Some(status)),
+  )
 }
 
 fn with_method(
   payload: event.EventPayload,
   method: String,
 ) -> event.EventPayload {
-  event.EventPayload(..payload, method: Some(method))
+  apply_patch(
+    payload,
+    PayloadPatch(..payload_patch(payload), method: Some(method)),
+  )
 }
 
 fn with_request_id(
   payload: event.EventPayload,
   request_id: String,
 ) -> event.EventPayload {
-  event.EventPayload(..payload, request_id: Some(request_id))
+  apply_patch(
+    payload,
+    PayloadPatch(..payload_patch(payload), request_id: Some(request_id)),
+  )
+}
+
+fn with_raw_json(
+  payload: event.EventPayload,
+  raw_json: event.RedactedRawJson,
+) -> event.EventPayload {
+  apply_patch(
+    payload,
+    PayloadPatch(..payload_patch(payload), raw_json: Some(raw_json)),
+  )
 }

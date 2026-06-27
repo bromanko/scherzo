@@ -2486,12 +2486,10 @@ fn publish_retained_events(
       hub.publish(
         hub_subject,
         session_id,
-        event.EventPayload(
-          ..event.empty_payload(
-            event.Lifecycle,
-            event.LifecycleName(event.DispatchStarted),
-          ),
-          message: Some(large_history_marker() <> "-" <> int_to_string(index)),
+        event.lifecycle_payload(
+          event.DispatchStarted,
+          Some(large_history_marker() <> "-" <> int_to_string(index)),
+          None,
         ),
       )
       publish_retained_events(hub_subject, session_id, event_count, index + 1)

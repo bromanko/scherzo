@@ -290,10 +290,10 @@ pub fn turn_update_helpers_emit_sanitized_runner_updates_test() {
   assert started_update.turn == 3
   assert started_update.tokens == session_tokens.zero_token_totals()
   let started_payload = event_publisher.turn_update_payload(started_update)
-  assert started_payload.kind == event.Turn
-  assert started_payload.message == None
-  assert started_payload.raw_json == None
-  assert started_payload.tool_input == None
+  assert event.payload_kind(started_payload) == event.Turn
+  assert event.payload_message(started_payload) == None
+  assert event.payload_raw_json(started_payload) == None
+  assert event.payload_tool_input(started_payload) == None
 
   let totals =
     session_tokens.TokenTotals(

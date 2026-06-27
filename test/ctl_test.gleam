@@ -3698,22 +3698,25 @@ fn turn_finished_event(session_id: String) -> event.SessionEvent {
     at_ms: 10,
     session_id: session_id,
     issue_id: "issue-1",
-    payload: event.EventPayload(
-      ..event.empty_payload(
-        event.Turn,
-        event.TurnName(turn_telemetry.EventFinished),
+    payload: event.turn_payload(
+      turn_telemetry.EventFinished,
+      3,
+      session_tokens.zero_token_totals(),
+      None,
+    )
+      |> event.with_turn_terminal_details(
+        3,
+        Some(turn_telemetry.StatusFinished),
+        10,
+        Some(1500),
+        session_tokens.TokenTotals(
+          input: 10,
+          output: 5,
+          cache_read: 0,
+          cache_write: 0,
+          total: 15,
+        ),
       ),
-      turn: Some(3),
-      turn_status: Some(turn_telemetry.StatusFinished),
-      turn_duration_ms: Some(1500),
-      token_delta: session_tokens.TokenTotals(
-        input: 10,
-        output: 5,
-        cache_read: 0,
-        cache_write: 0,
-        total: 15,
-      ),
-    ),
   )
 }
 
@@ -3774,10 +3777,7 @@ fn replay_event(session_id: String) -> event.SessionEvent {
     at_ms: 10,
     session_id: session_id,
     issue_id: "issue-1",
-    payload: event.empty_payload(
-      event.Lifecycle,
-      event.LifecycleName(event.WorkerStarted),
-    ),
+    payload: event.lifecycle_payload(event.WorkerStarted, None, None),
   )
 }
 

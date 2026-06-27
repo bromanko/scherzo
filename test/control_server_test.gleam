@@ -44,9 +44,18 @@ fn summary(session_id: String) -> event.SessionSummary {
 }
 
 fn payload(name: String) -> event.EventPayload {
-  event.empty_payload(
-    event.Lifecycle,
-    event.PiName(pi_event.UnknownPiEvent(name)),
+  event.pi_event_payload(
+    pi_event.UnknownPiEvent(name),
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    session_tokens.zero_token_totals(),
+    None,
   )
 }
 
@@ -528,7 +537,7 @@ pub fn server_returns_event_page_test() {
   let assert Ok(page) = client.get_events(control_file, "session-events", 0, 10)
 
   assert list.map(page.events, fn(stored_event) {
-      event.name_to_string(stored_event.payload.name)
+      event.name_to_string(event.payload_name(stored_event.payload))
     })
     == ["first", "second"]
   assert page.truncated == False
@@ -543,10 +552,18 @@ pub fn server_returns_large_event_page_test() {
   hub.publish(
     subject,
     "session-large-events",
-    event.EventPayload(
-      ..payload("large_raw_json"),
-      kind: event.PiRaw,
-      raw_json: Some(event.RedactedRawJson(value: large_raw, truncated: False)),
+    event.pi_event_payload(
+      pi_event.UnknownPiEvent("large_raw_json"),
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      None,
+      session_tokens.zero_token_totals(),
+      Some(event.RedactedRawJson(value: large_raw, truncated: False)),
     ),
   )
   let assert Ok(waited_page) =
@@ -558,7 +575,7 @@ pub fn server_returns_large_event_page_test() {
     client.get_events(control_file, "session-large-events", 0, 10)
 
   let assert [stored_event] = page.events
-  let assert Some(raw_json) = stored_event.payload.raw_json
+  let assert Some(raw_json) = event.payload_raw_json(stored_event.payload)
   assert string.length(raw_json.value) == 20_000
 
   server.stop(server_handle)
@@ -582,7 +599,7 @@ pub fn server_stream_closes_after_exited_session_replay_test() {
       fn(stored_event) {
         process.send(
           event_subject,
-          event.name_to_string(stored_event.payload.name),
+          event.name_to_string(event.payload_name(stored_event.payload)),
         )
         client.Continue
       },
@@ -609,7 +626,8 @@ pub fn server_streams_events_by_polling_after_cursor_test() {
           "session-stream",
           0,
           fn(stored_event) {
-            let event_name = event.name_to_string(stored_event.payload.name)
+            let event_name =
+              event.name_to_string(event.payload_name(stored_event.payload))
             process.send(event_subject, event_name)
             case event_name == "after" {
               True -> client.Stop
@@ -649,7 +667,7 @@ pub fn server_stop_closes_active_stream_test() {
           fn(stored_event) {
             process.send(
               event_subject,
-              event.name_to_string(stored_event.payload.name),
+              event.name_to_string(event.payload_name(stored_event.payload)),
             )
             client.Continue
           },

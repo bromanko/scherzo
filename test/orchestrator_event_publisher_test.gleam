@@ -39,8 +39,8 @@ pub fn event_publisher_classifies_raw_unknown_pi_event_test() {
       None,
       session_tokens.zero_token_totals(),
     ))
-  assert payload.kind == event.PiRaw
-  assert payload.pi_type == Some("unknown_event")
+  assert event.payload_kind(payload) == event.PiRaw
+  assert event.payload_pi_type(payload) == Some("unknown_event")
 }
 
 pub fn event_publisher_classifies_blocking_ui_request_test() {
@@ -52,7 +52,7 @@ pub fn event_publisher_classifies_blocking_ui_request_test() {
       None,
       session_tokens.zero_token_totals(),
     ))
-  assert payload.kind == event.UiRequest
+  assert event.payload_kind(payload) == event.UiRequest
 }
 
 pub fn event_publisher_classifies_nonblocking_ui_request_as_pi_test() {
@@ -64,7 +64,33 @@ pub fn event_publisher_classifies_nonblocking_ui_request_as_pi_test() {
       None,
       session_tokens.zero_token_totals(),
     ))
-  assert payload.kind == event.Pi
+  assert event.payload_kind(payload) == event.Pi
+}
+
+pub fn event_publisher_classifies_operator_updates_as_lifecycle_test() {
+  let operator_update =
+    update(
+      "operator_prompt_sent",
+      None,
+      None,
+      None,
+      session_tokens.zero_token_totals(),
+    )
+  let recovery_update =
+    update(
+      "context_recovery_started",
+      None,
+      None,
+      None,
+      session_tokens.zero_token_totals(),
+    )
+
+  assert event.payload_kind(event_publisher.update_payload(operator_update))
+    == event.Lifecycle
+  assert event_publisher.kind_for_update(operator_update) == event.Lifecycle
+  assert event.payload_kind(event_publisher.update_payload(recovery_update))
+    == event.Lifecycle
+  assert event_publisher.kind_for_update(recovery_update) == event.Lifecycle
 }
 
 pub fn event_publisher_classifies_tool_shaped_message_test() {
@@ -76,7 +102,7 @@ pub fn event_publisher_classifies_tool_shaped_message_test() {
       Some("shell"),
       session_tokens.zero_token_totals(),
     ))
-  assert payload.kind == event.Tool
+  assert event.payload_kind(payload) == event.Tool
 }
 
 pub fn event_publisher_classifies_turn_finished_tokens_test() {
@@ -96,8 +122,8 @@ pub fn event_publisher_classifies_turn_finished_tokens_test() {
       None,
       tokens,
     ))
-  assert payload.kind == event.TokenStats
-  assert payload.tokens == tokens
+  assert event.payload_kind(payload) == event.TokenStats
+  assert event.payload_tokens(payload) == tokens
 }
 
 pub fn turn_update_payload_is_sanitized_for_all_lifecycle_names_test() {
@@ -147,7 +173,7 @@ pub fn worker_update_turn_bridge_computes_token_delta_with_real_hub_test() {
   assert summary.last_turn_token_delta.total == 15
   let assert Ok(page) = hub.events_after(subject, "session-1", 0, 10, 1000)
   let assert [_, finished] = page.events
-  assert finished.payload.token_delta.total == 15
+  assert event.payload_token_delta(finished.payload).total == 15
   hub.stop(subject)
 }
 
@@ -171,8 +197,8 @@ pub fn worker_update_turn_bridge_terminal_does_not_retain_secrets_test() {
     == Some(turn_telemetry.ReasonOperatorStopAfterCurrentTurn)
   let assert Ok(page) = hub.events_after(subject, "session-1", 0, 10, 1000)
   let assert [stored_event] = page.events
-  assert stored_event.payload.message == None
-  assert stored_event.payload.raw_json == None
+  assert event.payload_message(stored_event.payload) == None
+  assert event.payload_raw_json(stored_event.payload) == None
   hub.stop(subject)
 }
 
@@ -187,14 +213,14 @@ fn assert_turn_payload(
       token_totals(1, 2, 0, 0, 3),
       reason,
     ))
-  assert payload.kind == event.Turn
-  assert payload.name == event.TurnName(name)
-  assert payload.turn == Some(3)
-  assert payload.raw_json == None
-  assert payload.message == None
-  assert payload.tool_input == None
-  assert payload.tool_output == None
-  assert payload.reason == reason
+  assert event.payload_kind(payload) == event.Turn
+  assert event.payload_name(payload) == event.TurnName(name)
+  assert event.payload_turn(payload) == Some(3)
+  assert event.payload_raw_json(payload) == None
+  assert event.payload_message(payload) == None
+  assert event.payload_tool_input(payload) == None
+  assert event.payload_tool_output(payload) == None
+  assert event.payload_reason(payload) == reason
 }
 
 fn turn_update(

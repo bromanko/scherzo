@@ -433,7 +433,7 @@ pub fn error_message(error: ControlError) -> String {
 }
 
 pub fn compact_event_line(stored_event: event.SessionEvent) -> String {
-  case stored_event.payload.kind {
+  case event.payload_kind(stored_event.payload) {
     event.Turn -> compact_turn_event_line(stored_event)
     _ ->
       int.to_string(stored_event.cursor)
@@ -442,10 +442,10 @@ pub fn compact_event_line(stored_event: event.SessionEvent) -> String {
       <> " "
       <> stored_event.session_id
       <> " "
-      <> event.kind_to_string(stored_event.payload.kind)
+      <> event.kind_to_string(event.payload_kind(stored_event.payload))
       <> " "
-      <> event.name_to_string(stored_event.payload.name)
-      <> compact_message(stored_event.payload.message)
+      <> event.payload_name_to_string(stored_event.payload)
+      <> compact_message(event.payload_message(stored_event.payload))
   }
 }
 
@@ -458,12 +458,12 @@ fn compact_turn_event_line(stored_event: event.SessionEvent) -> String {
   <> " session="
   <> stored_event.session_id
   <> " kind=turn name="
-  <> event.name_to_string(payload.name)
-  <> compact_turn_field(payload.turn)
-  <> compact_turn_status_field(payload.turn_status)
-  <> compact_duration_field(payload.turn_duration_ms)
-  <> compact_token_delta_field(payload.token_delta.total)
-  <> compact_reason_field(payload.reason)
+  <> event.payload_name_to_string(payload)
+  <> compact_turn_field(event.payload_turn(payload))
+  <> compact_turn_status_field(event.payload_turn_status(payload))
+  <> compact_duration_field(event.payload_turn_duration_ms(payload))
+  <> compact_token_delta_field(event.payload_token_delta(payload).total)
+  <> compact_reason_field(event.payload_reason(payload))
 }
 
 fn compact_turn_field(turn: Option(Int)) -> String {
