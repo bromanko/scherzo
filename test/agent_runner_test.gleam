@@ -195,10 +195,7 @@ fn drain_updates(
   subject: process.Subject(agent_types.RunnerUpdate),
   acc: List(agent_types.RunnerUpdate),
 ) -> List(agent_types.RunnerUpdate) {
-  case process.receive(subject, within: 10) {
-    Ok(update) -> drain_updates(subject, [update, ..acc])
-    Error(_) -> list.reverse(acc)
-  }
+  list.append(list.reverse(acc), test_async.drain_subject(subject))
 }
 
 fn find_update(

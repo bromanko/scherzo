@@ -431,10 +431,7 @@ pub fn effect_runner_runs_successful_effect_once_test() {
     _,
     effect_runner.CleanupFinished("workspace", Ok(Nil)),
   )) = process.receive(completions, within: 1000)
-  case process.receive(completions, within: 50) {
-    Error(_) -> Nil
-    Ok(_) -> panic as "duplicate completion"
-  }
+  test_async.assert_no_extra_message_within(completions, 50)
   assert effect_runner.shutdown(runner, 1000) == Ok(Nil)
 }
 
@@ -516,10 +513,7 @@ pub fn effect_runner_shutdown_waits_for_in_flight_effect_test() {
       process.send(shutdown_result, effect_runner.shutdown(runner, 1000))
     })
 
-  case process.receive(shutdown_result, within: 50) {
-    Error(_) -> Nil
-    Ok(_) -> panic as "shutdown returned before in-flight effect completed"
-  }
+  test_async.assert_no_extra_message_within(shutdown_result, 50)
 
   test_async.release_barrier(barrier)
 
@@ -569,10 +563,7 @@ pub fn effect_runner_shutdown_drops_queued_effects_test() {
       process.send(shutdown_result, effect_runner.shutdown(runner, 1000))
     })
 
-  case process.receive(started, within: 50) {
-    Error(_) -> Nil
-    Ok(_) -> panic as "unexpected queued effect start"
-  }
+  test_async.assert_no_extra_message_within(started, 50)
 
   test_async.release_barrier(barrier)
 

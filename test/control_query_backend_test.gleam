@@ -17,6 +17,7 @@ import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/work_item
 import support/fake_tracker_adapter
+import test_async
 
 fn effective_config() -> config_types.EffectiveConfig {
   config_types.EffectiveConfig(
@@ -588,7 +589,7 @@ pub fn backend_rejects_mismatched_work_item_cursor_before_querying_adapter_test(
 
   assert code == types.InvalidCursor
   assert message == "invalid query cursor"
-  let assert Error(Nil) = process.receive(requests, within: 20)
+  test_async.assert_no_extra_message(requests)
 }
 
 pub fn backend_work_item_list_applies_search_archive_sort_and_cursor_test() {

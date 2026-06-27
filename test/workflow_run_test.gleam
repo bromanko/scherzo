@@ -5216,7 +5216,7 @@ pub fn contracted_mapped_input_missing_fails_before_prepare_test() {
       dependencies,
     )
   assert failure.reason == "workflow_required_input_missing:exec_plan"
-  assert process.receive(subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message(subject)
 }
 
 pub fn contracted_existing_mismatched_input_manifest_fails_before_prepare_test() {
@@ -5264,7 +5264,7 @@ pub fn contracted_existing_mismatched_input_manifest_fails_before_prepare_test()
     failure.reason,
     "existing_input_manifest_mismatch:runs/run-1/inputs.v1.json",
   )
-  assert process.receive(subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message(subject)
 }
 
 pub fn opted_in_workstream_phase_emits_handoff_and_next_action_test() {

@@ -327,7 +327,7 @@ pub fn server_rejects_bad_token_before_query_backend_test() {
   let assert Error(client.RequestFailed(code, _)) =
     client.query(bad_control_file, query_types.Status)
   assert code == "unauthorized"
-  let assert Error(Nil) = process.receive(query_subject, within: 100)
+  test_async.assert_no_extra_message_within(query_subject, 100)
 
   server.stop(server_handle)
   hub.stop(subject)
@@ -430,7 +430,7 @@ pub fn server_rejects_bad_token_before_mutating_backend_test() {
   let assert Error(client.RequestFailed(code, _)) =
     client.apply_command(bad_control_file, command.PauseDispatch)
   assert code == "unauthorized"
-  let assert Error(Nil) = process.receive(command_subject, within: 100)
+  test_async.assert_no_extra_message_within(command_subject, 100)
 
   server.stop(server_handle)
   hub.stop(subject)

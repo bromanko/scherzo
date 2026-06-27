@@ -28,6 +28,7 @@ import scherzo/workflow_run
 import scherzo/workflow_run/contract_io
 import simplifile
 import support/test_helpers
+import test_async
 
 pub fn recollect_outputs_daemon_applies_without_worker_or_terminal_records_test() {
   let dir = "test/tmp/daemon-recollect-outputs/applied"
@@ -60,7 +61,7 @@ pub fn recollect_outputs_daemon_applies_without_worker_or_terminal_records_test(
   assert list.length(after) == list.length(before) + 1
   assert last(after) == Some("workflow_run_outputs_recorded")
   assert count_kind(after, "workflow_run_finished") == before_finished
-  assert process.receive(worker_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message(worker_subject)
   let assert Ok(output_ref) = latest_output_ref(root)
   assert output_ref == "runs/run-1/recollections/1/outputs.v1.json"
   let assert Ok(step_ref) = latest_step_artifact_ref(root)
@@ -117,7 +118,7 @@ pub fn recollect_outputs_daemon_rejects_parked_issue_without_mutation_test() {
   let assert Some(message) = result.message
   assert string.contains(message, "unpark before recollect-outputs")
   assert after == before
-  assert process.receive(worker_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message(worker_subject)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -152,7 +153,7 @@ pub fn recollect_outputs_daemon_rejects_missing_artifact_without_mutation_test()
   assert command.status_reason(result.status)
     == Some("artifact_recovery_failed")
   assert after == before
-  assert process.receive(worker_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message(worker_subject)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -187,7 +188,7 @@ pub fn recollect_outputs_daemon_applies_for_terminal_issue_state_test() {
   assert command.status_to_string(result.status) == "applied"
   let assert Some(message) = result.message
   assert string.contains(message, "recollected workflow outputs for run-1")
-  assert process.receive(worker_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message(worker_subject)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -221,7 +222,7 @@ pub fn recollect_outputs_daemon_is_idempotent_when_latest_manifest_valid_test() 
   let assert Some(message) = result.message
   assert string.contains(message, "workflow outputs already valid for run-1")
   assert after == before
-  assert process.receive(worker_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message(worker_subject)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -257,7 +258,7 @@ pub fn recollect_outputs_daemon_rejects_current_workflow_unavailable_without_mut
   let assert Some(message) = result.message
   assert string.contains(message, "unknown_workflow_label")
   assert after == before
-  assert process.receive(worker_subject, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message(worker_subject)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)

@@ -35,6 +35,7 @@ import scherzo/workspace
 import scherzo/workspace_manifest
 import simplifile
 import support/test_helpers
+import test_async
 
 const ps_now_ms = -576_460_678_330
 
@@ -342,14 +343,14 @@ fn subject_inline(subject: process.Subject(OutMsg)) -> fn(String) -> Nil {
 }
 
 fn drain_output(subject: process.Subject(OutMsg)) -> String {
-  drain_output_loop(subject, "")
+  drain_output_messages(test_async.drain_subject(subject), "")
 }
 
-fn drain_output_loop(subject: process.Subject(OutMsg), acc: String) -> String {
-  case process.receive(subject, within: 10) {
-    Ok(OutLine(text)) -> drain_output_loop(subject, acc <> text <> "\n")
-    Ok(OutInline(text)) -> drain_output_loop(subject, acc <> text)
-    Error(Nil) -> acc
+fn drain_output_messages(messages: List(OutMsg), acc: String) -> String {
+  case messages {
+    [] -> acc
+    [OutLine(text), ..rest] -> drain_output_messages(rest, acc <> text <> "\n")
+    [OutInline(text), ..rest] -> drain_output_messages(rest, acc <> text)
   }
 }
 

@@ -21,6 +21,7 @@ import scherzo/workstream/start_key
 import scherzo/workstream/types
 import simplifile
 import support/test_helpers
+import test_async
 
 type CtlOutMsg {
   CtlOutLine(String)
@@ -42,17 +43,15 @@ fn capture_inline(subject: process.Subject(CtlOutMsg)) -> fn(String) -> Nil {
 }
 
 fn drain_ctl_output(subject: process.Subject(CtlOutMsg)) -> String {
-  drain_ctl_output_loop(subject, "")
+  drain_ctl_output_messages(test_async.drain_subject(subject), "")
 }
 
-fn drain_ctl_output_loop(
-  subject: process.Subject(CtlOutMsg),
-  acc: String,
-) -> String {
-  case process.receive(subject, within: 10) {
-    Ok(CtlOutLine(text)) -> drain_ctl_output_loop(subject, acc <> text <> "\n")
-    Ok(CtlOutInline(text)) -> drain_ctl_output_loop(subject, acc <> text)
-    Error(Nil) -> acc
+fn drain_ctl_output_messages(messages: List(CtlOutMsg), acc: String) -> String {
+  case messages {
+    [] -> acc
+    [CtlOutLine(text), ..rest] ->
+      drain_ctl_output_messages(rest, acc <> text <> "\n")
+    [CtlOutInline(text), ..rest] -> drain_ctl_output_messages(rest, acc <> text)
   }
 }
 

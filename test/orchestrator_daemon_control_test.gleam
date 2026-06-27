@@ -1795,7 +1795,7 @@ pub fn startup_recovery_of_parked_issue_does_not_repost_park_comment_test() {
     orchestrator_state.linear_issue_id_identity("recovered-park"),
   )
   assert read_snapshot.counts.parked_tasks == 1
-  assert process.receive(park_subject, within: 100) == Error(Nil)
+  test_async.assert_no_extra_message_within(park_subject, 100)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -2187,7 +2187,7 @@ pub fn work_item_action_replays_from_daemon_receipts_test() {
     daemon.apply_operator_command(started.data, request, 1000)
   assert first == second
   let assert Ok("lookup:card-1") = process.receive(lookup_calls, within: 1000)
-  assert process.receive(lookup_calls, within: 20) == Error(Nil)
+  test_async.assert_no_extra_message(lookup_calls)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
