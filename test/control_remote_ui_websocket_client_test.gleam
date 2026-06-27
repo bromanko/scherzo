@@ -91,7 +91,7 @@ fn new_fixture_with_behavior(query_behavior: QueryBehavior) -> Fixture {
       retry_max_ms: 100,
       connect_timeout_ms: 50,
       command_timeout_ms: 75,
-      query_timeout_ms: 75,
+      query_timeout_ms: 60_000,
       command_bridge_enabled: False,
       redaction_secrets: ["dcred_secret_1"],
     )

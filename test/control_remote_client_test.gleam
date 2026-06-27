@@ -896,6 +896,7 @@ fn new_fixture_with_settings_and_query(
           ApplyImmediately ->
             Ok(command.applied(operator_command, Some("applied")))
           ApplyDelay(delay_ms) -> {
+            // nolint: scherzo_no_process_sleep_in_tests -- this fixture branch models an already in-flight remote command; tests assert duplicate suppression while the fake backend is deliberately delayed.
             process.sleep(delay_ms)
             Ok(command.applied(operator_command, Some("applied")))
           }
@@ -907,6 +908,7 @@ fn new_fixture_with_settings_and_query(
         case query_behavior {
           QueryImmediately -> status_query_result(settings)
           QueryDelay(delay_ms) -> {
+            // nolint: scherzo_no_process_sleep_in_tests -- this fixture branch models an already in-flight remote query; tests assert stale/duplicate handling while the fake backend is deliberately delayed.
             process.sleep(delay_ms)
             status_query_result(settings)
           }

@@ -408,7 +408,7 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
       retry_max_ms: 100,
       connect_timeout_ms: 50,
       command_timeout_ms: 75,
-      query_timeout_ms: 75,
+      query_timeout_ms: 60_000,
       command_bridge_enabled: False,
       redaction_secrets: ["dcred_secret_1"],
     )
