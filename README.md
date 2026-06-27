@@ -119,7 +119,7 @@ direnv exec . gleam test
 # Shell-heavy script/workflow/daemon/process/driver contract suite
 direnv exec . scherzo-test-contract
 # CI-friendly shards are also available, for example:
-direnv exec . gleam test -- --suite contract-runtime
+direnv exec . scherzo-test-contract runtime
 
 # Production lint gates
 direnv exec . gleam run -m glinter
@@ -155,14 +155,14 @@ Shell-heavy script, workflow-helper, renderer, daemon/service, port/process, pi-
 direnv exec . scherzo-test-contract
 ```
 
-For CI or local runners with per-command timeouts, run the contract shards separately and clean `test/tmp` between them:
+For CI or local runners with per-command timeouts, run the contract shards separately. The test runner serializes suites with `test/.tmp-suite-lock` and resets `test/tmp` at suite start, so parallel suite invocations wait instead of sharing scratch space; do not clean `test/tmp` manually while another suite is active:
 
 ```sh
-direnv exec . gleam test -- --suite contract-runtime
-direnv exec . gleam test -- --suite contract-orchestrator
-direnv exec . gleam test -- --suite contract-tracker
-direnv exec . gleam test -- --suite contract-workflow
-direnv exec . gleam test -- --suite contract-repository
+direnv exec . scherzo-test-contract runtime
+direnv exec . scherzo-test-contract orchestrator
+direnv exec . scherzo-test-contract tracker
+direnv exec . scherzo-test-contract workflow
+direnv exec . scherzo-test-contract repository
 ```
 
 Run the contract suite or the relevant shards when changing helper scripts such as `.scherzo/workflows/scripts/scherzo-review` or `.scherzo/workflows/scripts/scherzo-implementation`, ExecPlan HTML rendering, daemon/service behavior, port/pi-client process boundaries, workspace driver scripts, or before relying on repository confidence from the final gate.
