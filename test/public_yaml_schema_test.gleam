@@ -174,7 +174,12 @@ fn assert_config_rejected(yaml: String) {
 
 fn assert_workflow_parses(path: String) {
   let assert Ok(contents) = simplifile.read(path)
-  let assert Ok(_) = workflow_dag.parse(contents)
+  assert_workflow_parses_source(contents)
+}
+
+fn assert_workflow_parses_source(yaml: String) {
+  let assert Ok(_) = workflow_dag.parse(yaml)
+  Nil
 }
 
 fn assert_workflow_rejected(yaml: String) {
@@ -923,6 +928,23 @@ pub fn workflow_schema_only_invalid_shapes_are_rejected_test() {
       yaml,
     )
   })
+}
+
+pub fn workflow_schema_accepts_top_level_model_defaults_test() {
+  let yaml =
+    "version: 1\n"
+    <> "id: sample\n"
+    <> "model: openai/gpt-5.1\n"
+    <> "thinking: medium\n"
+    <> "steps:\n"
+    <> "  - id: draft\n"
+    <> "    prompt: prompts/draft.md\n"
+  assert_workflow_parses_source(yaml)
+  validate_yaml_source_against_schema(
+    "public_workflow_schema",
+    "schemas/scherzo.workflow.v1.schema.json",
+    yaml,
+  )
 }
 
 pub fn workflow_schema_accepts_sourced_commit_stack_target_test() {

@@ -142,7 +142,7 @@ agents:
   max_turns: 1
   sessions_per_task: 2
 
-  model: openai-codex/gpt-5.5:xhigh
+  model: openai-codex/gpt-5.5
   thinking: high
 
   recovery:
@@ -470,6 +470,10 @@ the root `workspace.driver` is used. `workspace.requires` declares the driver
 capabilities required by the workflow.
 
 `concurrency` replaces `max_parallel_steps` and defaults to `1`.
+
+Top-level `model` and `thinking` define workflow-specific defaults for agent
+steps. They override root `agents.model` / `agents.thinking` for this workflow and
+are overridden by step-level `model` / `thinking`.
 
 `recovery` replaces `recover` at workflow and step level:
 

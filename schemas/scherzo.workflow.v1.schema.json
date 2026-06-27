@@ -714,6 +714,8 @@
         "version": { "const": 1 },
         "id": { "$ref": "#/$defs/WorkflowId" },
         "description": { "type": "string" },
+        "model": { "type": "string" },
+        "thinking": { "type": "string" },
         "workspace": { "$ref": "#/$defs/WorkflowWorkspace" },
         "concurrency": { "type": "integer", "minimum": 1 },
         "recovery": { "$ref": "#/$defs/Recovery" },

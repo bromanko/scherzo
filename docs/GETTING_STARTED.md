@@ -538,7 +538,7 @@ Important workflow rules:
 - Prompt paths are relative to the workflow YAML file and must stay inside that workflow directory.
 - Steps sharing the same logical workspace are serialized.
 - Different logical workspaces may run concurrently up to workflow `concurrency` and `agents.concurrency`.
-- Agent steps inherit project-level `agents` settings unless the step overrides `model` or `thinking`.
+- Agent steps inherit project-level `agents` settings, then workflow-level `model` / `thinking`, unless the step overrides them.
 - Command steps run shell commands in the prepared workspace.
 - `run_in` selects the workspace lane. Omit it only when the default `main` lane is intentional.
 - Use `recovery`, not the old recovery spelling, when configuring bounded step remediation.

@@ -137,7 +137,12 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
       let #(workspace_profile, workspace_capabilities) = workspace
       use max_parallel_steps <- result.try(read_concurrency(root))
       use recover <- result.try(read_recovery(root, "recovery"))
-      use steps <- result.try(read_steps(root))
+      use workflow_model_settings <- result.try(read_workflow_model_settings(
+        root,
+      ))
+      use raw_steps <- result.try(read_steps(root))
+      let steps =
+        apply_workflow_model_settings(raw_steps, workflow_model_settings)
       use contract <- result.try(read_contract(root))
       use publication_routes <- result.try(read_publication_routes(
         root,
@@ -990,6 +995,38 @@ fn read_recover_prompt(
         path <> ".prompt must be a string",
       ))
   }
+}
+
+fn read_workflow_model_settings(
+  root: yay.Node,
+) -> Result(model_config.Settings, DagError) {
+  model_config.read_settings(
+    root,
+    model_config.SettingsPaths(
+      provider_path: "workflow.provider",
+      provider_model_path: "workflow.model",
+      model_path: "workflow.model",
+      thinking_path: "workflow.thinking",
+    ),
+    fn(code, message) { DagError(code, message) },
+  )
+}
+
+fn apply_workflow_model_settings(
+  steps: List(WorkflowStep),
+  defaults: model_config.Settings,
+) -> List(WorkflowStep) {
+  steps
+  |> list.map(fn(step) {
+    case step.kind {
+      AgentStep(_, _) ->
+        WorkflowStep(
+          ..step,
+          model_settings: model_config.resolve(defaults, step.model_settings),
+        )
+      CommandStep(_, _) -> step
+    }
+  })
 }
 
 fn read_model_settings(

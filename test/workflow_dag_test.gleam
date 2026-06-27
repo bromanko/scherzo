@@ -49,6 +49,26 @@ pub fn parses_minimal_workflow_dag_test() {
   ) = step.kind
 }
 
+pub fn applies_workflow_model_defaults_to_agent_steps_test() {
+  let dag =
+    parse_ok(
+      "version: 1\nid: research\nmodel: openai/gpt-5.1\nthinking: medium\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n  - id: review\n    depends_on: [draft]\n    prompt: prompts/review.md\n    model: github-copilot/gpt-5.1-codex\n  - id: validate\n    depends_on: [review]\n    run: gleam test\n",
+    )
+
+  let assert [draft, review, validate] = dag.steps
+  assert draft.model_settings
+    == model_config.Settings(
+      model: Some("openai/gpt-5.1"),
+      thinking: Some(model_config.ThinkingMedium),
+    )
+  assert review.model_settings
+    == model_config.Settings(
+      model: Some("github-copilot/gpt-5.1-codex"),
+      thinking: Some(model_config.ThinkingMedium),
+    )
+  assert validate.model_settings == model_config.default_settings()
+}
+
 pub fn parses_artifact_publications_test() {
   let dag =
     parse_ok(
