@@ -247,7 +247,7 @@ fn run_files_with_shared_tmp_guard(
   suite: Suite,
 ) -> Result(Nil, a) {
   let suite = suite_name(suite)
-  acquire_shared_tmp_lock(suite, shared_tmp_lock_attempts)
+  retry_acquire_shared_tmp_lock(suite, shared_tmp_lock_attempts)
   reset_shared_tmp_or_halt(suite)
   let result = run_files(files, options)
   release_shared_tmp_lock()
@@ -264,7 +264,7 @@ fn run_files(
   |> run_eunit(options)
 }
 
-fn acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
+fn retry_acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
   case simplifile.create_directory(shared_tmp_lock_dir) {
     Ok(Nil) -> {
       let _ = simplifile.write(shared_tmp_lock_owner, "suite=" <> suite <> "\n")
@@ -284,7 +284,7 @@ fn acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
         }
         False -> {
           process.sleep(shared_tmp_lock_wait_ms)
-          acquire_shared_tmp_lock(suite, attempts - 1)
+          retry_acquire_shared_tmp_lock(suite, attempts - 1)
         }
       }
     }

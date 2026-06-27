@@ -24,7 +24,7 @@
     {
       "claim": "The fixture demonstrates a claim.",
       "draft_finding_id": "finding-001",
-      "evidence_key": "fixture",
+      "evidence_key": "schema_validate_artifacts",
       "expected_observation": "The fixture is present.",
       "request_id": "evidence-001",
       "target": {
