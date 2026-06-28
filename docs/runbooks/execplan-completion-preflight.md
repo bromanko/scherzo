@@ -23,7 +23,7 @@ The final execplan-implementation plan-completion gate still runs. It remains re
 
 - whether code changes truly implement the promised behavior rather than just naming it;
 - whether all referenced files, tests, docs, and helper paths were actually updated;
-- whether validation commands, lint, SelfCI, pre-publish manual browser/dogfood checks, or retained evidence really ran and passed;
+- whether validation commands, lint, the `scripts/scherzo-ci` gate, pre-publish manual browser/dogfood checks, or retained evidence really ran and passed;
 - whether review feedback or base refresh introduced new gaps after the ExecPlan pack was materialized.
 
 Retained runs that motivated the preflight included missing negative/idempotency coverage, unchecked dogfood/full-validation obligations, and required docs/helper migrations omitted from implementation steps. Those classes are now checked before implementation when they appear in the plan surface or pack. Manual/browser/dogfood checks that are explicitly marked for a human/operator after implementation are carried as deferred manual verification instead of blocking the implementation workflow.

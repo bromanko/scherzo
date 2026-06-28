@@ -17,8 +17,8 @@ steps:
       scripts/scherzo-ci-nix-cache
       devenv direnv-export >/dev/null
       direnv allow .
-      direnv exec . gleam format --check src test
-      direnv exec . gleam test
+      scripts/scherzo-ci fmt
+      scripts/scherzo-ci unit
 
   - label: ":mag: production lint"
     key: "production-lint"
@@ -29,8 +29,7 @@ steps:
       scripts/scherzo-ci-nix-cache
       devenv direnv-export >/dev/null
       direnv allow .
-      direnv exec . gleam run -m glinter
-      direnv exec . gleam run -m scherzo_lint
+      scripts/scherzo-ci lint
 
   - label: ":shell: contract tests"
     key: "contract-tests"
@@ -41,7 +40,7 @@ steps:
       scripts/scherzo-ci-nix-cache
       devenv direnv-export >/dev/null
       direnv allow .
-      direnv exec . scherzo-test-contract
+      scripts/scherzo-ci contract
 
   - label: ":nix: flake + package"
     key: "nix"
@@ -49,6 +48,5 @@ steps:
       queue: "hcloud"
     command: |
       set -euo pipefail
-      scripts/scherzo-ci-nix-cache
-      nix flake check
-      nix build .#scherzo
+      scripts/scherzo-ci nix
+      scripts/scherzo-ci package

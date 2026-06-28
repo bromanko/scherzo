@@ -124,8 +124,8 @@ COMPLETION_PREFLIGHT_PACK_CUES = [
     ),
     (
         "full validation or lint evidence",
-        re.compile(r"\b(?:full validation|glinter|scherzo_lint|selfci|lint)\b", re.IGNORECASE),
-        re.compile(r"\b(?:full validation|glinter|scherzo_lint|selfci|lint|format|test)\b", re.IGNORECASE),
+        re.compile(r"\b(?:full validation|glinter|scherzo_lint|scherzo-ci|selfci|lint)\b", re.IGNORECASE),
+        re.compile(r"\b(?:full validation|glinter|scherzo_lint|scherzo-ci|selfci|lint|format|test)\b", re.IGNORECASE),
     ),
     (
         "documentation/helper migration coverage",
@@ -769,7 +769,7 @@ def completion_pack_alignment_findings(markdown: str, pack: dict[str, Any]) -> l
         command_text = "\n".join(commands)
         if not commands and not text_has_unnegated_match(pack_text, COMPLETION_PREFLIGHT_MANUAL_PACK_RE):
             findings.append("Review doc requires validation/test evidence, but the implementation pack has no validation commands or explicit manual-evidence step.")
-        elif commands and not re.search(r"\b(?:test|validate|lint|check|py_compile|selfci|dogfood)\b", command_text, re.IGNORECASE):
+        elif commands and not re.search(r"\b(?:test|validate|lint|check|py_compile|scherzo-ci|selfci|dogfood)\b", command_text, re.IGNORECASE):
             findings.append(
                 "Review doc requires validation/test evidence, but the implementation pack commands do not include a recognizable test, validation, lint, check, or dogfood command."
             )

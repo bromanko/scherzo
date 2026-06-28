@@ -169,10 +169,10 @@ Run the contract suite or the relevant shards when changing helper scripts such 
 
 The explicit integration suites are opt-in because they have required dependencies outside the normal unit and contract loops: `scherzo-test-local-integration` exercises local jj/workspace behavior, and `scherzo-test-real-pi-validation` uses the devenv-provided `pi` plus working model/provider credentials.
 
-For the full local gate used by dogfood implementation workflows, run SelfCI against the configured pull-request base. SelfCI runs the unit and contract suites; local-integration and real-pi-validation remain explicit because of their external dependency requirements.
+For the full local gate used by dogfood implementation workflows, run `scripts/scherzo-ci`. It runs formatting, production lint, workflow contracts, the unit and contract suites, and `nix flake check`; local-integration and real-pi-validation remain explicit because of their external dependency requirements. Pass a target (for example `scripts/scherzo-ci unit`) to run a subset.
 
 ```sh
-direnv exec . selfci check --base main@origin --candidate @ --print-output
+direnv exec . scripts/scherzo-ci
 ```
 
 ## Development status

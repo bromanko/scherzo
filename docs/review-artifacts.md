@@ -261,7 +261,7 @@ Operators can check one schema or one captured submission directly:
   --output tmp/scherzo-review-lane-contract/correctness/review-lane-draft.v1.json
 ```
 
-The optional live-provider canary is separate from required SelfCI because it may need provider credentials or incur provider cost:
+The optional live-provider canary is separate from the required `scripts/scherzo-ci` gate because it may need provider credentials or incur provider cost:
 
 ```sh
 .scherzo/workflows/scripts/scherzo-review-lane-contract live \
