@@ -166,7 +166,9 @@ pub fn contract_runtime_test_files() -> List(String) {
     "port_test.gleam",
     "scherzo_launcher_test.gleam",
     "scherzoctl_wrapper_test.gleam",
+    "remote_daemon_registration_integration_test.gleam",
     "workspace_cleanup_helper_test.gleam",
+    "workspace_test.gleam",
     "workspace_driver_contract_test.gleam",
     "workspace_driver_discovery_test.gleam",
     "workspace_driver_lifecycle_test.gleam",
@@ -190,6 +192,7 @@ pub fn contract_tracker_test_files() -> List(String) {
   [
     "linear_cli_wrapper_test.gleam",
     "tracker_conformance_cli_test.gleam",
+    "tracker_conformance_adapter_author_docs_test.gleam",
     "tracker_conformance_comments_pack_test.gleam",
     "tracker_conformance_fixture_probe_test.gleam",
     "tracker_conformance_handoff_pack_test.gleam",
@@ -207,7 +210,9 @@ pub fn contract_workflow_test_files() -> List(String) {
     "portable_research_workflow_test.gleam",
     "structured_output_command_validator_test.gleam",
     "structured_output_contract_command_test.gleam",
+    "structured_output_json_schema_test.gleam",
     "workflow_portability_test.gleam",
+    "workstream_start_test.gleam",
     "workflow_run_test.gleam",
   ]
 }
