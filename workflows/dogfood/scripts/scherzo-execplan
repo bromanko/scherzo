@@ -3513,8 +3513,8 @@ def materialize_code_change_bundle(args: list[str]) -> None:
     changed_path.write_text(canonical_json(changed_files), encoding="utf-8")
     validation_artifacts: list[dict[str, Any]] = []
     if validation_path.exists():
-        meta = copy_file_to_artifact(validation_path, code_dir / "validation" / "selfci.json")
-        validation_artifacts.append({"name": "selfci", **meta})
+        meta = copy_file_to_artifact(validation_path, code_dir / "validation" / "scherzo-ci.json")
+        validation_artifacts.append({"name": "scherzo-ci", **meta})
     plan_completion_payload = load_json(plan_completion_path) if plan_completion_path.exists() else {"verdict": "blocked"}
     pc_meta = copy_file_to_artifact(plan_completion_path if plan_completion_path.exists() else Path("__missing__"), code_dir / "plan-completion.json")
     raw_verdict = str(plan_completion_payload.get("verdict") or "blocked")
