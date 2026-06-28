@@ -283,6 +283,7 @@ fn acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
           halt(1)
         }
         False -> {
+          // nolint: scherzo_no_process_sleep_in_tests -- deterministic suite-runner lock polling happens before tests run; it serializes shared test/tmp reset across concurrent CI shards.
           process.sleep(shared_tmp_lock_wait_ms)
           acquire_shared_tmp_lock(suite, attempts - 1)
         }
