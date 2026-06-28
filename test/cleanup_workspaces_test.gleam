@@ -250,8 +250,9 @@ pub fn workspace_cleanup_apply_delegates_remove_and_reports_failures_test() {
   let outside = repo <> "/outside"
   let assert Ok(Nil) = simplifile.create_directory_all(outside)
   let assert Ok(Nil) = simplifile.write(outside <> "/sentinel", "keep")
+  let assert Ok(outside_abs) = path.absolute(outside)
   let assert Ok(Nil) =
-    path.symlink(outside, eligible <> "/workspaces/outside-sentinel")
+    path.symlink(outside_abs, eligible <> "/workspaces/outside-sentinel")
   let assert Ok(Nil) =
     simplifile.write(repo <> "/remove-fail-workspace", "review\n")
 
