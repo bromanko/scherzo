@@ -2656,6 +2656,8 @@ def write_validation_result(
     exit_code: int | None = None,
     stdout: str = "",
     stderr: str = "",
+    fingerprint: str | None = None,
+    cached: bool = False,
 ) -> None:
     result: dict[str, Any] = {
         "base_revision": base_revision,
@@ -2664,6 +2666,10 @@ def write_validation_result(
         "status": status,
         "validator": "scherzo-ci",
     }
+    if fingerprint:
+        result["fingerprint"] = fingerprint
+    if cached:
+        result["cached"] = True
     if exit_code is not None:
         result["exit_code"] = exit_code
     if status != "passed":
@@ -2714,6 +2720,50 @@ def previous_validation_failure_details() -> str:
     return "\n".join(lines)
 
 
+def validation_fingerprint() -> str | None:
+    # Fingerprint the exact tree state validation runs against: the base commit
+    # the change is stacked on plus the change's own diff. base_commit + diff
+    # fully determines the working tree, so an identical fingerprint means an
+    # identical tree under test and a prior passing scherzo-ci run can be reused
+    # instead of re-running the full gate. Best-effort: any resolution failure
+    # returns None so validation simply runs. SCHERZO_VALIDATE_FINGERPRINT lets
+    # callers/tests pin the value when jj is unavailable.
+    override = os.environ.get("SCHERZO_VALIDATE_FINGERPRINT", "").strip()
+    if override:
+        return override
+    if not command_exists("jj"):
+        return None
+    base = run_proc([
+        "jj", "log", "-r", "@-", "--no-graph",
+        "-T", "commit_id ++ \"\\n\"", "--color=never",
+    ])
+    diff = run_proc(["jj", "diff", "--from", "@-", "--to", "@", "--color=never"])
+    if base.returncode != 0 or diff.returncode != 0:
+        return None
+    base_ids = clean_lines(base.stdout)
+    if not base_ids:
+        return None
+    return sha256_json(
+        {
+            "schema_version": 1,
+            "base_commit_ids": base_ids,
+            "diff": diff.stdout,
+        }
+    )
+
+
+def cached_passing_validation(fingerprint: str | None) -> dict[str, Any] | None:
+    if not fingerprint or not VALIDATION_PATH.exists():
+        return None
+    try:
+        prior = json.loads(VALIDATION_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if prior.get("status") == "passed" and prior.get("fingerprint") == fingerprint:
+        return prior
+    return None
+
+
 def validate_command(*, failure_code: str | None = None) -> None:
     if BASE_DRIFT_REPAIR_FAILURE_PATH.exists():
         failure = BASE_DRIFT_REPAIR_FAILURE_PATH.read_text().strip()
@@ -2741,6 +2791,33 @@ def validate_command(*, failure_code: str | None = None) -> None:
     base_revision = final_validation_base_revision(failure_code=failure_code)
     setup_commands = [["direnv", "allow", "."]]
     validation_command = scherzo_ci_validation_command()
+    fingerprint = validation_fingerprint()
+    if cached_passing_validation(fingerprint) is not None:
+        # The working tree is byte-identical to a previously passing run (same
+        # base + diff), so the gate result is unchanged; reuse it instead of
+        # re-running ~15m of checks. final_validate stays authoritative because
+        # it re-runs whenever the fingerprint differs.
+        write_validation_result(
+            base_revision=base_revision,
+            setup_commands=setup_commands,
+            validation_command=validation_command,
+            status="passed",
+            fingerprint=fingerprint,
+            cached=True,
+        )
+        restore_status = restore_execplan_artifacts()
+        verdict_restore_status = restore_plan_completion_verdict()
+        short = fingerprint[:12] if fingerprint else ""
+        print(
+            "scherzo-ci validation skipped: working tree unchanged since the last "
+            f"passing run (fingerprint {short})",
+            flush=True,
+        )
+        print("FINAL_VALIDATION=passed")
+        print("VALIDATION_CACHED=1")
+        print(f"EXECPLAN_ARTIFACT_RESTORE_STATUS={restore_status}")
+        print(f"PLAN_COMPLETION_VERDICT_RESTORE_STATUS={verdict_restore_status}")
+        return
     env = validation_env()
     for command in setup_commands:
         run_and_print(command, failure_code=failure_code, env=env)
@@ -2756,6 +2833,7 @@ def validate_command(*, failure_code: str | None = None) -> None:
             exit_code=proc.returncode,
             stdout=proc.stdout,
             stderr=proc.stderr,
+            fingerprint=fingerprint,
         )
         restore_status = restore_execplan_artifacts()
         verdict_restore_status = restore_plan_completion_verdict()
@@ -2775,6 +2853,7 @@ def validate_command(*, failure_code: str | None = None) -> None:
         setup_commands=setup_commands,
         validation_command=validation_command,
         status="passed",
+        fingerprint=fingerprint,
     )
     restore_status = restore_execplan_artifacts()
     verdict_restore_status = restore_plan_completion_verdict()

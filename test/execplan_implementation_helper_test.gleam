@@ -1325,6 +1325,83 @@ pub fn validate_failure_writes_structured_failure_artifact_test() {
   )
 }
 
+pub fn validate_skips_when_fingerprint_matches_prior_pass_test() {
+  let dir = "test/tmp/implementation-helper-validate-cache-hit"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  write_fake_direnv(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-validation.json",
+      "{\n"
+        <> "  \"status\": \"passed\",\n"
+        <> "  \"validator\": \"scherzo-ci\",\n"
+        <> "  \"base_revision\": \"main@origin\",\n"
+        <> "  \"commands\": [\"direnv exec . scripts/scherzo-ci\"],\n"
+        <> "  \"fingerprint\": \"cafef00d\"\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_VALIDATE_FINGERPRINT=cafef00d SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "FINAL_VALIDATION=passed")
+  assert string.contains(artifact.stdout, "VALIDATION_CACHED=1")
+  // The gate was reused, so the scherzo-ci command was never executed.
+  assert !string.contains(artifact.stdout, "$ direnv exec . scripts/scherzo-ci")
+  let assert Ok(validation_json) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-validation.json")
+  assert string.contains(validation_json, "\"cached\": true")
+  assert string.contains(validation_json, "\"status\": \"passed\"")
+}
+
+pub fn validate_runs_when_prior_pass_fingerprint_differs_test() {
+  let dir = "test/tmp/implementation-helper-validate-cache-miss"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  write_fake_direnv(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-validation.json",
+      "{\n"
+        <> "  \"status\": \"passed\",\n"
+        <> "  \"validator\": \"scherzo-ci\",\n"
+        <> "  \"base_revision\": \"main@origin\",\n"
+        <> "  \"commands\": [\"direnv exec . scripts/scherzo-ci\"],\n"
+        <> "  \"fingerprint\": \"stalefingerprint\"\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_VALIDATE_FINGERPRINT=freshfingerprint SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert string.contains(artifact.stdout, "FINAL_VALIDATION=passed")
+  assert !string.contains(artifact.stdout, "VALIDATION_CACHED=1")
+  let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
+  assert string.contains(direnv_log, "exec . scripts/scherzo-ci")
+  let assert Ok(validation_json) =
+    simplifile.read(dir <> "/tmp/scherzo-implementation-validation.json")
+  // Re-ran, so the artifact carries the freshly computed fingerprint, not the stale one.
+  assert string.contains(
+    validation_json,
+    "\"fingerprint\": \"freshfingerprint\"",
+  )
+  assert !string.contains(validation_json, "\"cached\": true")
+}
+
 pub fn validate_base_drift_marker_reports_previous_validation_summary_test() {
   let dir = "test/tmp/implementation-helper-base-drift-validation-summary"
   test_helpers.reset_dir(dir)
