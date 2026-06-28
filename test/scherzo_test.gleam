@@ -205,6 +205,7 @@ pub fn contract_tracker_test_files() -> List(String) {
 pub fn contract_workflow_test_files() -> List(String) {
   [
     "portable_research_workflow_test.gleam",
+    "structured_output_command_validator_test.gleam",
     "structured_output_contract_command_test.gleam",
     "workflow_portability_test.gleam",
     "workflow_run_test.gleam",
