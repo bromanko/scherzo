@@ -159,6 +159,7 @@ pub fn contract_runtime_test_files() -> List(String) {
   [
     "agent_helper_script_test.gleam",
     "agent_runner_test.gleam",
+    "agent_worker_control_test.gleam",
     "command_step_test.gleam",
     "control_server_test.gleam",
     "pi_client_test.gleam",
