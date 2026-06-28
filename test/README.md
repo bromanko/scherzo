@@ -2,7 +2,7 @@
 
 ## Suite selection
 
-`direnv exec . gleam test` and `direnv exec . scherzo-test-unit` run the deterministic unit suite. Shell-heavy helper-script, workflow, renderer, daemon/service, port/process, pi-client, CLI, tracker-conformance, and workspace-driver contract tests are excluded from that default loop and run with `direnv exec . scherzo-test-contract` (or `gleam test -- --suite contract`).
+`direnv exec . gleam test` and `direnv exec . scherzo-test-unit` run the deterministic unit suite. Shell-heavy agent-runner, helper-script, workflow, renderer, daemon/service, port/process, pi-client, CLI, tracker-conformance, and workspace-driver contract tests are excluded from that default loop and run with `direnv exec . scherzo-test-contract` (or `gleam test -- --suite contract`).
 
 For CI systems with per-command timeouts, split the contract suite into shards: `contract-runtime`, `contract-orchestrator`, `contract-tracker`, `contract-workflow`, and `contract-repository`, for example `direnv exec . scherzo-test-contract runtime` or `direnv exec . gleam test -- --suite contract-runtime`. The test runner serializes suites with `test/.tmp-suite-lock` and resets `test/tmp` at suite start, so do not run manual `rm -rf test/tmp` cleanup while any suite is running.
 

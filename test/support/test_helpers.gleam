@@ -1,8 +1,5 @@
-import gleam/option.{Some}
 import gleam/string
-import scherzo/command_step
 import scherzo/config/types as config_types
-import scherzo/step_artifact
 import simplifile
 
 pub fn reset_dir(path: String) -> Nil {
@@ -28,16 +25,10 @@ pub fn shell_quote(value: String) -> String {
 }
 
 pub fn chmod_executable(path: String) -> Nil {
-  let artifact =
-    command_step.run(
-      "chmod_test_file",
-      "chmod +x " <> shell_quote(path),
-      ".",
-      5000,
-      [],
-      default_artifact_limits(),
-    )
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
+  // Set the executable bits directly via the filesystem (0o755) instead of
+  // spawning a `chmod` subprocess. Test fixtures are freshly written scripts,
+  // so a fixed rwxr-xr-x mode matches the prior `chmod +x` intent without the
+  // per-call fork/exec cost.
+  let assert Ok(Nil) = simplifile.set_permissions_octal(path, 0o755)
   Nil
 }

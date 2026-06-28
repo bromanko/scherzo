@@ -31,3 +31,4 @@ __pycache__/
 *.log
 tmp/
 test/tmp/
+test/.tmp-suite-lock/

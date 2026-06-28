@@ -2,6 +2,7 @@
 -export([
     set_cwd/1,
     getenv/1,
+    os_pid/0,
     pid_alive/1,
     process_cleanup_watcher_alive/1,
     wait_for_port_data_and_requeue/2,
@@ -20,6 +21,9 @@ getenv(Name) ->
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
+
+os_pid() ->
+    list_to_integer(os:getpid()).
 
 pid_alive(Pid) when is_integer(Pid), Pid > 1 ->
     case os:cmd("kill -0 " ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 && printf alive || true") of
