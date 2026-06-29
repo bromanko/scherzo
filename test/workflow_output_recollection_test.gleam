@@ -32,7 +32,7 @@ pub fn recollect_outputs_writes_recollection_namespace_test() {
       root,
       dag,
       issue,
-      [step_attempt(root, dag.id, "collect_findings", artifact)],
+      [step_attempt(root, workflow_dag.id(dag), "collect_findings", artifact)],
       None,
     )
 
@@ -54,7 +54,8 @@ pub fn recollect_outputs_is_idempotent_when_latest_manifest_is_valid_test() {
     workflow_checkpoint.recollection_ledger_writer(root, fn() { 10 }, 1)
   let store = artifact_store.new(root)
   let artifact = successful_artifact("collect_findings", "findings")
-  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+  let attempt =
+    step_attempt(root, workflow_dag.id(dag), "collect_findings", artifact)
   let assert Ok(outputs) =
     contract_io.record_outputs_if_contracted(
       dag,
@@ -70,7 +71,7 @@ pub fn recollect_outputs_is_idempotent_when_latest_manifest_is_valid_test() {
   let result =
     workflow_output_recollection.execute(
       projection_with_run(
-        dag.id,
+        workflow_dag.id(dag),
         issue,
         [attempt.status],
         Some(recorded),
@@ -98,7 +99,8 @@ pub fn recollect_outputs_uses_latest_valid_manifest_before_recovering_sources_te
     workflow_checkpoint.recollection_ledger_writer(root, fn() { 10 }, 1)
   let store = artifact_store.new(root)
   let artifact = successful_artifact("collect_findings", "findings")
-  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+  let attempt =
+    step_attempt(root, workflow_dag.id(dag), "collect_findings", artifact)
   let assert Ok(outputs) =
     contract_io.record_outputs_if_contracted(
       dag,
@@ -116,7 +118,7 @@ pub fn recollect_outputs_uses_latest_valid_manifest_before_recovering_sources_te
   let result =
     workflow_output_recollection.execute(
       projection_with_run(
-        dag.id,
+        workflow_dag.id(dag),
         issue,
         [attempt.status],
         Some(recorded),
@@ -140,7 +142,8 @@ pub fn recollect_outputs_writes_next_recollection_namespace_after_prior_record_t
   let dag = stdout_dag()
   let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 10 })
   let artifact = successful_artifact("collect_findings", "findings")
-  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+  let attempt =
+    step_attempt(root, workflow_dag.id(dag), "collect_findings", artifact)
   let assert Ok(outputs) =
     contract_io.record_outputs_if_contracted(
       dag,
@@ -203,7 +206,8 @@ pub fn recollect_outputs_rejects_workflow_drift_test() {
   let issue = issue()
   let dag = stdout_dag()
   let artifact = successful_artifact("collect_findings", "findings")
-  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+  let attempt =
+    step_attempt(root, workflow_dag.id(dag), "collect_findings", artifact)
   let changed = renamed_stdout_dag()
 
   let result =
@@ -227,7 +231,8 @@ pub fn recollect_outputs_rejects_issue_drift_test() {
   let original_issue = issue()
   let current_issue = tracker_issue.Issue(..original_issue, id: "issue-2")
   let artifact = successful_artifact("collect_findings", "findings")
-  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+  let attempt =
+    step_attempt(root, workflow_dag.id(dag), "collect_findings", artifact)
 
   let result =
     execute_with_attempts(
@@ -249,7 +254,8 @@ pub fn recollect_outputs_rejects_issue_unavailable_current_workflow_test() {
   let issue = issue()
   let dag = stdout_dag()
   let artifact = successful_artifact("collect_findings", "findings")
-  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+  let attempt =
+    step_attempt(root, workflow_dag.id(dag), "collect_findings", artifact)
 
   let result =
     execute_with_attempts(
@@ -272,7 +278,8 @@ pub fn recollect_outputs_rejects_tracker_refresh_unavailable_current_workflow_te
   let issue = issue()
   let dag = stdout_dag()
   let artifact = successful_artifact("collect_findings", "findings")
-  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+  let attempt =
+    step_attempt(root, workflow_dag.id(dag), "collect_findings", artifact)
 
   let result =
     execute_with_attempts(
@@ -295,7 +302,8 @@ pub fn recollect_outputs_rejects_workflow_unavailable_current_workflow_test() {
   let issue = issue()
   let dag = stdout_dag()
   let artifact = successful_artifact("collect_findings", "findings")
-  let attempt = step_attempt(root, dag.id, "collect_findings", artifact)
+  let attempt =
+    step_attempt(root, workflow_dag.id(dag), "collect_findings", artifact)
 
   let result =
     execute_with_attempts(
@@ -323,14 +331,14 @@ pub fn recollect_outputs_requires_every_workflow_step_completed_test() {
   let seed =
     step_attempt(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       successful_artifact("collect_findings", "findings"),
     )
   let pending =
     projection.StepAttemptPending(
       run_id: "run-1",
-      workflow_id: dag.id,
+      workflow_id: workflow_dag.id(dag),
       step_id: "finalize",
       attempt_index: 1,
       workspace_name: "main",
@@ -361,7 +369,7 @@ pub fn recollect_outputs_rejects_failed_source_step_test() {
   let failed =
     step_attempt_with(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       failed_artifact("collect_findings"),
       "failed_fatal",
@@ -382,7 +390,7 @@ pub fn recollect_outputs_rejects_latest_failed_attempt_after_completed_attempt_t
   let first =
     step_attempt_with_index(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       successful_artifact("collect_findings", "stale findings"),
       "completed",
@@ -392,7 +400,7 @@ pub fn recollect_outputs_rejects_latest_failed_attempt_after_completed_attempt_t
   let latest =
     step_attempt_with_index(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       failed_artifact("collect_findings"),
       "failed_fatal",
@@ -420,7 +428,7 @@ pub fn recollect_outputs_uses_latest_completed_attempt_artifact_test() {
   let first =
     step_attempt_with_index(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       successful_artifact("collect_findings", "stale findings"),
       "completed",
@@ -430,7 +438,7 @@ pub fn recollect_outputs_uses_latest_completed_attempt_artifact_test() {
   let latest =
     step_attempt_with_index(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       successful_artifact("collect_findings", "latest findings"),
       "completed",
@@ -457,7 +465,7 @@ pub fn recollect_outputs_rejects_missing_artifact_test() {
   let dag = stdout_dag()
   let attempt =
     StepAttempt(status: finished_status(
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       "runs/run-1/collect_findings/attempt-1.json",
       "missing-sha",
@@ -488,7 +496,7 @@ pub fn recollect_outputs_rejects_invalid_artifact_json_test() {
     )
   let attempt =
     StepAttempt(status: finished_status(
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       corrupted_ref,
       hash_of(corrupted_contents),
@@ -511,7 +519,7 @@ pub fn recollect_outputs_rejects_artifact_sha_mismatch_test() {
   let attempt =
     step_attempt(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       successful_artifact("collect_findings", "findings"),
     )
@@ -539,7 +547,7 @@ pub fn recollect_outputs_rejects_missing_source_workspace_test() {
   let attempt =
     step_attempt_with(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       successful_artifact("collect_findings", "ignored"),
       "completed",
@@ -561,7 +569,7 @@ pub fn recollect_outputs_rejects_invalid_output_json_test() {
   let attempt =
     step_attempt(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       successful_artifact("collect_findings", "not json"),
     )
@@ -581,7 +589,7 @@ pub fn recollect_outputs_rejects_invalid_artifact_set_descriptor_test() {
   let attempt =
     step_attempt(
       root,
-      dag.id,
+      workflow_dag.id(dag),
       "collect_findings",
       successful_artifact("collect_findings", descriptor),
     )
@@ -618,7 +626,7 @@ pub fn recollect_outputs_restores_artifact_set_success_test() {
       [
         step_attempt(
           root,
-          dag.id,
+          workflow_dag.id(dag),
           "collect_findings",
           successful_artifact("collect_findings", descriptor),
         ),
@@ -727,7 +735,7 @@ fn execute_with_attempts_and_recollection_index(
 
   workflow_output_recollection.execute(
     projection_with_run(
-      dag.id,
+      workflow_dag.id(dag),
       issue,
       list.map(attempts, fn(attempt) { attempt.status }),
       output_manifest,
@@ -1011,7 +1019,7 @@ fn observation(
 ) -> recovery.CurrentWorkflowObservation {
   recovery.CurrentWorkflow(
     issue,
-    dag.id,
+    workflow_dag.id(dag),
     "wf-1",
     core.issue_fingerprint(issue),
     dag,

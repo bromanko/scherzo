@@ -22,7 +22,12 @@ pub fn for_workflow(
   dag: workflow_dag.WorkflowDag,
   repository_root: String,
 ) -> Result(List(ReviewLaneTool), structured_output_tool_spec.ToolSpecError) {
-  review_lane_tools_loop(dag.steps, workflow_id, repository_root, [])
+  review_lane_tools_loop(
+    workflow_dag.steps(dag),
+    workflow_id,
+    repository_root,
+    [],
+  )
 }
 
 fn review_lane_tools_loop(

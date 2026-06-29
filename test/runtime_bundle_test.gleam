@@ -193,7 +193,7 @@ pub fn loads_configured_publication_repository_test() {
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   let assert Ok(dag) = dict.get(bundle.workflows, "implementation")
-  let assert [route] = dag.publication_routes
+  let assert [route] = workflow_dag.publication_routes(dag)
   assert route.repository == "github.docs"
 }
 
@@ -489,7 +489,7 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   assert bundle.config_path == dir <> "/scherzo.yaml"
   let assert Ok(dag) = dict.get(bundle.workflows, "implementation")
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   let assert workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), None) =
     step.kind
   assert prompt == "Implement {{ issue.identifier }}"
@@ -743,7 +743,7 @@ pub fn task_updates_completion_policy_accepts_publish_commit_stack_with_jj_test(
   let assert Some(policy) = bundle.effective.handoff.completion_states
   let assert Ok(implementation) = dict.get(policy.workflows, "implementation")
 
-  assert dag.workspace_capabilities
+  assert workflow_dag.workspace_capabilities(dag)
     == [config_types.WorkspacePublishCommitStack]
   assert !list.contains(
     driver.capabilities,
@@ -770,10 +770,10 @@ pub fn loads_workflow_yaml_without_recover_fields_through_current_parser_test() 
   let assert Ok(dag) =
     runtime_bundle.load_workflow_file(dir <> "/workflows/legacy.yaml")
 
-  assert dag.id == "legacy"
-  assert dag.recover == None
-  let assert Some(_) = dag.contract
-  let assert [collect, summarize] = dag.steps
+  assert workflow_dag.id(dag) == "legacy"
+  assert workflow_dag.recovery_config(dag) == None
+  let assert Some(_) = workflow_dag.contract(dag)
+  let assert [collect, summarize] = workflow_dag.steps(dag)
   assert collect.id == "collect"
   assert collect.recover == None
   assert summarize.id == "summarize"
@@ -805,8 +805,8 @@ pub fn loads_recovery_prompt_files_test() {
   let assert Some(workflow_dag.RecoveryConfigPatch(
     prompt: Some(workflow_dag.PromptInline(workflow_prompt)),
     ..,
-  )) = dag.recover
-  let assert [step] = dag.steps
+  )) = workflow_dag.recovery_config(dag)
+  let assert [step] = workflow_dag.steps(dag)
   let assert Some(workflow_dag.RecoveryConfigPatch(
     prompt: Some(workflow_dag.PromptInline(step_prompt)),
     ..,
@@ -878,8 +878,8 @@ pub fn loads_workflows_with_workspace_profiles_test() {
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   let assert Ok(noop) = dict.get(bundle.workflows, "noop")
   let assert Ok(defaulted) = dict.get(bundle.workflows, "defaulted")
-  assert noop.workspace_profile == Some("noop")
-  assert defaulted.workspace_profile == None
+  assert workflow_dag.workspace_profile(noop) == Some("noop")
+  assert workflow_dag.workspace_profile(defaulted) == None
 }
 
 pub fn rejects_hook_backed_profile_with_no_workspace_capabilities_test() {
@@ -1031,8 +1031,8 @@ pub fn dogfood_workflows_select_existing_driver_profile_test() {
   )
   let assert Ok(conflict_scout) =
     dict.get(bundle.workflows, "github-pr-conflict-scout")
-  assert conflict_scout.workspace_profile == Some("noop")
-  assert conflict_scout.workspace_capabilities == []
+  assert workflow_dag.workspace_profile(conflict_scout) == Some("noop")
+  assert workflow_dag.workspace_capabilities(conflict_scout) == []
 }
 
 pub fn checked_in_merge_conflict_completion_policy_completes_without_review_test() {
@@ -1144,7 +1144,7 @@ fn assert_dogfood_workflows_select_profile(
     [] -> Nil
     [id, ..rest] -> {
       let assert Ok(dag) = dict.get(workflows, id)
-      assert dag.workspace_profile == Some("dogfood-jj")
+      assert workflow_dag.workspace_profile(dag) == Some("dogfood-jj")
       let expected_capabilities = case id {
         "implementation" | "execplan-implementation" -> [
           config_types.WorkspaceStatus,
@@ -1175,7 +1175,7 @@ fn assert_dogfood_workflows_select_profile(
         ]
         _ -> []
       }
-      assert dag.workspace_capabilities == expected_capabilities
+      assert workflow_dag.workspace_capabilities(dag) == expected_capabilities
       assert_dogfood_workflows_select_profile(rest, workflows)
     }
   }
@@ -1335,7 +1335,7 @@ pub fn selects_yaml_workflow_from_issue_label_test() {
     runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
   let assert Ok(#("implementation", dag)) =
     runtime_bundle.select_workflow(bundle, issue(["workflow:implementation"]))
-  assert dag.id == "implementation"
+  assert workflow_dag.id(dag) == "implementation"
 }
 
 pub fn select_workflow_rejects_scheduled_only_label_when_policy_enforced_test() {
@@ -1380,7 +1380,7 @@ pub fn loads_checked_in_execplan_implementation_workflow_test() {
       bundle,
       issue(["workflow:execplan-implementation"]),
     )
-  assert dag.id == "execplan-implementation"
+  assert workflow_dag.id(dag) == "execplan-implementation"
   let assert Some(terminal) = workflow_dag.terminal_step(dag)
   assert terminal.id == "materialize_code_change_bundle"
 }
@@ -1437,13 +1437,13 @@ pub fn checked_in_dogfood_workflows_select_named_jj_profile_test() {
     ],
     fn(workflow_id) {
       let assert Ok(dag) = dict.get(bundle.workflows, workflow_id)
-      assert dag.workspace_profile == Some("dogfood-jj")
+      assert workflow_dag.workspace_profile(dag) == Some("dogfood-jj")
     },
   )
 
   let assert Ok(conflict_scout) =
     dict.get(bundle.workflows, "github-pr-conflict-scout")
-  assert conflict_scout.workspace_profile == Some("noop")
+  assert workflow_dag.workspace_profile(conflict_scout) == Some("noop")
 }
 
 pub fn routing_rejects_missing_unknown_and_multiple_labels_test() {

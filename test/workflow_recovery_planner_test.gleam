@@ -454,7 +454,7 @@ fn scheduler_state_with(
 ) -> workflow_scheduler.SchedulerState {
   let overrides = dict.from_list(overrides)
   let statuses =
-    dag.steps
+    workflow_dag.steps(dag)
     |> list.map(fn(step) {
       let status =
         dict.get(overrides, step.id)
@@ -463,7 +463,7 @@ fn scheduler_state_with(
     })
     |> dict.from_list
   let failure_policies =
-    dag.steps
+    workflow_dag.steps(dag)
     |> list.map(fn(step) { #(step.id, step.on_failure) })
     |> dict.from_list
   workflow_scheduler.SchedulerState(

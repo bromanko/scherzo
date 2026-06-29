@@ -1224,7 +1224,7 @@ pub fn workflow_result_artifact(
   limits: config_types.ArtifactLimits,
 ) -> result_artifact.ResultArtifact {
   let primary = primary_text(dag, artifacts)
-  let summary = summary_for_dag(dag.steps, artifacts, [])
+  let summary = summary_for_dag(workflow_dag.steps(dag), artifacts, [])
   let text = case primary, summary {
     "", "" -> ""
     _, "" -> primary

@@ -128,11 +128,12 @@ fn driver_env(driver: String) -> List(#(String, String)) {
 
 pub fn example_research_workflow_is_driver_portable_test() {
   let dag = example_research_dag()
-  assert dag.id == "research"
-  assert dag.workspace_profile == Some("noop")
-  assert dag.workspace_capabilities == [config_types.WorkspaceAssertOnly]
+  assert workflow_dag.id(dag) == "research"
+  assert workflow_dag.workspace_profile(dag) == Some("noop")
+  assert workflow_dag.workspace_capabilities(dag)
+    == [config_types.WorkspaceAssertOnly]
 
-  let step_ids = dag.steps |> list.map(fn(step) { step.id })
+  let step_ids = workflow_dag.steps(dag) |> list.map(fn(step) { step.id })
   assert step_ids == ["research", "collect_findings"]
 
   let assert Ok(research) = workflow_dag.step_by_id(dag, "research")
@@ -178,7 +179,7 @@ pub fn example_research_workflow_is_driver_portable_test() {
   assert_not_contains(run, "git diff")
   assert_not_contains(run, "Linear")
 
-  let assert Some(contract) = dag.contract
+  let assert Some(contract) = workflow_dag.contract(dag)
   let assert [findings] = contract.outputs
   assert findings.name == "findings"
   assert findings.type_ == workflow_contract.DocumentMarkdown
@@ -190,10 +191,10 @@ pub fn example_research_workflow_is_driver_portable_test() {
 
 pub fn dogfood_research_workflow_exposes_retained_findings_output_test() {
   let dag = dogfood_research_dag()
-  assert dag.id == "research"
-  assert dag.publication_routes == []
+  assert workflow_dag.id(dag) == "research"
+  assert workflow_dag.publication_routes(dag) == []
 
-  let assert Some(contract) = dag.contract
+  let assert Some(contract) = workflow_dag.contract(dag)
   let assert [findings] = contract.outputs
   assert findings.name == "findings"
   assert findings.type_ == workflow_contract.DocumentMarkdown
@@ -323,9 +324,10 @@ pub fn example_research_package_profile_supports_assert_only_test() {
   let assert Ok(bundle) =
     runtime_bundle.load_with_env(Some("examples/scherzo.yaml"), env)
   let assert Ok(dag) = dict.get(bundle.workflows, "research")
-  assert dag.workspace_capabilities == [config_types.WorkspaceAssertOnly]
+  assert workflow_dag.workspace_capabilities(dag)
+    == [config_types.WorkspaceAssertOnly]
 
-  let assert Some(profile_name) = dag.workspace_profile
+  let assert Some(profile_name) = workflow_dag.workspace_profile(dag)
   let assert Ok(profile) =
     dict.get(bundle.orchestrator.workspace_profiles.profiles, profile_name)
   let assert Some(driver) = profile.driver

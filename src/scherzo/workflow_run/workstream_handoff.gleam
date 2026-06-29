@@ -33,7 +33,7 @@ pub fn emit_if_configured(
   outputs: contract_io.ContractOutputsResult,
   checkpoint: workflow_checkpoint.Writer,
 ) -> Result(Nil, HandoffError) {
-  case dag.workstream_phase {
+  case workflow_dag.workstream_phase(dag) {
     None -> Ok(Nil)
     Some(metadata) ->
       case metadata.handoff {
@@ -44,7 +44,7 @@ pub fn emit_if_configured(
             Some(manifest) -> {
               use emitted <- result.try(
                 handoff_emitter.emit(
-                  dag.id,
+                  workflow_dag.id(dag),
                   run_id,
                   workflow_fingerprint,
                   issue.id,

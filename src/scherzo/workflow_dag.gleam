@@ -1,4 +1,3 @@
-import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order.{Gt, Lt}
@@ -9,12 +8,13 @@ import scherzo/config/types as config_types
 import scherzo/model_config
 import scherzo/structured_output_source
 import scherzo/workflow_contract
+import scherzo/workflow_dag/graph_validation
 import scherzo/workflow_dag_validator_parser
 import scherzo/workflow_yaml_migration
 import scherzo/workstream/phase_metadata
 import yay
 
-pub type WorkflowDag {
+pub opaque type WorkflowDag {
   WorkflowDag(
     id: String,
     description: Option(String),
@@ -116,6 +116,92 @@ pub type FailurePolicy {
 
 pub type DagError {
   DagError(code: String, message: String)
+}
+
+pub fn new(
+  id id: String,
+  description description: Option(String),
+  workspace_profile workspace_profile: Option(String),
+  workspace_capabilities workspace_capabilities: List(
+    config_types.WorkspaceCapability,
+  ),
+  max_parallel_steps max_parallel_steps: Int,
+  recover recover: Option(RecoveryConfigPatch),
+  steps steps: List(WorkflowStep),
+  contract contract: Option(workflow_contract.Contract),
+  publication_routes publication_routes: List(
+    artifact_publication_config.PublicationRoute,
+  ),
+  workstream_phase workstream_phase: Option(phase_metadata.PhaseMetadata),
+) -> Result(WorkflowDag, DagError) {
+  WorkflowDag(
+    id: id,
+    description: description,
+    workspace_profile: workspace_profile,
+    workspace_capabilities: workspace_capabilities,
+    max_parallel_steps: max_parallel_steps,
+    recover: recover,
+    steps: steps,
+    contract: contract,
+    publication_routes: publication_routes,
+    workstream_phase: workstream_phase,
+  )
+  |> validate
+}
+
+pub fn id(dag: WorkflowDag) -> String {
+  dag.id
+}
+
+pub fn description(dag: WorkflowDag) -> Option(String) {
+  dag.description
+}
+
+pub fn workspace_profile(dag: WorkflowDag) -> Option(String) {
+  dag.workspace_profile
+}
+
+pub fn workspace_capabilities(
+  dag: WorkflowDag,
+) -> List(config_types.WorkspaceCapability) {
+  dag.workspace_capabilities
+}
+
+pub fn max_parallel_steps(dag: WorkflowDag) -> Int {
+  dag.max_parallel_steps
+}
+
+pub fn recovery_config(dag: WorkflowDag) -> Option(RecoveryConfigPatch) {
+  dag.recover
+}
+
+pub fn steps(dag: WorkflowDag) -> List(WorkflowStep) {
+  dag.steps
+}
+
+pub fn contract(dag: WorkflowDag) -> Option(workflow_contract.Contract) {
+  dag.contract
+}
+
+pub fn publication_routes(
+  dag: WorkflowDag,
+) -> List(artifact_publication_config.PublicationRoute) {
+  dag.publication_routes
+}
+
+pub fn workstream_phase(
+  dag: WorkflowDag,
+) -> Option(phase_metadata.PhaseMetadata) {
+  dag.workstream_phase
+}
+
+pub fn with_recovery_and_steps(
+  dag: WorkflowDag,
+  recover recover: Option(RecoveryConfigPatch),
+  steps steps: List(WorkflowStep),
+) -> Result(WorkflowDag, DagError) {
+  WorkflowDag(..dag, recover: recover, steps: steps)
+  |> validate
 }
 
 pub fn parse(content: String) -> Result(WorkflowDag, DagError) {
@@ -289,15 +375,237 @@ fn read_publication_routes(
 }
 
 fn validate(dag: WorkflowDag) -> Result(WorkflowDag, DagError) {
+  use _ <- result.try(validate_workflow_id(dag.id))
+  use _ <- result.try(validate_concurrency(dag.max_parallel_steps))
+  use _ <- result.try(validate_workspace_profile(dag.workspace_profile))
+  use _ <- result.try(validate_workspace_capabilities(
+    dag.workspace_capabilities,
+  ))
+  use _ <- result.try(validate_step_shapes(dag.steps))
   use _ <- result.try(validate_unique_step_ids(dag.steps))
   use _ <- result.try(validate_dependencies_exist(dag.steps))
   use _ <- result.try(validate_acyclic(dag.steps))
   use _ <- result.try(validate_workspace_sources(dag.steps))
   use _ <- result.try(validate_structured_output_schema_paths(dag.steps))
+  use _ <- result.try(validate_recovery_patch(dag.recover, "recovery"))
+  use _ <- result.try(validate_step_recovery_patches(dag.steps))
   use _ <- result.try(validate_recovery_configs(dag))
   use _ <- result.try(validate_single_terminal_sink(dag.steps))
   use _ <- result.try(validate_contract_sources(dag))
   Ok(dag)
+}
+
+fn validate_concurrency(value: Int) -> Result(Nil, DagError) {
+  case value >= 1 {
+    True -> Ok(Nil)
+    False ->
+      Error(DagError("invalid_concurrency", "concurrency must be at least 1"))
+  }
+}
+
+fn validate_workspace_profile(
+  profile: Option(String),
+) -> Result(Nil, DagError) {
+  case profile {
+    None -> Ok(Nil)
+    Some(name) ->
+      case valid_workflow_or_workspace_id(name) {
+        True -> Ok(Nil)
+        False ->
+          Error(DagError(
+            "invalid_workspace_driver",
+            "invalid workspace.driver: " <> name,
+          ))
+      }
+  }
+}
+
+fn validate_workspace_capabilities(
+  capabilities: List(config_types.WorkspaceCapability),
+) -> Result(Nil, DagError) {
+  validate_workspace_capabilities_loop(capabilities, [])
+}
+
+fn validate_workspace_capabilities_loop(
+  capabilities: List(config_types.WorkspaceCapability),
+  seen: List(config_types.WorkspaceCapability),
+) -> Result(Nil, DagError) {
+  case capabilities {
+    [] -> Ok(Nil)
+    [capability, ..rest] ->
+      case list.contains(seen, capability) {
+        True ->
+          Error(DagError(
+            "duplicate_workspace_capability",
+            "duplicate workspace capability: "
+              <> config_types.workspace_capability_to_string(capability),
+          ))
+        False ->
+          validate_workspace_capabilities_loop(rest, [capability, ..seen])
+      }
+  }
+}
+
+fn validate_step_shapes(steps: List(WorkflowStep)) -> Result(Nil, DagError) {
+  case steps {
+    [] -> Ok(Nil)
+    [step, ..rest] -> {
+      use _ <- result.try(validate_step_id(step.id))
+      use _ <- result.try(validate_workspace_ref(step.workspace))
+      use _ <- result.try(validate_step_kind(step.kind))
+      validate_step_shapes(rest)
+    }
+  }
+}
+
+fn validate_workspace_ref(workspace: WorkspaceRef) -> Result(Nil, DagError) {
+  use _ <- result.try(validate_workspace_name(workspace.name))
+  case workspace.from {
+    None -> Ok(Nil)
+    Some(source) -> validate_workspace_name(source)
+  }
+}
+
+fn validate_step_kind(kind: StepKind) -> Result(Nil, DagError) {
+  case kind {
+    AgentStep(_, structured_output) ->
+      case structured_output {
+        None -> Ok(Nil)
+        Some(spec) -> validate_structured_output_spec(spec)
+      }
+    CommandStep(timeout_ms: timeout_ms, ..) ->
+      validate_command_timeout(timeout_ms)
+  }
+}
+
+fn validate_command_timeout(timeout_ms: Option(Int)) -> Result(Nil, DagError) {
+  case timeout_ms {
+    None -> Ok(Nil)
+    Some(value) ->
+      case value >= 1 {
+        True -> Ok(Nil)
+        False ->
+          Error(DagError(
+            "invalid_command_timeout",
+            "timeout must be a positive duration",
+          ))
+      }
+  }
+}
+
+fn validate_structured_output_spec(
+  spec: StructuredOutputSpec,
+) -> Result(Nil, DagError) {
+  use _ <- result.try(validate_structured_artifact_name(spec.artifact_name))
+  use _ <- result.try(validate_structured_required_keys(spec.schema))
+  validate_structured_validation_retries(spec.validation_retries)
+}
+
+fn validate_structured_artifact_name(name: String) -> Result(Nil, DagError) {
+  case valid_step_id(name) {
+    True -> Ok(Nil)
+    False ->
+      Error(DagError(
+        "invalid_structured_artifact_name",
+        "invalid structured_output.artifact_name: " <> name,
+      ))
+  }
+}
+
+fn validate_structured_required_keys(
+  schema: StructuredOutputSchema,
+) -> Result(Nil, DagError) {
+  case schema {
+    StructuredObjectSchema(required_keys) ->
+      validate_structured_required_key_list(required_keys)
+  }
+}
+
+fn validate_structured_required_key_list(
+  required_keys: List(String),
+) -> Result(Nil, DagError) {
+  case required_keys {
+    [] -> Ok(Nil)
+    [key, ..rest] ->
+      case valid_step_id(key) {
+        True -> validate_structured_required_key_list(rest)
+        False ->
+          Error(DagError(
+            "invalid_structured_output_required_key",
+            "invalid structured_output.schema.required key: " <> key,
+          ))
+      }
+  }
+}
+
+fn validate_structured_validation_retries(value: Int) -> Result(Nil, DagError) {
+  case value == 0 || value == 1 {
+    True -> Ok(Nil)
+    False ->
+      Error(DagError(
+        "invalid_structured_output_validation_retries",
+        "structured_output.validation_retries must be 0 or 1",
+      ))
+  }
+}
+
+fn validate_step_recovery_patches(
+  steps: List(WorkflowStep),
+) -> Result(Nil, DagError) {
+  case steps {
+    [] -> Ok(Nil)
+    [step, ..rest] -> {
+      use _ <- result.try(validate_recovery_patch(step.recover, "step.recovery"))
+      validate_step_recovery_patches(rest)
+    }
+  }
+}
+
+fn validate_recovery_patch(
+  recover: Option(RecoveryConfigPatch),
+  path: String,
+) -> Result(Nil, DagError) {
+  case recover {
+    None -> Ok(Nil)
+    Some(RecoveryConfigPatch(attempts: attempts, model: model, ..)) -> {
+      use _ <- result.try(validate_recovery_attempts(attempts, path))
+      validate_recovery_model(model, path)
+    }
+  }
+}
+
+fn validate_recovery_attempts(
+  attempts: Option(Int),
+  path: String,
+) -> Result(Nil, DagError) {
+  case attempts {
+    None -> Ok(Nil)
+    Some(value) ->
+      case value >= 1 {
+        True -> Ok(Nil)
+        False ->
+          Error(DagError(
+            "invalid_recovery_attempts",
+            path <> ".attempts must be at least 1",
+          ))
+      }
+  }
+}
+
+fn validate_recovery_model(
+  model: Option(String),
+  path: String,
+) -> Result(Nil, DagError) {
+  case model {
+    None -> Ok(Nil)
+    Some(value) ->
+      model_config.parse_model(value, path <> ".model")
+      |> result.map(fn(_) { Nil })
+      |> result.map_error(fn(error) {
+        let model_config.ModelError(code, message) = error
+        DagError(code, message)
+      })
+  }
 }
 
 fn require_version(root: yay.Node) -> Result(Nil, DagError) {
@@ -1185,202 +1493,62 @@ fn normalize_repository_path(value: String) -> String {
 fn validate_unique_step_ids(
   steps: List(WorkflowStep),
 ) -> Result(Nil, DagError) {
-  validate_unique_step_ids_loop(steps, [])
-}
-
-fn validate_unique_step_ids_loop(
-  steps: List(WorkflowStep),
-  seen: List(String),
-) -> Result(Nil, DagError) {
-  case steps {
-    [] -> Ok(Nil)
-    [step, ..rest] ->
-      case list.contains(seen, step.id) {
-        True ->
-          Error(DagError("duplicate_step_id", "duplicate step id: " <> step.id))
-        False -> validate_unique_step_ids_loop(rest, [step.id, ..seen])
-      }
-  }
+  steps
+  |> step_nodes
+  |> graph_validation.validate_unique_step_ids
+  |> result.map_error(graph_error_to_dag_error)
 }
 
 fn validate_dependencies_exist(
   steps: List(WorkflowStep),
 ) -> Result(Nil, DagError) {
-  let ids = list.map(steps, fn(step) { step.id })
-  validate_dependencies_exist_loop(steps, ids)
-}
-
-fn validate_dependencies_exist_loop(
-  steps: List(WorkflowStep),
-  ids: List(String),
-) -> Result(Nil, DagError) {
-  case steps {
-    [] -> Ok(Nil)
-    [step, ..rest] -> {
-      use _ <- result.try(validate_dependency_ids(step.depends_on, ids, step.id))
-      validate_dependencies_exist_loop(rest, ids)
-    }
-  }
-}
-
-fn validate_dependency_ids(
-  deps: List(String),
-  ids: List(String),
-  step_id: String,
-) -> Result(Nil, DagError) {
-  case deps {
-    [] -> Ok(Nil)
-    [dep, ..rest] ->
-      case list.contains(ids, dep) {
-        True -> validate_dependency_ids(rest, ids, step_id)
-        False ->
-          Error(DagError(
-            "missing_dependency",
-            step_id <> " depends on unknown step " <> dep,
-          ))
-      }
-  }
+  steps
+  |> step_nodes
+  |> graph_validation.validate_dependencies_exist
+  |> result.map_error(graph_error_to_dag_error)
 }
 
 fn validate_acyclic(steps: List(WorkflowStep)) -> Result(Nil, DagError) {
-  let by_id = steps_dict(steps)
-  validate_acyclic_loop(steps, by_id)
-}
-
-fn validate_acyclic_loop(
-  steps: List(WorkflowStep),
-  by_id: Dict(String, WorkflowStep),
-) -> Result(Nil, DagError) {
-  case steps {
-    [] -> Ok(Nil)
-    [step, ..rest] -> {
-      use _ <- result.try(detect_cycle(step.id, by_id, []))
-      validate_acyclic_loop(rest, by_id)
-    }
-  }
-}
-
-fn detect_cycle(
-  step_id: String,
-  by_id: Dict(String, WorkflowStep),
-  path: List(String),
-) -> Result(Nil, DagError) {
-  case list.contains(path, step_id) {
-    True -> Error(DagError("cycle", "cycle includes step " <> step_id))
-    False -> {
-      case dict.get(by_id, step_id) {
-        Error(_) -> Ok(Nil)
-        Ok(step) -> detect_cycle_deps(step.depends_on, by_id, [step_id, ..path])
-      }
-    }
-  }
-}
-
-fn detect_cycle_deps(
-  deps: List(String),
-  by_id: Dict(String, WorkflowStep),
-  path: List(String),
-) -> Result(Nil, DagError) {
-  case deps {
-    [] -> Ok(Nil)
-    [dep, ..rest] -> {
-      use _ <- result.try(detect_cycle(dep, by_id, path))
-      detect_cycle_deps(rest, by_id, path)
-    }
-  }
+  steps
+  |> step_nodes
+  |> graph_validation.validate_acyclic
+  |> result.map_error(graph_error_to_dag_error)
 }
 
 fn validate_workspace_sources(
   steps: List(WorkflowStep),
 ) -> Result(Nil, DagError) {
-  let by_id = steps_dict(steps)
-  validate_workspace_sources_loop(steps, by_id)
-}
-
-fn validate_workspace_sources_loop(
-  steps: List(WorkflowStep),
-  by_id: Dict(String, WorkflowStep),
-) -> Result(Nil, DagError) {
-  case steps {
-    [] -> Ok(Nil)
-    [step, ..rest] -> {
-      case step.workspace.from {
-        None -> validate_workspace_sources_loop(rest, by_id)
-        Some(source) -> {
-          let dep_ids = transitive_dependency_ids(step.depends_on, by_id, [])
-          let workspaces = workspace_names_for(dep_ids, by_id, [])
-          case list.contains(workspaces, source) {
-            True -> validate_workspace_sources_loop(rest, by_id)
-            False ->
-              Error(DagError(
-                "invalid_workspace_from",
-                step.id
-                  <> " derives from workspace not produced by transitive dependency: "
-                  <> source,
-              ))
-          }
-        }
-      }
-    }
-  }
-}
-
-fn transitive_dependency_ids(
-  deps: List(String),
-  by_id: Dict(String, WorkflowStep),
-  seen: List(String),
-) -> List(String) {
-  case deps {
-    [] -> seen
-    [dep, ..rest] -> {
-      case list.contains(seen, dep) {
-        True -> transitive_dependency_ids(rest, by_id, seen)
-        False -> {
-          let seen = [dep, ..seen]
-          let seen = case dict.get(by_id, dep) {
-            Ok(step) -> transitive_dependency_ids(step.depends_on, by_id, seen)
-            Error(_) -> seen
-          }
-          transitive_dependency_ids(rest, by_id, seen)
-        }
-      }
-    }
-  }
-}
-
-fn workspace_names_for(
-  ids: List(String),
-  by_id: Dict(String, WorkflowStep),
-  acc: List(String),
-) -> List(String) {
-  case ids {
-    [] -> acc
-    [id, ..rest] -> {
-      let acc = case dict.get(by_id, id) {
-        Ok(step) -> [step.workspace.name, ..acc]
-        Error(_) -> acc
-      }
-      workspace_names_for(rest, by_id, acc)
-    }
-  }
+  steps
+  |> step_nodes
+  |> graph_validation.validate_workspace_sources
+  |> result.map_error(graph_error_to_dag_error)
 }
 
 fn validate_single_terminal_sink(
   steps: List(WorkflowStep),
 ) -> Result(Nil, DagError) {
-  case terminal_steps(steps) {
-    [] -> Ok(Nil)
-    [_] -> Ok(Nil)
-    sinks -> {
-      let ids =
-        sinks |> list.map(fn(step) { step.id }) |> string.join(with: ", ")
-      Error(DagError(
-        "multiple_terminal_steps",
-        "workflow DAG must have exactly one terminal step; terminal steps: "
-          <> ids,
-      ))
-    }
-  }
+  steps
+  |> step_nodes
+  |> graph_validation.validate_single_terminal_sink
+  |> result.map_error(graph_error_to_dag_error)
+}
+
+fn step_nodes(steps: List(WorkflowStep)) -> List(graph_validation.StepNode) {
+  list.map(steps, step_node)
+}
+
+fn step_node(step: WorkflowStep) -> graph_validation.StepNode {
+  graph_validation.StepNode(
+    id: step.id,
+    depends_on: step.depends_on,
+    workspace_name: step.workspace.name,
+    workspace_from: step.workspace.from,
+  )
+}
+
+fn graph_error_to_dag_error(error: graph_validation.GraphError) -> DagError {
+  let graph_validation.GraphError(code, message) = error
+  DagError(code, message)
 }
 
 fn validate_contract_sources(dag: WorkflowDag) -> Result(Nil, DagError) {
@@ -1540,12 +1708,6 @@ fn has_dependent(steps: List(WorkflowStep), step_id: String) -> Bool {
     [step, ..rest] ->
       list.contains(step.depends_on, step_id) || has_dependent(rest, step_id)
   }
-}
-
-fn steps_dict(steps: List(WorkflowStep)) -> Dict(String, WorkflowStep) {
-  steps
-  |> list.map(fn(step) { #(step.id, step) })
-  |> dict.from_list
 }
 
 fn validate_workflow_id(id: String) -> Result(Nil, DagError) {

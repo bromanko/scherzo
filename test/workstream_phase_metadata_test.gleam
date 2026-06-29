@@ -33,7 +33,7 @@ pub fn parses_optional_workstream_phase_metadata_test() {
       "workstream_phase:\n  phase_id: artifact_specs\n  display_name: Artifact Specs\n  handoff:\n    output: code_change_bundle\n    artifact_type: scherzo.handoff.v1\n    snapshot: required\n  gates: [human_review]\n  next_actions:\n    - action_id: revise_plan\n      workflow_id: execplan-revision\n      state: available\n      priority: 3\n      inputs: [code_change_bundle]\n      requires_gate: human_review\n      auto_enqueue: false\n",
     ))
 
-  let assert Some(metadata) = dag.workstream_phase
+  let assert Some(metadata) = workflow_dag.workstream_phase(dag)
   assert metadata.phase_id == "artifact_specs"
   assert metadata.display_name == "Artifact Specs"
   let assert Some(handoff) = metadata.handoff
@@ -46,8 +46,8 @@ pub fn parses_optional_workstream_phase_metadata_test() {
 
 pub fn workflow_without_workstream_phase_returns_none_test() {
   let dag = parse_ok(base_workflow(""))
-  assert dag.contract != None
-  assert dag.workstream_phase == None
+  assert workflow_dag.contract(dag) != None
+  assert workflow_dag.workstream_phase(dag) == None
 }
 
 pub fn rejects_unknown_handoff_output_test() {
@@ -121,10 +121,10 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
   let implementation =
     parse_ok(read_fixture(".scherzo/workflows/execplan-implementation.yaml"))
 
-  assert execplan.contract != None
-  assert revision.contract != None
-  assert implementation.contract != None
-  let assert Some(revision_contract) = revision.contract
+  assert workflow_dag.contract(execplan) != None
+  assert workflow_dag.contract(revision) != None
+  assert workflow_dag.contract(implementation) != None
+  let assert Some(revision_contract) = workflow_dag.contract(revision)
   let assert Ok(revision_bundle_input) =
     list.find(revision_contract.inputs, fn(input) {
       input.name == "exec_plan_bundle"
@@ -132,7 +132,8 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
   assert !workflow_contract.requirement_required(revision_bundle_input.source)
   assert workflow_contract.requirement_source(revision_bundle_input.source)
     == Some(workflow_contract.MappedOutputSource)
-  let assert Some(implementation_contract) = implementation.contract
+  let assert Some(implementation_contract) =
+    workflow_dag.contract(implementation)
   let assert Ok(implementation_bundle_input) =
     list.find(implementation_contract.inputs, fn(input) {
       input.name == "exec_plan_bundle"
@@ -144,7 +145,7 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
       implementation_bundle_input.source,
     )
     == Some(workflow_contract.MappedOutputSource)
-  let assert Some(execplan_phase) = execplan.workstream_phase
+  let assert Some(execplan_phase) = workflow_dag.workstream_phase(execplan)
   assert execplan_phase.phase_id == "execplan"
   let assert Some(handoff) = execplan_phase.handoff
   assert handoff.output == "exec_plan_bundle"
@@ -160,7 +161,7 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
   assert revise_action.workflow_id == "execplan-revision"
   assert revise_action.priority == 1
   assert revise_action.requires_gate == None
-  let assert Some(revision_phase) = revision.workstream_phase
+  let assert Some(revision_phase) = workflow_dag.workstream_phase(revision)
   assert revision_phase.phase_id == "execplan_revision"
   let assert Some(revision_handoff) = revision_phase.handoff
   assert revision_handoff.output == "exec_plan_bundle"
@@ -171,7 +172,8 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
   assert revision_next_action.requires_gate == Some("human_review")
   assert revision_revise_action.action_id == "revise_exec_plan"
   assert revision_revise_action.workflow_id == "execplan-revision"
-  let assert Some(implementation_phase) = implementation.workstream_phase
+  let assert Some(implementation_phase) =
+    workflow_dag.workstream_phase(implementation)
   assert implementation_phase.phase_id == "implementation"
   assert implementation_phase.gates
     == [
@@ -187,8 +189,8 @@ pub fn current_workflows_remain_compatible_with_execplan_opt_in_test() {
     parse_ok(
       "version: 1\nid: minimal\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    run_in: main\n",
     )
-  assert minimal.contract == None
-  assert minimal.workstream_phase == None
+  assert workflow_dag.contract(minimal) == None
+  assert workflow_dag.workstream_phase(minimal) == None
 }
 
 pub fn canonical_phase_metadata_json_includes_expected_fields_test() {

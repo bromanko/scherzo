@@ -186,7 +186,7 @@ pub fn workflow_reloader_changed_prompt_reloads_prompt_contents_test() {
   case workflow_reloader.reload_if_changed(state) {
     workflow_reloader.Reloaded(next) -> {
       let assert Ok(dag) = dict.get(next.bundle.workflows, "implementation")
-      let assert [step] = dag.steps
+      let assert [step] = workflow_dag.steps(dag)
       assert step.kind
         == workflow_dag.AgentStep(
           workflow_dag.PromptInline("Updated Prompt"),
@@ -225,7 +225,7 @@ pub fn workflow_reloader_invalid_routed_workflow_keeps_last_known_good_and_names
       assert !config.can_dispatch(next.reload_state)
       assert string.contains(message, "workflows/implementation.yaml")
       let assert Ok(dag) = dict.get(next.bundle.workflows, "implementation")
-      let assert [step] = dag.steps
+      let assert [step] = workflow_dag.steps(dag)
       assert step.id == "implement"
     }
     _ -> panic as "expected invalid routed workflow reload outcome"
@@ -245,9 +245,9 @@ pub fn workflow_reloader_invalid_contract_keeps_last_known_good_bundle_test() {
       assert !config.can_dispatch(next.reload_state)
       assert string.contains(message, "missing_step")
       let assert Ok(dag) = dict.get(next.bundle.workflows, "implementation")
-      let assert [step] = dag.steps
+      let assert [step] = workflow_dag.steps(dag)
       assert step.id == "implement"
-      assert dag.contract == None
+      assert workflow_dag.contract(dag) == None
     }
     _ -> panic as "expected invalid contract reload outcome"
   }
@@ -266,7 +266,7 @@ pub fn workflow_reloader_missing_prompt_keeps_last_known_good_and_names_path_tes
       assert !config.can_dispatch(next.reload_state)
       assert string.contains(message, "workflows/prompts/task.md")
       let assert Ok(dag) = dict.get(next.bundle.workflows, "implementation")
-      let assert [step] = dag.steps
+      let assert [step] = workflow_dag.steps(dag)
       assert step.kind
         == workflow_dag.AgentStep(workflow_dag.PromptInline("Prompt"), None)
     }
@@ -301,7 +301,7 @@ pub fn workflow_reloader_recovers_when_created_prompt_was_not_in_last_good_bundl
       assert recovered.last_invalid_dependency_snapshot == None
       let assert Ok(dag) =
         dict.get(recovered.bundle.workflows, "implementation")
-      let assert [step] = dag.steps
+      let assert [step] = workflow_dag.steps(dag)
       assert step.kind
         == workflow_dag.AgentStep(workflow_dag.PromptInline("New Prompt"), None)
     }
@@ -325,7 +325,7 @@ pub fn workflow_reloader_repeated_invalid_dependency_poll_is_unchanged_test() {
       assert still_invalid.last_invalid_dependency_snapshot == Some(snapshot)
       let assert Ok(dag) =
         dict.get(still_invalid.bundle.workflows, "implementation")
-      let assert [step] = dag.steps
+      let assert [step] = workflow_dag.steps(dag)
       assert step.id == "implement"
     }
     _ -> panic as "expected repeated invalid dependency poll to be unchanged"
@@ -369,7 +369,7 @@ pub fn workflow_reloader_recovers_after_invalid_dependency_is_fixed_test() {
       assert recovered.last_invalid_dependency_snapshot == None
       let assert Ok(dag) =
         dict.get(recovered.bundle.workflows, "implementation")
-      let assert [step] = dag.steps
+      let assert [step] = workflow_dag.steps(dag)
       assert step.kind
         == workflow_dag.AgentStep(workflow_dag.PromptInline("Prompt"), None)
     }
@@ -388,7 +388,7 @@ pub fn workflow_reloader_reload_now_reloads_when_config_contents_unchanged_test(
     workflow_reloader.Reloaded(next) -> {
       assert next.last_contents == state.last_contents
       let assert Ok(dag) = dict.get(next.bundle.workflows, "implementation")
-      let assert [step] = dag.steps
+      let assert [step] = workflow_dag.steps(dag)
       assert step.kind
         == workflow_dag.AgentStep(
           workflow_dag.PromptInline("Updated Prompt"),

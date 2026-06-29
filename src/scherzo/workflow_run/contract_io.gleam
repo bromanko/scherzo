@@ -76,7 +76,7 @@ pub fn record_recovered_inputs_if_contracted(
   checkpoint: workflow_checkpoint.Writer,
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, contract_error.ContractIoError) {
-  case recovered.contract_inputs_recorded, dag.contract {
+  case recovered.contract_inputs_recorded, workflow_dag.contract(dag) {
     Some(_), _ | _, None -> Ok(Nil)
     None, Some(contract) ->
       case recovered.steps_started {
@@ -102,7 +102,7 @@ pub fn record_recovered_inputs_if_contracted(
           let manifest =
             contract_manifest.ContractInputManifest(
               run_id: recovered.run_id,
-              workflow_id: dag.id,
+              workflow_id: workflow_dag.id(dag),
               workflow_fingerprint: recovered.workflow_fingerprint,
               inputs: list.map(
                 contract.inputs,
@@ -128,7 +128,7 @@ pub fn record_inputs_if_contracted(
   checkpoint: workflow_checkpoint.Writer,
   profile: config_types.WorkspaceHookProfile,
 ) -> Result(Nil, contract_error.ContractIoError) {
-  case dag.contract {
+  case workflow_dag.contract(dag) {
     None -> Ok(Nil)
     Some(contract) -> {
       use inputs <- result.try(
@@ -146,7 +146,7 @@ pub fn record_inputs_if_contracted(
       let manifest =
         contract_manifest.ContractInputManifest(
           run_id: invocation.run_id,
-          workflow_id: dag.id,
+          workflow_id: workflow_dag.id(dag),
           workflow_fingerprint: invocation.workflow_fingerprint,
           inputs: inputs,
           context: context,
@@ -166,7 +166,7 @@ pub fn record_outputs_if_contracted(
   artifacts: Dict(String, step_artifact.StepArtifact),
   prepared_workspaces: Dict(String, workspace_run.PreparedStepWorkspace),
 ) -> Result(ContractOutputsResult, contract_error.ContractIoError) {
-  case dag.contract, contract_outputs_recorded {
+  case workflow_dag.contract(dag), contract_outputs_recorded {
     None, _ -> Ok(ContractOutputsResult([], None, None))
     Some(_), Some(recorded) -> {
       use contents <- result.try(
@@ -185,7 +185,7 @@ pub fn record_outputs_if_contracted(
       let #(values, diagnostics, missing) =
         resolve_contract_outputs(
           contract.outputs,
-          dag.steps,
+          workflow_dag.steps(dag),
           run_id,
           checkpoint,
           artifacts,
@@ -197,7 +197,7 @@ pub fn record_outputs_if_contracted(
       let manifest =
         contract_manifest.ContractOutputManifest(
           run_id: run_id,
-          workflow_id: dag.id,
+          workflow_id: workflow_dag.id(dag),
           workflow_fingerprint: workflow_fingerprint,
           outputs: values,
           diagnostics: diagnostics,
@@ -211,7 +211,7 @@ pub fn record_outputs_if_contracted(
         checkpoint.workflow_outputs_recorded(
           workflow_checkpoint.WorkflowContractManifestRecorded(
             run_id: run_id,
-            workflow_id: dag.id,
+            workflow_id: workflow_dag.id(dag),
             workflow_fingerprint: workflow_fingerprint,
             artifact: written,
           ),

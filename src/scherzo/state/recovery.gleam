@@ -1821,7 +1821,12 @@ fn validate_recovered_workflow_filesystem(
     root_abs,
     run_root_abs,
   ))
-  validate_pending_source_workspaces(dag.steps, dag, artifacts, workspaces)
+  validate_pending_source_workspaces(
+    workflow_dag.steps(dag),
+    dag,
+    artifacts,
+    workspaces,
+  )
 }
 
 fn validate_recovered_run_root(
@@ -1885,7 +1890,7 @@ fn validate_completed_workspace_summary(
     && workspace_path_abs != run_root_abs
     && path.contains(run_root_abs, workspace_path_abs)
     && path.contains(root_abs, workspace_path_abs)
-    && dag_has_workspace_name(dag.steps, workspace.workspace_name)
+    && dag_has_workspace_name(workflow_dag.steps(dag), workspace.workspace_name)
   {
     True ->
       validate_existing_recovered_directory(

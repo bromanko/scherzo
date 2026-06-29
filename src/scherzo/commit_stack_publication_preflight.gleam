@@ -134,7 +134,7 @@ fn diagnostics_for_dag(
     orchestrator,
     workflow_id,
     dag,
-    dag.publication_routes,
+    workflow_dag.publication_routes(dag),
     required,
     [],
   )

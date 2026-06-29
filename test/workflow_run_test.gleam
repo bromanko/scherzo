@@ -2045,7 +2045,7 @@ pub fn recovery_prompt_does_not_rerender_workspace_driver_locals_test() {
   let context =
     workflow_run.RecoveredRunContext(
       ..recovered_context(
-        dag.id,
+        workflow_dag.id(dag),
         dict.new(),
         dict.new(),
         dict.new(),
@@ -2973,7 +2973,7 @@ pub fn recovered_completed_upstream_step_is_not_rerun_test() {
   let subject = process.new_subject()
   let context =
     recovered_context(
-      dag.id,
+      workflow_dag.id(dag),
       dict.from_list([#("collect", workflow_scheduler.Succeeded)]),
       dict.from_list([#("collect", collect_artifact)]),
       dict.new(),
@@ -3018,7 +3018,7 @@ pub fn recovered_failed_continued_artifact_feeds_downstream_prompt_test() {
   let subject = process.new_subject()
   let context =
     recovered_context(
-      dag.id,
+      workflow_dag.id(dag),
       dict.from_list([#("lint", workflow_scheduler.FailedContinued)]),
       dict.from_list([#("lint", lint_artifact)]),
       dict.new(),
@@ -3081,7 +3081,7 @@ pub fn recovered_pi_resume_validation_failure_is_fatal_even_with_continue_policy
   let context =
     workflow_run.RecoveredRunContext(
       ..recovered_context(
-        dag.id,
+        workflow_dag.id(dag),
         dict.new(),
         dict.new(),
         dict.new(),
@@ -3185,7 +3185,13 @@ pub fn recovered_start_checkpoint_failure_does_not_cleanup_before_attempt_test()
       ),
     )
   let context =
-    recovered_context(dag.id, dict.new(), dict.new(), dict.new(), dict.new())
+    recovered_context(
+      workflow_dag.id(dag),
+      dict.new(),
+      dict.new(),
+      dict.new(),
+      dict.new(),
+    )
   let assert Error(failure) =
     workflow_run.execute_with_context(
       issue(),
@@ -3223,7 +3229,13 @@ pub fn recovered_prepare_checkpoint_failure_stops_before_step_run_test() {
       ),
     )
   let context =
-    recovered_context(dag.id, dict.new(), dict.new(), dict.new(), dict.new())
+    recovered_context(
+      workflow_dag.id(dag),
+      dict.new(),
+      dict.new(),
+      dict.new(),
+      dict.new(),
+    )
   let assert Error(failure) =
     workflow_run.execute_with_context(
       issue(),
@@ -3258,7 +3270,13 @@ pub fn recovered_prepare_failure_interrupts_stale_prepared_attempt_before_termin
       checkpoint: recording_checkpoint(root, subject),
     )
   let context =
-    recovered_context(dag.id, dict.new(), dict.new(), dict.new(), dict.new())
+    recovered_context(
+      workflow_dag.id(dag),
+      dict.new(),
+      dict.new(),
+      dict.new(),
+      dict.new(),
+    )
 
   let assert Error(failure) =
     workflow_run.execute_with_context(
@@ -3330,7 +3348,7 @@ pub fn parallel_recovery_runs_only_interrupted_branch_test() {
     )
   let context =
     recovered_context(
-      dag.id,
+      workflow_dag.id(dag),
       dict.from_list([#("docs", workflow_scheduler.Succeeded)]),
       dict.from_list([#("docs", docs_artifact)]),
       dict.new(),
@@ -7071,7 +7089,7 @@ pub fn resumed_publication_finalization_preserves_terminal_required_failure_test
 
   let assert Ok(initial_result) =
     artifact_publication_executor.execute_routes_with_runner_and_state_root(
-      dag.publication_routes,
+      workflow_dag.publication_routes(dag),
       publication_repositories(),
       config_root,
       config_root,

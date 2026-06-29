@@ -27,16 +27,91 @@ fn minimal() -> String {
   "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n"
 }
 
+fn simple_constructor_step(
+  id: String,
+  depends_on: List(String),
+) -> workflow_dag.WorkflowStep {
+  workflow_dag.WorkflowStep(
+    id: id,
+    kind: workflow_dag.AgentStep(workflow_dag.PromptInline("prompt"), None),
+    depends_on: depends_on,
+    workspace: workflow_dag.WorkspaceRef(name: "main", from: None),
+    on_failure: workflow_dag.FailWorkflow,
+    model_settings: model_config.default_settings(),
+    recover: None,
+  )
+}
+
+fn construct_workflow(
+  id: String,
+  steps: List(workflow_dag.WorkflowStep),
+) -> Result(workflow_dag.WorkflowDag, workflow_dag.DagError) {
+  workflow_dag.new(
+    id: id,
+    description: None,
+    workspace_profile: None,
+    workspace_capabilities: [],
+    max_parallel_steps: 1,
+    recover: None,
+    steps: steps,
+    contract: None,
+    publication_routes: [],
+    workstream_phase: None,
+  )
+}
+
+pub fn constructor_rejects_duplicate_step_ids_test() {
+  let step = simple_constructor_step("main", [])
+  let assert Error(workflow_dag.DagError(code, message)) =
+    construct_workflow("research", [step, step])
+  assert code == "duplicate_step_id"
+  assert string.contains(message, "duplicate step id: main")
+}
+
+pub fn constructor_rejects_invalid_workflow_id_test() {
+  let assert Error(workflow_dag.DagError(code, message)) =
+    construct_workflow("Invalid", [simple_constructor_step("main", [])])
+  assert code == "invalid_workflow_id"
+  assert string.contains(message, "invalid workflow id: Invalid")
+}
+
+pub fn constructor_rejects_invalid_structured_required_key_test() {
+  let step =
+    workflow_dag.WorkflowStep(
+      ..simple_constructor_step("main", []),
+      kind: workflow_dag.AgentStep(
+        workflow_dag.PromptInline("prompt"),
+        Some(workflow_dag.StructuredOutputSpec(
+          artifact_name: "review_json",
+          required: True,
+          source: structured_output_source.PiToolCallSource(
+            tool_name: "submit_review_json",
+            parameters_schema_path: None,
+          ),
+          format: workflow_dag.StructuredJson,
+          schema: workflow_dag.StructuredObjectSchema(["bad-name"]),
+          validators: [],
+          validation_retries: 1,
+        )),
+      ),
+    )
+
+  let assert Error(workflow_dag.DagError(code, message)) =
+    construct_workflow("research", [step])
+  assert code == "invalid_structured_output_required_key"
+  assert string.contains(message, "bad-name")
+}
+
 pub fn parses_minimal_workflow_dag_test() {
   let dag = parse_ok(minimal())
-  assert dag.id == "research"
-  assert dag.workspace_profile == None
-  assert dag.workspace_capabilities == []
-  assert dag.max_parallel_steps == 1
-  assert dag.recover == None
-  assert dag.contract == None
-  assert dag.publication_routes == []
-  let assert [step] = dag.steps
+  assert workflow_dag.id(dag) == "research"
+  assert workflow_dag.workspace_profile(dag) == None
+  assert workflow_dag.workspace_capabilities(dag) == []
+  assert workflow_dag.max_parallel_steps(dag) == 1
+  assert workflow_dag.recovery_config(dag) == None
+  assert workflow_dag.contract(dag) == None
+  assert workflow_dag.publication_routes(dag) == []
+  let assert [step] = workflow_dag.steps(dag)
   assert step.id == "main"
   assert step.depends_on == []
   assert step.workspace == workflow_dag.WorkspaceRef(name: "main", from: None)
@@ -55,7 +130,7 @@ pub fn applies_workflow_model_defaults_to_agent_steps_test() {
       "version: 1\nid: research\nmodel: openai/gpt-5.1\nthinking: medium\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n  - id: review\n    depends_on: [draft]\n    prompt: prompts/review.md\n    model: github-copilot/gpt-5.1-codex\n  - id: validate\n    depends_on: [review]\n    run: gleam test\n",
     )
 
-  let assert [draft, review, validate] = dag.steps
+  let assert [draft, review, validate] = workflow_dag.steps(dag)
   assert draft.model_settings
     == model_config.Settings(
       model: Some("openai/gpt-5.1"),
@@ -75,7 +150,7 @@ pub fn parses_artifact_publications_test() {
       "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    exec_plan_bundle:\n      type: exec_plan_bundle\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\nartifacts:\n  publications:\n    - id: review_doc\n      repository: github.docs\n      required: false\n      pull_request:\n        title: \"Publish {{ publication.id }}\"\n        body_template: docs/pr-body.md\n      files:\n        - select:\n            output: exec_plan_bundle\n            entry: plan\n          path: docs/plans/{{ work.identifier }}.md\n",
     )
 
-  let assert [route] = dag.publication_routes
+  let assert [route] = workflow_dag.publication_routes(dag)
   assert route.id == "review_doc"
   assert route.repository == "github.docs"
   assert route.required == False
@@ -102,7 +177,7 @@ pub fn parses_commit_stack_existing_pr_branch_publication_test() {
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
     )
 
-  let assert [route] = dag.publication_routes
+  let assert [route] = workflow_dag.publication_routes(dag)
   let assert artifact_publication_config.CommitStackPublicationRoute(
     commit_stack: commit_stack,
   ) = route.publication
@@ -147,7 +222,7 @@ pub fn parses_commit_stack_publication_pull_request_override_test() {
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\n    merge_conflict_target:\n      type: code_change\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: conflict_resolution\n      repository: github.code\n      required: true\n      mode: commit_stack\n      pull_request:\n        title: Should be used\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_conflict_target\n",
     )
 
-  let assert [route] = dag.publication_routes
+  let assert [route] = workflow_dag.publication_routes(dag)
   assert route.pull_request
     == Some(artifact_publication_config.PublicationPullRequestOverride(
       title: Some("Should be used"),
@@ -182,7 +257,7 @@ pub fn parses_commit_stack_stable_branch_publication_test() {
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: final_response\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/implementation.md\nartifacts:\n  publications:\n    - id: implementation_commit_stack\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: stable_branch\n",
     )
 
-  let assert [route] = dag.publication_routes
+  let assert [route] = workflow_dag.publication_routes(dag)
   let assert artifact_publication_config.CommitStackPublicationRoute(_) =
     route.publication
   let assert artifact_publication_config.StableBranchTarget = route.target
@@ -323,7 +398,7 @@ pub fn infers_step_kind_from_prompt_or_run_test() {
     parse_ok(
       "version: 1\nid: infer\nsteps:\n  - id: draft\n    prompt: prompts/draft.md\n  - id: validate\n    depends_on: [draft]\n    run: gleam test\n",
     )
-  let assert [draft, validate] = dag.steps
+  let assert [draft, validate] = workflow_dag.steps(dag)
   let assert workflow_dag.AgentStep(
     workflow_dag.PromptFile("prompts/draft.md"),
     None,
@@ -363,13 +438,13 @@ pub fn parses_workflow_and_step_recover_configs_test() {
     attempts,
     model,
     prompt,
-  )) = dag.recover
+  )) = workflow_dag.recovery_config(dag)
   assert enabled == None
   assert attempts == Some(2)
   assert model == Some("gpt-5")
   assert prompt == Some(workflow_dag.PromptFile("prompts/recover.md"))
 
-  let assert [test_step, fix_step] = dag.steps
+  let assert [test_step, fix_step] = workflow_dag.steps(dag)
   let assert Ok(Some(test_recover)) =
     workflow_dag.effective_recovery_config(dag, test_step)
   assert test_recover
@@ -393,7 +468,7 @@ pub fn parses_step_only_recover_and_default_attempts_test() {
     parse_ok(
       "version: 1\nid: recovery\nsteps:\n  - id: fix\n    kind: agent\n    prompt: prompts/fix.md\n    recovery:\n      prompt: prompts/recover.md\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   let assert Ok(Some(recover)) =
     workflow_dag.effective_recovery_config(dag, step)
   assert recover
@@ -409,7 +484,7 @@ pub fn recover_enabled_false_disables_step_recovery_test() {
     parse_ok(
       "version: 1\nid: recovery\nrecovery:\n  prompt: prompts/recover.md\nsteps:\n  - id: test\n    kind: command\n    run: gleam test\n    recovery:\n      enabled: false\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   assert workflow_dag.effective_recovery_config(dag, step) == Ok(None)
 }
 
@@ -452,7 +527,7 @@ pub fn parses_agent_structured_output_defaults_test() {
     parse_ok(
       "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   let assert workflow_dag.AgentStep(
     workflow_dag.PromptFile("prompts/review.md"),
     Some(spec),
@@ -475,7 +550,7 @@ pub fn parses_agent_structured_output_json_contract_test() {
     parse_ok(
       "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      format: json\n      artifact_name: review_result\n      required: true\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_result\n      validator: review_lane_draft\n      validation_retries: 0\n      schema:\n        type: object\n        required:\n          - summary\n          - findings\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   let assert workflow_dag.AgentStep(
     workflow_dag.PromptFile("prompts/review.md"),
     Some(spec),
@@ -514,7 +589,7 @@ pub fn parses_agent_structured_output_pi_tool_call_source_test() {
     parse_ok(
       "version: 1\nid: structured_review\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_example_artifact\n        require_single: true\n        reject_sibling_tool_calls: true\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   let assert workflow_dag.AgentStep(_, Some(spec)) = step.kind
   assert spec.source
     == structured_output_source.PiToolCallSource(
@@ -580,6 +655,10 @@ pub fn rejects_invalid_structured_output_contracts_test() {
     )
     == "structured_output_schema_required_entry_not_string"
   assert error_code(
+      "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      schema:\n        required:\n          - bad-name\n",
+    )
+    == "invalid_structured_output_required_key"
+  assert error_code(
       "version: 1\nid: structured_review\nsteps:\n  - id: review_json\n    kind: agent\n    prompt: prompts/review.md\n    structured_output:\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_json\n      validator: unknown_contract\n",
     )
     == "unknown_structured_output_validator"
@@ -602,7 +681,7 @@ pub fn parses_workspace_requires_test() {
     parse_ok(
       "version: 1\nid: research\nworkspace:\n  requires: [assert-only, changed-files]\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
     )
-  assert dag.workspace_capabilities
+  assert workflow_dag.workspace_capabilities(dag)
     == [
       config_types.WorkspaceAssertOnly,
       config_types.WorkspaceChangedFiles,
@@ -645,7 +724,7 @@ pub fn parses_top_level_workspace_driver_test() {
     parse_ok(
       "version: 1\nid: research\nworkspace:\n  driver: noop\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n",
     )
-  assert dag.workspace_profile == Some("noop")
+  assert workflow_dag.workspace_profile(dag) == Some("noop")
 }
 
 pub fn rejects_invalid_workspace_driver_test() {
@@ -741,7 +820,7 @@ pub fn parses_command_step_duration_timeout_test() {
     parse_ok(
       "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n    timeout: 2m\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   let assert workflow_dag.CommandStep(_, Some(timeout_ms)) = step.kind
   assert timeout_ms == 120_000
 }
@@ -773,7 +852,7 @@ pub fn parses_optional_description_test() {
     parse_ok(
       "version: 1\nid: research\ndescription: Test description\nsteps:\n  - id: main\n    kind: command\n    run: echo ok\n",
     )
-  assert dag.description == Some("Test description")
+  assert workflow_dag.description(dag) == Some("Test description")
 }
 
 pub fn parses_per_step_model_settings_test() {
@@ -781,7 +860,7 @@ pub fn parses_per_step_model_settings_test() {
     parse_ok(
       "version: 1\nid: research\nsteps:\n  - id: main\n    kind: agent\n    prompt: prompts/research.md\n    model: github-copilot/gpt-5.1-codex\n    thinking: xhigh\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   assert step.model_settings.model == Some("github-copilot/gpt-5.1-codex")
   assert step.model_settings.thinking == Some(model_config.ThinkingXHigh)
 }
@@ -851,7 +930,7 @@ pub fn accepts_string_workspace_test() {
     parse_ok(
       "version: 1\nid: research\nsteps:\n  - id: main\n    kind: command\n    run_in: main\n    run: gleam test\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   assert step.workspace == workflow_dag.WorkspaceRef(name: "main", from: None)
 }
 
@@ -860,7 +939,7 @@ pub fn accepts_derived_workspace_from_transitive_dependency_test() {
     parse_ok(
       "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: implement.md\n    run_in: main\n  - id: code_review\n    kind: agent\n    depends_on: [implement]\n    prompt: review.md\n    run_in:\n      name: code-review\n      from: main\n",
     )
-  let assert [_, review] = dag.steps
+  let assert [_, review] = workflow_dag.steps(dag)
   assert review.workspace
     == workflow_dag.WorkspaceRef(name: "code-review", from: Some("main"))
 }
@@ -901,7 +980,7 @@ pub fn rejects_zero_parallelism_test() {
 
 pub fn defaults_depends_on_and_on_failure_test() {
   let dag = parse_ok(minimal())
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   assert step.depends_on == []
   assert step.on_failure == workflow_dag.FailWorkflow
 }
@@ -911,7 +990,7 @@ pub fn parses_on_failure_continue_test() {
     parse_ok(
       "version: 1\nid: research\nsteps:\n  - id: test_step\n    kind: command\n    run: gleam test\n    on_failure: continue\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   assert step.on_failure == workflow_dag.ContinueWorkflow
 }
 
@@ -932,7 +1011,7 @@ pub fn accepts_generic_pi_tool_call_with_matching_json_schema_validator_test() {
     parse_ok(
       "version: 1\nid: implementation\nsteps:\n  - id: example_json\n    kind: agent\n    prompt: prompts/example.md\n    structured_output:\n      artifact_name: example_artifact\n      source:\n        type: pi_tool_call\n        tool_name: submit_structured_output\n        parameters_schema_path: .scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json\n      validators:\n        - name: shape\n          type: json_schema\n          path: .scherzo/workflows/schemas/review-lane-draft.correctness.v1.schema.json\n      schema:\n        required: [schema_version, artifact_type]\n",
     )
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   let assert workflow_dag.AgentStep(_, Some(spec)) = step.kind
   assert structured_output_source.parameters_schema_path(spec.source)
     == Some(
@@ -945,7 +1024,7 @@ pub fn validates_contract_output_step_sources_test() {
     parse_ok(
       "version: 1\nid: research\ncontract:\n  version: 1\n  outputs:\n    findings:\n      type: document.markdown\n      source:\n        step: collect_findings\n        field: stdout\nsteps:\n  - id: collect_findings\n    kind: command\n    run: printf '# Findings'\n",
     )
-  let assert Some(contract) = dag.contract
+  let assert Some(contract) = workflow_dag.contract(dag)
   let assert [output] = contract.outputs
   assert workflow_contract.requirement_source(output.source)
     == Some(workflow_contract.StepField(
@@ -973,7 +1052,7 @@ pub fn validates_contract_structured_output_sources_test() {
     parse_ok(
       "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    code_change:\n      type: code_change\n      source:\n        step: summarize_change\n        structured_output: code_change\n    inline_change:\n      type: code_change\n      source:\n        step: summarize_change\n        inline_json: code_change\nsteps:\n  - id: summarize_change\n    kind: agent\n    prompt: prompts/summarize.md\n    structured_output:\n      artifact_name: code_change\n      source:\n        type: pi_tool_call\n        tool_name: submit_code_change\n",
     )
-  let assert Some(contract) = dag.contract
+  let assert Some(contract) = workflow_dag.contract(dag)
   let assert [structured, inline] = contract.outputs
   assert workflow_contract.requirement_source(structured.source)
     == Some(workflow_contract.StructuredOutput(

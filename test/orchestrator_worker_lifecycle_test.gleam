@@ -15,6 +15,7 @@ import scherzo/session/tokens as session_tokens
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_dag
 import scherzo/workflow_run
 
 type TestState {
@@ -173,7 +174,8 @@ pub fn worker_lifecycle_rebuilds_missing_workflow_snapshot_for_start_test() {
       "run-1",
     )
 
-  assert worker_lifecycle.workflow_snapshot_dag(snapshot).id == "default"
+  assert workflow_dag.id(worker_lifecycle.workflow_snapshot_dag(snapshot))
+    == "default"
   assert worker_lifecycle.workflow_snapshot_fingerprint(snapshot) != ""
   assert string.contains(
     worker_lifecycle.workflow_snapshot_run_root(snapshot),

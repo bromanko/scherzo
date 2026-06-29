@@ -31,6 +31,7 @@ import scherzo/terminal/style
 import scherzo/turn_telemetry
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
+import scherzo/workflow_dag
 import scherzo/workspace
 import scherzo/workspace_manifest
 import simplifile
@@ -2942,7 +2943,7 @@ fn seed_failed_commit_stack_retry_publication_state(root: String) -> Nil {
   let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
   let assert Ok(#(_, workflow)) =
     runtime_bundle.workflow_by_id(bundle, "implementation")
-  let assert [route] = workflow.publication_routes
+  let assert [route] = workflow_dag.publication_routes(workflow)
   let work =
     artifact_publication_planner.PublicationWork(
       kind: artifact_publication_planner.TaskWork,
@@ -3367,12 +3368,12 @@ fn seeded_publication_plans_from_config(
     runtime_bundle.workflow_by_id(bundle, "execplan")
   let assert Ok(body_templates) =
     artifact_publication_recording.load_body_templates(
-      workflow.publication_routes,
+      workflow_dag.publication_routes(workflow),
       bundle.orchestrator.artifact_repositories,
       bundle.orchestrator.config_dir,
-      runtime_bundle.workflow_bundle_dir(bundle, workflow.id),
+      runtime_bundle.workflow_bundle_dir(bundle, workflow_dag.id(workflow)),
     )
-  workflow.publication_routes
+  workflow_dag.publication_routes(workflow)
   |> list.map(fn(route) {
     let assert Ok(planned) =
       artifact_publication_planner.plan_publication(

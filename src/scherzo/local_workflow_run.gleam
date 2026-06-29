@@ -48,7 +48,7 @@ pub fn run(options: Options) -> Result(Nil, RunError) {
     |> result.map_error(map_bundle_error),
   )
   let orchestrator = local_orchestrator(options.run_root)
-  let issue = local_issue(dag.id)
+  let issue = local_issue(workflow_dag.id(dag))
   let tracker_client = local_tracker(issue)
   let dependencies = local_dependencies(options, issue)
   let outcome =
@@ -65,7 +65,7 @@ pub fn run(options: Options) -> Result(Nil, RunError) {
   case outcome {
     Ok(_) -> {
       io.println("SCHERZO_WORKFLOW_RUN=ok")
-      io.println("SCHERZO_WORKFLOW_ID=" <> dag.id)
+      io.println("SCHERZO_WORKFLOW_ID=" <> workflow_dag.id(dag))
       io.println("SCHERZO_RUN_ID=" <> options.run_id)
       io.println("SCHERZO_RUN_ROOT=" <> options.run_root)
       io.println(
@@ -748,7 +748,7 @@ fn write_summary(
       #("schema_version", json.int(1)),
       #("artifact_type", json.string("workflow_local_run_summary")),
       #("workflow_path", json.string(options.workflow_path)),
-      #("workflow_id", json.string(dag.id)),
+      #("workflow_id", json.string(workflow_dag.id(dag))),
       #("run_id", json.string(options.run_id)),
       #("run_root", json.string(options.run_root)),
       #(

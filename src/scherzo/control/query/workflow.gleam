@@ -96,14 +96,14 @@ fn summary_from_workflow(
 ) -> types.WorkflowSummaryDto {
   types.WorkflowSummaryDto(
     id: workflow_id,
-    name: dag.id,
+    name: workflow_dag.id(dag),
     route: Some(workflow_id),
     label: label_for_workflow(
       state.bundle.orchestrator.routing.workflow_label_prefix,
       workflow_id,
     ),
     yaml_paths: yaml_paths_for_workflow(state, workflow_id, roots),
-    step_count: list.length(dag.steps),
+    step_count: list.length(workflow_dag.steps(dag)),
     status: reload_status_to_string(state.reload_state.current_status),
   )
 }
@@ -289,8 +289,8 @@ fn invalid_dependency_diagnostics(
 
 fn graph_from_dag(dag: workflow_dag.WorkflowDag) -> types.WorkflowGraphDto {
   types.WorkflowGraphDto(
-    nodes: dag.steps |> list.map(graph_node_from_step),
-    edges: dag.steps |> list.flat_map(graph_edges_from_step),
+    nodes: workflow_dag.steps(dag) |> list.map(graph_node_from_step),
+    edges: workflow_dag.steps(dag) |> list.flat_map(graph_edges_from_step),
   )
 }
 

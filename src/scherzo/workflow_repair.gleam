@@ -1612,7 +1612,7 @@ fn descendants_including_self(
   dag: workflow_dag.WorkflowDag,
   step_id: String,
 ) -> List(String) {
-  descendants_loop(dag.steps, [step_id], [step_id])
+  descendants_loop(workflow_dag.steps(dag), [step_id], [step_id])
 }
 
 fn descendants_loop(

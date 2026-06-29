@@ -20,7 +20,7 @@ fn error(source: String) -> workflow_dag.DagError {
 
 fn structured_spec(source: String) -> workflow_dag.StructuredOutputSpec {
   let dag = parse_ok(source)
-  let assert [step] = dag.steps
+  let assert [step] = workflow_dag.steps(dag)
   let assert workflow_dag.AgentStep(_, Some(spec)) = step.kind
   spec
 }
@@ -285,7 +285,7 @@ pub fn parses_descriptor_first_contracts_in_workflow_yaml_test() {
       "version: 1\nid: execplan\ncontract:\n  version: 1\n  inputs:\n    exec_plan_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.exec_plan_bundle.v2\n      required: true\n      source: mapped_output\n  outputs:\n    plan:\n      kind: file\n      media_type: text/markdown\n      artifact_type: scherzo.exec_plan.v1\n      source:\n        step: materialize_bundle\n        path: tmp/execplan-review-doc.md\n    implementation_pack:\n      kind: file\n      media_type: application/json\n      artifact_type: scherzo.implementation_pack.v2\n      source:\n        step: materialize_pack\n        path: tmp/execplan-implementation-pack.json\n    code_change_bundle:\n      kind: artifact_set\n      media_type: application/json\n      artifact_type: scherzo.code_change_bundle.v2\n      source:\n        step: materialize_code_change_bundle\n        path: tmp/execplan-code-change-bundle.json\nsteps:\n  - id: materialize_bundle\n    kind: command\n    run: echo bundle\n  - id: materialize_pack\n    kind: command\n    depends_on: [materialize_bundle]\n    run: echo pack\n  - id: materialize_code_change_bundle\n    kind: command\n    depends_on: [materialize_pack]\n    run: echo change\n",
     )
 
-  let assert Some(contract) = dag.contract
+  let assert Some(contract) = workflow_dag.contract(dag)
   let assert [exec_plan_bundle] = contract.inputs
   let assert [plan, implementation_pack, code_change_bundle] = contract.outputs
   assert exec_plan_bundle.type_ == workflow_contract.ExecPlanBundle
@@ -308,7 +308,7 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
     let #(path, expected_id) = workflow_path
     let assert Ok(source) = simplifile.read(path)
     let dag = parse_ok(source)
-    assert dag.id == expected_id
+    assert workflow_dag.id(dag) == expected_id
     assert !string.contains(source, "docs/schemas/")
     assert string.contains(source, ".scherzo/workflows/schemas/")
       || path == ".scherzo/workflows/execplan-implementation.yaml"
@@ -318,7 +318,7 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
     simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
   let implementation = parse_ok(implementation_source)
   let implementation_step_ids =
-    list.map(implementation.steps, fn(step) { step.id })
+    list.map(workflow_dag.steps(implementation), fn(step) { step.id })
   list.each(
     [
       "assert_native_review_cutover",
@@ -339,7 +339,7 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
   let assert Ok(drafting_source) =
     simplifile.read(".scherzo/workflows/execplan.yaml")
   let drafting = parse_ok(drafting_source)
-  let assert Some(contract) = drafting.contract
+  let assert Some(contract) = workflow_dag.contract(drafting)
   let assert [plan, implementation_pack, exec_plan_bundle, commit_stack] =
     contract.outputs
   assert plan.type_ == workflow_contract.ExecPlan
@@ -356,7 +356,7 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
   assert recovery_config.prompt
     == workflow_dag.PromptFile("prompts/execplan-recover-failed-step.md")
 
-  let assert [drafting_route] = drafting.publication_routes
+  let assert [drafting_route] = workflow_dag.publication_routes(drafting)
   assert drafting_route.id == "execplan_review_doc"
   assert drafting_route.repository == "github.code"
   let assert artifact_publication_config.CommitStackPublicationRoute(
@@ -369,7 +369,7 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
   let assert Ok(revision_source) =
     simplifile.read(".scherzo/workflows/execplan-revision.yaml")
   let revision = parse_ok(revision_source)
-  let assert [revision_route] = revision.publication_routes
+  let assert [revision_route] = workflow_dag.publication_routes(revision)
   assert revision_route.id == "execplan_review_doc"
   assert revision_route.repository == "github.code"
   let assert artifact_publication_config.CommitStackPublicationRoute(
