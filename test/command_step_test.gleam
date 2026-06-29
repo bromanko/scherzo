@@ -22,6 +22,14 @@ fn diagnostic_limits() -> config_types.ArtifactLimits {
   )
 }
 
+fn timeout_limits() -> config_types.ArtifactLimits {
+  config_types.ArtifactLimits(
+    command_stream_max_chars: 1000,
+    template_field_max_chars: 1000,
+    workflow_summary_max_chars: 1000,
+  )
+}
+
 pub fn command_step_captures_stdout_and_exit_zero_test() {
   let dir = "test/tmp/command-step-success"
   test_helpers.reset_dir(dir)
@@ -100,11 +108,45 @@ pub fn command_step_captures_final_stdout_line_without_newline_test() {
 pub fn command_step_timeout_returns_failed_artifact_test() {
   let dir = "test/tmp/command-step-timeout"
   test_helpers.reset_dir(dir)
-  let artifact = command_step.run("slow", "sleep 1", dir, 10, [], limits())
+  let artifact =
+    command_step.run("slow", "sleep 1", dir, 10, [], timeout_limits())
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(124)
   assert artifact.timed_out == True
   assert artifact.failure_code == Some(command_step.timeout_failure_code)
+  assert artifact.command == Some("sleep 1")
+  assert string.contains(artifact.stderr, "prepared_monotonic_ms:")
+  assert string.contains(artifact.stderr, "started_monotonic_ms:")
+  assert string.contains(artifact.stderr, "deadline_monotonic_ms:")
+  assert string.contains(artifact.stderr, "timeout_monotonic_ms:")
+  let assert Some(diagnostic_path) = artifact.diagnostic_path
+  let assert Ok(body) = simplifile.read(diagnostic_path)
+  assert string.contains(body, "command: sleep 1")
+  assert string.contains(body, "prepared_monotonic_ms:")
+  assert string.contains(body, "timeout_monotonic_ms:")
+}
+
+pub fn command_step_timeout_redacts_command_identity_test() {
+  let dir = "test/tmp/command-step-timeout-secret"
+  test_helpers.reset_dir(dir)
+  let artifact =
+    command_step.run(
+      "secret_timeout",
+      "printf start; sleep 1 # super-secret",
+      dir,
+      10,
+      ["super-secret"],
+      diagnostic_limits(),
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some(command_step.timeout_failure_code)
+  assert artifact.command == Some("printf start; sleep 1 # [REDACTED]")
+  assert !string.contains(step_artifact.to_string(artifact), "super-secret")
+  let assert Some(diagnostic_path) = artifact.diagnostic_path
+  let assert Ok(body) = simplifile.read(diagnostic_path)
+  assert string.contains(body, "command: printf start; sleep 1 # [REDACTED]")
+  assert !string.contains(body, "super-secret")
 }
 
 pub fn command_step_timeout_overrides_child_failure_code_test() {
@@ -117,7 +159,7 @@ pub fn command_step_timeout_overrides_child_failure_code_test() {
       dir,
       1000,
       [],
-      diagnostic_limits(),
+      timeout_limits(),
     )
 
   assert artifact.status == step_artifact.StepFailed
