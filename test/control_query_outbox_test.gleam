@@ -68,7 +68,10 @@ fn entries() -> List(#(String, projection.OutboxStatus)) {
 pub fn outbox_list_filters_paginates_and_omits_payload_bodies_test() {
   let assert Ok(types.OutboxListResponse(page)) =
     outbox.execute_list(
-      get_outbox: fn(_) { Ok(entries()) },
+      get_outbox: fn(timeout_ms) {
+        assert timeout_ms == 1000
+        Ok(entries())
+      },
       query: types.OutboxListQuery(
         statuses: [types.OutboxRetryableStatus, types.OutboxPermanentStatus],
         kinds: ["linear_comment"],
@@ -111,7 +114,10 @@ pub fn outbox_list_filters_paginates_and_omits_payload_bodies_test() {
 pub fn outbox_show_returns_single_record_and_not_found_test() {
   let assert Ok(types.OutboxShowResponse(record)) =
     outbox.execute_show(
-      get_outbox: fn(_) { Ok(entries()) },
+      get_outbox: fn(timeout_ms) {
+        assert timeout_ms == 1000
+        Ok(entries())
+      },
       query: types.OutboxShowQuery(outbox_id: "outbox-retryable"),
     )
 
@@ -154,7 +160,10 @@ pub fn outbox_list_invalid_cursor_is_validated_before_snapshot_test() {
 pub fn outbox_query_times_out_when_snapshot_unavailable_test() {
   let assert Error(types.QueryError(code: code, message: message)) =
     outbox.execute_list(
-      get_outbox: fn(_) { Error(Nil) },
+      get_outbox: fn(timeout_ms) {
+        assert timeout_ms == 1000
+        Error(Nil)
+      },
       query: types.default_outbox_list_query(),
     )
 

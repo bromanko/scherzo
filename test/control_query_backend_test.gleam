@@ -278,8 +278,12 @@ pub fn backend_work_item_show_uses_projection_for_review_artifact_availability_t
       effective_config(),
       identity(),
       tracker_adapter,
-      fn(_) { Ok(False) },
-      fn(_) {
+      fn(timeout_ms) {
+        assert timeout_ms == 1000
+        Ok(False)
+      },
+      fn(timeout_ms) {
+        assert timeout_ms == 1000
         Ok(projection_with_retained_artifacts(
           issue_id: "card-1-child-1",
           issue_identifier: "CARD-1.1",

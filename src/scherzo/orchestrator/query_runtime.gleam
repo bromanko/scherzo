@@ -11,6 +11,8 @@ import scherzo/orchestrator/workflow_reloader
 import scherzo/state/projection
 import scherzo/tracker/adapter
 
+const state_snapshot_timeout_ms = 1000
+
 pub fn start(
   effective: config_types.EffectiveConfig,
   identity: daemon_identity.DaemonIdentity,
@@ -25,8 +27,12 @@ pub fn start(
   get_workflow_snapshot get_workflow_snapshot: fn(Int) ->
     Result(workflow_reloader.State, Nil),
 ) -> Result(query_service.Handle, query_service.StartError) {
+  let settings = query_service.default_settings()
   query_service.start(
-    query_service.default_settings(),
+    query_service.Settings(
+      ..settings,
+      timeout_ms: effective.control.command_timeout_ms,
+    ),
     query_service.Backend(run: fn(query) {
       case query {
         query_types.Status ->
@@ -77,7 +83,7 @@ fn execute_workflow_query(
   run run: fn(workflow_reloader.State) ->
     Result(query_types.QueryResponse, query_types.QueryError),
 ) -> Result(query_types.QueryResponse, query_types.QueryError) {
-  case get_snapshot(100) {
+  case get_snapshot(state_snapshot_timeout_ms) {
     Ok(snapshot) -> run(snapshot)
     Error(Nil) ->
       Error(query_types.QueryError(

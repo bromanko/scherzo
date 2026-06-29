@@ -11,6 +11,8 @@ import scherzo/tracker/adapter
 import scherzo/work_item
 import scherzo/work_item/action_derivation
 
+const daemon_state_query_timeout_ms = 1000
+
 pub type DispatchPausedReader =
   fn(Int) -> Result(Bool, Nil)
 
@@ -84,7 +86,7 @@ fn execute_status_query(
   identity: daemon_identity.DaemonIdentity,
   read_dispatch_paused: DispatchPausedReader,
 ) -> Result(types.QueryResponse, types.QueryError) {
-  case read_dispatch_paused(100) {
+  case read_dispatch_paused(daemon_state_query_timeout_ms) {
     Ok(dispatch_paused) ->
       Ok(
         types.StatusResponse(
@@ -329,7 +331,7 @@ fn work_item_query_ref_to_adapter_ref(
 fn read_dispatch_paused_query(
   read_dispatch_paused: DispatchPausedReader,
 ) -> Result(Bool, types.QueryError) {
-  case read_dispatch_paused(100) {
+  case read_dispatch_paused(daemon_state_query_timeout_ms) {
     Ok(dispatch_paused) -> Ok(dispatch_paused)
     Error(Nil) ->
       Error(types.QueryError(
@@ -342,7 +344,7 @@ fn read_dispatch_paused_query(
 fn read_projection_query(
   read_projection: ProjectionReader,
 ) -> Result(projection.Projection, types.QueryError) {
-  case read_projection(100) {
+  case read_projection(daemon_state_query_timeout_ms) {
     Ok(projection_state) -> Ok(projection_state)
     Error(Nil) ->
       Error(types.QueryError(

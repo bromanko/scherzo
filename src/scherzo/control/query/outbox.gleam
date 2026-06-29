@@ -7,13 +7,15 @@ import scherzo/control/query/types
 import scherzo/state/projection
 import scherzo/state/record
 
+const outbox_snapshot_timeout_ms = 1000
+
 pub fn execute_list(
   get_outbox get_outbox: fn(Int) ->
     Result(List(#(String, projection.OutboxStatus)), Nil),
   query query: types.OutboxListQuery,
 ) -> Result(types.QueryResponse, types.QueryError) {
   use offset <- try_query(decode_cursor(query.cursor))
-  case get_outbox(100) {
+  case get_outbox(outbox_snapshot_timeout_ms) {
     Ok(entries) -> {
       let filtered =
         entries
@@ -43,7 +45,7 @@ pub fn execute_show(
     Result(List(#(String, projection.OutboxStatus)), Nil),
   query query: types.OutboxShowQuery,
 ) -> Result(types.QueryResponse, types.QueryError) {
-  case get_outbox(100) {
+  case get_outbox(outbox_snapshot_timeout_ms) {
     Ok(entries) ->
       case
         list.find(entries, fn(entry) {
