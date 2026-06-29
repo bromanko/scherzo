@@ -74,14 +74,8 @@ LEGACY_PR_CURATED_SET: list[dict[str, Any]] = [
     },
 ]
 EXECUTABLE_CORRECTNESS_EVIDENCE_TYPES = {"test", "runtime", "reproduction"}
-NATIVE_EVIDENCE_ALLOWLIST = {
-    "gleam_test",
-    "glinter",
-    "scherzo_lint",
-    "schema_validate_artifacts",
-    "diff_static_scan",
-    "fixture_reproduction",
-}
+CONTEXT_ONLY_EVIDENCE_KEY = lane_contract.CONTEXT_ONLY_EVIDENCE_KEY
+NATIVE_EVIDENCE_ALLOWLIST = lane_contract.NATIVE_EVIDENCE_ALLOWLIST
 NATIVE_PREFLIGHT_LANE_IDS = [
     "correctness",
     "test-quality",
@@ -3046,6 +3040,8 @@ def evidence_type_for_key(evidence_key: str) -> str:
         return "static"
     if evidence_key == "schema_validate_artifacts":
         return "spec"
+    if evidence_key == CONTEXT_ONLY_EVIDENCE_KEY:
+        return "manual"
     return "unknown"
 
 
@@ -3068,8 +3064,17 @@ def verdict_for_request(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     request_id = str(request.get("request_id", "unknown"))
     finding_id = str(request.get("draft_finding_id", "unknown"))
-    evidence_key = str(request.get("evidence_key", "unknown"))
-    check_id = "C" + sha256_text(request_id + finding_id + evidence_key)[:8]
+    raw_evidence_key = str(request.get("evidence_key", "unknown"))
+    evidence_key = raw_evidence_key
+    unsupported_evidence_key: str | None = None
+    if evidence_key not in NATIVE_EVIDENCE_ALLOWLIST:
+        unsupported_evidence_key = evidence_key
+        evidence_key = CONTEXT_ONLY_EVIDENCE_KEY
+    elif evidence_key == CONTEXT_ONLY_EVIDENCE_KEY:
+        original_evidence_key = request.get("original_evidence_key")
+        if isinstance(original_evidence_key, str) and original_evidence_key and original_evidence_key != CONTEXT_ONLY_EVIDENCE_KEY:
+            unsupported_evidence_key = original_evidence_key
+    check_id = "C" + sha256_text(request_id + finding_id + raw_evidence_key)[:8]
     command = "not run"
     exit_status = 0
     output_excerpt = ""
@@ -3082,11 +3087,16 @@ def verdict_for_request(
         output_excerpt = "request rejected because draft_finding_id does not exist"
         verdict = "rejected"
         evidence_type = "unknown"
-    elif evidence_key not in NATIVE_EVIDENCE_ALLOWLIST:
-        exit_status = 2
-        output_excerpt = "request rejected because evidence_key is not allowlisted"
-        verdict = "rejected"
-        evidence_type = "unknown"
+    elif unsupported_evidence_key is not None:
+        output_excerpt = (
+            "non-fatal unsupported evidence_key "
+            + unsupported_evidence_key
+            + " normalized to context_only before verification; no deterministic command was run"
+        )
+        verdict = "context_only"
+    elif evidence_key == CONTEXT_ONLY_EVIDENCE_KEY:
+        output_excerpt = "request recorded as context only; no deterministic command was requested"
+        verdict = "context_only"
     elif not request_has_specific_target(request):
         output_excerpt = "allowlisted command recorded as context only because no target test, fixture, artifact, changed file, or static-scan rule was supplied"
         verdict = "context_only"
@@ -3168,6 +3178,15 @@ def verdict_for_request(
         "matched_expected_observation": matched,
         "check_id": check_id,
     }
+    if unsupported_evidence_key is not None:
+        diagnostic = (
+            "non-fatal unsupported evidence_key "
+            + unsupported_evidence_key
+            + " was classified as context_only before verification"
+        )
+        check["original_evidence_key"] = unsupported_evidence_key
+        check["normalization_diagnostic"] = diagnostic
+        verdict_obj["normalization_diagnostic"] = diagnostic
     return check, verdict_obj
 
 
