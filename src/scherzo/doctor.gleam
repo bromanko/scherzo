@@ -561,7 +561,7 @@ fn remediation(check: CheckName, code: String) -> List(String) {
     ]
     PiProbe -> [
       "- Confirm pi is installed and the configured pi.command supports --mode rpc.",
-      "- Run: gleam run -- --pi-probe <path-to-scherzo.yaml>",
+      "- Run: gleam run -- doctor --check pi-probe <path-to-scherzo.yaml>",
     ]
   }
   |> append_code_specific_remediation(code)
