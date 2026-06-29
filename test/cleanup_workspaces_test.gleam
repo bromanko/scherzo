@@ -250,8 +250,9 @@ pub fn workspace_cleanup_apply_delegates_remove_and_reports_failures_test() {
   let outside = repo <> "/outside"
   let assert Ok(Nil) = simplifile.create_directory_all(outside)
   let assert Ok(Nil) = simplifile.write(outside <> "/sentinel", "keep")
+  let assert Ok(outside_abs) = path.absolute(outside)
   let assert Ok(Nil) =
-    path.symlink(outside, eligible <> "/workspaces/outside-sentinel")
+    path.symlink(outside_abs, eligible <> "/workspaces/outside-sentinel")
   let assert Ok(Nil) =
     simplifile.write(repo <> "/remove-fail-workspace", "review\n")
 
@@ -362,7 +363,7 @@ esac\n",
   let assert Ok(Nil) =
     simplifile.write(
       repo <> "/.scherzo/scherzo.yaml",
-      "version: 1\ntracker:\n  linear:\n    api_key: linearkey\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: dogfood-jj\n  drivers:\n    dogfood-jj:\n      type: custom\n      command: "
+      "version: 1\ntracker:\n  linear:\n    api_key_env: HOME\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\n  driver: dogfood-jj\n  drivers:\n    dogfood-jj:\n      type: custom\n      command: "
         <> repo_abs
         <> "/driver.sh\n      timeout: 5s\nworkflows:\n  workspace-cleanup: workflows/workspace-cleanup.yaml\n",
     )

@@ -252,6 +252,17 @@ fn build_command(
         json_output(parsed),
         query_types.Metrics,
       ))
+    command_registry.QueryOperationStatusKey ->
+      Ok(Query(
+        control_file_option(parsed),
+        json_output(parsed),
+        query_types.OperationStatus(
+          query_types.OperationStatusQuery(operation_id: first_positional(
+            parsed,
+            parsed.usage,
+          )),
+        ),
+      ))
     command_registry.TaskListKey ->
       Ok(TaskList(
         control_file_option(parsed),
@@ -1103,6 +1114,10 @@ pub fn run_with_deps_and_env(
             }
             Ok(query_types.MetricsResponse(metrics)) -> {
               ctl_renderers.print_query_metrics(metrics, line: output.line)
+              Ok(Nil)
+            }
+            Ok(query_types.OperationStatusResponse(operation)) -> {
+              ctl_renderers.print_operation_status(operation, line: output.line)
               Ok(Nil)
             }
             Ok(query_types.TaskListResponse(tasks)) -> {

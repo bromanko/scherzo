@@ -883,9 +883,9 @@ pub fn prepare_native_serializes_passed_validation_evidence_test() {
       validation_path,
       "{\n"
         <> "  \"status\": \"passed\",\n"
-        <> "  \"validator\": \"selfci\",\n"
+        <> "  \"validator\": \"scherzo-ci\",\n"
         <> "  \"base_revision\": \"main@origin\",\n"
-        <> "  \"commands\": [\"direnv exec . selfci check --base main@origin --candidate @ --print-output\"],\n"
+        <> "  \"commands\": [\"direnv exec . scripts/scherzo-ci\"],\n"
         <> "  \"setup_commands\": [\"direnv allow .\"]\n"
         <> "}\n",
     )
@@ -912,7 +912,7 @@ pub fn prepare_native_serializes_passed_validation_evidence_test() {
   assert string.contains(validation_status, "\"overall_state\": \"passed\"")
   assert string.contains(
     validation_status,
-    "\"command\": \"direnv exec . selfci check --base main@origin --candidate @ --print-output\"",
+    "\"command\": \"direnv exec . scripts/scherzo-ci\"",
   )
   assert string.contains(validation_status, "\"exit_status\": 0")
   assert string.contains(validation_status, validation_path)
@@ -939,10 +939,10 @@ pub fn prepare_native_serializes_failed_validation_evidence_test() {
       validation_path,
       "{\n"
         <> "  \"status\": \"failed\",\n"
-        <> "  \"validator\": \"selfci\",\n"
+        <> "  \"validator\": \"scherzo-ci\",\n"
         <> "  \"exit_code\": 7,\n"
-        <> "  \"commands\": [\"direnv exec . selfci check --base main@origin --candidate @ --print-output\"],\n"
-        <> "  \"failure_summary\": \"SelfCI failed on review fixture.\",\n"
+        <> "  \"commands\": [\"direnv exec . scripts/scherzo-ci\"],\n"
+        <> "  \"failure_summary\": \"scherzo-ci failed on review fixture.\",\n"
         <> "  \"stdout_excerpt\": \"stdout line\",\n"
         <> "  \"stderr_excerpt\": \"stderr line\"\n"
         <> "}\n",
@@ -964,7 +964,10 @@ pub fn prepare_native_serializes_failed_validation_evidence_test() {
   let assert Ok(brief) = simplifile.read(output_dir <> "/review-brief.v1.json")
   assert string.contains(validation_status, "\"overall_state\": \"failed\"")
   assert string.contains(validation_status, "\"exit_status\": 7")
-  assert string.contains(validation_status, "SelfCI failed on review fixture.")
+  assert string.contains(
+    validation_status,
+    "scherzo-ci failed on review fixture.",
+  )
   assert string.contains(validation_status, "stdout line")
   assert string.contains(validation_status, "stderr line")
   assert string.contains(brief, "\"status\": \"failed\"")

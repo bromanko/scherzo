@@ -5,7 +5,7 @@ Task URL:
 
 ExecPlan identity model:
 
-- Use the repo-local ExecPlan workflow guidance at `workflows/dogfood/guidance/exec-plan.md` for implementation-mode expectations when plan context is ambiguous. Do not load or rely on machine-local pi skills, home-directory skill files, `.pi` skill packages, or other machine-local skill paths.
+- Use the repo-local ExecPlan workflow guidance at `.scherzo/workflows/guidance/exec-plan.md` for implementation-mode expectations when plan context is ambiguous. Do not load or rely on machine-local pi skills, home-directory skill files, `.pi` skill packages, or other machine-local skill paths.
 - The workflow task in this prompt is the implementation handoff issue; it owns this implementation run and should be used for Linear/GitHub linkage.
 - `tmp/execplan-bundle.json` records that handoff under `implementation_handoff` and records the source ExecPlan/review-doc issue under `source_issue`.
 - `implementation_handoff.issue_identifier` may differ from `source_issue.identifier`; that split is valid and expected for handoff tasks.

@@ -60,6 +60,8 @@ Provider schemas live with the workflow bundle at:
 
 These provider schemas are Pi tool parameter schemas only. They intentionally avoid provider-hostile JSON Schema keywords such as `$ref`, `$defs`, `oneOf`, `anyOf`, `allOf`, `enum`, `const`, and union-style `type` arrays. They do not replace canonical artifact validation. The local gate `scripts/scherzo-structured-output-contract check-schema --schema <path>` is the source of truth for this provider-safe subset.
 
+Native lane evidence requests may use only the `evidence_key` values exposed by the provider schema's `evidence_key` description; the executable source of truth is `NATIVE_EVIDENCE_ALLOWLIST` in `.scherzo/workflows/scripts/scherzo_review/review_lane_contract.py`. If a captured submission still proposes another key, Scherzo materializes the retained draft by rewriting that request to `context_only`, clearing its target, and recording a non-fatal normalization diagnostic on the rewritten request before evidence verification.
+
 ### `ReviewLaneDraft`
 
 A `ReviewLaneDraft` is the canonical retained artifact produced by Scherzo after it captures a `ReviewLaneSubmission`, rejects runner-owned metadata in the submission, injects deterministic runner metadata, validates the artifact with `.scherzo/workflows/schemas/review-lane-draft.v1.schema.json`, and runs semantic checks such as unique draft finding ids and evidence-request links.
@@ -261,7 +263,7 @@ Operators can check one schema or one captured submission directly:
   --output tmp/scherzo-review-lane-contract/correctness/review-lane-draft.v1.json
 ```
 
-The optional live-provider canary is separate from required SelfCI because it may need provider credentials or incur provider cost:
+The optional live-provider canary is separate from the required `scripts/scherzo-ci` gate because it may need provider credentials or incur provider cost:
 
 ```sh
 .scherzo/workflows/scripts/scherzo-review-lane-contract live \

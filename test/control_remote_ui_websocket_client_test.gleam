@@ -799,6 +799,45 @@ pub fn ui_websocket_client_applies_pause_resume_reload_server_commands_test() {
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
+pub fn ui_websocket_client_sends_command_result_operation_id_test() {
+  let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
+    new_fixture()
+  let deps =
+    ui_websocket_client.Dependencies(
+      ..deps,
+      apply_command: fn(operator_command, timeout_ms) {
+        process.send(apply_requests, ApplyRequest(operator_command, timeout_ms))
+        Ok(command.CommandResult(
+          command: command.command_name(operator_command),
+          status: command.Queued,
+          target: command.command_target(operator_command),
+          message: Some("queued durable repair"),
+          operation_id: Some("op-queued-1"),
+        ))
+      },
+    )
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(..settings, command_bridge_enabled: True),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(inbound_path, server_command_frame("scmd_pause", "pause"))
+  let ApplyRequest(command_, _) = test_async.expect_message(apply_requests)
+  assert command_ == command.PauseDispatch
+  let result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_pause\"",
+    )
+  assert string.contains(result, "\"status\":\"queued\"")
+  assert string.contains(result, "\"operation_id\":\"op-queued-1\"")
+
+  let _ = expect_next_outbound_contains(outbound, "\"type\":\"daemon_state\"")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
 pub fn ui_websocket_client_rejects_malformed_server_command_test() {
   let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
     new_fixture()

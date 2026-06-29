@@ -271,6 +271,18 @@ pub fn port_start_argv_with_input_waits_until_launch_wrapper_records_child_pid_t
   assert_launch_wrapper_records_child_pid(process)
 }
 
+pub fn port_terminate_drains_exit_status_after_stdout_test() {
+  let cwd = "test/tmp/port-terminate-drains-exit"
+  test_helpers.reset_dir(cwd)
+
+  let assert Ok(process) = port.start("printf 'ready\\n'", cwd)
+  let assert Ok(stdout) = port.read_stdout_line(process, 1000)
+  assert stdout == "ready"
+  let assert Ok(Nil) = port.terminate(process)
+
+  assert drain_port_exit_messages(process) == 0
+}
+
 pub fn port_terminate_exits_child_test() {
   let cwd = "test/tmp/port-terminate"
   test_helpers.reset_dir(cwd)
@@ -644,6 +656,9 @@ fn wait_for_port_data_and_requeue(
 
 @external(erlang, "scherzo_test_ffi", "drain_port_data_messages")
 fn drain_port_data_messages(port_process: port.Process) -> Int
+
+@external(erlang, "scherzo_test_ffi", "drain_port_exit_messages")
+fn drain_port_exit_messages(port_process: port.Process) -> Int
 
 @external(erlang, "scherzo_time_ffi", "monotonic_ms")
 fn monotonic_ms() -> Int

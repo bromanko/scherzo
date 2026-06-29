@@ -7,13 +7,13 @@ Review an execution plan with two goals:
 
 Do not review the plan as a friendly editor. Review it as a skeptical technical lead performing a pre-mortem. Assume that if the plan is vague, overcomplicated, poorly sequenced, unsafe, or based on a weak premise, a future implementer will faithfully build the wrong thing. Your job is to find those problems before implementation begins.
 
-Read the local ExecPlan guidance at `workflows/dogfood/guidance/exec-plan.md` to understand the full authoring standard — particularly the "Who This Plan Is For" section, which defines the developer profile. This review guidance evaluates plans against that standard plus the adversarial criteria below.
+Read the local ExecPlan guidance at `.scherzo/workflows/guidance/exec-plan.md` to understand the full authoring standard — particularly the "Who This Plan Is For" section, which defines the developer profile. This review guidance evaluates plans against that standard plus the adversarial criteria below.
 
 
 ## Review Process
 
 1. **Read the entire plan** from top to bottom before writing any feedback.
-2. **Read the local ExecPlan guidance** at `workflows/dogfood/guidance/exec-plan.md` to refresh the authoring standard.
+2. **Read the local ExecPlan guidance** at `.scherzo/workflows/guidance/exec-plan.md` to refresh the authoring standard.
 3. **Identify the claimed outcome**: what user-visible or operator-visible result the plan says it will produce.
 4. **Pressure-test the approach before the prose**:
    - Is this the right problem to solve?

@@ -2,11 +2,14 @@
 -export([
     set_cwd/1,
     getenv/1,
+    os_pid/0,
     pid_alive/1,
     process_cleanup_watcher_alive/1,
     wait_for_port_data_and_requeue/2,
     drain_port_data_messages/1,
-    drain_any_port_data_messages/0
+    drain_port_exit_messages/1,
+    drain_any_port_data_messages/0,
+    drain_any_subject_messages/0
 ]).
 
 set_cwd(Path) ->
@@ -20,6 +23,9 @@ getenv(Name) ->
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
     end.
+
+os_pid() ->
+    list_to_integer(os:getpid()).
 
 pid_alive(Pid) when is_integer(Pid), Pid > 1 ->
     case os:cmd("kill -0 " ++ integer_to_list(Pid) ++ " >/dev/null 2>&1 && printf alive || true") of
@@ -58,12 +64,34 @@ drain_port_data_messages(Port, Count) ->
     after 0 -> Count
     end.
 
+drain_port_exit_messages(Process) ->
+    case process_port(Process) of
+        {ok, Port} -> drain_port_exit_messages(Port, 0);
+        error -> 0
+    end.
+
+drain_port_exit_messages(Port, Count) ->
+    receive
+        {Port, {exit_status, _Status}} -> drain_port_exit_messages(Port, Count + 1);
+        {'EXIT', Port, _Reason} -> drain_port_exit_messages(Port, Count + 1)
+    after 0 -> Count
+    end.
+
 drain_any_port_data_messages() ->
     drain_any_port_data_messages(0).
 
 drain_any_port_data_messages(Count) ->
     receive
         {Port, {data, _Bytes}} when is_port(Port) -> drain_any_port_data_messages(Count + 1)
+    after 0 -> Count
+    end.
+
+drain_any_subject_messages() ->
+    drain_any_subject_messages(0).
+
+drain_any_subject_messages(Count) ->
+    receive
+        {Tag, _Message} when is_reference(Tag) -> drain_any_subject_messages(Count + 1)
     after 0 -> Count
     end.
 

@@ -82,6 +82,7 @@ pub fn result_constructor_uses_command_metadata_test() {
   assert command.status_to_string(result.status) == "rejected"
   assert command.status_reason(result.status) == Some("busy")
   assert result.message == Some("turn is currently streaming")
+  assert result.operation_id == None
 }
 
 pub fn operator_command_codec_roundtrips_all_variants_test() {
@@ -243,31 +244,70 @@ pub fn command_result_codec_roundtrips_statuses_and_reasons_test() {
     status: command.Applied,
     target: None,
     message: Some("paused"),
+    operation_id: None,
   ))
   assert_result_roundtrip(command.CommandResult(
     command: "retry",
     status: command.Queued,
     target: Some("ABC-123"),
     message: Some("queued"),
+    operation_id: None,
+  ))
+  assert_result_roundtrip(command.CommandResult(
+    command: "retry_step",
+    status: command.Queued,
+    target: Some("run-1"),
+    message: Some("queued durable repair"),
+    operation_id: Some("op-123"),
   ))
   assert_result_roundtrip(command.CommandResult(
     command: "abort",
     status: command.Rejected("busy"),
     target: Some("session-1"),
     message: Some("session busy"),
+    operation_id: None,
   ))
   assert_result_roundtrip(command.CommandResult(
     command: "reload",
     status: command.NotFound,
     target: None,
     message: Some("missing"),
+    operation_id: None,
   ))
   assert_result_roundtrip(command.CommandResult(
     command: "prompt",
     status: command.NotAllowed("policy"),
     target: Some("session-1"),
     message: Some("policy denied"),
+    operation_id: None,
   ))
+}
+
+pub fn command_result_decoder_accepts_missing_operation_id_test() {
+  let assert Ok(dynamic) =
+    json.parse(
+      "{\"command\":\"retry_step\",\"status\":\"queued\",\"target\":\"run-1\",\"message\":\"queued durable repair\"}",
+      decode.dynamic,
+    )
+  let assert Ok(result) = command.decode_command_result_dynamic(dynamic)
+  assert result.command == "retry_step"
+  assert command.status_to_string(result.status) == "queued"
+  assert result.operation_id == None
+}
+
+pub fn queued_operation_helper_sets_operation_id_test() {
+  let result =
+    command.queued_operation(
+      command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
+      "op-456",
+      Some("queued durable repair"),
+    )
+
+  assert result.command == "retry_step"
+  assert command.status_to_string(result.status) == "queued"
+  assert result.target == Some("run-1")
+  assert result.message == Some("queued durable repair")
+  assert result.operation_id == Some("op-456")
 }
 
 pub fn invalid_command_result_payloads_return_stable_errors_test() {

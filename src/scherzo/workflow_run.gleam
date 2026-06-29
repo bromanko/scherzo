@@ -2235,10 +2235,11 @@ fn run_prepared_batch(
   step_worker_pool.run_prepared_batch(
     starts,
     prepared_batch_timeout_ms(starts, orchestrator),
-    fn(step_id, duration_ms) {
+    fn(timeout) {
       step_batch_timeout_artifact(
-        step_id,
-        duration_ms,
+        timeout,
+        starts,
+        orchestrator,
         secrets,
         orchestrator.artifact_limits,
       )
@@ -2288,22 +2289,30 @@ fn run_prepared_batch(
 }
 
 fn step_batch_timeout_artifact(
-  step_id: String,
-  duration_ms: Int,
+  timeout: step_worker_pool.StepBatchTimeoutContext,
+  starts: List(PreparedStart),
+  orchestrator: config_types.OrchestratorConfig,
   secrets: List(String),
   limits: config_types.ArtifactLimits,
 ) -> step_artifact.StepArtifact {
+  let configured_timeout_ms =
+    configured_timeout_ms_for_timeout(timeout, starts, orchestrator)
+  let command_deadline_ms =
+    command_deadline_monotonic_ms(
+      timeout.batch_started_monotonic_ms,
+      configured_timeout_ms,
+    )
   let stderr =
-    "SCHERZO_FAILURE_CODE="
-    <> step_worker_pool.step_batch_timeout_failure_code
-    <> "\nstep batch deadline exceeded after "
-    <> int.to_string(duration_ms)
-    <> "ms\n"
+    step_batch_timeout_stderr(
+      timeout,
+      configured_timeout_ms,
+      command_deadline_ms,
+    )
   step_artifact.from_command_result_with_metadata(
-    step_id,
-    None,
+    timeout.step_id,
+    timeout.command,
     124,
-    Some(duration_ms),
+    Some(timeout.duration_ms),
     None,
     "",
     stderr,
@@ -2313,6 +2322,85 @@ fn step_batch_timeout_artifact(
     False,
     False,
   )
+}
+
+fn step_batch_timeout_stderr(
+  timeout: step_worker_pool.StepBatchTimeoutContext,
+  configured_timeout_ms: Option(Int),
+  command_deadline_ms: Option(Int),
+) -> String {
+  "SCHERZO_FAILURE_CODE="
+  <> step_worker_pool.step_batch_timeout_failure_code
+  <> "\nstep batch deadline exceeded after "
+  <> int.to_string(timeout.duration_ms)
+  <> "ms\n"
+  <> "timeout_kind: step_batch_watchdog\n"
+  <> "duration_ms: "
+  <> int.to_string(timeout.duration_ms)
+  <> "\n"
+  <> option_string_line("diagnostic_step_id", timeout.diagnostic_step_id)
+  <> option_int_line("configured_timeout_ms", configured_timeout_ms)
+  <> option_int_line("deadline_monotonic_ms", command_deadline_ms)
+  <> "batch_started_monotonic_ms: "
+  <> int.to_string(timeout.batch_started_monotonic_ms)
+  <> "\n"
+  <> "batch_deadline_monotonic_ms: "
+  <> int.to_string(timeout.batch_deadline_monotonic_ms)
+  <> "\n"
+  <> "timeout_monotonic_ms: "
+  <> int.to_string(timeout.timed_out_monotonic_ms)
+  <> "\n"
+}
+
+fn configured_timeout_ms_for_timeout(
+  timeout: step_worker_pool.StepBatchTimeoutContext,
+  starts: List(PreparedStart),
+  orchestrator: config_types.OrchestratorConfig,
+) -> Option(Int) {
+  case timeout.diagnostic_step_id {
+    Some(step_id) -> configured_step_timeout_ms(step_id, starts, orchestrator)
+    None -> None
+  }
+}
+
+fn configured_step_timeout_ms(
+  step_id: String,
+  starts: List(PreparedStart),
+  orchestrator: config_types.OrchestratorConfig,
+) -> Option(Int) {
+  case prepared_start_by_step(starts, step_id) {
+    Error(Nil) -> None
+    Ok(start) ->
+      Some(step_watchdog_timeout_ms(
+        step_worker_pool.prepared_start_step(start),
+        orchestrator,
+      ))
+  }
+}
+
+fn command_deadline_monotonic_ms(
+  base_monotonic_ms: Int,
+  configured_timeout_ms: Option(Int),
+) -> Option(Int) {
+  case configured_timeout_ms {
+    Some(configured_timeout_ms) ->
+      Some(base_monotonic_ms + configured_timeout_ms)
+    None -> None
+  }
+}
+
+fn option_string_line(label: String, value: Option(String)) -> String {
+  case value {
+    Some(value) -> label <> ": " <> value <> "\n"
+    None -> ""
+  }
+}
+
+fn option_int_line(label: String, value: Option(Int)) -> String {
+  case value {
+    Some(value) -> label <> ": " <> int.to_string(value) <> "\n"
+    None -> ""
+  }
 }
 
 const command_step_default_timeout_ms = 60_000

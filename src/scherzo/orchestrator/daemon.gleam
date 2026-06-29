@@ -143,6 +143,8 @@ pub type Message {
   GetWorkflowSnapshot(process.Subject(workflow_reloader.State))
   GetRemoteDispatchPaused(process.Subject(Bool))
   StartRemoteClient
+  RunQueuedControlOperation(String)
+  QueuedControlOperationFinished(String, QueuedControlOperationResult)
   ApplyOperatorCommand(
     command.OperatorCommand,
     Int,
@@ -153,6 +155,16 @@ pub type Message {
     Int,
     process.Subject(Result(query_types.QueryResponse, query_types.QueryError)),
   )
+}
+
+pub type QueuedControlOperationResult {
+  QueuedControlOperationNoop
+  QueuedControlOperationSucceeded(
+    List(record.RecordBody),
+    recovery.RecoveredWorkflowRun,
+  )
+  QueuedControlOperationRejected(List(record.RecordBody))
+  QueuedControlOperationFailed(String, Option(String))
 }
 
 pub type TimerHandle {
@@ -249,6 +261,7 @@ type State {
       process.Subject(command.CommandResult),
     ),
     completed_operator_command_results: Dict(String, command.CommandResult),
+    active_control_operations: Dict(String, Bool),
     work_item_action_receipts: Dict(String, action_receipts.Receipt),
     next_operator_command_correlation_id: Int,
     transition_invariant_violation_pending: Bool,
@@ -777,16 +790,16 @@ pub fn execute_query(
   query: query_types.QueryRequest,
   timeout_ms: Int,
 ) -> Result(query_types.QueryResponse, query_types.QueryError) {
-  let reply = process.new_subject()
-  process.send(daemon_subject, ExecuteQuery(query, timeout_ms, reply))
-  case process.receive(reply, within: timeout_ms) {
-    Ok(result) -> result
-    Error(Nil) ->
-      Error(query_types.QueryError(
-        query_types.QueryTimeout,
-        "daemon query timed out",
-      ))
-  }
+  remote_command_runtime.call_without_late_reply(
+    send_request: fn(reply) {
+      process.send(daemon_subject, ExecuteQuery(query, timeout_ms, reply))
+    },
+    timeout_ms: timeout_ms,
+    timeout_value: Error(query_types.QueryError(
+      query_types.QueryTimeout,
+      "daemon query timed out",
+    )),
+  )
 }
 
 pub fn get_remote_dispatch_paused(
@@ -951,6 +964,7 @@ pub fn start(
                           operator_paused: startup_recovery.projection.dispatch_paused,
                           pending_operator_command_replies: dict.new(),
                           completed_operator_command_results: dict.new(),
+                          active_control_operations: dict.new(),
                           work_item_action_receipts: action_receipts.empty(),
                           next_operator_command_correlation_id: 1,
                           transition_invariant_violation_pending: False,
@@ -978,6 +992,7 @@ pub fn start(
                         }
                         False -> {
                           let state = refresh_read_model(state)
+                          replay_incomplete_control_operations(subject, state)
                           process.send(subject, StartRemoteClient)
                           let selector =
                             process.new_selector()
@@ -1171,6 +1186,19 @@ fn spawn_recovered_workflow_resumptions(
         spawn_recovered_workflow_resumption(state, resumption)
       })
   }
+}
+
+fn replay_incomplete_control_operations(
+  subject: process.Subject(Message),
+  state: State,
+) -> Nil {
+  projection.replayable_control_operation_ids(
+    state.ledger_projection,
+    "retry_step",
+  )
+  |> list.each(fn(operation_id) {
+    process.send(subject, RunQueuedControlOperation(operation_id))
+  })
 }
 
 fn spawn_recovered_workflow_resumption(
@@ -1787,6 +1815,17 @@ fn handle_message(
         True -> continue_with_refreshed_state(state)
         False -> continue_with_refreshed_state(start_remote_client_now(state))
       }
+    RunQueuedControlOperation(operation_id) ->
+      continue_with_refreshed_state(run_queued_control_operation(
+        state,
+        operation_id,
+      ))
+    QueuedControlOperationFinished(operation_id, execution_result) ->
+      continue_with_refreshed_state(finish_queued_control_operation(
+        state,
+        operation_id,
+        execution_result,
+      ))
     ApplyOperatorCommand(operator_command, timeout_ms, reply) ->
       continue_with_refreshed_state(operator_command_reply(
         state,
@@ -2488,7 +2527,7 @@ fn retry_workflow_step_for_operator(
             workflow_repair.error_message(error),
           ),
         )
-        Ok(#(_run_id, issue_id, _issue_identifier)) ->
+        Ok(#(run_id, issue_id, issue_identifier)) ->
           case
             retry_step_issue_preflight(
               state,
@@ -2498,15 +2537,56 @@ fn retry_workflow_step_for_operator(
             )
           {
             Error(result) -> #(state, result)
-            Ok(issue) ->
-              continue_retry_workflow_step_for_operator(
-                state,
-                operator_command,
-                projection_state,
-                target,
-                step_id,
-                issue,
-              )
+            Ok(_) -> {
+              let operation_id =
+                make_retry_step_operation_id(state, run_id, step_id)
+              let queued_body =
+                record.ControlOperationQueued(
+                  operation_id: operation_id,
+                  operation_kind: "retry_step",
+                  command_name: command.command_name(operator_command),
+                  target: option.unwrap(
+                    command.command_target(operator_command),
+                    "",
+                  ),
+                  run_id: Some(run_id),
+                  issue_id: Some(issue_id),
+                  issue_identifier: Some(issue_identifier),
+                  requested_step_id: step_id,
+                )
+              let #(state, appended) =
+                append_ledger_bodies(
+                  state,
+                  [queued_body],
+                  "retry_step_queue_append_failed",
+                )
+              case appended {
+                False -> #(
+                  state,
+                  command.rejected(
+                    operator_command,
+                    "ledger_append_failed",
+                    Some("failed to append retry-step operation"),
+                  ),
+                )
+                True -> {
+                  process.send(
+                    state.subject,
+                    RunQueuedControlOperation(operation_id),
+                  )
+                  #(
+                    state,
+                    command.queued_operation(
+                      operator_command,
+                      operation_id,
+                      Some(
+                        "retry-step accepted; poll query operation-status for completion",
+                      ),
+                    ),
+                  )
+                }
+              }
+            }
           }
       }
   }
@@ -2729,25 +2809,158 @@ fn retry_step_issue_preflight(
   }
 }
 
-fn continue_retry_workflow_step_for_operator(
+fn run_queued_control_operation(state: State, operation_id: String) -> State {
+  case dict.get(state.active_control_operations, operation_id) {
+    Ok(True) -> state
+    _ ->
+      case projection.control_operation(state.ledger_projection, operation_id) {
+        Error(Nil) -> state
+        Ok(operation) ->
+          case operation.status {
+            "completed" | "failed" -> state
+            _ -> start_queued_control_operation(state, operation)
+          }
+      }
+  }
+}
+
+fn start_queued_control_operation(
   state: State,
-  operator_command: command.OperatorCommand,
-  projection_state: projection.Projection,
-  target: command.RetryWorkflowStepTarget,
+  operation: projection.ControlOperationStatus,
+) -> State {
+  let state =
+    State(
+      ..state,
+      active_control_operations: dict.insert(
+        state.active_control_operations,
+        operation.operation_id,
+        True,
+      ),
+    )
+  let state = case operation.status {
+    "queued" ->
+      append_ledger_bodies_best_effort(
+        state,
+        [record.ControlOperationStarted(operation.operation_id)],
+        "retry_step_operation_start_append_failed",
+      )
+    _ -> state
+  }
+  let subject = state.subject
+  let _queued_control_operation_worker =
+    process.spawn_unlinked(fn() {
+      process.send(
+        subject,
+        QueuedControlOperationFinished(
+          operation.operation_id,
+          execute_retry_step_operation(state, operation),
+        ),
+      )
+      Nil
+    })
+  state
+}
+
+fn finish_queued_control_operation(
+  state: State,
+  operation_id: String,
+  execution_result: QueuedControlOperationResult,
+) -> State {
+  let state =
+    State(
+      ..state,
+      active_control_operations: dict.delete(
+        state.active_control_operations,
+        operation_id,
+      ),
+    )
+  case execution_result {
+    QueuedControlOperationNoop -> state
+    QueuedControlOperationSucceeded(bodies, resumption) -> {
+      let #(state, appended) =
+        append_ledger_bodies(state, bodies, "retry_step_append_failed")
+      case appended {
+        False ->
+          append_retry_step_operation_failure(
+            state,
+            operation_id,
+            "ledger_append_failed",
+            Some("failed to append retry-step repair records"),
+          )
+        True -> spawn_recovered_workflow_resumption(state, resumption)
+      }
+    }
+    QueuedControlOperationRejected(bodies) ->
+      append_ledger_bodies_best_effort(
+        state,
+        bodies,
+        "retry_step_rejection_diagnostic_append_failed",
+      )
+    QueuedControlOperationFailed(reason, message) ->
+      append_retry_step_operation_failure(state, operation_id, reason, message)
+  }
+}
+
+fn make_retry_step_operation_id(
+  state: State,
+  run_id: String,
   step_id: Option(String),
+) -> String {
+  "retry-step:"
+  <> run_id
+  <> ":"
+  <> option.unwrap(step_id, "auto")
+  <> ":"
+  <> int.to_string(state.dependencies.now_ms())
+}
+
+fn execute_retry_step_operation(
+  state: State,
+  operation: projection.ControlOperationStatus,
+) -> QueuedControlOperationResult {
+  let operator_command =
+    command.RetryWorkflowStep(
+      command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, "")),
+      operation.requested_step_id,
+    )
+  case option.unwrap(operation.issue_id, "") {
+    "" ->
+      QueuedControlOperationFailed(
+        "operation_missing_issue_id",
+        Some("retry-step operation is missing issue metadata"),
+      )
+    issue_id ->
+      case
+        retry_step_issue_preflight(
+          state,
+          operator_command,
+          command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, "")),
+          issue_id,
+        )
+      {
+        Error(result) -> queued_control_operation_failure_result(result)
+        Ok(issue) -> continue_retry_step_operation(state, operation, issue)
+      }
+  }
+}
+
+fn continue_retry_step_operation(
+  state: State,
+  operation: projection.ControlOperationStatus,
   issue: tracker_issue.Issue,
-) -> #(State, command.CommandResult) {
+) -> QueuedControlOperationResult {
+  let projection_state = state.ledger_projection
+  let target =
+    command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, ""))
+  let step_id = operation.requested_step_id
   let observation =
     startup_recovery.current_workflow_observation(state.workflow.bundle, issue)
   case workflow_repair.plan(projection_state, target, step_id, observation) {
-    Error(error) -> #(
-      state,
-      command.rejected(
-        operator_command,
+    Error(error) ->
+      QueuedControlOperationFailed(
         workflow_repair.describe_error(error),
         workflow_repair.error_message(error),
-      ),
-    )
+      )
     Ok(plan) ->
       case
         recovery.finalize_retry_step_candidates_with_config(
@@ -2759,65 +2972,68 @@ fn continue_retry_workflow_step_for_operator(
           state.workflow.effective,
         )
       {
-        Error(error) -> #(
-          state,
-          command.rejected(
-            operator_command,
+        Error(error) ->
+          QueuedControlOperationFailed(
             recovery.describe_error(error),
             Some(recovery.describe_error(error)),
-          ),
-        )
+          )
         Ok(finalization) ->
           case finalization.resumptions {
             [resumption] -> {
+              let message = retry_step_applied_message(plan)
               let bodies =
                 list.append(
                   plan.records_to_append,
-                  ledger_record_bodies(finalization.records_to_append),
-                )
-              let #(state, appended) =
-                append_ledger_bodies(state, bodies, "retry_step_append_failed")
-              case appended {
-                False -> #(
-                  state,
-                  command.rejected(
-                    operator_command,
-                    "ledger_append_failed",
-                    Some("failed to append retry-step repair records"),
+                  list.append(
+                    ledger_record_bodies(finalization.records_to_append),
+                    [
+                      record.ControlOperationCompleted(
+                        operation.operation_id,
+                        Some(message),
+                      ),
+                    ],
                   ),
                 )
-                True -> {
-                  let state =
-                    spawn_recovered_workflow_resumption(state, resumption)
-                  #(
-                    state,
-                    command.applied(
-                      operator_command,
-                      Some(retry_step_applied_message(plan)),
-                    ),
-                  )
-                }
-              }
+              QueuedControlOperationSucceeded(bodies, resumption)
             }
-            _ -> {
-              let #(state, _diagnostic_appended) =
-                append_ledger_bodies(
-                  state,
+            _ ->
+              QueuedControlOperationRejected(
+                list.append(
                   retry_step_rejection_diagnostic_bodies(finalization),
-                  "retry_step_rejection_diagnostic_append_failed",
-                )
-              #(
-                state,
-                command.rejected(
-                  operator_command,
-                  rejection_reason_from_finalization(finalization),
-                  rejection_message_from_finalization(finalization),
+                  [
+                    record.ControlOperationFailed(
+                      operation.operation_id,
+                      rejection_reason_from_finalization(finalization),
+                      rejection_message_from_finalization(finalization),
+                    ),
+                  ],
                 ),
               )
-            }
           }
       }
   }
+}
+
+fn queued_control_operation_failure_result(
+  result: command.CommandResult,
+) -> QueuedControlOperationResult {
+  QueuedControlOperationFailed(
+    option.unwrap(command.status_reason(result.status), "rejected"),
+    result.message,
+  )
+}
+
+fn append_retry_step_operation_failure(
+  state: State,
+  operation_id: String,
+  reason: String,
+  message: Option(String),
+) -> State {
+  append_ledger_bodies_best_effort(
+    state,
+    [record.ControlOperationFailed(operation_id, reason, message)],
+    "retry_step_operation_failed_append_failed",
+  )
 }
 
 fn replay_projection_for_operator(

@@ -305,7 +305,7 @@ pub fn launch_retries_transient_handshake_read_timeouts_test() {
   let cwd = "test/tmp/pi-rpc-launch-timeout-retry"
   test_helpers.reset_dir(cwd)
   // Keep the first handshake read shorter than the fake delay so launch retries,
-  // while giving retry attempts enough margin on loaded SelfCI runners.
+  // while giving retry attempts enough margin on loaded CI runners.
   let command = "FAKE_PI_DELAY_MS=200 " <> fake_pi()
   let assert Ok(session) = client.launch(command, cwd, "name", False, 150)
   assert session.session_id == Some("fake-session")

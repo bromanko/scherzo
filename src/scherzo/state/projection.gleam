@@ -38,6 +38,7 @@ pub type Projection {
     parked_issues: Dict(String, ParkedIssue),
     commands: Dict(String, CommandStatus),
     command_receipts: Dict(String, CommandReceiptState),
+    control_operations: Dict(String, ControlOperationStatus),
     outbox: Dict(String, OutboxStatus),
     issue_counters: Dict(String, IssueCounterStatus),
     known_workspaces: Dict(String, KnownWorkspace),
@@ -316,6 +317,25 @@ pub type KnownWorkspace {
     issue_identifier: String,
     workspace_path: String,
     recorded_at_ms: Int,
+  )
+}
+
+pub type ControlOperationStatus {
+  ControlOperationStatus(
+    operation_id: String,
+    operation_kind: String,
+    command_name: String,
+    target: String,
+    run_id: Option(String),
+    issue_id: Option(String),
+    issue_identifier: Option(String),
+    requested_step_id: Option(String),
+    status: String,
+    reason: Option(String),
+    message: Option(String),
+    queued_at_ms: Int,
+    started_at_ms: Option(Int),
+    finished_at_ms: Option(Int),
   )
 }
 
@@ -653,6 +673,10 @@ type CommandReceiptSnapshot {
   CommandReceiptSnapshot(comment_id: String, receipt: CommandReceiptState)
 }
 
+type ControlOperationSnapshot {
+  ControlOperationSnapshot(operation_id: String, status: ControlOperationStatus)
+}
+
 type OutboxSnapshot {
   OutboxSnapshot(outbox_id: String, status: OutboxStatus)
 }
@@ -698,6 +722,7 @@ type SnapshotFields {
     parked_issues: List(ParkedSnapshot),
     commands: List(CommandSnapshot),
     command_receipts: List(CommandReceiptSnapshot),
+    control_operations: List(ControlOperationSnapshot),
     outbox: List(OutboxSnapshot),
     issue_counters: List(IssueCounterSnapshot),
     known_workspaces: List(KnownWorkspaceSnapshot),
@@ -728,6 +753,7 @@ pub fn new() -> Projection {
     parked_issues: dict.new(),
     commands: dict.new(),
     command_receipts: dict.new(),
+    control_operations: dict.new(),
     outbox: dict.new(),
     issue_counters: dict.new(),
     known_workspaces: dict.new(),
@@ -1945,6 +1971,87 @@ pub fn apply(
         ),
       )
     }
+    record.ControlOperationQueued(
+      operation_id,
+      operation_kind,
+      command_name,
+      target,
+      run_id,
+      issue_id,
+      issue_identifier,
+      requested_step_id,
+    ) ->
+      Projection(
+        ..projection,
+        control_operations: dict.insert(
+          projection.control_operations,
+          operation_id,
+          ControlOperationStatus(
+            operation_id: operation_id,
+            operation_kind: operation_kind,
+            command_name: command_name,
+            target: target,
+            run_id: run_id,
+            issue_id: issue_id,
+            issue_identifier: issue_identifier,
+            requested_step_id: requested_step_id,
+            status: "queued",
+            reason: None,
+            message: None,
+            queued_at_ms: at_ms,
+            started_at_ms: None,
+            finished_at_ms: None,
+          ),
+        ),
+      )
+    record.ControlOperationStarted(operation_id) ->
+      Projection(
+        ..projection,
+        control_operations: update_control_operation(
+          projection.control_operations,
+          operation_id,
+          fn(existing) {
+            ControlOperationStatus(
+              ..existing,
+              status: "running",
+              started_at_ms: Some(at_ms),
+            )
+          },
+        ),
+      )
+    record.ControlOperationCompleted(operation_id, message) ->
+      Projection(
+        ..projection,
+        control_operations: update_control_operation(
+          projection.control_operations,
+          operation_id,
+          fn(existing) {
+            ControlOperationStatus(
+              ..existing,
+              status: "completed",
+              message: message,
+              finished_at_ms: Some(at_ms),
+            )
+          },
+        ),
+      )
+    record.ControlOperationFailed(operation_id, reason, message) ->
+      Projection(
+        ..projection,
+        control_operations: update_control_operation(
+          projection.control_operations,
+          operation_id,
+          fn(existing) {
+            ControlOperationStatus(
+              ..existing,
+              status: "failed",
+              reason: Some(reason),
+              message: message,
+              finished_at_ms: Some(at_ms),
+            )
+          },
+        ),
+      )
     record.ScheduledJobDue(..) ->
       apply_scheduled_record(projection, ledger_record)
     record.ScheduledJobSkipped(..) ->
@@ -2891,6 +2998,17 @@ fn acked_receipt(
   }
 }
 
+fn update_control_operation(
+  operations: Dict(String, ControlOperationStatus),
+  operation_id: String,
+  update: fn(ControlOperationStatus) -> ControlOperationStatus,
+) -> Dict(String, ControlOperationStatus) {
+  case dict.get(operations, operation_id) {
+    Ok(existing) -> dict.insert(operations, operation_id, update(existing))
+    Error(Nil) -> operations
+  }
+}
+
 pub fn step_attempt_key(
   run_id: String,
   step_id: String,
@@ -3435,6 +3553,26 @@ pub fn command_receipt(
   )
 }
 
+pub fn control_operation(
+  projection: Projection,
+  operation_id: String,
+) -> Result(ControlOperationStatus, Nil) {
+  dict.get(projection.control_operations, operation_id)
+}
+
+pub fn replayable_control_operation_ids(
+  projection: Projection,
+  operation_kind: String,
+) -> List(String) {
+  projection.control_operations
+  |> dict.values
+  |> list.filter(fn(status) {
+    status.operation_kind == operation_kind
+    && { status.status == "queued" || status.status == "running" }
+  })
+  |> list.map(fn(status) { status.operation_id })
+}
+
 pub fn retry_due_at_ms(status: RetryStatus) -> Result(Int, Nil) {
   issue_recovery_projection.retry_due_at_ms(status, fn(status) {
     case status {
@@ -3558,6 +3696,13 @@ pub fn to_json(projection: Projection) -> json.Json {
       json.array(
         dict.to_list(projection.command_receipts),
         of: command_receipt_entry_to_json,
+      ),
+    ),
+    #(
+      "control_operations",
+      json.array(
+        dict.to_list(projection.control_operations),
+        of: control_operation_entry_to_json,
       ),
     ),
     #(
@@ -3716,6 +3861,12 @@ fn decode_current_snapshot(
           |> list.map(fn(entry) {
             let CommandReceiptSnapshot(comment_id, receipt) = entry
             #(comment_id, receipt)
+          })
+          |> dict.from_list,
+        control_operations: fields.control_operations
+          |> list.map(fn(entry) {
+            let ControlOperationSnapshot(operation_id, status) = entry
+            #(operation_id, status)
           })
           |> dict.from_list,
         outbox: fields.outbox
@@ -4412,6 +4563,28 @@ fn command_receipt_entry_to_json(
   }
 }
 
+fn control_operation_entry_to_json(
+  entry: #(String, ControlOperationStatus),
+) -> json.Json {
+  let #(operation_id, status) = entry
+  json.object([
+    #("operation_id", json.string(operation_id)),
+    #("operation_kind", json.string(status.operation_kind)),
+    #("command_name", json.string(status.command_name)),
+    #("target", json.string(status.target)),
+    #("run_id", option_string_to_json(status.run_id)),
+    #("issue_id", option_string_to_json(status.issue_id)),
+    #("issue_identifier", option_string_to_json(status.issue_identifier)),
+    #("requested_step_id", option_string_to_json(status.requested_step_id)),
+    #("status", json.string(status.status)),
+    #("reason", option_string_to_json(status.reason)),
+    #("message", option_string_to_json(status.message)),
+    #("queued_at_ms", json.int(status.queued_at_ms)),
+    #("started_at_ms", option_int_to_json(status.started_at_ms)),
+    #("finished_at_ms", option_int_to_json(status.finished_at_ms)),
+  ])
+}
+
 fn outbox_entry_to_json(entry: #(String, OutboxStatus)) -> json.Json {
   let #(outbox_id, status) = entry
   case status {
@@ -4873,6 +5046,11 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     [],
     decode.list(of: command_receipt_snapshot_decoder()),
   )
+  use control_operations <- decode.optional_field(
+    "control_operations",
+    [],
+    decode.list(of: control_operation_snapshot_decoder()),
+  )
   use outbox <- decode.field(
     "outbox",
     decode.list(of: outbox_snapshot_decoder()),
@@ -4918,6 +5096,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         parked_issues,
         commands,
         command_receipts,
+        control_operations,
         outbox,
         issue_counters,
         known_workspaces,
@@ -4929,6 +5108,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         SnapshotFields(
           [],
           False,
+          [],
           [],
           [],
           [],
@@ -5735,6 +5915,56 @@ fn command_receipt_snapshot_decoder() -> decode.Decoder(CommandReceiptSnapshot) 
     let #(comment_id, receipt) = entry
     CommandReceiptSnapshot(comment_id, receipt)
   })
+}
+
+fn control_operation_snapshot_decoder() -> decode.Decoder(
+  ControlOperationSnapshot,
+) {
+  use operation_id <- decode.field("operation_id", decode.string)
+  use operation_kind <- decode.field("operation_kind", decode.string)
+  use command_name <- decode.field("command_name", decode.string)
+  use target <- decode.field("target", decode.string)
+  use run_id <- decode.field("run_id", decode.optional(decode.string))
+  use issue_id <- decode.field("issue_id", decode.optional(decode.string))
+  use issue_identifier <- decode.field(
+    "issue_identifier",
+    decode.optional(decode.string),
+  )
+  use requested_step_id <- decode.field(
+    "requested_step_id",
+    decode.optional(decode.string),
+  )
+  use status <- decode.field("status", decode.string)
+  use reason <- decode.field("reason", decode.optional(decode.string))
+  use message <- decode.field("message", decode.optional(decode.string))
+  use queued_at_ms <- decode.field("queued_at_ms", decode.int)
+  use started_at_ms <- decode.field(
+    "started_at_ms",
+    decode.optional(decode.int),
+  )
+  use finished_at_ms <- decode.field(
+    "finished_at_ms",
+    decode.optional(decode.int),
+  )
+  decode.success(ControlOperationSnapshot(
+    operation_id: operation_id,
+    status: ControlOperationStatus(
+      operation_id: operation_id,
+      operation_kind: operation_kind,
+      command_name: command_name,
+      target: target,
+      run_id: run_id,
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      requested_step_id: requested_step_id,
+      status: status,
+      reason: reason,
+      message: message,
+      queued_at_ms: queued_at_ms,
+      started_at_ms: started_at_ms,
+      finished_at_ms: finished_at_ms,
+    ),
+  ))
 }
 
 fn outbox_snapshot_decoder() -> decode.Decoder(OutboxSnapshot) {

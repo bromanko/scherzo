@@ -462,6 +462,11 @@ fn client_dependencies(
             query_types.QueryNotFound,
             "outbox record not found",
           ))
+        query_types.OperationStatus(_) ->
+          Error(query_types.QueryError(
+            query_types.QueryNotFound,
+            "operation not found",
+          ))
         query_types.WorkflowList | query_types.WorkflowDetail(_) ->
           Error(query_types.QueryError(
             query_types.UnsupportedQuery,

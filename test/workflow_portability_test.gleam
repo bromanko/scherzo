@@ -83,7 +83,7 @@ fn active_operator_guidance_paths() -> List(String) {
     ".scherzo/README.md",
     "docs/GETTING_STARTED.md",
     "docs/review-artifacts.md",
-    ".config/selfci/ci.sh",
+    "scripts/scherzo-ci",
     ".pi/skills/scherzo-operator/references/commands.md",
   ]
 }

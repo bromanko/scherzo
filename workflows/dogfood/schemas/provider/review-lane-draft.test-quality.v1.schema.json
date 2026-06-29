@@ -126,7 +126,7 @@
         "properties": {
           "request_id": { "type": "string", "minLength": 1 },
           "draft_finding_id": { "type": "string", "minLength": 1 },
-          "evidence_key": { "type": "string", "minLength": 1 },
+          "evidence_key": { "type": "string", "minLength": 1, "description": "Allowed native review evidence keys: gleam_test, glinter, scherzo_lint, schema_validate_artifacts, diff_static_scan, fixture_reproduction, context_only. Use context_only for unsupported or manual review context instead of inventing lane-specific keys." },
           "claim": { "type": "string", "minLength": 1 },
           "expected_observation": { "type": "string", "minLength": 1 },
           "target": {

@@ -34,20 +34,17 @@ in
     (pkgs.python3.withPackages (ps: [ ps.jsonschema ]))
     pkgs.git
     pkgs.jq
-    pkgs.selfci
     pkgs.buildkite-cli
     pi
     (linearCommand "linear")
     (linearCommand "lc")
   ];
 
+  # `check` is the canonical local gate; it shares scripts/scherzo-ci with the
+  # dogfood validate step and Buildkite. Pass a target (for example `check unit`)
+  # to run a subset; with no argument it runs the full gate.
   scripts.check.exec = ''
-    if [ -d src ] && [ -d test ]; then
-      gleam format --check src test
-      gleam test
-    else
-      echo "src/ and test/ do not exist yet; scaffold the Gleam project first."
-    fi
+    exec "''${DEVENV_ROOT:-$PWD}/scripts/scherzo-ci" "$@"
   '';
 
   scripts."scherzo-start".exec = projectScript "scherzo-start";

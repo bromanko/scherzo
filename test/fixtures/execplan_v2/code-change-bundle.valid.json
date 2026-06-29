@@ -33,13 +33,13 @@
       "sha256": "4cd32a5c9e69d8e96d2fc76382fe3dc73c1cb34f92bb43509efa7d9bfc27f0bb"
     },
     {
-      "artifact_type": "selfci",
-      "bytes": 45,
+      "artifact_type": "scherzo-ci",
+      "bytes": 49,
       "kind": "file",
       "media_type": "application/json",
-      "name": "selfci",
-      "ref": "runs/run-2/execplan/code-change/validation/selfci.json",
-      "sha256": "b81b7f38f5afb508039afea118728dee0b5a846e1cd28fa26a67ed13e483071a"
+      "name": "scherzo-ci",
+      "ref": "runs/run-2/execplan/code-change/validation/scherzo-ci.json",
+      "sha256": "b55e06b08ea7c49b652ebf502fa8a5a99dd6a5e326a60383783c4a7c43bfa51d"
     },
     {
       "artifact_type": "final-review",
@@ -90,10 +90,10 @@
   },
   "validation_artifacts": [
     {
-      "bytes": 45,
-      "name": "selfci",
-      "ref": "runs/run-2/execplan/code-change/validation/selfci.json",
-      "sha256": "b81b7f38f5afb508039afea118728dee0b5a846e1cd28fa26a67ed13e483071a"
+      "bytes": 49,
+      "name": "scherzo-ci",
+      "ref": "runs/run-2/execplan/code-change/validation/scherzo-ci.json",
+      "sha256": "b55e06b08ea7c49b652ebf502fa8a5a99dd6a5e326a60383783c4a7c43bfa51d"
     }
   ]
 }

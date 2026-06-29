@@ -1005,6 +1005,58 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "ControlOperationQueued",
+      "control_operation_queued",
+      record.with_id(
+        "record-control-operation-queued",
+        1024,
+        record.ControlOperationQueued(
+          operation_id: "op-1",
+          operation_kind: "retry_step",
+          command_name: "retry_step",
+          target: "run:run-1",
+          run_id: Some("run-1"),
+          issue_id: Some("issue-1"),
+          issue_identifier: Some("LIV-1"),
+          requested_step_id: Some("apply_feedback"),
+        ),
+      ),
+    ),
+    LedgerExample(
+      "ControlOperationStarted",
+      "control_operation_started",
+      record.with_id(
+        "record-control-operation-started",
+        1025,
+        record.ControlOperationStarted(operation_id: "op-1"),
+      ),
+    ),
+    LedgerExample(
+      "ControlOperationCompleted",
+      "control_operation_completed",
+      record.with_id(
+        "record-control-operation-completed",
+        1026,
+        record.ControlOperationCompleted(
+          operation_id: "op-1",
+          message: Some("retry-step completed"),
+        ),
+      ),
+    ),
+    LedgerExample(
+      "ControlOperationFailed",
+      "control_operation_failed",
+      record.with_id(
+        "record-control-operation-failed",
+        1027,
+        record.ControlOperationFailed(
+          operation_id: "op-2",
+          reason: "artifact_recovery_failed",
+          message: Some("retry-step failed"),
+        ),
+      ),
+    ),
+    LedgerExample(
       "ScheduledJobDue",
       "scheduled_job_due",
       record.with_id(
@@ -1815,6 +1867,7 @@ fn projection_fixture_projection() -> projection.Projection {
         ),
       ),
     ]),
+    control_operations: dict.new(),
     outbox: dict.from_list([
       #(
         "outbox-2",
@@ -2003,6 +2056,7 @@ fn sample_command_result() -> command.CommandResult {
     status: command.Rejected("busy"),
     target: Some("session-1"),
     message: Some("session is busy"),
+    operation_id: None,
   )
 }
 

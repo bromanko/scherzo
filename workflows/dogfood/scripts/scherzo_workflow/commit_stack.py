@@ -1,6 +1,6 @@
 """Shared commit_stack publication invariants for dogfood workflow helpers.
 
-The helpers in workflows/dogfood/scripts are copied into retained workflow
+The helpers in .scherzo/workflows/scripts are copied into retained workflow
 bundles and must remain self-contained.  This module intentionally depends only
 on Python's standard library plus the local `jj` and `git` commands already
 required by commit_stack publication.

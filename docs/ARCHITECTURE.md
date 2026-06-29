@@ -335,8 +335,8 @@ changes must also follow the upgrade policy in [docs/runbooks/upgrades.md](runbo
    retry, park, outbox, command receipt, workflow resumption, cleanup, or
    control output.
 6. Update README/examples/runbooks when users or operators see the schema.
-7. Run the targeted tests listed below and consider SelfCI for broad schema
-   changes.
+7. Run the targeted tests listed below and consider `scripts/scherzo-ci` for
+   broad schema changes.
 
 ## Validation commands
 
@@ -345,21 +345,21 @@ Use direnv-backed commands from the repository root.
 | Command | When to run |
 | --- | --- |
 | `direnv exec . gleam test` | Default deterministic unit suite; run for normal source changes and before review when cheap. |
-| `direnv exec . gleam format --check src test` | Source/test formatting check. Docs-only changes normally do not need it, but SelfCI runs it. |
+| `direnv exec . gleam format --check src test` | Source/test formatting check. Docs-only changes normally do not need it, but `scripts/scherzo-ci` runs it. |
 | `direnv exec . scherzo-test-unit` | Explicit alias for the default unit suite. |
 | `direnv exec . scherzo-test-contract` | Shell-heavy helper-script, workflow, renderer, daemon/service, port/process, pi-client, and workspace-driver contract coverage excluded from the default unit loop. For CI timeout control, run the `runtime`, `orchestrator`, `tracker`, `workflow`, and `repository` shards separately with `scherzo-test-contract <shard>`; direct `gleam test -- --suite <name>` is also guarded by the test runner. |
 | `direnv exec . scherzo-test-local-integration` | Workspace drivers, jj workspace behavior, local integration paths. |
 | `direnv exec . scherzo-test-real-pi-validation` | Real pi/session-persistence changes only; uses the devenv-provided pi and requires credentials, network, and time. |
 | `LINEAR_API_KEY=... direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` | Real-board readiness after config, workflow, tracker/Linear contract, workspace lifecycle, or pi launch changes. |
-| `direnv exec . selfci check --base main@origin --candidate @ --print-output` | Canonical final gate for Scherzo dogfood implementation workflows and broad changes. |
+| `direnv exec . scripts/scherzo-ci` | Canonical final gate for Scherzo dogfood implementation workflows and broad changes. Pass a target such as `scripts/scherzo-ci unit` to run a subset. |
 
-SelfCI vs direct checks:
+Full gate vs direct checks:
 
 - Use direct Gleam tests for tight implementation feedback and focused repairs.
 - Use local integration or real-pi suites only when the changed surface needs
   those dependencies.
-- Use SelfCI when you need the same final gate as the workflow publish step, or
-  after changes that span docs/config/source/Nix/formatting.
+- Use `scripts/scherzo-ci` when you need the same final gate as the workflow
+  publish step, or after changes that span docs/config/source/Nix/formatting.
 
 ## If changing workflow DAG parsing or routing
 
@@ -614,8 +614,8 @@ Touch:
 - `scripts/scherzo-test-unit`, `scripts/scherzo-test-contract`,
   `scripts/scherzo-test-local-integration`,
   `scripts/scherzo-test-real-pi-validation`
-- `.config/selfci/ci.sh` if present in the target tree
-- `README.md` test-suite and SelfCI sections
+- `scripts/scherzo-ci`
+- `README.md` test-suite and gate sections
 - `devenv.*`, `flake.*`, `nix/*` for toolchain changes
 
 Must preserve:
@@ -624,22 +624,21 @@ Must preserve:
   Linear/pi/network dependencies.
 - Shell-heavy daemon/service, port/process, pi-client, workflow, helper-script,
   renderer, and workspace-driver contract coverage stays explicit via
-  `scherzo-test-contract`, with CI-friendly contract shards included in SelfCI
-  rather than one timeout-prone monolithic contract command in the default unit
-  loop.
+  `scherzo-test-contract`, with CI-friendly contract shards included in
+  `scripts/scherzo-ci` rather than one timeout-prone monolithic contract command
+  in the default unit loop.
 - Suite runs serialize and reset the shared `test/tmp` scratch directory through
   the test runner guard; CI must not perform unguarded `rm -rf test/tmp` cleanup
   while another suite may be active.
 - Local integration and real-pi suites stay opt-in explicit suites.
-- SelfCI remains the final gate used by Scherzo implementation workflows.
+- `scripts/scherzo-ci` remains the final gate used by Scherzo implementation workflows.
 - Test fixtures do not require secrets.
 
 Run tests:
 
 - `direnv exec . gleam test`
 - The specific suite wrapper or shard being changed, for example `direnv exec . scherzo-test-contract` or `direnv exec . scherzo-test-contract runtime`
-- `direnv exec . selfci check --base main@origin --candidate @ --print-output`
-  when SelfCI or Nix/devenv behavior changes
+- `direnv exec . scripts/scherzo-ci` when the gate or Nix/devenv behavior changes
 
 ## If changing docs, examples, or checked-in workflows
 

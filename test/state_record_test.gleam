@@ -141,6 +141,45 @@ pub fn encodes_and_decodes_recovery_records_test() {
   ))
 }
 
+pub fn encodes_and_decodes_control_operation_records_test() {
+  assert_roundtrip(record.with_id(
+    "control-operation-queued-1",
+    9400,
+    record.ControlOperationQueued(
+      operation_id: "op-1",
+      operation_kind: "retry_step",
+      command_name: "retry_step",
+      target: "run:run-1",
+      run_id: Some("run-1"),
+      issue_id: Some("issue-1"),
+      issue_identifier: Some("LIV-1"),
+      requested_step_id: Some("apply_feedback"),
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "control-operation-started-1",
+    9401,
+    record.ControlOperationStarted(operation_id: "op-1"),
+  ))
+  assert_roundtrip(record.with_id(
+    "control-operation-completed-1",
+    9402,
+    record.ControlOperationCompleted(
+      operation_id: "op-1",
+      message: Some("retry-step completed"),
+    ),
+  ))
+  assert_roundtrip(record.with_id(
+    "control-operation-failed-1",
+    9403,
+    record.ControlOperationFailed(
+      operation_id: "op-2",
+      reason: "artifact_recovery_failed",
+      message: Some("retry-step failed"),
+    ),
+  ))
+}
+
 pub fn legacy_issue_id_outbox_records_decode_test() {
   let pending =
     decode_record(

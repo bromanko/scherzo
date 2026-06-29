@@ -11,9 +11,9 @@ direnv exec . gleam run -m scherzo_lint
 
 - The checked `glinter`/`scherzo_lint` runs are production-source gates: `gleam.toml` includes `src/` and explicitly excludes `test/`.
 - Tests are excluded intentionally from those checked commands. Test code uses `let assert`, fixture helpers, helper processes, and deliberately crashing paths that are useful for concise deterministic tests but conflict with several production-only rules.
-- The repository now has a documented test-source policy below, but it is not wired into `gleam.toml` or SelfCI. Do not add `test/` to the production gate; a future rollout should use a separate test lint command or project config so test severities can differ from production severities.
+- The repository now has a documented test-source policy below, but it is not wired into `gleam.toml` or `scripts/scherzo-ci`. Do not add `test/` to the production gate; a future rollout should use a separate test lint command or project config so test severities can differ from production severities.
 - `direnv exec . gleam run -m glinter` and `direnv exec . gleam run -m scherzo_lint` must continue to exit successfully. Errors are blocking. Warnings are tracked debt and should not be converted wholesale to `warnings_as_errors = true`; instead, promote individual high-signal rules after a clean baseline.
-- SelfCI already runs both production lint commands via `.config/selfci/ci.sh`, so rule promotions in `gleam.toml` and custom Scherzo lint rules automatically become PR-blocking validation failures for production source.
+- `scripts/scherzo-ci` already runs both production lint commands (its `lint` target), so rule promotions in `gleam.toml` and custom Scherzo lint rules automatically become PR-blocking validation failures for production source.
 
 ## Current rule tiers
 

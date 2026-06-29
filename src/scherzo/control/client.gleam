@@ -313,9 +313,11 @@ fn request_response_timeout_ms(
   control_file: file.ControlFile,
   request: protocol.Request,
 ) -> Int {
-  case protocol.request_operator_command(request) {
-    Some(_) -> operator_command_response_timeout_ms(control_file)
-    None -> request_transport_timeout_ms
+  case protocol.request_operator_command(request), request {
+    Some(_), _ -> operator_command_response_timeout_ms(control_file)
+    None, protocol.Query(_, _, _) ->
+      operator_command_response_timeout_ms(control_file)
+    None, _ -> request_transport_timeout_ms
   }
 }
 

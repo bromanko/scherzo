@@ -3,7 +3,11 @@ import scherzo/control/query/types
 import scherzo/orchestrator/read_model
 
 pub fn execute_status_times_out_when_snapshot_unavailable_test() {
-  let result = metrics.execute_status(get_snapshot: fn(_) { Error(Nil) })
+  let result =
+    metrics.execute_status(get_snapshot: fn(timeout_ms) {
+      assert timeout_ms == 1000
+      Error(Nil)
+    })
 
   let assert Error(types.QueryError(code: code, message: message)) = result
   assert code == types.QueryTimeout
@@ -21,7 +25,10 @@ pub fn execute_status_uses_read_model_snapshot_test() {
     |> read_model.snapshot(sampled_at_ms: 123)
 
   let assert Ok(types.StatusResponse(status_response)) =
-    metrics.execute_status(get_snapshot: fn(_) { Ok(snapshot) })
+    metrics.execute_status(get_snapshot: fn(timeout_ms) {
+      assert timeout_ms == 1000
+      Ok(snapshot)
+    })
 
   assert status_response.daemon_id == "daemon-1"
   assert status_response.boot_id == "boot-1"
@@ -31,7 +38,11 @@ pub fn execute_status_uses_read_model_snapshot_test() {
 }
 
 pub fn execute_metrics_times_out_when_snapshot_unavailable_test() {
-  let result = metrics.execute_metrics(get_snapshot: fn(_) { Error(Nil) })
+  let result =
+    metrics.execute_metrics(get_snapshot: fn(timeout_ms) {
+      assert timeout_ms == 1000
+      Error(Nil)
+    })
 
   let assert Error(types.QueryError(code: code, message: message)) = result
   assert code == types.QueryTimeout
@@ -62,7 +73,10 @@ pub fn execute_metrics_uses_read_model_snapshot_test() {
     |> read_model.snapshot(sampled_at_ms: 123)
 
   let assert Ok(types.MetricsResponse(metrics_response)) =
-    metrics.execute_metrics(get_snapshot: fn(_) { Ok(snapshot) })
+    metrics.execute_metrics(get_snapshot: fn(timeout_ms) {
+      assert timeout_ms == 1000
+      Ok(snapshot)
+    })
 
   assert metrics_response.daemon_id == "daemon-1"
   assert metrics_response.boot_id == "boot-1"

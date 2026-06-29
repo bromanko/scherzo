@@ -262,6 +262,98 @@ pub fn projection_exposes_recovery_facts_test() {
   assert replay_task_ref == record.linear_task_ref_fields("issue-1", None, None)
 }
 
+pub fn projection_tracks_control_operation_lifecycle_and_replayable_ids_test() {
+  let queued_then_completed =
+    projection.fold([
+      record.with_id(
+        "op-queued",
+        1000,
+        record.ControlOperationQueued(
+          operation_id: "op-1",
+          operation_kind: "retry_step",
+          command_name: "retry_step",
+          target: "run:run-1",
+          run_id: Some("run-1"),
+          issue_id: Some("issue-1"),
+          issue_identifier: Some("LIV-1"),
+          requested_step_id: Some("apply_feedback"),
+        ),
+      ),
+      record.with_id(
+        "op-started",
+        1001,
+        record.ControlOperationStarted(operation_id: "op-1"),
+      ),
+      record.with_id(
+        "op-completed",
+        1002,
+        record.ControlOperationCompleted(
+          operation_id: "op-1",
+          message: Some("retry-step completed"),
+        ),
+      ),
+      record.with_id(
+        "op-queued-2",
+        1010,
+        record.ControlOperationQueued(
+          operation_id: "op-2",
+          operation_kind: "retry_step",
+          command_name: "retry_step",
+          target: "run:run-2",
+          run_id: Some("run-2"),
+          issue_id: Some("issue-2"),
+          issue_identifier: Some("LIV-2"),
+          requested_step_id: Some("validate"),
+        ),
+      ),
+      record.with_id(
+        "op-queued-3",
+        1020,
+        record.ControlOperationQueued(
+          operation_id: "op-3",
+          operation_kind: "retry_step",
+          command_name: "retry_step",
+          target: "run:run-3",
+          run_id: Some("run-3"),
+          issue_id: Some("issue-3"),
+          issue_identifier: Some("LIV-3"),
+          requested_step_id: Some("apply_feedback"),
+        ),
+      ),
+      record.with_id(
+        "op-failed-3",
+        1021,
+        record.ControlOperationFailed(
+          operation_id: "op-3",
+          reason: "artifact_recovery_failed",
+          message: Some("retry-step failed"),
+        ),
+      ),
+    ])
+
+  let assert Ok(completed) =
+    projection.control_operation(queued_then_completed, "op-1")
+  assert completed.status == "completed"
+  assert completed.message == Some("retry-step completed")
+  assert completed.started_at_ms == Some(1001)
+  assert completed.finished_at_ms == Some(1002)
+
+  let assert Ok(queued) =
+    projection.control_operation(queued_then_completed, "op-2")
+  assert queued.status == "queued"
+  assert queued.requested_step_id == Some("validate")
+  assert projection.replayable_control_operation_ids(
+      queued_then_completed,
+      "retry_step",
+    )
+    == ["op-2"]
+
+  let assert Ok(failed) =
+    projection.control_operation(queued_then_completed, "op-3")
+  assert failed.status == "failed"
+  assert failed.reason == Some("artifact_recovery_failed")
+}
+
 pub fn projection_records_workflow_contract_manifest_refs_test() {
   let folded =
     projection.fold([
