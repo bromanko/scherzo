@@ -288,6 +288,7 @@ pub fn command_result_rejections_are_success_data_test() {
       status: command.Rejected("busy"),
       target: Some("session-1"),
       message: Some("session is busy"),
+      operation_id: None,
     )
     |> protocol.command_result_data
   let rejected_encoded =
@@ -311,6 +312,7 @@ pub fn command_result_rejections_are_success_data_test() {
       status: command.NotAllowed("policy"),
       target: Some("session-2"),
       message: Some("operator policy denied"),
+      operation_id: None,
     )
     |> protocol.command_result_data
   let not_allowed_encoded =
@@ -327,6 +329,39 @@ pub fn command_result_rejections_are_success_data_test() {
   assert decoded_not_allowed.message == Some("operator policy denied")
   assert command.status_to_string(decoded_not_allowed.status) == "not_allowed"
   assert command.status_reason(decoded_not_allowed.status) == Some("policy")
+}
+
+pub fn command_result_response_roundtrips_operation_id_test() {
+  let queued =
+    command.CommandResult(
+      command: "retry_step",
+      status: command.Queued,
+      target: Some("run-1"),
+      message: Some("queued durable repair"),
+      operation_id: Some("op-123"),
+    )
+    |> protocol.command_result_data
+  let queued_encoded =
+    protocol.success_response("cmd-queued", queued)
+    |> protocol.response_to_string
+
+  assert string.contains(queued_encoded, "\"status\":\"queued\"")
+  assert string.contains(queued_encoded, "\"operation_id\":\"op-123\"")
+
+  let assert Ok(decoded) =
+    protocol.decode_command_result_response(queued_encoded)
+  assert decoded.command == "retry_step"
+  assert decoded.operation_id == Some("op-123")
+}
+
+pub fn command_result_response_decodes_missing_operation_id_test() {
+  let line =
+    "{\"version\":1,\"id\":\"cmd-legacy\",\"ok\":true,\"data\":{\"status\":\"queued\",\"command\":\"retry_step\",\"target\":\"run-1\",\"message\":\"queued durable repair\"}}"
+
+  let assert Ok(decoded) = protocol.decode_command_result_response(line)
+  assert decoded.command == "retry_step"
+  assert command.status_to_string(decoded.status) == "queued"
+  assert decoded.operation_id == None
 }
 
 pub fn decode_events_response_accepts_missing_and_new_tool_fields_test() {

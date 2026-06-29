@@ -66,10 +66,11 @@ If a parked task exists because of retry caps, inspect recent events and handoff
 Use `retry-step` when a retained workflow run has durable completed upstream artifacts and a failed or interrupted repair boundary that you want to rerun in place instead of redispatching the full task:
 
 ```sh
-scripts/scherzoctl retry-step run:<run-id> --step <step-id>
+scripts/scherzoctl retry-step run:<run-id> --step <step-id> --json
+scripts/scherzoctl query operation-status <operation-id> --json
 ```
 
-This path is fail-closed. Scherzo accepts it only when workflow identity, issue identity, task identity, run root, retained artifacts, and required source workspaces still match the current world. Stable rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, and `workspace_recovery_failed`.
+A successful acknowledgement is now durable and asynchronous: `retry-step` returns `status: queued` plus `operation_id` after Scherzo records the control intent, and the slow repair runs afterward. Poll `query operation-status <operation-id>` for `queued`, `running`, `completed`, or `failed` status. This path is fail-closed. Scherzo accepts it only when workflow identity, issue identity, task identity, run root, retained artifacts, and required source workspaces still match the current world. Stable rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, and `workspace_recovery_failed`.
 
 When `retry-step` rejects with `artifact_recovery_failed`, the result message names the step, retained artifact ref, and failure reason. A hash mismatch also includes the ledger sha and current file sha, for example:
 

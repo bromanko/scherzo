@@ -81,6 +81,39 @@ pub fn metrics_query_response_rejects_unknown_schema_version_test() {
   assert message == "unsupported metrics schema version"
 }
 
+pub fn operation_status_query_request_response_roundtrip_test() {
+  let request =
+    types.OperationStatus(types.OperationStatusQuery(operation_id: "op-123"))
+  let response =
+    types.OperationStatusResponse(types.OperationStatusDto(
+      operation_id: "op-123",
+      kind: "retry_step",
+      command: "retry_step",
+      target: "run:run-1",
+      run_id: Some("run-1"),
+      issue_id: Some("issue-1"),
+      issue_identifier: Some("LIV-1"),
+      requested_step_id: Some("apply_feedback"),
+      status: "completed",
+      reason: None,
+      message: Some("retry-step completed"),
+      queued_at_ms: 1000,
+      started_at_ms: Some(1001),
+      finished_at_ms: Some(1002),
+    ))
+
+  let encoded_request = codec.request_to_string(request)
+  assert string.contains(encoded_request, "\"type\":\"operation_status\"")
+  assert string.contains(encoded_request, "\"operation_id\":\"op-123\"")
+  assert codec.decode_request(encoded_request) == Ok(request)
+
+  let encoded_response = codec.response_to_string(response)
+  assert string.contains(encoded_response, "\"type\":\"operation_status\"")
+  assert string.contains(encoded_response, "\"status\":\"completed\"")
+  assert string.contains(encoded_response, "\"operation_id\":\"op-123\"")
+  assert codec.decode_response(encoded_response) == Ok(response)
+}
+
 pub fn shared_query_codec_decodes_nested_local_and_remote_payloads_test() {
   let request = codec.request_to_string(types.Status)
   let local_line = "{\"query\":" <> request <> "}"

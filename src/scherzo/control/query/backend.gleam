@@ -72,6 +72,7 @@ pub fn run_with_projection(
       )
     types.OutboxList(_)
     | types.OutboxShow(_)
+    | types.OperationStatus(_)
     | types.WorkflowList
     | types.WorkflowDetail(_) ->
       Error(types.QueryError(

@@ -70,6 +70,7 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
       status: command.NotAllowed("policy"),
       target: Some("session-1"),
       message: Some("policy denied"),
+      operation_id: None,
     ),
   ))
   assert_roundtrip(remote_envelope.RemoteQueryResponse(
@@ -331,6 +332,19 @@ pub fn remote_envelope_rejects_invalid_nested_result_payloads_test() {
     "{\"version\":1,\"type\":\"command_result\",\"command_id\":\"cmd-1\",\"result\":{\"command\":\"prompt\",\"status\":\"future_status\"}}",
     "invalid_result",
   )
+}
+
+pub fn remote_envelope_roundtrips_command_result_with_operation_id_test() {
+  assert_roundtrip(remote_envelope.RemoteCommandResult(
+    "cmd-queued",
+    command.CommandResult(
+      command: "retry_step",
+      status: command.Queued,
+      target: Some("run-1"),
+      message: Some("queued durable repair"),
+      operation_id: Some("op-123"),
+    ),
+  ))
 }
 
 pub fn remote_envelope_rejects_local_control_file_json_test() {

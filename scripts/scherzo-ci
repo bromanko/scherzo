@@ -17,11 +17,14 @@ set -euo pipefail
 #   unit                gleam unit suite
 #   contract            gleam contract suites (runtime/orchestrator/tracker/workflow/repository)
 #   nix                 nix flake check
-#   package             nix build .#scherzo
+#   package             nix build path:<repo-root>#scherzo
 #
 # Toolchain steps run through `direnv exec .` so the script works whether or not
 # the caller has already entered the devenv shell. `nix`/`package` invoke `nix`
-# directly and do not require direnv.
+# directly and do not require direnv. Nix flakes use the Git-aware repo path for
+# Git worktrees, but force a path: URI for jj-only workspaces so nested workflow
+# workspaces under an enclosing Git checkout are not rejected as untracked parent
+# repo files.
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -93,12 +96,24 @@ ci_contract() {
   run_step "gleam contract test repository" direnv exec . scherzo-test-contract repository
 }
 
+ci_flake_ref() {
+  if [ -e "$repo_root/.git" ]; then
+    printf '%s\n' "$repo_root"
+  else
+    printf 'path:%s\n' "$repo_root"
+  fi
+}
+
 ci_flake_check() {
-  run_step "nix flake check" nix flake check --print-build-logs
+  local ref
+  ref=$(ci_flake_ref)
+  run_step "nix flake check" nix flake check "$ref" --print-build-logs
 }
 
 ci_package() {
-  run_step "nix build" nix build .#scherzo --print-build-logs
+  local ref
+  ref=$(ci_flake_ref)
+  run_step "nix build" nix build "$ref#scherzo" --print-build-logs
 }
 
 usage() {

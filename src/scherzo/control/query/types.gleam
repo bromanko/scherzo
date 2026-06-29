@@ -13,6 +13,7 @@ pub type QueryRequest {
   WorkItemShow(WorkItemShowQuery)
   OutboxList(OutboxListQuery)
   OutboxShow(OutboxShowQuery)
+  OperationStatus(OperationStatusQuery)
   WorkflowList
   WorkflowDetail(WorkflowDetailQuery)
 }
@@ -26,6 +27,7 @@ pub type QueryResponse {
   WorkItemShowResponse(work_item: work_item.WorkItemDetail)
   OutboxListResponse(outbox: OutboxListDto)
   OutboxShowResponse(outbox: OutboxRecordDto)
+  OperationStatusResponse(operation: OperationStatusDto)
   WorkflowListResponse(workflows: WorkflowListDto)
   WorkflowDetailResponse(workflow: WorkflowDetailDto)
 }
@@ -67,6 +69,10 @@ pub type OutboxListQuery {
 
 pub type OutboxShowQuery {
   OutboxShowQuery(outbox_id: String)
+}
+
+pub type OperationStatusQuery {
+  OperationStatusQuery(operation_id: String)
 }
 
 pub type WorkflowDetailQuery {
@@ -186,6 +192,25 @@ pub type OutboxRecordDto {
 
 pub type OutboxListDto {
   OutboxListDto(items: List(OutboxRecordDto), page: PageDto)
+}
+
+pub type OperationStatusDto {
+  OperationStatusDto(
+    operation_id: String,
+    kind: String,
+    command: String,
+    target: String,
+    run_id: Option(String),
+    issue_id: Option(String),
+    issue_identifier: Option(String),
+    requested_step_id: Option(String),
+    status: String,
+    reason: Option(String),
+    message: Option(String),
+    queued_at_ms: Int,
+    started_at_ms: Option(Int),
+    finished_at_ms: Option(Int),
+  )
 }
 
 pub type WorkflowDiagnosticDto {
@@ -380,6 +405,7 @@ pub fn supported_queries() -> List(String) {
     "work_item_show",
     "outbox_list",
     "outbox_show",
+    "operation_status",
     "workflow_list",
     "workflow_detail",
   ]
@@ -446,6 +472,7 @@ pub fn query_type(request: QueryRequest) -> String {
     WorkItemShow(_) -> "work_item_show"
     OutboxList(_) -> "outbox_list"
     OutboxShow(_) -> "outbox_show"
+    OperationStatus(_) -> "operation_status"
     WorkflowList -> "workflow_list"
     WorkflowDetail(_) -> "workflow_detail"
   }
@@ -461,6 +488,7 @@ pub fn response_type(response: QueryResponse) -> String {
     WorkItemShowResponse(_) -> "work_item_show"
     OutboxListResponse(_) -> "outbox_list"
     OutboxShowResponse(_) -> "outbox_show"
+    OperationStatusResponse(_) -> "operation_status"
     WorkflowListResponse(_) -> "workflow_list"
     WorkflowDetailResponse(_) -> "workflow_detail"
   }

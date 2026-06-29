@@ -11,6 +11,7 @@ import scherzo/artifact_repository/command_runner
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/protocol
+import scherzo/control/query/types as query_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/hash
@@ -19,6 +20,7 @@ import scherzo/orchestrator/dispatch_recovery
 import scherzo/orchestrator/startup_recovery
 import scherzo/orchestrator/yaml_step_session
 import scherzo/path
+import scherzo/port
 import scherzo/result_artifact
 import scherzo/runtime_bundle
 import scherzo/session/event
@@ -136,7 +138,7 @@ pub fn retry_step_rejects_parked_issue_before_planning_test() {
   hub.stop(hub_subject)
 }
 
-pub fn retry_step_appends_repair_records_before_spawning_recovered_worker_test() {
+pub fn retry_step_queues_operation_and_records_lifecycle_before_spawning_recovered_worker_test() {
   let dir = "test/tmp/daemon-retry-step-accepted"
   let issue = issue("issue-1", "LIV-509", "Todo")
   let #(workflow_path, root) = write_retry_step_workflow(dir)
@@ -177,13 +179,35 @@ pub fn retry_step_appends_repair_records_before_spawning_recovered_worker_test()
     )
 
   assert command.status_reason(result.status) == None
-  assert command.status_to_string(result.status) == "applied"
+  assert command.status_to_string(result.status) == "queued"
+  let assert Some(operation_id) = result.operation_id
+  assert string.starts_with(operation_id, "retry-step:run-1:apply_feedback:")
+  assert result.message
+    == Some("retry-step accepted; poll query operation-status for completion")
+  let assert Ok(queued_operation) =
+    projection.control_operation(load_projection_or_panic(root), operation_id)
+  assert queued_operation.requested_step_id == Some("apply_feedback")
+  assert queued_operation.status == "queued"
+    || queued_operation.status == "running"
+  assert count_kind(root, "control_operation_queued") == 1
+
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+  assert wait_for_log(log_subject, "retry_step_ledger_ready", 100)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.message
+    == Some(
+      "provenance_ok; retrying run run-1 step apply_feedback at attempt 2",
+    )
   assert contains_kind_sequence(root, [
+    "control_operation_queued",
+    "control_operation_started",
     "workflow_repair_requested",
     "step_attempt_superseded",
     "workflow_run_started",
     "known_workspace",
     "issue_counter_updated",
+    "control_operation_completed",
   ])
 
   test_async.release_barrier_if_waiting(worker_barrier)
@@ -226,22 +250,23 @@ pub fn retry_step_repairs_claim_handoff_interrupted_run_test() {
       ),
       1000,
     )
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
 
-  assert command.status_to_string(result.status) == "applied"
   assert contains_kind_sequence(root, [
     "workflow_run_started",
     "known_workspace",
     "run_started",
     "issue_counter_updated",
   ])
-  assert contains_kind_sequence(root, [
-    "workflow_run_interrupted",
-    "run_interrupted",
-    "workflow_repair_requested",
-    "step_attempt_superseded",
-    "workflow_run_started",
-  ])
   assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == Some("apply_feedback")
+  assert count_kind(root, "control_operation_queued") == 1
+  assert count_kind(root, "control_operation_started") == 1
+  assert count_kind(root, "workflow_repair_requested") == 1
+  assert count_kind(root, "step_attempt_superseded") == 1
+  assert count_kind(root, "control_operation_completed") == 1
 
   test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -283,19 +308,21 @@ pub fn retry_step_repairs_missing_provenance_after_finalization_accepts_test() {
       ),
       1000,
     )
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
 
-  assert command.status_to_string(result.status) == "applied"
-  assert result.message
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.message
     == Some(
       "provenance_repaired; retrying run run-1 step apply_feedback at attempt 2",
     )
-  assert contains_kind_sequence(root, [
-    "workflow_run_provenance_repaired",
-    "workflow_repair_requested",
-    "step_attempt_superseded",
-    "workflow_run_started",
-  ])
-  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+  assert count_kind(root, "control_operation_queued") == 1
+  assert count_kind(root, "control_operation_started") == 1
+  assert count_kind(root, "workflow_run_provenance_repaired") == 1
+  assert count_kind(root, "workflow_repair_requested") == 1
+  assert count_kind(root, "step_attempt_superseded") == 1
+  assert count_kind(root, "control_operation_completed") == 1
 
   test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -342,6 +369,7 @@ pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnosti
       1000,
     )
 
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
   let detail =
     "artifact_recovery_failed: step_id=seed artifact_ref="
     <> artifact_ref
@@ -349,10 +377,10 @@ pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnosti
     <> expected_sha256
     <> " current_sha256="
     <> current_sha256
-  assert command.status_to_string(result.status) == "rejected"
-  assert command.status_reason(result.status)
-    == Some("artifact_recovery_failed")
-  assert result.message
+  let assert Ok(failed_operation) =
+    wait_for_operation_status(root, operation_id, "failed", 20)
+  assert failed_operation.reason == Some("artifact_recovery_failed")
+  assert failed_operation.message
     == Some("retry-step repair was rejected by recovery validation: " <> detail)
   assert retained_workflow_diagnostic_reason(root, detail)
   assert !retained_workflow_interruption_reason(root, detail)
@@ -397,10 +425,11 @@ pub fn retry_step_does_not_append_provenance_repair_when_finalization_rejects_te
       ),
       1000,
     )
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
 
-  assert command.status_to_string(result.status) == "rejected"
-  assert command.status_reason(result.status)
-    == Some("artifact_recovery_failed")
+  let assert Ok(failed_operation) =
+    wait_for_operation_status(root, operation_id, "failed", 20)
+  assert failed_operation.reason == Some("artifact_recovery_failed")
   assert !contains_kind(root, "workflow_run_provenance_repaired")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -525,7 +554,7 @@ pub fn retry_step_abort_of_recovered_parent_cleans_review_children_and_exposes_o
       command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
       1000,
     )
-  assert command.status_to_string(retry_result.status) == "applied"
+  let operation_id = assert_retry_step_queued(retry_result, None)
   assert wait_for_all_logs(
     log_subject,
     [
@@ -534,6 +563,10 @@ pub fn retry_step_abort_of_recovered_parent_cleans_review_children_and_exposes_o
     ],
     100,
   )
+
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == None
 
   let assert Ok(parent_session) =
     wait_for_parent_session(hub_subject, issue.identifier, 20)
@@ -712,7 +745,7 @@ pub fn retry_step_shutdown_interrupts_active_review_children_with_registry_metad
       command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
       1000,
     )
-  assert command.status_to_string(retry_result.status) == "applied"
+  let operation_id = assert_retry_step_queued(retry_result, None)
   assert wait_for_all_logs(
     log_subject,
     [
@@ -721,6 +754,10 @@ pub fn retry_step_shutdown_interrupts_active_review_children_with_registry_metad
     ],
     100,
   )
+
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == None
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   assert has_step_interrupted_attempt_reason(
@@ -805,7 +842,7 @@ pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_rec
       command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
       1000,
     )
-  assert command.status_to_string(retry_result.status) == "applied"
+  let operation_id = assert_retry_step_queued(retry_result, None)
   assert wait_for_all_logs(
     log_subject,
     [
@@ -814,6 +851,9 @@ pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_rec
     ],
     100,
   )
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(active_root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == None
   let assert Ok(active_code_review_session) =
     wait_for_active_step_session(hub_subject, "run-1", "code_review", 1, 20)
   let assert Ok(active_security_review_session) =
@@ -1015,8 +1055,12 @@ pub fn retry_step_active_command_session_has_no_orphan_cleanup_recovery_test() {
       command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
       1000,
     )
-  assert command.status_to_string(retry_result.status) == "applied"
+  let operation_id = assert_retry_step_queued(retry_result, None)
   assert wait_for_log(log_subject, "active_command_started:apply_feedback", 100)
+
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(active_root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == None
 
   let assert Ok(active_command_session) =
     wait_for_active_step_session(hub_subject, "run-1", "apply_feedback", 2, 100)
@@ -1100,8 +1144,12 @@ pub fn retry_step_non_active_parent_stop_interrupts_command_child_test() {
       command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
       1000,
     )
-  assert command.status_to_string(retry_result.status) == "applied"
+  let operation_id = assert_retry_step_queued(retry_result, None)
   assert wait_for_log(log_subject, "active_command_started:apply_feedback", 100)
+
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == None
 
   let assert Ok(active_command_session) =
     wait_for_active_step_session(hub_subject, "run-1", "apply_feedback", 2, 100)
@@ -1175,6 +1223,417 @@ pub fn retry_step_rejects_terminal_issue_state_for_retained_run_test() {
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
+}
+
+pub fn retry_step_startup_replay_replays_queued_operation_test() {
+  let dir = "test/tmp/daemon-retry-step-startup-replay-queued"
+  let issue = issue("issue-1", "LIV-1262", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let operation_id = "retry-step:run-1:apply_feedback:queued-replay"
+  append_ledger_records(root, [
+    record.with_id(
+      "queued-op",
+      40,
+      record.ControlOperationQueued(
+        operation_id: operation_id,
+        operation_kind: "retry_step",
+        command_name: "retry_step",
+        target: "run-1",
+        run_id: Some("run-1"),
+        issue_id: Some(issue.id),
+        issue_identifier: Some(issue.identifier),
+        requested_step_id: Some("apply_feedback"),
+      ),
+    ),
+  ])
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, context, _effective) {
+        process.send(log_subject, "startup_replay_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert wait_for_log(log_subject, "startup_replay_worker_started:issue-1", 100)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == Some("apply_feedback")
+  assert count_kind(root, "workflow_repair_requested") == 1
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_operation_status_query_succeeds_while_startup_replay_is_running_test() {
+  let dir = "test/tmp/daemon-retry-step-operation-status-running"
+  let issue = issue("issue-1", "LIV-1262", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let operation_id = "retry-step:run-1:apply_feedback:running-query"
+  append_ledger_records(root, [
+    record.with_id(
+      "queued-op",
+      40,
+      record.ControlOperationQueued(
+        operation_id: operation_id,
+        operation_kind: "retry_step",
+        command_name: "retry_step",
+        target: "run-1",
+        run_id: Some("run-1"),
+        issue_id: Some(issue.id),
+        issue_identifier: Some(issue.identifier),
+        requested_step_id: Some("apply_feedback"),
+      ),
+    ),
+  ])
+  let log_subject = process.new_subject()
+  let lookup_barrier = test_async.new_barrier()
+  let tracker_client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) {
+        process.send(log_subject, "startup_replay_issue_lookup")
+        test_async.block_until_released(lookup_barrier)
+        Ok([issue])
+      },
+    )
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert wait_for_log(log_subject, "startup_replay_issue_lookup", 100)
+  let assert Ok(running_operation) =
+    wait_for_operation_status(root, operation_id, "running", 20)
+  assert running_operation.requested_step_id == Some("apply_feedback")
+
+  let assert Ok(query_types.OperationStatusResponse(operation)) =
+    daemon.execute_query(
+      started.data,
+      query_types.OperationStatus(query_types.OperationStatusQuery(
+        operation_id: operation_id,
+      )),
+      1000,
+    )
+  assert operation.operation_id == operation_id
+  assert operation.status == "running"
+
+  test_async.release_barrier_if_waiting(lookup_barrier)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == Some("apply_feedback")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_startup_replay_replays_running_operation_without_duplicate_started_record_test() {
+  let dir = "test/tmp/daemon-retry-step-startup-replay-running"
+  let issue = issue("issue-1", "LIV-1262", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let operation_id = "retry-step:run-1:apply_feedback:running-replay"
+  append_ledger_records(root, [
+    record.with_id(
+      "queued-op",
+      40,
+      record.ControlOperationQueued(
+        operation_id: operation_id,
+        operation_kind: "retry_step",
+        command_name: "retry_step",
+        target: "run-1",
+        run_id: Some("run-1"),
+        issue_id: Some(issue.id),
+        issue_identifier: Some(issue.identifier),
+        requested_step_id: Some("apply_feedback"),
+      ),
+    ),
+    record.with_id(
+      "started-op",
+      41,
+      record.ControlOperationStarted(operation_id),
+    ),
+  ])
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, context, _effective) {
+        process.send(log_subject, "startup_running_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert wait_for_log(
+    log_subject,
+    "startup_running_worker_started:issue-1",
+    100,
+  )
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.started_at_ms == Some(41)
+  assert count_kind(root, "control_operation_started") == 1
+  assert count_kind(root, "workflow_repair_requested") == 1
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_startup_replay_skips_completed_and_failed_operations_test() {
+  let dir = "test/tmp/daemon-retry-step-startup-replay-skip-terminal"
+  let issue = issue("issue-1", "LIV-1262", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  append_ledger_records(root, [
+    record.with_id(
+      "completed-queued",
+      40,
+      record.ControlOperationQueued(
+        operation_id: "retry-step:run-1:apply_feedback:completed",
+        operation_kind: "retry_step",
+        command_name: "retry_step",
+        target: "run-1",
+        run_id: Some("run-1"),
+        issue_id: Some(issue.id),
+        issue_identifier: Some(issue.identifier),
+        requested_step_id: Some("apply_feedback"),
+      ),
+    ),
+    record.with_id(
+      "completed-final",
+      41,
+      record.ControlOperationCompleted(
+        operation_id: "retry-step:run-1:apply_feedback:completed",
+        message: Some("done"),
+      ),
+    ),
+    record.with_id(
+      "failed-queued",
+      42,
+      record.ControlOperationQueued(
+        operation_id: "retry-step:run-1:apply_feedback:failed",
+        operation_kind: "retry_step",
+        command_name: "retry_step",
+        target: "run-1",
+        run_id: Some("run-1"),
+        issue_id: Some(issue.id),
+        issue_identifier: Some(issue.identifier),
+        requested_step_id: Some("apply_feedback"),
+      ),
+    ),
+    record.with_id(
+      "failed-final",
+      43,
+      record.ControlOperationFailed(
+        operation_id: "retry-step:run-1:apply_feedback:failed",
+        reason: "artifact_recovery_failed",
+        message: Some("failed"),
+      ),
+    ),
+  ])
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, _context, _effective) {
+        process.send(log_subject, "unexpected_start:" <> issue.id)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  assert !wait_for_log(log_subject, "unexpected_start:issue-1", 5)
+  assert count_kind(root, "workflow_repair_requested") == 0
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_replay_is_idempotent_and_queue_append_failure_rejects_without_async_work_test() {
+  let duplicate_dir = "test/tmp/daemon-retry-step-replay-idempotent"
+  let duplicate_issue = issue("issue-1", "LIV-1262", "Todo")
+  let #(duplicate_workflow_path, duplicate_root) =
+    write_retry_step_workflow(duplicate_dir)
+  seed_interrupted_retry_step_run(
+    duplicate_root,
+    duplicate_issue,
+    include_parked: False,
+  )
+  let duplicate_log_subject = process.new_subject()
+  let duplicate_worker_barrier = test_async.new_barrier()
+  let assert Ok(duplicate_hub_subject) = hub.start(50, fn() { 42 })
+  let duplicate_deps =
+    in_process_dependencies(
+      duplicate_log_subject,
+      tracker_issue_only(duplicate_issue),
+      duplicate_hub_subject,
+      fn(issue, context, _effective) {
+        process.send(
+          duplicate_log_subject,
+          "duplicate_worker_started:" <> issue.id,
+        )
+        test_async.block_until_released(duplicate_worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(duplicate_started) =
+    daemon.start(Some(duplicate_workflow_path), duplicate_deps)
+
+  let assert Ok(duplicate_result) =
+    daemon.apply_operator_command(
+      duplicate_started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  let duplicate_operation_id =
+    assert_retry_step_queued(duplicate_result, Some("apply_feedback"))
+  process.send(
+    duplicate_started.data,
+    daemon.RunQueuedControlOperation(duplicate_operation_id),
+  )
+  process.send(
+    duplicate_started.data,
+    daemon.RunQueuedControlOperation(duplicate_operation_id),
+  )
+
+  assert wait_for_log(
+    duplicate_log_subject,
+    "duplicate_worker_started:issue-1",
+    100,
+  )
+  let assert Ok(duplicate_completed) =
+    wait_for_operation_status(
+      duplicate_root,
+      duplicate_operation_id,
+      "completed",
+      20,
+    )
+  assert duplicate_completed.requested_step_id == Some("apply_feedback")
+  process.send(
+    duplicate_started.data,
+    daemon.RunQueuedControlOperation(duplicate_operation_id),
+  )
+  assert count_kind(duplicate_root, "workflow_repair_requested") == 1
+  assert count_kind(duplicate_root, "step_attempt_superseded") == 1
+
+  test_async.release_barrier_if_waiting(duplicate_worker_barrier)
+  assert daemon.shutdown(duplicate_started.data, 1000) == Ok(Nil)
+  hub.stop(duplicate_hub_subject)
+
+  let failure_dir = "test/tmp/daemon-retry-step-queue-append-failed"
+  let failure_issue = issue("issue-1", "LIV-1262", "Todo")
+  let #(failure_workflow_path, failure_root) =
+    write_retry_step_workflow(failure_dir)
+  seed_interrupted_retry_step_run(
+    failure_root,
+    failure_issue,
+    include_parked: False,
+  )
+  let failure_log_subject = process.new_subject()
+  let assert Ok(failure_hub_subject) = hub.start(50, fn() { 42 })
+  let failure_deps =
+    in_process_dependencies(
+      failure_log_subject,
+      tracker_issue_only(failure_issue),
+      failure_hub_subject,
+      fn(issue, _context, _effective) {
+        process.send(
+          failure_log_subject,
+          "queue_append_failed_spawn:" <> issue.id,
+        )
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(failure_started) =
+    daemon.start(Some(failure_workflow_path), failure_deps)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(failure_root)
+  chmod_path("a-w", ledger_path.current_path)
+
+  let assert Ok(failure_result) =
+    daemon.apply_operator_command(
+      failure_started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  chmod_path("u+w", ledger_path.current_path)
+  assert command.status_to_string(failure_result.status) == "rejected"
+  assert command.status_reason(failure_result.status)
+    == Some("ledger_append_failed")
+  assert failure_result.message == Some("failed to append retry-step operation")
+  assert count_kind(failure_root, "control_operation_queued") == 0
+  assert count_kind(failure_root, "workflow_repair_requested") == 0
+  assert !wait_for_log(
+    failure_log_subject,
+    "queue_append_failed_spawn:issue-1",
+    5,
+  )
+
+  assert daemon.shutdown(failure_started.data, 1000) == Ok(Nil)
+  hub.stop(failure_hub_subject)
 }
 
 fn write_retry_step_workflow(dir: String) -> #(String, String) {
@@ -4128,6 +4587,78 @@ fn artifact_limits() -> config_types.ArtifactLimits {
     template_field_max_chars: 1000,
     workflow_summary_max_chars: 4000,
   )
+}
+
+fn assert_retry_step_queued(
+  result: command.CommandResult,
+  step_id: Option(String),
+) -> String {
+  assert command.status_reason(result.status) == None
+  assert command.status_to_string(result.status) == "queued"
+  let assert Some(operation_id) = result.operation_id
+  assert string.starts_with(
+    operation_id,
+    "retry-step:run-1:" <> option.unwrap(step_id, "auto") <> ":",
+  )
+  assert result.message
+    == Some("retry-step accepted; poll query operation-status for completion")
+  operation_id
+}
+
+fn wait_for_operation_status(
+  root: String,
+  operation_id: String,
+  expected_status: String,
+  attempts: Int,
+) -> Result(projection.ControlOperationStatus, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case
+        projection.control_operation(
+          load_projection_or_panic(root),
+          operation_id,
+        )
+      {
+        Ok(operation) ->
+          case operation.status == expected_status {
+            True -> Ok(operation)
+            False -> {
+              process.sleep(20)
+              wait_for_operation_status(
+                root,
+                operation_id,
+                expected_status,
+                attempts - 1,
+              )
+            }
+          }
+        Error(Nil) -> {
+          process.sleep(20)
+          wait_for_operation_status(
+            root,
+            operation_id,
+            expected_status,
+            attempts - 1,
+          )
+        }
+      }
+  }
+}
+
+fn append_ledger_records(
+  root: String,
+  records: List(record.LedgerRecord),
+) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) = ledger.append_many(ledger_path, records, True)
+  Nil
+}
+
+fn chmod_path(mode: String, path: String) -> Nil {
+  let assert Ok(chmod) = port.start_argv("chmod", [mode, path], ".", [])
+  let assert Ok(0) = port.await_exit(chmod, 1000)
+  Nil
 }
 
 fn ledger_bodies(root: String) -> List(record.RecordBody) {

@@ -493,6 +493,33 @@ pub fn outbox_list_to_json(outbox: types.OutboxListDto) -> json.Json {
   ])
 }
 
+pub fn operation_status_to_json(
+  operation: types.OperationStatusDto,
+) -> json.Json {
+  json.object([
+    #("operation_id", json.string(operation.operation_id)),
+    #("kind", json.string(operation.kind)),
+    #("command", json.string(operation.command)),
+    #("target", json.string(operation.target)),
+    #("run_id", json.nullable(operation.run_id, of: json.string)),
+    #("issue_id", json.nullable(operation.issue_id, of: json.string)),
+    #(
+      "issue_identifier",
+      json.nullable(operation.issue_identifier, of: json.string),
+    ),
+    #(
+      "requested_step_id",
+      json.nullable(operation.requested_step_id, of: json.string),
+    ),
+    #("status", json.string(operation.status)),
+    #("reason", json.nullable(operation.reason, of: json.string)),
+    #("message", json.nullable(operation.message, of: json.string)),
+    #("queued_at_ms", json.int(operation.queued_at_ms)),
+    #("started_at_ms", json.nullable(operation.started_at_ms, of: json.int)),
+    #("finished_at_ms", json.nullable(operation.finished_at_ms, of: json.int)),
+  ])
+}
+
 pub fn outbox_record_to_json(record: types.OutboxRecordDto) -> json.Json {
   json.object([
     #("outbox_id", json.string(record.outbox_id)),
@@ -536,6 +563,19 @@ pub fn decode_task_detail_dynamic(
       Error(types.QueryError(
         types.QueryBackendFailed,
         "invalid task detail query payload",
+      ))
+  }
+}
+
+pub fn decode_operation_status_dynamic(
+  value: Dynamic,
+) -> Result(types.OperationStatusDto, types.QueryError) {
+  case decode.run(value, operation_status_decoder()) {
+    Ok(operation) -> Ok(operation)
+    Error(_) ->
+      Error(types.QueryError(
+        types.QueryBackendFailed,
+        "invalid operation status query payload",
       ))
   }
 }
@@ -671,6 +711,51 @@ fn outbox_list_decoder() -> decode.Decoder(types.OutboxListDto) {
   use items <- decode.field("items", decode.list(outbox_record_decoder()))
   use page <- decode.field("page", page_decoder())
   decode.success(types.OutboxListDto(items: items, page: page))
+}
+
+fn operation_status_decoder() -> decode.Decoder(types.OperationStatusDto) {
+  use operation_id <- decode.field("operation_id", decode.string)
+  use kind <- decode.field("kind", decode.string)
+  use command <- decode.field("command", decode.string)
+  use target <- decode.field("target", decode.string)
+  use run_id <- decode.field("run_id", decode.optional(decode.string))
+  use issue_id <- decode.field("issue_id", decode.optional(decode.string))
+  use issue_identifier <- decode.field(
+    "issue_identifier",
+    decode.optional(decode.string),
+  )
+  use requested_step_id <- decode.field(
+    "requested_step_id",
+    decode.optional(decode.string),
+  )
+  use status <- decode.field("status", decode.string)
+  use reason <- decode.field("reason", decode.optional(decode.string))
+  use message <- decode.field("message", decode.optional(decode.string))
+  use queued_at_ms <- decode.field("queued_at_ms", decode.int)
+  use started_at_ms <- decode.field(
+    "started_at_ms",
+    decode.optional(decode.int),
+  )
+  use finished_at_ms <- decode.field(
+    "finished_at_ms",
+    decode.optional(decode.int),
+  )
+  decode.success(types.OperationStatusDto(
+    operation_id: operation_id,
+    kind: kind,
+    command: command,
+    target: target,
+    run_id: run_id,
+    issue_id: issue_id,
+    issue_identifier: issue_identifier,
+    requested_step_id: requested_step_id,
+    status: status,
+    reason: reason,
+    message: message,
+    queued_at_ms: queued_at_ms,
+    started_at_ms: started_at_ms,
+    finished_at_ms: finished_at_ms,
+  ))
 }
 
 fn outbox_record_decoder() -> decode.Decoder(types.OutboxRecordDto) {

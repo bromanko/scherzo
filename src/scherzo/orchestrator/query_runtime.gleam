@@ -61,6 +61,48 @@ pub fn start(
             get_outbox: get_outbox_snapshot,
             query: outbox_query,
           )
+        query_types.OperationStatus(operation_query) ->
+          case get_projection_snapshot(100) {
+            Ok(snapshot) ->
+              case
+                projection.control_operation(
+                  snapshot,
+                  operation_query.operation_id,
+                )
+              {
+                Ok(operation) ->
+                  Ok(
+                    query_types.OperationStatusResponse(
+                      query_types.OperationStatusDto(
+                        operation_id: operation.operation_id,
+                        kind: operation.operation_kind,
+                        command: operation.command_name,
+                        target: operation.target,
+                        run_id: operation.run_id,
+                        issue_id: operation.issue_id,
+                        issue_identifier: operation.issue_identifier,
+                        requested_step_id: operation.requested_step_id,
+                        status: operation.status,
+                        reason: operation.reason,
+                        message: operation.message,
+                        queued_at_ms: operation.queued_at_ms,
+                        started_at_ms: operation.started_at_ms,
+                        finished_at_ms: operation.finished_at_ms,
+                      ),
+                    ),
+                  )
+                Error(Nil) ->
+                  Error(query_types.QueryError(
+                    query_types.QueryNotFound,
+                    "operation not found: " <> operation_query.operation_id,
+                  ))
+              }
+            Error(Nil) ->
+              Error(query_types.QueryError(
+                query_types.QueryTimeout,
+                "operation-status query timed out",
+              ))
+          }
         query_types.WorkflowList ->
           execute_workflow_query(
             get_snapshot: get_workflow_snapshot,
