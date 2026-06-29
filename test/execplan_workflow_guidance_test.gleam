@@ -2,9 +2,9 @@ import gleam/list
 import gleam/string
 import simplifile
 
-const exec_plan_guidance = "workflows/dogfood/guidance/exec-plan.md"
+const exec_plan_guidance = ".scherzo/workflows/guidance/exec-plan.md"
 
-const exec_plan_review_guidance = "workflows/dogfood/guidance/exec-plan-review.md"
+const exec_plan_review_guidance = ".scherzo/workflows/guidance/exec-plan-review.md"
 
 pub fn execplan_workflow_guidance_is_vendored_under_workflows_test() {
   let authoring = read_file(exec_plan_guidance)
@@ -28,7 +28,7 @@ pub fn execplan_prompts_load_repo_local_guidance_test() {
     assert_avoids_machine_local_skill_paths(prompt)
   })
 
-  let review_prompt = read_file("workflows/dogfood/prompts/execplan-review.md")
+  let review_prompt = read_file(".scherzo/workflows/prompts/execplan-review.md")
   assert string.contains(review_prompt, exec_plan_review_guidance)
   assert string.contains(review_prompt, exec_plan_guidance)
   assert_avoids_machine_local_skill_paths(review_prompt)
@@ -60,6 +60,7 @@ fn assert_avoids_machine_local_skill_paths(contents: String) -> Nil {
   assert !string.contains(contents, "llm-agents/skills")
   assert !string.contains(contents, ".pi/skills")
   assert !string.contains(contents, "SKILL.md")
+  assert !string.contains(contents, "workflows/dogfood/")
 }
 
 fn required_living_document_sections() -> List(String) {
@@ -90,46 +91,46 @@ fn required_execution_context_headings() -> List(String) {
 
 fn review_doc_prompt_paths() -> List(String) {
   [
-    "workflows/dogfood/prompts/execplan-draft.md",
-    "workflows/dogfood/prompts/execplan-incorporate-review.md",
-    "workflows/dogfood/prompts/execplan-review.md",
-    "workflows/dogfood/prompts/execplan-revision.md",
+    ".scherzo/workflows/prompts/execplan-draft.md",
+    ".scherzo/workflows/prompts/execplan-incorporate-review.md",
+    ".scherzo/workflows/prompts/execplan-review.md",
+    ".scherzo/workflows/prompts/execplan-revision.md",
   ]
 }
 
 fn authoring_prompt_paths() -> List(String) {
   [
-    "workflows/dogfood/prompts/execplan-draft.md",
-    "workflows/dogfood/prompts/execplan-incorporate-review.md",
-    "workflows/dogfood/prompts/execplan-revision.md",
-    "workflows/dogfood/prompts/execplan-implementation-implement.md",
-    "workflows/dogfood/prompts/execplan-implementation-apply-plan-completion-feedback.md",
-    "workflows/dogfood/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
-    "workflows/dogfood/prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-draft.md",
+    ".scherzo/workflows/prompts/execplan-incorporate-review.md",
+    ".scherzo/workflows/prompts/execplan-revision.md",
+    ".scherzo/workflows/prompts/execplan-implementation-implement.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
   ]
 }
 
 fn execplan_prompt_paths() -> List(String) {
   [
-    "workflows/dogfood/prompts/execplan-draft.md",
-    "workflows/dogfood/prompts/execplan-incorporate-review.md",
-    "workflows/dogfood/prompts/execplan-pr-body.md",
-    "workflows/dogfood/prompts/execplan-recover-failed-step.md",
-    "workflows/dogfood/prompts/execplan-review.md",
-    "workflows/dogfood/prompts/execplan-revision.md",
-    "workflows/dogfood/prompts/execplan-implementation-apply-feedback.md",
-    "workflows/dogfood/prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
-    "workflows/dogfood/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
-    "workflows/dogfood/prompts/execplan-implementation-apply-plan-completion-feedback.md",
-    "workflows/dogfood/prompts/execplan-implementation-implement.md",
-    "workflows/dogfood/prompts/execplan-implementation-recover-failed-step.md",
-    "workflows/dogfood/prompts/execplan-implementation-repair-base-drift.md",
-    "workflows/dogfood/prompts/execplan-implementation-review.md",
-    "workflows/dogfood/prompts/execplan-implementation-verify-completion.md",
-    "workflows/dogfood/prompts/execplan-implementation-verify-completion-after-feedback.md",
-    "workflows/dogfood/prompts/execplan-implementation-verify-completion-after-final-repair.md",
-    "workflows/dogfood/prompts/execplan-implementation-verify-completion-after-late-repair.md",
-    "workflows/dogfood/prompts/execplan-implementation-verify-completion-before-final-validation.md",
+    ".scherzo/workflows/prompts/execplan-draft.md",
+    ".scherzo/workflows/prompts/execplan-incorporate-review.md",
+    ".scherzo/workflows/prompts/execplan-pr-body.md",
+    ".scherzo/workflows/prompts/execplan-recover-failed-step.md",
+    ".scherzo/workflows/prompts/execplan-review.md",
+    ".scherzo/workflows/prompts/execplan-revision.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-implement.md",
+    ".scherzo/workflows/prompts/execplan-implementation-recover-failed-step.md",
+    ".scherzo/workflows/prompts/execplan-implementation-repair-base-drift.md",
+    ".scherzo/workflows/prompts/execplan-implementation-review.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-final-repair.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
   ]
 }
 

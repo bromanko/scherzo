@@ -5,8 +5,8 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 ## Convention
 
 - Put the repo dogfood runtime config in `.scherzo/scherzo.yaml`.
-- Keep the canonical checked-in dogfood workflow bundle in `workflows/dogfood/*.yaml`, and consume it in this repository through the tracked symlink `.scherzo/workflows -> ../workflows/dogfood`.
-- Keep prompt templates referenced by dogfood workflow DAG agent steps in `workflows/dogfood/prompts/*.md` and reach them through `.scherzo/workflows/prompts/*.md`.
+- Keep this repository's checked-in dogfood workflow bundle reachable at `.scherzo/workflows`; in this repository that path is the tracked symlink `.scherzo/workflows -> ../workflows/dogfood`.
+- Keep workflow-internal file references pointed at `.scherzo/workflows/...` rather than the repository-root `workflows/dogfood/...` target so the bundle remains portable when copied or mounted into another repository.
 - Put workflow-required agent guidance directly in checked-in prompt templates (or a workflow-owned bundled include mechanism when one exists) so consuming repositories do not have to vendor Pi skills.
 - Put runtime jj workspaces under `.scherzo/workspaces/<workflow-name>/`; they are ignored by git.
 - Config-relative paths are resolved from `.scherzo/scherzo.yaml`, so this repository uses `workspace.root: workspaces` to land at repo-root `.scherzo/workspaces`.
@@ -17,11 +17,11 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Keep machine-specific variants as `.scherzo/workflows/**/*.local.yaml`, `.scherzo/workflows/**/*.local.yml`, `.scherzo/scherzo.local.yaml`, or `.scherzo/scherzo.local.yml`; they are ignored by git.
 - Do not put secrets in workflow files. Use environment variables for secrets and deployment-specific values.
 
-The repo `.gitignore` intentionally ignores runtime `.scherzo/*` state while allowing this README, `.scherzo/scherzo.yaml`, the tracked `.scherzo/workflows` symlink, and the canonical `workflows/dogfood/**` bundle tree to be checked in.
+The repo `.gitignore` intentionally ignores runtime `.scherzo/*` state while allowing this README, `.scherzo/scherzo.yaml`, the tracked `.scherzo/workflows` symlink, and this repository's checked-in `workflows/dogfood/**` bundle target to be checked in.
 
 ## Workflow-packaged guidance and portability
 
-Bundle-based ExecPlan workflows must not depend on a consuming repository's personal or repo-local Pi skill installation. The draft, review, review-incorporation, revision, and implementation prompts embed the required ExecPlan authoring, adversarial review, living-document, and implementation guidance directly in the canonical workflow prompt files under `workflows/dogfood/prompts/`, surfaced locally through `.scherzo/workflows/prompts/`. Review-lane JSON Schemas live under `workflows/dogfood/schemas/` and remain reachable at `.scherzo/workflows/schemas/`, so consuming repositories can use the workflows without copying a separate schema directory. A clean consuming repository that points `.scherzo/scherzo.yaml` at this workflow bundle can therefore prepare those prompts without committing local ExecPlan skill files.
+Bundle-based ExecPlan workflows must not depend on a consuming repository's personal or repo-local Pi skill installation. The draft, review, review-incorporation, revision, and implementation prompts embed the required ExecPlan authoring, adversarial review, living-document, and implementation guidance directly in workflow prompt files reachable under `.scherzo/workflows/prompts/`. Review-lane JSON Schemas live under `.scherzo/workflows/schemas/`, so consuming repositories can use the workflows without copying a separate schema directory. A clean consuming repository that points `.scherzo/scherzo.yaml` at this workflow bundle can therefore prepare those prompts without committing local ExecPlan skill files.
 
 Command steps that need Scherzo helpers should resolve the configured repository root before invoking scripts, for example:
 
