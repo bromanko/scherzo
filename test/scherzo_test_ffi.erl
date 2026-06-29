@@ -7,6 +7,7 @@
     process_cleanup_watcher_alive/1,
     wait_for_port_data_and_requeue/2,
     drain_port_data_messages/1,
+    drain_port_exit_messages/1,
     drain_any_port_data_messages/0
 ]).
 
@@ -59,6 +60,19 @@ drain_port_data_messages(Process) ->
 drain_port_data_messages(Port, Count) ->
     receive
         {Port, {data, _Bytes}} -> drain_port_data_messages(Port, Count + 1)
+    after 0 -> Count
+    end.
+
+drain_port_exit_messages(Process) ->
+    case process_port(Process) of
+        {ok, Port} -> drain_port_exit_messages(Port, 0);
+        error -> 0
+    end.
+
+drain_port_exit_messages(Port, Count) ->
+    receive
+        {Port, {exit_status, _Status}} -> drain_port_exit_messages(Port, Count + 1);
+        {'EXIT', Port, _Reason} -> drain_port_exit_messages(Port, Count + 1)
     after 0 -> Count
     end.
 

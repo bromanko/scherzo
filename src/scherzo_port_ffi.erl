@@ -481,7 +481,7 @@ terminate(Process) ->
         ChildPidPath = process_child_pid_path(Process),
         terminate_launched_process(OsPid, ChildPidPath),
         case process_port_result(Process) of
-            {ok, Port} -> catch erlang:port_close(Port);
+            {ok, Port} -> _ = catch erlang:port_close(Port), drain_port_stdout_and_exit(Port);
             error -> ok
         end,
         _ = stop_owner_cleanup_watcher(Process),
