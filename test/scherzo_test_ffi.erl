@@ -8,7 +8,8 @@
     wait_for_port_data_and_requeue/2,
     drain_port_data_messages/1,
     drain_port_exit_messages/1,
-    drain_any_port_data_messages/0
+    drain_any_port_data_messages/0,
+    drain_any_subject_messages/0
 ]).
 
 set_cwd(Path) ->
@@ -82,6 +83,15 @@ drain_any_port_data_messages() ->
 drain_any_port_data_messages(Count) ->
     receive
         {Port, {data, _Bytes}} when is_port(Port) -> drain_any_port_data_messages(Count + 1)
+    after 0 -> Count
+    end.
+
+drain_any_subject_messages() ->
+    drain_any_subject_messages(0).
+
+drain_any_subject_messages(Count) ->
+    receive
+        {Tag, _Message} when is_reference(Tag) -> drain_any_subject_messages(Count + 1)
     after 0 -> Count
     end.
 

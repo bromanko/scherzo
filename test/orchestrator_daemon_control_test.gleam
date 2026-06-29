@@ -1073,6 +1073,38 @@ pub fn daemon_status_and_metrics_queries_do_not_call_tracker_adapter_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn daemon_execute_query_timeout_does_not_leave_late_reply_in_caller_mailbox_test() {
+  let #(workflow_path, _root) =
+    write_workflow("test/tmp/daemon-control-query-timeout-reply")
+  let log_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+      stop_control_server: fn(_) { Nil },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let done = process.new_subject()
+
+  let _ =
+    process.spawn(fn() {
+      let first_result =
+        daemon.execute_query(started.data, query_types.Metrics, 0)
+      let assert Ok(query_types.MetricsResponse(_)) =
+        daemon.execute_query(started.data, query_types.Metrics, 1000)
+      process.send(done, #(first_result, drain_any_subject_messages()))
+      Nil
+    })
+
+  let assert Ok(#(first_result, leaked_replies)) =
+    process.receive(done, within: 1000)
+  let assert Error(query_types.QueryError(code: code, ..)) = first_result
+  assert code == query_types.QueryTimeout
+  assert leaked_replies == 0
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn daemon_outbox_queries_use_recovered_outbox_snapshot_test() {
   let dir = "test/tmp/daemon-control-outbox-query"
   let #(workflow_path, root) = write_workflow(dir)
@@ -2791,3 +2823,6 @@ fn wait_for_session_exit(
 
 @external(erlang, "erlang", "integer_to_binary")
 fn int_to_string(value: Int) -> String
+
+@external(erlang, "scherzo_test_ffi", "drain_any_subject_messages")
+fn drain_any_subject_messages() -> Int

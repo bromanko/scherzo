@@ -85,6 +85,57 @@ pub fn execute_remote_query(
   dependencies.execute_query(daemon_subject, query, timeout_ms)
 }
 
+type LateReplyCallOutcome(reply) {
+  LateReplyCallReturned(reply)
+  LateReplyCallWorkerDown
+}
+
+pub fn call_without_late_reply(
+  send_request send_request: fn(process.Subject(reply)) -> Nil,
+  timeout_ms timeout_ms: Int,
+  timeout_value timeout_value: reply,
+) -> reply {
+  let reply = process.new_subject()
+  let worker =
+    process.spawn_unlinked(fn() {
+      process.send(
+        reply,
+        run_late_reply_call(send_request, timeout_ms, timeout_value),
+      )
+      Nil
+    })
+  let monitor = process.monitor(worker)
+  let outcome =
+    process.new_selector()
+    |> process.select_map(reply, LateReplyCallReturned)
+    |> process.select_specific_monitor(monitor, fn(_) {
+      LateReplyCallWorkerDown
+    })
+    |> process.selector_receive_forever
+  process.demonitor_process(monitor)
+  case outcome {
+    LateReplyCallReturned(reply) -> reply
+    LateReplyCallWorkerDown ->
+      case process.receive(reply, within: 0) {
+        Ok(reply) -> reply
+        Error(Nil) -> timeout_value
+      }
+  }
+}
+
+fn run_late_reply_call(
+  send_request: fn(process.Subject(reply)) -> Nil,
+  timeout_ms: Int,
+  timeout_value: reply,
+) -> reply {
+  let reply = process.new_subject()
+  send_request(reply)
+  case process.receive(reply, within: timeout_ms) {
+    Ok(reply) -> reply
+    Error(Nil) -> timeout_value
+  }
+}
+
 pub fn start_remote_client(
   effective: config_types.EffectiveConfig,
   event_hub: process.Subject(hub.Message),

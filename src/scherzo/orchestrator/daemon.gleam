@@ -777,16 +777,16 @@ pub fn execute_query(
   query: query_types.QueryRequest,
   timeout_ms: Int,
 ) -> Result(query_types.QueryResponse, query_types.QueryError) {
-  let reply = process.new_subject()
-  process.send(daemon_subject, ExecuteQuery(query, timeout_ms, reply))
-  case process.receive(reply, within: timeout_ms) {
-    Ok(result) -> result
-    Error(Nil) ->
-      Error(query_types.QueryError(
-        query_types.QueryTimeout,
-        "daemon query timed out",
-      ))
-  }
+  remote_command_runtime.call_without_late_reply(
+    send_request: fn(reply) {
+      process.send(daemon_subject, ExecuteQuery(query, timeout_ms, reply))
+    },
+    timeout_ms: timeout_ms,
+    timeout_value: Error(query_types.QueryError(
+      query_types.QueryTimeout,
+      "daemon query timed out",
+    )),
+  )
 }
 
 pub fn get_remote_dispatch_paused(
