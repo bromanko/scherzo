@@ -743,6 +743,7 @@ fn rejected_decode_result(
     status: command.Rejected(code),
     target: None,
     message: Some(message),
+    operation_id: None,
   )
 }
 

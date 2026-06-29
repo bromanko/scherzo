@@ -11,6 +11,7 @@ pub type HandlerKey {
   PsKey
   QueryStatusKey
   QueryMetricsKey
+  QueryOperationStatusKey
   TaskListKey
   TaskShowKey
   OutboxKey
@@ -107,6 +108,20 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         line(
           "query metrics",
           "Show daemon operational health and runtime counters.",
+        ),
+      ],
+    ),
+    command_spec.CommandSpec(
+      handler: QueryOperationStatusKey,
+      path: ["query", "operation-status"],
+      usage: "query operation-status <operation-id>",
+      summary: "Show one durable queued control operation status.",
+      positionals: [command_spec.Required("operation_id")],
+      options: [control_file_option(), json_option()],
+      help_lines: [
+        line(
+          "query operation-status <operation-id>",
+          "Show one durable queued control operation status.",
         ),
       ],
     ),
@@ -273,7 +288,11 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         line("retry-step <target> [--step <step-id>]", ""),
         line(
           "",
-          "Retry a failed or interrupted workflow step without redispatching the whole task.",
+          "Queue durable retry-step work without redispatching the whole task.",
+        ),
+        line(
+          "",
+          "Successful acknowledgement returns queued plus an operation_id; poll query operation-status for completion.",
         ),
       ],
     ),

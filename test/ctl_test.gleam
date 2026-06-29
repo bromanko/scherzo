@@ -207,6 +207,25 @@ fn query_metrics_response() -> query_types.QueryResponse {
   ))
 }
 
+fn query_operation_status_response() -> query_types.QueryResponse {
+  query_types.OperationStatusResponse(query_types.OperationStatusDto(
+    operation_id: "op-123",
+    kind: "retry_step",
+    command: "retry_step",
+    target: "run:run-1",
+    run_id: Some("run-1"),
+    issue_id: Some("issue-1"),
+    issue_identifier: Some("LIV-1262"),
+    requested_step_id: Some("apply_feedback"),
+    status: "completed",
+    reason: None,
+    message: Some("retry-step completed"),
+    queued_at_ms: 1000,
+    started_at_ms: Some(1001),
+    finished_at_ms: Some(1002),
+  ))
+}
+
 fn task_summary() -> query_types.TaskSummaryDto {
   query_types.TaskSummaryDto(
     id: "linear:issue-770",
@@ -428,6 +447,47 @@ pub fn query_metrics_human_executes_query_and_formats_metrics_test() {
   assert string.contains(transcript, "token_total: 42")
 }
 
+pub fn query_operation_status_human_executes_query_and_formats_operation_test() {
+  let path = "test/tmp/ctl-query/human-operation-status-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let query_calls = process.new_subject()
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, ""),
+      query: fn(control_file, query) {
+        process.send(query_calls, #(control_file, query))
+        Ok(query_operation_status_response())
+      },
+    )
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Query(
+        Some(path),
+        False,
+        query_types.OperationStatus(query_types.OperationStatusQuery(
+          operation_id: "op-123",
+        )),
+      ),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let assert Ok(#(called_control_file, called_query)) =
+    process.receive(query_calls, within: 1000)
+  assert called_control_file.token == "token"
+  assert called_query
+    == query_types.OperationStatus(query_types.OperationStatusQuery(
+      operation_id: "op-123",
+    ))
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "operation_id: op-123")
+  assert string.contains(transcript, "status: completed")
+  assert string.contains(transcript, "requested_step_id: apply_feedback")
+}
+
 pub fn query_status_json_uses_raw_request_with_query_payload_test() {
   let path = "test/tmp/ctl-query/json-control.json"
   write_control_file(path)
@@ -465,6 +525,48 @@ pub fn query_status_json_uses_raw_request_with_query_payload_test() {
   assert string.contains(transcript, "\"type\":\"status\"")
   assert string.contains(transcript, "\"daemon_id\":\"daemon-query\"")
   assert !string.contains(transcript, "token")
+}
+
+pub fn query_operation_status_json_uses_raw_request_with_query_payload_test() {
+  let path = "test/tmp/ctl-query/json-operation-status-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let raw_calls = process.new_subject()
+  let raw_response =
+    protocol.success_response(
+      "1",
+      protocol.query_data(Ok(query_operation_status_response())),
+    )
+    |> protocol.response_to_string
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, raw_response),
+      raw_request: fn(control_file, request) {
+        process.send(raw_calls, #(control_file, request))
+        Ok(raw_response)
+      },
+    )
+
+  let query =
+    query_types.OperationStatus(query_types.OperationStatusQuery(
+      operation_id: "op-123",
+    ))
+  let result =
+    ctl.run_with_deps(
+      ctl.Query(Some(path), True, query),
+      deps,
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let assert Ok(#(called_control_file, called_request)) =
+    process.receive(raw_calls, within: 1000)
+  assert called_control_file.token == "token"
+  assert called_request == protocol.Query("1", "", query)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"type\":\"operation_status\"")
+  assert string.contains(transcript, "\"operation_id\":\"op-123\"")
+  assert string.contains(transcript, "\"target\"")
 }
 
 pub fn task_list_human_executes_daemon_query_and_formats_page_test() {
@@ -673,6 +775,22 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     == Ok(ctl.Query(None, False, query_types.Metrics))
   assert ctl.parse(["query", "metrics", "--json"])
     == Ok(ctl.Query(None, True, query_types.Metrics))
+  assert ctl.parse(["query", "operation-status", "op-123"])
+    == Ok(ctl.Query(
+      None,
+      False,
+      query_types.OperationStatus(query_types.OperationStatusQuery(
+        operation_id: "op-123",
+      )),
+    ))
+  assert ctl.parse(["query", "operation-status", "op-123", "--json"])
+    == Ok(ctl.Query(
+      None,
+      True,
+      query_types.OperationStatus(query_types.OperationStatusQuery(
+        operation_id: "op-123",
+      )),
+    ))
   assert ctl.parse([
       "task",
       "list",
@@ -1167,7 +1285,7 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "retry-step <target>")
   assert string.contains(
     usage,
-    "Retry a failed or interrupted workflow step without redispatching the whole task.",
+    "Queue durable retry-step work without redispatching the whole task.",
   )
   assert string.contains(usage, "recollect-outputs run:<run-id>")
   assert string.contains(

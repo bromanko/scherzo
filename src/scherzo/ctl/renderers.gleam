@@ -191,6 +191,26 @@ pub fn print_query_metrics(
   print_int("token_total", metrics.token_totals.total, output_line)
 }
 
+pub fn print_operation_status(
+  operation: query_types.OperationStatusDto,
+  line output_line: fn(String) -> Nil,
+) -> Nil {
+  output_line("operation_id: " <> operation.operation_id)
+  output_line("kind: " <> operation.kind)
+  output_line("command: " <> operation.command)
+  output_line("target: " <> operation.target)
+  output_line("status: " <> operation.status)
+  print_optional("run_id", operation.run_id, output_line)
+  print_optional("issue_id", operation.issue_id, output_line)
+  print_optional("issue_identifier", operation.issue_identifier, output_line)
+  print_optional("requested_step_id", operation.requested_step_id, output_line)
+  print_optional("reason", operation.reason, output_line)
+  print_optional("message", operation.message, output_line)
+  print_optional_int("queued_at_ms", Some(operation.queued_at_ms), output_line)
+  print_optional_int("started_at_ms", operation.started_at_ms, output_line)
+  print_optional_int("finished_at_ms", operation.finished_at_ms, output_line)
+}
+
 pub fn print_command_result(
   result: control_command.CommandResult,
   line output_line: fn(String) -> Nil,
@@ -203,6 +223,10 @@ pub fn print_command_result(
     Some(reason) -> " reason=" <> reason
     None -> ""
   }
+  let operation_id = case result.operation_id {
+    Some(operation_id) -> " operation_id=" <> operation_id
+    None -> ""
+  }
   let message = case result.message {
     Some(message) -> " " <> message
     None -> ""
@@ -213,6 +237,7 @@ pub fn print_command_result(
     <> control_command.status_to_string(result.status)
     <> target
     <> reason
+    <> operation_id
     <> message,
   )
 }

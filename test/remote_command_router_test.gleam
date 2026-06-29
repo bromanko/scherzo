@@ -153,6 +153,7 @@ fn malformed_result(command_name: String) -> command.CommandResult {
     status: command.Rejected("unknown_command"),
     target: None,
     message: Some("unknown command"),
+    operation_id: None,
   )
 }
 

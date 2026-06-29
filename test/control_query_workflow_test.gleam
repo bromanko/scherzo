@@ -10,6 +10,7 @@ import scherzo/orchestrator/read_model
 import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime_bundle
 import scherzo/state/projection
+import scherzo/state/record
 import scherzo/tracker/adapter
 import simplifile
 import support/test_helpers
@@ -174,6 +175,86 @@ pub fn workflow_query_runtime_maps_snapshot_timeout_test() {
   assert query_service.stop(handle, 1000) == Ok(Nil)
 }
 
+pub fn operation_status_query_executes_through_query_runtime_test() {
+  let state = state_for("test/tmp/control-query-workflow-operation-status")
+  let projection =
+    projection.fold([
+      record.with_id(
+        "op-queued",
+        1000,
+        record.ControlOperationQueued(
+          operation_id: "op-123",
+          operation_kind: "retry_step",
+          command_name: "retry_step",
+          target: "run:run-1",
+          run_id: Some("run-1"),
+          issue_id: Some("issue-1"),
+          issue_identifier: Some("LIV-1"),
+          requested_step_id: Some("apply_feedback"),
+        ),
+      ),
+      record.with_id(
+        "op-started",
+        1001,
+        record.ControlOperationStarted(operation_id: "op-123"),
+      ),
+    ])
+  let handle =
+    start_query_runtime_with_projection(state, fn(_) { Ok(state) }, fn(_) {
+      Ok(projection)
+    })
+
+  let assert Ok(types.OperationStatusResponse(operation)) =
+    query_service.query(
+      handle,
+      types.OperationStatus(types.OperationStatusQuery(operation_id: "op-123")),
+    )
+  assert operation.operation_id == "op-123"
+  assert operation.status == "running"
+  assert operation.started_at_ms == Some(1001)
+  assert operation.finished_at_ms == None
+
+  assert query_service.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn operation_status_query_maps_not_found_and_timeout_test() {
+  let state =
+    state_for("test/tmp/control-query-workflow-operation-status-errors")
+  let missing_handle =
+    start_query_runtime_with_projection(state, fn(_) { Ok(state) }, fn(_) {
+      Ok(projection.new())
+    })
+
+  let assert Error(types.QueryError(
+    code: missing_code,
+    message: missing_message,
+  )) =
+    query_service.query(
+      missing_handle,
+      types.OperationStatus(types.OperationStatusQuery(operation_id: "missing")),
+    )
+  assert missing_code == types.QueryNotFound
+  assert missing_message == "operation not found: missing"
+  assert query_service.stop(missing_handle, 1000) == Ok(Nil)
+
+  let timeout_handle =
+    start_query_runtime_with_projection(state, fn(_) { Ok(state) }, fn(_) {
+      Error(Nil)
+    })
+
+  let assert Error(types.QueryError(
+    code: timeout_code,
+    message: timeout_message,
+  )) =
+    query_service.query(
+      timeout_handle,
+      types.OperationStatus(types.OperationStatusQuery(operation_id: "op-123")),
+    )
+  assert timeout_code == types.QueryTimeout
+  assert timeout_message == "operation-status query timed out"
+  assert query_service.stop(timeout_handle, 1000) == Ok(Nil)
+}
+
 pub fn workflow_detail_unknown_id_returns_not_found_test() {
   let state = state_for("test/tmp/control-query-workflow-not-found")
 
@@ -235,6 +316,16 @@ fn start_query_runtime(
   state: workflow_reloader.State,
   get_workflow_snapshot: fn(Int) -> Result(workflow_reloader.State, Nil),
 ) -> query_service.Handle {
+  start_query_runtime_with_projection(state, get_workflow_snapshot, fn(_) {
+    Ok(projection.new())
+  })
+}
+
+fn start_query_runtime_with_projection(
+  state: workflow_reloader.State,
+  get_workflow_snapshot: fn(Int) -> Result(workflow_reloader.State, Nil),
+  get_projection_snapshot: fn(Int) -> Result(projection.Projection, Nil),
+) -> query_service.Handle {
   let assert Ok(handle) =
     query_runtime.start(
       state.bundle.effective,
@@ -246,7 +337,7 @@ fn start_query_runtime(
       empty_tracker_adapter(),
       get_dispatch_paused: fn(_) { Ok(False) },
       get_read_model_snapshot: fn(_) { Ok(empty_read_model_snapshot()) },
-      get_projection_snapshot: fn(_) { Ok(projection.new()) },
+      get_projection_snapshot: get_projection_snapshot,
       get_outbox_snapshot: fn(_) { Ok([]) },
       get_workflow_snapshot: get_workflow_snapshot,
     )

@@ -229,6 +229,21 @@ pub fn backend_work_item_list_does_not_require_projection_snapshot_test() {
   assert run_workflow.action_id == "work_item.run_workflow"
 }
 
+pub fn backend_operation_status_rejects_unsupported_query_type_test() {
+  let assert Error(types.QueryError(code: code, message: message)) =
+    backend.run_with_projection(
+      effective_config(),
+      identity(),
+      fake_tracker_adapter.read_only_adapter(),
+      fn(_) { Ok(False) },
+      fn(_) { Ok(projection.new()) },
+      types.OperationStatus(types.OperationStatusQuery(operation_id: "op-123")),
+    )
+
+  assert code == types.UnsupportedQuery
+  assert message == "unsupported query type: operation_status"
+}
+
 pub fn backend_work_item_show_resolves_display_and_remote_refs_test() {
   let tracker_adapter = fake_tracker_adapter.read_only_adapter()
 

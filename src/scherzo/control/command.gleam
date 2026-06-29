@@ -68,6 +68,7 @@ pub type CommandResult {
     status: CommandStatus,
     target: Option(String),
     message: Option(String),
+    operation_id: Option(String),
   )
 }
 
@@ -110,6 +111,7 @@ type CommandResultFields {
     target: Option(String),
     message: Option(String),
     reason: Option(String),
+    operation_id: Option(String),
   )
 }
 
@@ -323,9 +325,16 @@ pub fn command_result_to_json(result: CommandResult) -> json.Json {
     Some(message) -> [#("message", json.string(message)), ..with_target]
     None -> with_target
   }
-  let entries = case status_reason(result.status) {
-    Some(reason) -> [#("reason", json.string(reason)), ..with_message]
+  let with_operation_id = case result.operation_id {
+    Some(operation_id) -> [
+      #("operation_id", json.string(operation_id)),
+      ..with_message
+    ]
     None -> with_message
+  }
+  let entries = case status_reason(result.status) {
+    Some(reason) -> [#("reason", json.string(reason)), ..with_operation_id]
+    None -> with_operation_id
   }
   entries |> list.reverse |> json.object
 }
@@ -357,6 +366,7 @@ pub fn result_for(
     status: status,
     target: command_target(operator_command),
     message: message,
+    operation_id: None,
   )
 }
 
@@ -372,6 +382,17 @@ pub fn queued(
   message: Option(String),
 ) -> CommandResult {
   result_for(operator_command, Queued, message)
+}
+
+pub fn queued_operation(
+  operator_command: OperatorCommand,
+  operation_id: String,
+  message: Option(String),
+) -> CommandResult {
+  CommandResult(
+    ..queued(operator_command, message),
+    operation_id: Some(operation_id),
+  )
 }
 
 pub fn rejected(
@@ -896,12 +917,18 @@ fn command_result_fields_decoder() -> decode.Decoder(CommandResultFields) {
     None,
     decode.optional(decode.string),
   )
+  use operation_id <- decode.optional_field(
+    "operation_id",
+    None,
+    decode.optional(decode.string),
+  )
   decode.success(CommandResultFields(
     command_name: command_name,
     status_name: status_name,
     target: target,
     message: message,
     reason: reason,
+    operation_id: operation_id,
   ))
 }
 
@@ -915,6 +942,7 @@ fn command_result_from_fields_decoder(
         status: status,
         target: fields.target,
         message: fields.message,
+        operation_id: fields.operation_id,
       ))
     Error(Nil) ->
       decode.failure(
@@ -923,6 +951,7 @@ fn command_result_from_fields_decoder(
           status: Rejected("invalid_status"),
           target: fields.target,
           message: fields.message,
+          operation_id: fields.operation_id,
         ),
         expected: "known command result status",
       )

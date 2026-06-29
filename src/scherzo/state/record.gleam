@@ -372,6 +372,23 @@ pub type RecordBody {
     event_id: String,
     task_remote_id: String,
   )
+  ControlOperationQueued(
+    operation_id: String,
+    operation_kind: String,
+    command_name: String,
+    target: String,
+    run_id: Option(String),
+    issue_id: Option(String),
+    issue_identifier: Option(String),
+    requested_step_id: Option(String),
+  )
+  ControlOperationStarted(operation_id: String)
+  ControlOperationCompleted(operation_id: String, message: Option(String))
+  ControlOperationFailed(
+    operation_id: String,
+    reason: String,
+    message: Option(String),
+  )
   ScheduledJobDue(
     job_id: String,
     workflow_id: String,
@@ -636,6 +653,7 @@ type RecordFields {
     workflow_fingerprint: Option(String),
     issue_id: Option(String),
     issue_identifier: Option(String),
+    target: Option(String),
     task_backend_kind: Option(String),
     task_remote_id: Option(String),
     task_key: Option(String),
@@ -671,6 +689,7 @@ type RecordFields {
     token_total: Option(Int),
     turns: Option(Int),
     reason: Option(String),
+    message: Option(String),
     delay_ms: Option(Int),
     generation: Option(Int),
     failure_attempts: Option(Int),
@@ -691,6 +710,8 @@ type RecordFields {
     comment_id: Option(String),
     author_id: Option(String),
     command_name: Option(String),
+    operation_id: Option(String),
+    operation_kind: Option(String),
     excerpt: Option(String),
     status: Option(String),
     required: Option(Bool),
@@ -817,6 +838,10 @@ pub fn kind(body: RecordBody) -> String {
     RemoteCommandStarted(..) -> "remote_command_started"
     RemoteCommandCompleted(..) -> "remote_command_completed"
     RemoteCommandAcked(..) -> "remote_command_acked"
+    ControlOperationQueued(..) -> "control_operation_queued"
+    ControlOperationStarted(..) -> "control_operation_started"
+    ControlOperationCompleted(..) -> "control_operation_completed"
+    ControlOperationFailed(..) -> "control_operation_failed"
     ScheduledJobDue(..) -> "scheduled_job_due"
     ScheduledJobSkipped(..) -> "scheduled_job_skipped"
     ScheduledRunPending(..) -> "scheduled_run_pending"
@@ -1461,6 +1486,37 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         event_id,
         task_remote_id,
       )
+    ControlOperationQueued(
+      operation_id,
+      operation_kind,
+      command_name,
+      target,
+      run_id,
+      issue_id,
+      issue_identifier,
+      requested_step_id,
+    ) -> [
+      #("operation_id", json.string(operation_id)),
+      #("operation_kind", json.string(operation_kind)),
+      #("command_name", json.string(command_name)),
+      #("target", json.string(target)),
+      #("run_id", json.nullable(run_id, of: json.string)),
+      #("issue_id", json.nullable(issue_id, of: json.string)),
+      #("issue_identifier", json.nullable(issue_identifier, of: json.string)),
+      #("requested_step_id", json.nullable(requested_step_id, of: json.string)),
+    ]
+    ControlOperationStarted(operation_id) -> [
+      #("operation_id", json.string(operation_id)),
+    ]
+    ControlOperationCompleted(operation_id, message) -> [
+      #("operation_id", json.string(operation_id)),
+      #("message", json.nullable(message, of: json.string)),
+    ]
+    ControlOperationFailed(operation_id, reason, message) -> [
+      #("operation_id", json.string(operation_id)),
+      #("reason", json.string(reason)),
+      #("message", json.nullable(message, of: json.string)),
+    ]
     ScheduledJobDue(job_id, workflow_id, due_at_ms, run_id, trigger) ->
       scheduled_record.job_due_entries(
         job_id,
@@ -2863,6 +2919,53 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
       ))
       Ok(RemoteCommandAcked(backend_kind, event_id, task_remote_id))
     }
+    "control_operation_queued" -> {
+      use operation_id <- result.try(required_string(
+        fields.operation_id,
+        "operation_id",
+      ))
+      use operation_kind <- result.try(required_string(
+        fields.operation_kind,
+        "operation_kind",
+      ))
+      use command_name <- result.try(required_string(
+        fields.command_name,
+        "command_name",
+      ))
+      use target <- result.try(required_string(fields.target, "target"))
+      Ok(ControlOperationQueued(
+        operation_id,
+        operation_kind,
+        command_name,
+        target,
+        fields.run_id,
+        fields.issue_id,
+        fields.issue_identifier,
+        fields.requested_step_id,
+      ))
+    }
+    "control_operation_started" -> {
+      use operation_id <- result.try(required_string(
+        fields.operation_id,
+        "operation_id",
+      ))
+      Ok(ControlOperationStarted(operation_id))
+    }
+    "control_operation_completed" -> {
+      use operation_id <- result.try(required_string(
+        fields.operation_id,
+        "operation_id",
+      ))
+      Ok(ControlOperationCompleted(operation_id, fields.message))
+    }
+    "control_operation_failed" -> {
+      use operation_id <- result.try(required_string(
+        fields.operation_id,
+        "operation_id",
+      ))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      Ok(ControlOperationFailed(operation_id, reason, fields.message))
+    }
     "scheduled_job_due"
     | "scheduled_job_skipped"
     | "scheduled_run_pending"
@@ -3400,6 +3503,11 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use target <- decode.optional_field(
+    "target",
+    None,
+    decode.optional(decode.string),
+  )
   use task_backend_kind <- decode.optional_field(
     "task_backend_kind",
     None,
@@ -3571,6 +3679,11 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     None,
     decode.optional(decode.string),
   )
+  use message <- decode.optional_field(
+    "message",
+    None,
+    decode.optional(decode.string),
+  )
   use delay_ms <- decode.optional_field(
     "delay_ms",
     None,
@@ -3668,6 +3781,16 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
   )
   use command_name <- decode.optional_field(
     "command_name",
+    None,
+    decode.optional(decode.string),
+  )
+  use operation_id <- decode.optional_field(
+    "operation_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use operation_kind <- decode.optional_field(
+    "operation_kind",
     None,
     decode.optional(decode.string),
   )
@@ -3976,6 +4099,7 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     workflow_fingerprint: workflow_fingerprint,
     issue_id: issue_id,
     issue_identifier: issue_identifier,
+    target: target,
     task_backend_kind: task_backend_kind,
     task_remote_id: task_remote_id,
     task_key: task_key,
@@ -4011,6 +4135,7 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     token_total: token_total,
     turns: turns,
     reason: reason,
+    message: message,
     delay_ms: delay_ms,
     generation: generation,
     failure_attempts: failure_attempts,
@@ -4031,6 +4156,8 @@ fn fields_decoder() -> decode.Decoder(RecordFields) {
     comment_id: comment_id,
     author_id: author_id,
     command_name: command_name,
+    operation_id: operation_id,
+    operation_kind: operation_kind,
     excerpt: excerpt,
     status: status,
     required: required,
