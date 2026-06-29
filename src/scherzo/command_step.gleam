@@ -13,6 +13,16 @@ type DiagnosticsCapture {
   DiagnosticsCapture(stdout_path: String, artifact_path: String)
 }
 
+type ExecutionTiming {
+  ExecutionTiming(
+    prepared_monotonic_ms: Int,
+    started_monotonic_ms: Int,
+    deadline_monotonic_ms: Int,
+    configured_timeout_ms: Int,
+    timed_out_monotonic_ms: Option(Int),
+  )
+}
+
 pub const timeout_failure_code = "command_step_timeout"
 
 pub fn run(
@@ -43,7 +53,7 @@ pub fn run_with_env(
   secrets: List(String),
   limits: config_types.ArtifactLimits,
 ) -> step_artifact.StepArtifact {
-  let started_ms = monotonic_ms()
+  let prepared_ms = monotonic_ms()
   let diagnostics = prepare_diagnostics(workspace_path, step_id)
   let command_for_child = command_with_shell_path_override(command, env)
   let command_to_run = case diagnostics {
@@ -51,13 +61,22 @@ pub fn run_with_env(
       command_with_stdout_capture(command_for_child, stdout_path)
     None -> command_for_child
   }
+  let started_ms = monotonic_ms()
+  let timing =
+    ExecutionTiming(
+      prepared_monotonic_ms: prepared_ms,
+      started_monotonic_ms: started_ms,
+      deadline_monotonic_ms: started_ms + timeout_ms,
+      configured_timeout_ms: timeout_ms,
+      timed_out_monotonic_ms: None,
+    )
   case port.start_with_env(command_to_run, workspace_path, env) {
     Error(err) -> {
       let stderr = port_error_to_string(err)
       finish_command(
         step_id,
         command,
-        started_ms,
+        timing,
         127,
         "",
         stderr,
@@ -75,8 +94,7 @@ pub fn run_with_env(
         command,
         process,
         timeout_ms,
-        started_ms + timeout_ms,
-        started_ms,
+        timing,
         secrets,
         limits,
         "",
@@ -91,22 +109,22 @@ fn read_loop(
   command: String,
   process: port.Process,
   idle_timeout_ms: Int,
-  deadline_ms: Int,
-  started_ms: Int,
+  timing: ExecutionTiming,
   secrets: List(String),
   limits: config_types.ArtifactLimits,
   stdout: String,
   stdout_truncated: Bool,
   diagnostics: Option(DiagnosticsCapture),
 ) -> step_artifact.StepArtifact {
-  let read_timeout_ms = min_int(idle_timeout_ms, deadline_ms - monotonic_ms())
+  let read_timeout_ms =
+    min_int(idle_timeout_ms, timing.deadline_monotonic_ms - monotonic_ms())
   case read_timeout_ms <= 0 {
     True ->
       finish_timeout(
         step_id,
         command,
         process,
-        started_ms,
+        timing,
         secrets,
         limits,
         stdout,
@@ -119,8 +137,7 @@ fn read_loop(
         command,
         process,
         idle_timeout_ms,
-        deadline_ms,
-        started_ms,
+        timing,
         secrets,
         limits,
         stdout,
@@ -136,8 +153,7 @@ fn read_next_line(
   command: String,
   process: port.Process,
   idle_timeout_ms: Int,
-  deadline_ms: Int,
-  started_ms: Int,
+  timing: ExecutionTiming,
   secrets: List(String),
   limits: config_types.ArtifactLimits,
   stdout: String,
@@ -159,8 +175,7 @@ fn read_next_line(
         command,
         process,
         idle_timeout_ms,
-        deadline_ms,
-        started_ms,
+        timing,
         secrets,
         limits,
         stdout,
@@ -174,7 +189,7 @@ fn read_next_line(
       finish_command(
         step_id,
         command,
-        started_ms,
+        timing,
         status,
         stdout,
         stderr,
@@ -192,7 +207,7 @@ fn read_next_line(
       finish_command(
         step_id,
         command,
-        started_ms,
+        timing,
         1,
         stdout,
         stderr,
@@ -209,7 +224,7 @@ fn read_next_line(
         step_id,
         command,
         process,
-        started_ms,
+        timing,
         secrets,
         limits,
         stdout,
@@ -222,7 +237,7 @@ fn read_next_line(
       finish_command(
         step_id,
         command,
-        started_ms,
+        timing,
         1,
         stdout,
         stderr <> port_error_to_string(err),
@@ -241,20 +256,23 @@ fn finish_timeout(
   step_id: String,
   command: String,
   process: port.Process,
-  started_ms: Int,
+  timing: ExecutionTiming,
   secrets: List(String),
   limits: config_types.ArtifactLimits,
   stdout: String,
   stdout_truncated: Bool,
   diagnostics: Option(DiagnosticsCapture),
 ) -> step_artifact.StepArtifact {
+  let timed_out_ms = monotonic_ms()
+  let timing =
+    ExecutionTiming(..timing, timed_out_monotonic_ms: Some(timed_out_ms))
   let _timeout_cleanup_result = port.terminate(process)
   let stderr =
-    read_diagnostics_or_error(process) |> prepend_timeout_failure_code
+    read_diagnostics_or_error(process) |> prepend_timeout_failure_code(timing)
   finish_command(
     step_id,
     command,
-    started_ms,
+    timing,
     124,
     stdout,
     stderr,
@@ -267,11 +285,35 @@ fn finish_timeout(
   )
 }
 
-fn prepend_timeout_failure_code(stderr: String) -> String {
+fn prepend_timeout_failure_code(
+  stderr: String,
+  timing: ExecutionTiming,
+) -> String {
   let failure_line = "SCHERZO_FAILURE_CODE=" <> timeout_failure_code <> "\n"
+  let metadata = timing_diagnostic_lines(timing)
   case stderr == "" {
-    True -> failure_line
-    False -> failure_line <> stderr
+    True -> failure_line <> metadata
+    False -> failure_line <> metadata <> stderr
+  }
+}
+
+fn timing_diagnostic_lines(timing: ExecutionTiming) -> String {
+  "prepared_monotonic_ms: "
+  <> int.to_string(timing.prepared_monotonic_ms)
+  <> "\nstarted_monotonic_ms: "
+  <> int.to_string(timing.started_monotonic_ms)
+  <> "\ndeadline_monotonic_ms: "
+  <> int.to_string(timing.deadline_monotonic_ms)
+  <> "\nconfigured_timeout_ms: "
+  <> int.to_string(timing.configured_timeout_ms)
+  <> "\n"
+  <> option_int_line("timeout_monotonic_ms", timing.timed_out_monotonic_ms)
+}
+
+fn option_int_line(label: String, value: Option(Int)) -> String {
+  case value {
+    Some(value) -> label <> ": " <> int.to_string(value) <> "\n"
+    None -> ""
   }
 }
 
@@ -351,7 +393,7 @@ fn command_with_stdout_capture(command: String, stdout_path: String) -> String {
 fn finish_command(
   step_id: String,
   command: String,
-  started_ms: Int,
+  timing: ExecutionTiming,
   exit_code: Int,
   stdout: String,
   stderr: String,
@@ -362,7 +404,7 @@ fn finish_command(
   stderr_truncated: Bool,
   diagnostics: Option(DiagnosticsCapture),
 ) -> step_artifact.StepArtifact {
-  let duration_ms = max_int(0, monotonic_ms() - started_ms)
+  let duration_ms = max_int(0, monotonic_ms() - timing.started_monotonic_ms)
   let full_stdout = captured_stdout(diagnostics, stdout)
   let stdout_truncated =
     stream_will_be_truncated(full_stdout, stdout_truncated, secrets, limits)
@@ -383,6 +425,7 @@ fn finish_command(
         exit_code,
         duration_ms,
         timed_out,
+        timing,
         full_stdout,
         stderr,
         stdout_truncated,
@@ -465,6 +508,7 @@ fn write_diagnostic_artifact(
   exit_code: Int,
   duration_ms: Int,
   timed_out: Bool,
+  timing: ExecutionTiming,
   stdout: String,
   stderr: String,
   stdout_truncated: Bool,
@@ -481,6 +525,7 @@ fn write_diagnostic_artifact(
           exit_code,
           duration_ms,
           timed_out,
+          timing,
           stdout,
           stderr,
           stdout_truncated,
@@ -506,6 +551,7 @@ fn diagnostic_body(
   exit_code: Int,
   duration_ms: Int,
   timed_out: Bool,
+  timing: ExecutionTiming,
   stdout: String,
   stderr: String,
   stdout_truncated: Bool,
@@ -526,7 +572,9 @@ fn diagnostic_body(
   <> int.to_string(exit_code)
   <> "\nduration_ms: "
   <> int.to_string(duration_ms)
-  <> "\ntimed_out: "
+  <> "\n"
+  <> timing_diagnostic_lines(timing)
+  <> "timed_out: "
   <> bool_to_string(timed_out)
   <> "\nstdout_truncated_in_report: "
   <> bool_to_string(stdout_truncated)
