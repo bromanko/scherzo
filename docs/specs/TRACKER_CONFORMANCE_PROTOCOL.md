@@ -110,10 +110,16 @@ Adapter authors should request optional packs explicitly, keep fake-driver manif
 
 Linear dogfood note: the protocol already supports the safety shape needed for a live-gated Linear `task_source` profile by combining `adapter_kind = "linear"`, explicit `fixtures.tasks`, operator-reviewed `report.redact` markers, and the same external-driver boundary used for other adapters. The repository wrapper `scripts/scherzo-linear-conformance` now provides the dedicated `SCHERZO_LINEAR_CONFORMANCE_API_KEY` preflight, unsafe-project rejection, offline fake transport, and report redaction checks outside the protocol itself while keeping write-capable packs disabled by default. Provider-live review-lane behavior, provider contract caches, and tracker-conformance caching remain out of scope unless a later reviewed change explicitly introduces them.
 
-## Local runner command
+## Runner availability
 
-Run the MVP locally from the repository root with:
+This protocol defines the manifest and driver envelope. Scherzo no longer exposes a public `tracker-conformance run` command for arbitrary manifests; the remaining runner route is private repository automation used by Scherzo-maintained wrappers and tests.
 
-    direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/task-source-pass.manifest.json --report test/tmp/tracker-conformance/task-source-pass.report.json
+Repository maintainers exercise the checked-in fake-driver manifests with:
 
-A passing run exits `0`, writes the requested report, and prints a summary naming the adapter kind, selected profile, total case count, and aggregate failure counters. When any adapter, setup, probe, or cleanup failure occurs, the CLI summary appends failure-specific recovery guidance without printing raw transcripts to stdout.
+    direnv exec . gleam test contract-tracker
+
+Linear dogfood uses the reviewed wrapper documented in `docs/runbooks/tracker-adapters.md`:
+
+    scripts/scherzo-linear-conformance run --manifest <linear-manifest.json> --run-id <operator-approved-run-id>
+
+A passing run writes the requested report and prints a summary naming the adapter kind, selected profile, total case count, and aggregate failure counters. When any adapter, setup, probe, or cleanup failure occurs, the CLI summary appends failure-specific recovery guidance without printing raw transcripts to stdout.

@@ -230,6 +230,59 @@ class WrapperRunBehaviorTests(unittest.TestCase):
             code = module.main(["run", "--manifest", manifest, "--run-id", run_id])
         return code, stdout.getvalue(), stderr.getvalue(), report_path
 
+    def test_run_mode_invokes_hidden_conformance_entrypoint(self):
+        module = load_module()
+        module.GLEAM_CANDIDATES = [str(SCRIPT_PATH)]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        manifest = "test/fixtures/tracker_conformance/linear-cleanup-idempotent.manifest.json"
+        report_path = module.default_report_path("hidden-entrypoint", REPO_ROOT / manifest)
+        if report_path.parent.exists():
+            shutil.rmtree(report_path.parent)
+        env = {
+            "SCHERZO_LINEAR_CONFORMANCE_API_KEY": "fake-linear-token",
+            "SCHERZO_LINEAR_CONFORMANCE_FIXTURE_SECRET": "linear-fixture-secret",
+            "PATH": os.environ.get("PATH", ""),
+        }
+        captured_args = []
+
+        def fake_run(args, **_kwargs):
+            captured_args.append(args)
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(
+                '{"ok": true, "redacted": "[REDACTED]"}\n',
+                encoding="utf-8",
+            )
+            return module.subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="tracker-conformance adapter=linear\n",
+                stderr="",
+            )
+
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(module.subprocess, "run", side_effect=fake_run),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            code = module.main([
+                "run",
+                "--manifest",
+                manifest,
+                "--run-id",
+                "hidden-entrypoint",
+            ])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(captured_args), 1)
+        runner_args = captured_args[0]
+        self.assertEqual(runner_args[1:4], ["run", "--", "__tracker-conformance-run"])
+        self.assertNotEqual(runner_args[4], "run")
+        self.assertNotIn("tracker-conformance", runner_args)
+        self.assertIn("tracker-conformance adapter=linear", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+
     def test_selects_report_path_and_redacts_emitted_evidence(self):
         code, stdout, stderr, report_path = self.run_wrapper(
             "test/fixtures/tracker_conformance/linear-redaction.manifest.json",

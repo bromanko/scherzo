@@ -13,14 +13,14 @@ pub type CliError {
 
 pub fn parse_args(args: List(String)) -> Result(CliCommand, CliError) {
   case args {
-    ["run", manifest_path, "--report", report_path] ->
+    [manifest_path, "--report", report_path] ->
       Ok(Run(manifest_path: manifest_path, report_path: report_path))
     _ -> Error(UsageError)
   }
 }
 
 pub fn usage() -> String {
-  "Usage: scherzo tracker-conformance run <manifest.json> --report <report.json>"
+  "Usage: scherzo __tracker-conformance-run <manifest.json> --report <report.json>"
 }
 
 pub fn run(args: List(String)) -> Result(types.RunResult, CliError) {

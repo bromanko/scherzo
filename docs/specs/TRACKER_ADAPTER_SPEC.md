@@ -366,7 +366,7 @@ Linear compatibility surfaces are intentionally preserved and are not generic ad
 - `backend_kind = "linear"` and Linear `remote_id` values are Linear-specific.
 - `tracker/issue.gleam` and `task.from_legacy_issue`/`task.to_legacy_issue` preserve existing Linear issue behavior.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_*`, `issue_id`, and `issue_identifier` remain compatibility names.
-- The old `linear_contract` config section and Linear-named smoke/contract CLI/check aliases are retired; use `tracker.linear.check_setup`, `tracker-smoke`, `tracker-contract`, `--tracker-smoke`, and `--tracker-contract-check`. `linear_commands` is also a removed config surface; leaving either removed config section in config is rejected.
+- The old `linear_contract` config section and Linear-named smoke/contract CLI/check aliases are retired; use `tracker.linear.check_setup` plus `doctor --check tracker-smoke` and `doctor --check tracker-contract`. The top-level `--tracker-smoke` and `--tracker-contract-check` modes are also retired. `linear_commands` is a removed config surface; leaving either removed config section in config is rejected.
 - Linear-only helper scripts and options that create, update, or inspect Linear tasks directly remain Linear-specific until replaced by generic adapter capabilities.
 
 Future Jira/Trello work MUST add production adapters and tests before docs or examples claim support. A fake or historical plan is not evidence of production conformance.

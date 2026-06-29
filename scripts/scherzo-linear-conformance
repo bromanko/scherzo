@@ -158,7 +158,7 @@ def command_run(argv: list[str]) -> int:
         return fail(str(error))
     gleam = resolve_binary(GLEAM_CANDIDATES, "gleam")
     if not Path(gleam).exists():
-        return fail("tracker-conformance run requires a local gleam executable")
+        return fail("tracker conformance runner requires a local gleam executable")
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     fixture_secret = os.environ.get("SCHERZO_LINEAR_CONFORMANCE_FIXTURE_SECRET", "linear-fixture-secret")
@@ -172,8 +172,7 @@ def command_run(argv: list[str]) -> int:
                 gleam,
                 "run",
                 "--",
-                "tracker-conformance",
-                "run",
+                "__tracker-conformance-run",
                 os.path.relpath(tmp_manifest_path, REPO_ROOT),
                 "--report",
                 os.path.relpath(report_path, REPO_ROOT),

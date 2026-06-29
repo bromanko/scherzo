@@ -7,7 +7,6 @@ pub fn tracker_conformance_cli_parses_args_runs_and_reports_usage_errors_test() 
   reset_report_dir()
 
   assert cli.parse_args([
-      "run",
       "test/fixtures/tracker_conformance/task-source-pass.manifest.json",
       "--report",
       "test/tmp/tracker-conformance/cli.report.json",
@@ -16,8 +15,8 @@ pub fn tracker_conformance_cli_parses_args_runs_and_reports_usage_errors_test() 
       manifest_path: "test/fixtures/tracker_conformance/task-source-pass.manifest.json",
       report_path: "test/tmp/tracker-conformance/cli.report.json",
     ))
-  assert cli.parse_args(["run", "manifest.json"]) == Error(cli.UsageError)
-  assert cli.run(["run", "missing.json", "--report", "out.json"])
+  assert cli.parse_args(["manifest.json"]) == Error(cli.UsageError)
+  assert cli.run(["missing.json", "--report", "out.json"])
     == Error(cli.RunError(
       code: "manifest_read_failed",
       message: "could not read manifest: missing.json",
@@ -25,7 +24,6 @@ pub fn tracker_conformance_cli_parses_args_runs_and_reports_usage_errors_test() 
 
   let assert Ok(types.RunResult(summary: summary, exit_code: exit_code, ..)) =
     cli.run([
-      "run",
       "test/fixtures/tracker_conformance/task-source-pass.manifest.json",
       "--report",
       "test/tmp/tracker-conformance/cli.report.json",
