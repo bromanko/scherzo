@@ -56,6 +56,22 @@ REQUIRED_SUBMISSION_FIELDS = [
 ]
 
 VALID_SEVERITIES = {"info", "low", "medium", "high", "critical"}
+CONTEXT_ONLY_EVIDENCE_KEY = "context_only"
+NATIVE_EVIDENCE_ALLOWLIST_ORDER = [
+    "gleam_test",
+    "glinter",
+    "scherzo_lint",
+    "schema_validate_artifacts",
+    "diff_static_scan",
+    "fixture_reproduction",
+    CONTEXT_ONLY_EVIDENCE_KEY,
+]
+NATIVE_EVIDENCE_ALLOWLIST = set(NATIVE_EVIDENCE_ALLOWLIST_ORDER)
+NATIVE_EVIDENCE_ALLOWLIST_DESCRIPTION = (
+    "Allowed native review evidence keys: "
+    + ", ".join(NATIVE_EVIDENCE_ALLOWLIST_ORDER)
+    + ". Use context_only for unsupported or manual review context instead of inventing lane-specific keys."
+)
 VALID_REVIEW_NOTE_CATEGORIES = {
     "correctness",
     "maintainability",
@@ -271,7 +287,32 @@ def check_provider_schema(schema_path: Path) -> dict[str, Any]:
             "review_lane_provider_schema_invalid_json_schema",
             f"provider schema {schema_path} is not a valid JSON Schema: {exc}",
         ) from exc
+    validate_provider_schema_evidence_key_description(schema, schema_path)
     return schema
+
+
+def validate_provider_schema_evidence_key_description(schema: dict[str, Any], schema_path: Path) -> None:
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+    evidence_requests = properties.get("evidence_requests")
+    if not isinstance(evidence_requests, dict):
+        return
+    items = evidence_requests.get("items")
+    if not isinstance(items, dict):
+        return
+    request_properties = items.get("properties")
+    if not isinstance(request_properties, dict):
+        return
+    evidence_key = request_properties.get("evidence_key")
+    if not isinstance(evidence_key, dict):
+        return
+    if evidence_key.get("description") == NATIVE_EVIDENCE_ALLOWLIST_DESCRIPTION:
+        return
+    raise ContractError(
+        "review_lane_provider_schema_evidence_allowlist_mismatch",
+        f"provider schema {schema_path} evidence_key description must match native evidence allowlist",
+    )
 
 
 def validate_provider_safe_schema(schema: dict[str, Any], schema_path: Path) -> None:
@@ -632,6 +673,37 @@ def validate_model_owned_submission(submission: dict[str, Any], lane_id: str) ->
     validate_submission_against_provider_schema(submission, lane_id)
 
 
+def normalize_evidence_requests_for_native_verification(
+    submission: dict[str, Any],
+) -> tuple[list[Any], dict[str, Any]]:
+    requests = submission.get("evidence_requests", [])
+    if not isinstance(requests, list):
+        return [], submission.get("self_check", {}) if isinstance(submission.get("self_check"), dict) else {}
+
+    normalized_requests: list[Any] = []
+    for request in requests:
+        if not isinstance(request, dict):
+            normalized_requests.append(request)
+            continue
+        evidence_key = request.get("evidence_key")
+        if not isinstance(evidence_key, str) or evidence_key in NATIVE_EVIDENCE_ALLOWLIST:
+            normalized_requests.append(request)
+            continue
+        normalized = dict(request)
+        normalized["evidence_key"] = CONTEXT_ONLY_EVIDENCE_KEY
+        normalized["target"] = {}
+        normalized["original_evidence_key"] = evidence_key
+        normalized["normalization_diagnostic"] = (
+            "non-fatal unsupported evidence_key "
+            + evidence_key
+            + " normalized to context_only before evidence verification"
+        )
+        normalized_requests.append(normalized)
+
+    self_check = dict(submission.get("self_check", {})) if isinstance(submission.get("self_check"), dict) else {}
+    return normalized_requests, self_check
+
+
 def prepared_review_ref_path(prepare_dir: Path, filename: str) -> str:
     raw = str(prepare_dir / filename)
     parts = Path(raw).parts
@@ -665,6 +737,7 @@ def materialize_submission(
 ) -> dict[str, Any]:
     submission = load_submission(submission_path, lane_id)
     validate_model_owned_submission(submission, lane_id)
+    evidence_requests, self_check = normalize_evidence_requests_for_native_verification(submission)
     artifact = {
         "$schema": CONTRACT_SCHEMA_REF,
         "schema_version": SCHEMA_VERSION,
@@ -675,8 +748,8 @@ def materialize_submission(
         "input_refs": input_refs_from_prepare_dir(prepare_dir),
         "draft_findings": submission.get("draft_findings", []),
         "review_notes": submission.get("review_notes", []),
-        "evidence_requests": submission.get("evidence_requests", []),
-        "self_check": submission.get("self_check", {}),
+        "evidence_requests": evidence_requests,
+        "self_check": self_check,
         "remote_mutations": "none",
     }
     validate_canonical_artifact(artifact)

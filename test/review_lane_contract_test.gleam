@@ -49,6 +49,32 @@ fn valid_correctness_payload() -> String {
   valid_payload_with_summary("Inspected the diff.")
 }
 
+fn unsupported_evidence_key_payload() -> String {
+  "{"
+  <> "\"draft_findings\":[{"
+  <> "\"draft_finding_id\":\"F1\","
+  <> "\"title\":\"Create modal success path may be untested\","
+  <> "\"claim\":\"The create modal success path needs review context.\","
+  <> "\"category\":\"correctness\","
+  <> "\"severity\":\"medium\","
+  <> "\"proposed_blocking\":false,"
+  <> "\"locations\":[{\"path\":\"src/create_modal.gleam\"}],"
+  <> "\"evidence_request_ids\":[\"E1\"],"
+  <> "\"suggested_fix\":\"Inspect the create modal success path.\""
+  <> "}],"
+  <> "\"review_notes\":[],"
+  <> "\"evidence_requests\":[{"
+  <> "\"request_id\":\"E1\","
+  <> "\"draft_finding_id\":\"F1\","
+  <> "\"evidence_key\":\"create-modal-success-heuristic\","
+  <> "\"claim\":\"The success heuristic should be checked.\","
+  <> "\"expected_observation\":\"The diff shows the success path context.\","
+  <> "\"target\":{\"changed_file_path\":\"src/create_modal.gleam\"}"
+  <> "}],"
+  <> "\"self_check\":{\"summary\":\"Inspected unsupported evidence key fixture.\"}"
+  <> "}"
+}
+
 fn review_lane_structured_output_artifact(
   step_id: String,
   artifact_name: String,
@@ -113,6 +139,74 @@ pub fn review_lane_contract_materializes_structured_output_artifact_test() {
   let assert Ok(draft) = simplifile.read(output_path)
   assert string.contains(draft, "\"artifact_type\": \"review_lane_draft\"")
   assert string.contains(draft, "\"remote_mutations\": \"none\"")
+}
+
+pub fn unsupported_evidence_key_is_materialized_as_context_only_test() {
+  let dir = "test/tmp/review-lane-contract-unsupported-evidence"
+  test_helpers.reset_dir(dir)
+  let prepare_dir = "test/fixtures/review-lane-contract/prepared-review"
+  let submission_path = dir <> "/correctness_submission.json"
+  let draft_path = dir <> "/review-lane-draft.v1.json"
+  let lane_dir = dir <> "/lane"
+  let assert Ok(Nil) =
+    simplifile.write(
+      submission_path,
+      correctness_structured_output_artifact(unsupported_evidence_key_payload()),
+    )
+
+  let materialized =
+    run_contract(
+      "materialize --lane correctness --submission "
+      <> submission_path
+      <> " --prepare-dir "
+      <> prepare_dir
+      <> " --output "
+      <> draft_path,
+    )
+  assert materialized.status == step_artifact.StepSucceeded
+  assert materialized.exit_code == Some(0)
+
+  let assert Ok(draft) = simplifile.read(draft_path)
+  assert string.contains(draft, "\"evidence_key\": \"context_only\"")
+  assert string.contains(draft, "\"target\": {}")
+  assert !string.contains(draft, "\"changed_file_path\"")
+  assert string.contains(draft, "\"normalization_diagnostic\"")
+  assert string.contains(draft, "create-modal-success-heuristic")
+  assert !string.contains(draft, "unsupported_evidence_key_normalized")
+
+  let verified =
+    run_shell(
+      ".scherzo/workflows/scripts/scherzo-review verify-evidence --lane correctness --draft "
+      <> draft_path
+      <> " --brief "
+      <> prepare_dir
+      <> "/review-brief.v1.json --diff-file "
+      <> prepare_dir
+      <> "/diff.patch --changed-files "
+      <> prepare_dir
+      <> "/changed-files.v1.json --validation-status "
+      <> prepare_dir
+      <> "/validation-status.v1.json --context-manifest "
+      <> prepare_dir
+      <> "/context-manifest.v1.json --output-dir "
+      <> lane_dir,
+    )
+  assert verified.status == step_artifact.StepSucceeded
+  assert verified.exit_code == Some(0)
+
+  let assert Ok(ledger) =
+    simplifile.read(lane_dir <> "/evidence-ledger.v1.json")
+  assert string.contains(ledger, "\"evidence_key\": \"context_only\"")
+  assert string.contains(ledger, "\"verdict\": \"context_only\"")
+  assert !string.contains(ledger, "\"verdict\": \"rejected\"")
+  assert !string.contains(
+    ledger,
+    "\"evidence_key\": \"create-modal-success-heuristic\"",
+  )
+  assert string.contains(
+    ledger,
+    "\"original_evidence_key\": \"create-modal-success-heuristic\"",
+  )
 }
 
 fn native_lane_step_metadata(

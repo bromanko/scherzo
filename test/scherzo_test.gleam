@@ -258,7 +258,7 @@ fn run_files_with_shared_tmp_guard(
   suite: Suite,
 ) -> Result(Nil, a) {
   let suite = suite_name(suite)
-  acquire_shared_tmp_lock(suite, shared_tmp_lock_attempts)
+  retry_acquire_shared_tmp_lock(suite, shared_tmp_lock_attempts)
   reset_shared_tmp_or_halt(suite)
   let result = run_files(files, options)
   release_shared_tmp_lock()
@@ -275,7 +275,7 @@ fn run_files(
   |> run_eunit(options)
 }
 
-fn acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
+fn retry_acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
   case simplifile.create_directory(shared_tmp_lock_dir) {
     Ok(Nil) -> {
       let _ =
@@ -299,11 +299,11 @@ fn acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
         }
         False -> {
           case reap_stale_shared_tmp_lock() {
-            True -> acquire_shared_tmp_lock(suite, attempts)
+            True -> retry_acquire_shared_tmp_lock(suite, attempts)
             False -> {
               // nolint: scherzo_no_process_sleep_in_tests -- deterministic suite-runner lock polling happens before tests run; it serializes shared test/tmp reset across concurrent CI shards.
               process.sleep(shared_tmp_lock_wait_ms)
-              acquire_shared_tmp_lock(suite, attempts - 1)
+              retry_acquire_shared_tmp_lock(suite, attempts - 1)
             }
           }
         }

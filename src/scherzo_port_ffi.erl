@@ -89,9 +89,8 @@ validate_argv_start(Executable, Args, Cwd, Env) ->
     end.
 
 resolve_bash(Env) ->
-    Find = case lists:keyfind("PATH", 1, Env) of
-        false -> os:find_executable("bash"); {_, Path} -> case os:find_executable("bash", Path) of false -> os:find_executable("bash"); BashPath -> BashPath end
-    end,
+    PathBash = case lists:keyfind("PATH", 1, Env) of false -> false; {_, Path} -> os:find_executable("bash", Path) end,
+    Find = case PathBash of false -> os:find_executable("bash"); FoundBash -> FoundBash end,
     case Find of false -> {error, tagged_error(spawn_failed, <<"bash executable not found on PATH">>)}; ResolvedBash -> {ok, ResolvedBash} end.
 
 start_shell(Cmd, Dir, Env) ->
@@ -560,14 +559,14 @@ await_exit_deadline(Process, Port, OsPid, ChildPidPath, StatusPath, Deadline) ->
             end
     end.
 
-await_status_file_exit(Process, Port, Status, OsPid, ChildPidPath, Deadline) ->
-    case terminate_residual_launched_process_until(ChildPidPath, Deadline) of
-        ok ->
-            case wait_for_launched_process_gone(OsPid, ChildPidPath, remaining_ms(Deadline)) of
+await_status_file_exit(Process, Port, Status, _OsPid, ChildPidPath, Deadline) ->
+    case child_target_alive(read_child_pid(ChildPidPath)) of
+        false -> _ = drain_port_stdout_and_exit(Port), finish_process_exit(Process, Status);
+        true ->
+            case terminate_residual_launched_process_until(ChildPidPath, Deadline) of
                 ok -> _ = drain_port_stdout_and_exit(Port), finish_process_exit(Process, Status);
                 timeout -> {error, <<"timeout">>}
-            end;
-        timeout -> {error, <<"timeout">>}
+            end
     end.
 
 await_os_exit(Process, Port, Status, OsPid, ChildPidPath, Timeout) ->
@@ -607,14 +606,14 @@ await_exit_collect_deadline(Process, Port, OsPid, ChildPidPath, StatusPath, Dead
             end
     end.
 
-await_status_file_exit_collect(Process, Port, Status, OsPid, ChildPidPath, Deadline, State) ->
-    case terminate_residual_launched_process_until(ChildPidPath, Deadline) of
-        ok ->
-            case wait_for_launched_process_gone(OsPid, ChildPidPath, remaining_ms(Deadline)) of
+await_status_file_exit_collect(Process, Port, Status, _OsPid, ChildPidPath, Deadline, State) ->
+    case child_target_alive(read_child_pid(ChildPidPath)) of
+        false -> finish_process_exit_with_stdout(Process, Port, Status, State);
+        true ->
+            case terminate_residual_launched_process_until(ChildPidPath, Deadline) of
                 ok -> finish_process_exit_with_stdout(Process, Port, Status, State);
                 timeout -> {error, <<"timeout">>}
-            end;
-        timeout -> {error, <<"timeout">>}
+            end
     end.
 
 await_os_exit_collect(Process, Port, Status, OsPid, ChildPidPath, Timeout, State) ->
