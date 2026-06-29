@@ -40,7 +40,7 @@ See the [Tracker Adapter Specification](specs/TRACKER_ADAPTER_SPEC.md) for the n
 
 ### Agent runtime and model/provider credentials
 
-Scherzo executes agent steps through `pi`. The Nix-packaged `scherzo` wrapper and the source checkout direnv/devenv shell provide Scherzo's pinned `pi` fork. `scherzo-start` remains as a deprecated compatibility alias for older daemon scripts. Non-Nix deployments should install a compatible `pi` or otherwise put it on `PATH`. Choose a model/provider, and make provider credentials available in the environment that will run Scherzo.
+Scherzo executes agent steps through `pi`. The Nix-packaged `scherzo` wrapper and the source checkout direnv/devenv shell provide Scherzo's pinned `pi` fork. Non-Nix deployments should install a compatible `pi` or otherwise put it on `PATH`. Choose a model/provider, and make provider credentials available in the environment that will run Scherzo.
 
 The minimal config uses the default `pi` executable. Add `agents.model`, `agents.thinking`, or an `agents.runtime` block only after you know the provider and runtime settings that work in your `pi` installation.
 
@@ -48,8 +48,10 @@ The minimal config uses the default `pi` executable. Add `agents.model`, `agents
 
 Use either the packaged Scherzo command or a source checkout:
 
-- Packaged usage exposes `scherzo`, `scherzoctl`, `scherzo-workspace-noop`, and `scherzo-workspace-jj` on `PATH`; it also keeps deprecated `scherzo-start` for compatibility.
-- Source-checkout usage normally runs `direnv exec . gleam run -- ...` for non-daemon commands and `direnv exec . scripts/scherzoctl ...` for local control. For Ctrl-C-friendly foreground daemon testing from the source tree, prefer the packaged launcher via `nix run .#scherzo -- ...`; the `direnv exec . scherzo-start ...` helper is the compatibility fallback.
+- Packaged usage exposes `scherzo`, `scherzoctl`, `scherzo-workspace-noop`, and `scherzo-workspace-jj` on `PATH`.
+- Source-checkout usage normally runs `direnv exec . gleam run -- ...` for non-daemon commands and `direnv exec . scripts/scherzoctl ...` for local control. For Ctrl-C-friendly foreground daemon testing from the source tree, prefer the packaged launcher via `nix run .#scherzo -- ...`.
+
+The deprecated `scherzo-start` alias has been removed. Replace old `scherzo-start <config>` or `nix run .#scherzo-start -- <config>` invocations with `scherzo <config>` or `nix run .#scherzo -- <config>`.
 
 Install any tools used by your workflows and drivers, such as `jj`, `git`, `gh`, `python3`, `node`, project test runners, or JSON-schema validator dependencies.
 
@@ -763,7 +765,7 @@ For source-checkout daemon testing without installing the package, use the same 
 LINEAR_API_KEY=lin_api_... nix run .#scherzo -- .scherzo/scherzo.yaml
 ```
 
-`gleam run -- .scherzo/scherzo.yaml` is still useful for low-level development, but direct Ctrl-C may terminate abruptly. Scherzo's current Erlang/Gleam signal FFI installs a SIGTERM handler for daemon lifecycle cleanup; it does not currently install or own a SIGINT handler, and adding native SIGINT handling is out of scope. The packaging wrapper remains necessary to translate interactive Ctrl-C into the already-tested SIGTERM path. `scherzo-start .scherzo/scherzo.yaml` remains available as a deprecated compatibility alias for existing scripts.
+`gleam run -- .scherzo/scherzo.yaml` is still useful for low-level development, but direct Ctrl-C may terminate abruptly. Scherzo's current Erlang/Gleam signal FFI installs a SIGTERM handler for daemon lifecycle cleanup; it does not currently install or own a SIGINT handler, and adding native SIGINT handling is out of scope. The packaged `scherzo` launcher remains necessary to translate interactive Ctrl-C into the already-tested SIGTERM path. The deprecated `scherzo-start` alias has been removed; update old daemon scripts to call `scherzo .scherzo/scherzo.yaml` or `nix run .#scherzo -- .scherzo/scherzo.yaml` from a source checkout.
 
 For systemd, launchd, or another service manager, use the same `scherzo .scherzo/scherzo.yaml` command. Service managers normally stop services with SIGTERM, so they can rely on Scherzo's daemon shutdown path directly.
 

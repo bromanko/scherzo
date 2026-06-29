@@ -2,7 +2,11 @@
 set -e
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd)
+repo_root=$(CDPATH= cd "$script_dir/.." && pwd)
 . "$script_dir/scherzo-agent-common.sh"
+
+SCHERZO_REPO_ROOT=${SCHERZO_REPO_ROOT:-${DEVENV_ROOT:-$repo_root}}
+export SCHERZO_REPO_ROOT
 
 prepare_agent_env
 require_live_identity
@@ -22,4 +26,7 @@ echo "SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE=$SCHERZO_AGENT_JJ_WORKSPACE_PUBL
 echo "remote url=$(require_agent_remote)"
 show_identities
 
-exec "$script_dir/scherzo-start" .scherzo/scherzo.yaml
+SCHERZO_START_RUNNER_NAME=${SCHERZO_START_RUNNER_NAME:-scherzo-agent-run}
+export SCHERZO_START_RUNNER_NAME
+
+exec "$script_dir/scherzo-start-runner" -- gleam run -- .scherzo/scherzo.yaml

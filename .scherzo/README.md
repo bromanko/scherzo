@@ -147,7 +147,7 @@ Start Scherzo through the guarded run command only when the operator is ready fo
 direnv exec . devenv shell -P scherzo-agent scherzo-agent-run
 ```
 
-`scherzo-agent-run` performs the same strict checks as `scherzo-agent-whoami`, confirms `LINEAR_API_KEY` was derived from `SCHERZO_AGENT_LINEAR_API_KEY`, and then runs `scherzo-start .scherzo/scherzo.yaml` under the isolated agent environment. The `scherzo-start` devenv helper wraps `gleam run -- ...` so Ctrl-C is translated into SIGTERM and the daemon can follow its graceful shutdown path.
+`scherzo-agent-run` performs the same strict checks as `scherzo-agent-whoami`, confirms `LINEAR_API_KEY` was derived from `SCHERZO_AGENT_LINEAR_API_KEY`, and then runs `.scherzo/scherzo.yaml` through `scripts/scherzo-start-runner` under the isolated agent environment. The runner wraps `gleam run -- ...` so Ctrl-C is translated into SIGTERM and the daemon can follow its graceful shutdown path without relying on the removed `scherzo-start` alias.
 
 ## Linear project contract
 
@@ -201,7 +201,7 @@ direnv exec . gleam run -- --tracker-smoke .scherzo/scherzo.yaml
 direnv exec . gleam run -- --tracker-contract-check .scherzo/scherzo.yaml
 direnv exec . gleam run -- --pi-probe .scherzo/scherzo.yaml
 LINEAR_API_KEY=$LINEAR_API_KEY SCHERZO_REPO_ROOT=$(pwd) \
-  direnv exec . scherzo-start .scherzo/scherzo.yaml
+  nix run .#scherzo -- .scherzo/scherzo.yaml
 ```
 
 In another terminal, supervise through the local control API:

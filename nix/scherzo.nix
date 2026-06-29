@@ -167,11 +167,6 @@ stdenvNoCC.mkDerivation {
       --prefix PATH : ${startRunnerPath}
     makeWrapper "$out/libexec/${pname}/scherzo-direct" "$out/bin/scherzoctl" \
       --add-flags ctl
-    makeWrapper "$out/libexec/${pname}/scherzo-start-runner" "$out/bin/scherzo-start" \
-      --set-default SCHERZO_START_RUNNER_NAME "scherzo-start" \
-      --add-flags -- \
-      --add-flags "$out/libexec/${pname}/scherzo-direct" \
-      --prefix PATH : ${startRunnerPath}
     makeWrapper "$out/libexec/${pname}/scherzo-workspace-noop" "$out/bin/scherzo-workspace-noop" \
       --prefix PATH : ${noopDriverRuntimePath}
     makeWrapper "$out/libexec/${pname}/scherzo-workspace-jj" "$out/bin/scherzo-workspace-jj" \
@@ -215,9 +210,6 @@ stdenvNoCC.mkDerivation {
           "$json_schema_repo" schemas/install-check.schema.json "$json_schema_repo/payload.json" \
           > json-schema-self-check
         grep -q "json_schema_self_check=ok" json-schema-self-check
-
-        PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo-start" --help > scherzo-start-help
-        grep -q "Usage: scherzo" scherzo-start-help
 
         PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzoctl" --help > scherzoctl-help
         grep -q "Usage: scherzo ctl" scherzoctl-help

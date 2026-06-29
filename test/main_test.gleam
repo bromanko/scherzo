@@ -1,8 +1,13 @@
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/command_step
 import scherzo/doctor
 import scherzo/local_workflow_run
 import scherzo/main
+import scherzo/path
+import scherzo/step_artifact
+import simplifile
+import support/test_helpers
 
 pub fn parse_args_default_explicit_and_help_test() {
   assert main.parse_args([]) == Ok(main.Run(main.Daemon, None))
@@ -223,11 +228,127 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "SIGTERM gracefully")
   assert string.contains(usage, "Ctrl-C/SIGINT")
   assert string.contains(usage, "packaged scherzo launcher")
-  assert string.contains(usage, "compatibility scherzo-start helper")
+  assert !string.contains(usage, "scherzo-start")
   assert string.contains(
     usage,
     "Erlang signal FFI installs only the SIGTERM handler",
   )
   assert string.contains(usage, "kill -9")
   assert string.contains(usage, "only one Scherzo instance")
+}
+
+pub fn agent_run_delegates_from_non_repo_cwd_to_repo_config_test() {
+  let dir = "test/tmp/scherzo-agent-run-nonroot"
+  test_helpers.reset_dir(dir)
+  let repo = dir <> "/repo"
+  let scripts = repo <> "/scripts"
+  let caller = dir <> "/caller"
+  let bin = dir <> "/bin"
+  let assert Ok(Nil) = simplifile.create_directory_all(scripts)
+  let assert Ok(Nil) = simplifile.create_directory_all(caller)
+  let assert Ok(Nil) = simplifile.create_directory_all(bin)
+
+  let assert Ok(agent_run_source) = simplifile.read("scripts/scherzo-agent-run")
+  let agent_run = scripts <> "/scherzo-agent-run"
+  let assert Ok(Nil) = simplifile.write(agent_run, agent_run_source)
+  test_helpers.chmod_executable(agent_run)
+
+  let assert Ok(start_runner_source) =
+    simplifile.read("scripts/scherzo-start-runner")
+  let start_runner = scripts <> "/scherzo-start-runner"
+  let assert Ok(Nil) = simplifile.write(start_runner, start_runner_source)
+  test_helpers.chmod_executable(start_runner)
+
+  let common = scripts <> "/scherzo-agent-common.sh"
+  let assert Ok(Nil) =
+    simplifile.write(
+      common,
+      "fail() {\n"
+        <> "  echo \"scherzo-agent: $*\" >&2\n"
+        <> "  exit 1\n"
+        <> "}\n"
+        <> "prepare_agent_env() {\n"
+        <> "  if [ -z \"$SCHERZO_REPO_ROOT\" ]; then\n"
+        <> "    if [ -n \"$DEVENV_ROOT\" ]; then\n"
+        <> "      SCHERZO_REPO_ROOT=$DEVENV_ROOT\n"
+        <> "    else\n"
+        <> "      SCHERZO_REPO_ROOT=$PWD\n"
+        <> "    fi\n"
+        <> "  fi\n"
+        <> "  cd \"$SCHERZO_REPO_ROOT\"\n"
+        <> "  LINEAR_API_KEY=$SCHERZO_AGENT_LINEAR_API_KEY\n"
+        <> "  SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE=test-remote\n"
+        <> "  SCHERZO_AGENT_GITHUB_LOGIN=test-login\n"
+        <> "  SCHERZO_GITHUB_REPO=test/repo\n"
+        <> "  export SCHERZO_REPO_ROOT LINEAR_API_KEY\n"
+        <> "  export SCHERZO_AGENT_JJ_WORKSPACE_PUBLISH_REMOTE\n"
+        <> "  export SCHERZO_AGENT_GITHUB_LOGIN SCHERZO_GITHUB_REPO\n"
+        <> "}\n"
+        <> "require_live_identity() { :; }\n"
+        <> "require_github_identity() { :; }\n"
+        <> "require_github_repo_access() { :; }\n"
+        <> "require_github_pr_create_permission() { :; }\n"
+        <> "require_linear_identity() { :; }\n"
+        <> "require_ssh_identity() { :; }\n"
+        <> "require_agent_remote() {\n"
+        <> "  printf 'git@example.com:test/repo.git\\n'\n"
+        <> "}\n"
+        <> "show_identities() { :; }\n",
+    )
+
+  let fake_gleam = bin <> "/gleam"
+  let assert Ok(Nil) =
+    simplifile.write(
+      fake_gleam,
+      "#!/usr/bin/env sh\n"
+        <> "set -e\n"
+        <> "{\n"
+        <> "  printf 'cwd=%s\\n' \"$PWD\"\n"
+        <> "  printf 'arg_count=%s\\n' \"$#\"\n"
+        <> "  i=1\n"
+        <> "  for arg do\n"
+        <> "    printf 'arg_%s=%s\\n' \"$i\" \"$arg\"\n"
+        <> "    i=$((i + 1))\n"
+        <> "  done\n"
+        <> "} > \"$SCHERZO_AGENT_RUN_LOG\"\n",
+    )
+  test_helpers.chmod_executable(fake_gleam)
+
+  let assert Ok(repo_dir) = path.absolute(repo)
+  let assert Ok(caller_dir) = path.absolute(caller)
+  let assert Ok(bin_dir) = path.absolute(bin)
+  let assert Ok(agent_run_path) = path.absolute(agent_run)
+  let assert Ok(log_path) = path.absolute(dir <> "/gleam.log")
+  let artifact =
+    command_step.run_with_env(
+      "scherzo_agent_run_from_non_repo_cwd",
+      test_helpers.shell_quote(agent_run_path),
+      caller_dir,
+      5000,
+      [
+        #("PATH", env_path(bin_dir)),
+        #("SCHERZO_AGENT_LINEAR_API_KEY", "lin_test"),
+        #("SCHERZO_AGENT_RUN_LOG", log_path),
+        #("SCHERZO_REPO_ROOT", ""),
+        #("DEVENV_ROOT", ""),
+      ],
+      [],
+      test_helpers.default_artifact_limits(),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(log) = simplifile.read(log_path)
+  assert string.contains(log, "cwd=" <> repo_dir <> "\n")
+  assert string.contains(log, "arg_count=3\n")
+  assert string.contains(log, "arg_1=run\n")
+  assert string.contains(log, "arg_2=--\n")
+  assert string.contains(log, "arg_3=.scherzo/scherzo.yaml\n")
+}
+
+fn env_path(bin: String) -> String {
+  case path.env("PATH") {
+    Some(value) -> bin <> ":" <> value
+    _ -> bin
+  }
 }
