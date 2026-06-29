@@ -154,11 +154,6 @@
           program = "${self.packages.${system}.scherzo}/bin/scherzo";
           meta.description = "Run the Scherzo daemon or CLI";
         };
-        scherzo-start = {
-          type = "app";
-          program = "${self.packages.${system}.scherzo}/bin/scherzo-start";
-          meta.description = "Deprecated compatibility alias for graceful Scherzo daemon startup";
-        };
         scherzoctl = {
           type = "app";
           program = "${self.packages.${system}.scherzo}/bin/scherzoctl";

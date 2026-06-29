@@ -16,7 +16,7 @@ child_pid=""
 shutdown_requested=0
 shutdown_watchdog_pid=""
 shutdown_grace_seconds=${SCHERZO_START_SHUTDOWN_GRACE_SECONDS:-15}
-runner_name=${SCHERZO_START_RUNNER_NAME:-scherzo-start}
+runner_name=${SCHERZO_START_RUNNER_NAME:-scherzo-start-runner}
 unset SCHERZO_START_RUNNER_NAME
 use_process_group=0
 

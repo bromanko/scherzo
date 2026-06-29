@@ -47,7 +47,6 @@ in
     exec "''${DEVENV_ROOT:-$PWD}/scripts/scherzo-ci" "$@"
   '';
 
-  scripts."scherzo-start".exec = projectScript "scherzo-start";
   scripts."scherzo-test-unit".exec = projectScript "scherzo-test-unit";
   scripts."scherzo-test-contract".exec = projectScript "scherzo-test-contract";
   scripts."scherzo-test-local-integration".exec = projectScript "scherzo-test-local-integration";

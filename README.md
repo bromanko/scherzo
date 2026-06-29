@@ -42,7 +42,7 @@ LINEAR_API_KEY=lin_api_... scherzo .scherzo/scherzo.yaml
 scherzoctl ps
 ```
 
-The packaged `scherzo` launcher is the primary foreground daemon command and translates terminal Ctrl-C into Scherzo's graceful SIGTERM shutdown path. `scherzo-start` remains available only as a deprecated compatibility alias for existing scripts. When working from this source checkout, run non-daemon entrypoints through devenv, for example `direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` or `direnv exec . scripts/scherzoctl ps`.
+The packaged `scherzo` launcher is the foreground daemon command and translates terminal Ctrl-C into Scherzo's graceful SIGTERM shutdown path. The deprecated `scherzo-start` alias has been removed; replace old `scherzo-start <config>` or `nix run .#scherzo-start -- <config>` usage with `scherzo <config>` or `nix run .#scherzo -- <config>`. When working from this source checkout, run non-daemon entrypoints through devenv, for example `direnv exec . gleam run -- doctor .scherzo/scherzo.yaml` or `direnv exec . scripts/scherzoctl ps`.
 
 ## Documentation map
 
