@@ -1,4 +1,5 @@
 import gleam/erlang/process
+import gleam/int
 import gleam/io
 import gleam/list
 import gleam/result
@@ -19,6 +20,8 @@ const shared_tmp_dir = "test/tmp"
 const shared_tmp_lock_dir = "test/.tmp-suite-lock"
 
 const shared_tmp_lock_owner = "test/.tmp-suite-lock/owner"
+
+const shared_tmp_lock_owner_pid_prefix = "pid="
 
 const shared_tmp_lock_wait_ms = 100
 
@@ -155,13 +158,17 @@ pub fn contract_test_files() -> List(String) {
 pub fn contract_runtime_test_files() -> List(String) {
   [
     "agent_helper_script_test.gleam",
+    "agent_runner_test.gleam",
+    "agent_worker_control_test.gleam",
     "command_step_test.gleam",
     "control_server_test.gleam",
     "pi_client_test.gleam",
     "port_test.gleam",
     "scherzo_launcher_test.gleam",
     "scherzoctl_wrapper_test.gleam",
+    "remote_daemon_registration_integration_test.gleam",
     "workspace_cleanup_helper_test.gleam",
+    "workspace_test.gleam",
     "workspace_driver_contract_test.gleam",
     "workspace_driver_discovery_test.gleam",
     "workspace_driver_lifecycle_test.gleam",
@@ -185,6 +192,7 @@ pub fn contract_tracker_test_files() -> List(String) {
   [
     "linear_cli_wrapper_test.gleam",
     "tracker_conformance_cli_test.gleam",
+    "tracker_conformance_adapter_author_docs_test.gleam",
     "tracker_conformance_comments_pack_test.gleam",
     "tracker_conformance_fixture_probe_test.gleam",
     "tracker_conformance_handoff_pack_test.gleam",
@@ -200,8 +208,11 @@ pub fn contract_tracker_test_files() -> List(String) {
 pub fn contract_workflow_test_files() -> List(String) {
   [
     "portable_research_workflow_test.gleam",
+    "structured_output_command_validator_test.gleam",
     "structured_output_contract_command_test.gleam",
+    "structured_output_json_schema_test.gleam",
     "workflow_portability_test.gleam",
+    "workstream_start_test.gleam",
     "workflow_run_test.gleam",
   ]
 }
@@ -267,7 +278,11 @@ fn run_files(
 fn retry_acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
   case simplifile.create_directory(shared_tmp_lock_dir) {
     Ok(Nil) -> {
-      let _ = simplifile.write(shared_tmp_lock_owner, "suite=" <> suite <> "\n")
+      let _ =
+        simplifile.write(
+          shared_tmp_lock_owner,
+          "suite=" <> suite <> "\npid=" <> int.to_string(os_pid()) <> "\n",
+        )
       Nil
     }
     Error(simplifile.Eexist) -> {
@@ -283,9 +298,14 @@ fn retry_acquire_shared_tmp_lock(suite: String, attempts: Int) -> Nil {
           halt(1)
         }
         False -> {
-          // nolint: scherzo_no_process_sleep_in_tests -- deterministic suite-runner lock polling happens before tests run; it serializes shared test/tmp reset across concurrent CI shards.
-          process.sleep(shared_tmp_lock_wait_ms)
-          retry_acquire_shared_tmp_lock(suite, attempts - 1)
+          case reap_stale_shared_tmp_lock() {
+            True -> retry_acquire_shared_tmp_lock(suite, attempts)
+            False -> {
+              // nolint: scherzo_no_process_sleep_in_tests -- deterministic suite-runner lock polling happens before tests run; it serializes shared test/tmp reset across concurrent CI shards.
+              process.sleep(shared_tmp_lock_wait_ms)
+              retry_acquire_shared_tmp_lock(suite, attempts - 1)
+            }
+          }
         }
       }
     }
@@ -339,6 +359,58 @@ fn release_shared_tmp_lock() -> Nil {
   Nil
 }
 
+fn reap_stale_shared_tmp_lock() -> Bool {
+  case simplifile.read(shared_tmp_lock_owner) {
+    Ok(owner) ->
+      case lock_owner_pid(owner) {
+        Ok(pid) ->
+          case pid_alive(pid) {
+            True -> False
+            False -> delete_stale_shared_tmp_lock(pid)
+          }
+
+        Error(Nil) -> False
+      }
+
+    Error(simplifile.Enoent) ->
+      // The lock directory exists but the owner file does not. That can only
+      // happen if the owner process crashed between mkdir and writing metadata.
+      delete_stale_shared_tmp_lock(0)
+
+    Error(_) -> False
+  }
+}
+
+fn delete_stale_shared_tmp_lock(pid: Int) -> Bool {
+  let pid_label = case pid > 0 {
+    True -> " owned by dead pid " <> int.to_string(pid)
+    False -> " without an owner file"
+  }
+  io.println_error("Removing stale " <> shared_tmp_lock_dir <> pid_label <> ".")
+  case simplifile.delete_all([shared_tmp_lock_dir]) {
+    Ok(Nil) -> True
+    Error(_) -> False
+  }
+}
+
+fn lock_owner_pid(owner: String) -> Result(Int, Nil) {
+  owner
+  |> string.split("\n")
+  |> list.find_map(line_owner_pid)
+}
+
+fn line_owner_pid(line: String) -> Result(Int, Nil) {
+  case string.starts_with(line, shared_tmp_lock_owner_pid_prefix) {
+    True ->
+      line
+      |> string.replace(shared_tmp_lock_owner_pid_prefix, "")
+      |> string.trim
+      |> int.parse
+
+    False -> Error(Nil)
+  }
+}
+
 fn gleam_to_erlang_module_name(path: String) -> String {
   case string.ends_with(path, ".gleam") {
     True ->
@@ -360,6 +432,12 @@ fn args() -> List(String)
 
 @external(erlang, "erlang", "halt")
 fn halt(code: Int) -> Nil
+
+@external(erlang, "scherzo_test_ffi", "os_pid")
+fn os_pid() -> Int
+
+@external(erlang, "scherzo_test_ffi", "pid_alive")
+fn pid_alive(pid: Int) -> Bool
 
 @external(erlang, "gleeunit_ffi", "find_files")
 fn find_files(matching matching: String, in in_: String) -> List(String)

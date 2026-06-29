@@ -39,9 +39,9 @@ Workflow contract:
 - Do not use `gh` to create, edit, close, or comment on pull requests. Later deterministic command steps validate and publish.
 - This step repairs only base drift, meaning problems caused by rebasing the implementation change onto the latest configured pull request base.
 - Read `tmp/scherzo-implementation-refresh-base-before-validation.json` when it exists. If it does not exist, read `tmp/scherzo-implementation-refresh-base-latest.json`.
-- Read `tmp/scherzo-implementation-validation.json` when it exists; it contains validation status, exit code, base revision, command, and, on failure, a deterministic SelfCI failure summary plus bounded stdout/stderr excerpts.
+- Read `tmp/scherzo-implementation-validation.json` when it exists; it contains validation status, exit code, base revision, command, and, on failure, a deterministic validation failure summary plus bounded stdout/stderr excerpts.
 - In this prompt, validation succeeded means the `validate_after_refresh` command exited `0`; validation failed means it exited nonzero.
-- When validation reaches the final check, the retained stdout/stderr is SelfCI `check --print-output` output; inspect the bounded failure summary first, then the full retained diagnostics only when deciding whether a `rebased_clean` validation failure is mechanically repairable.
+- When validation reaches the final check, the retained stdout/stderr is the validation command's output; inspect the bounded failure summary first, then the full retained diagnostics only when deciding whether a `rebased_clean` validation failure is mechanically repairable.
 - Never treat a validation failure as repairable base drift unless the refresh status is `rebased_clean` or `conflicts`.
 - If you cannot prove a fix is mechanical, write `tmp/scherzo-implementation-base-drift-failure.md` and stop.
 
@@ -116,10 +116,10 @@ Validation failed, but the latest refresh status was `fresh`, so this is not cla
 `validate_after_refresh` exited <code>.
 
 ## Validation command
-`direnv exec . selfci check --base <base> --candidate @ --print-output`
+The repository validation command recorded under `commands` in `tmp/scherzo-implementation-validation.json`.
 
 ## Failure summary
-Copy the concise root-cause summary from `tmp/scherzo-implementation-validation.json` when present, for example the failing SelfCI step, Nix hash mismatch, compile error, test failure, or other first actionable error. Do not paste full transcripts.
+Copy the concise root-cause summary from `tmp/scherzo-implementation-validation.json` when present, for example the failing validation step, Nix hash mismatch, compile error, test failure, or other first actionable error. Do not paste full transcripts.
 
 ## Diagnostic artifacts
 - `tmp/scherzo-implementation-refresh-base-before-validation.json`

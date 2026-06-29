@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Scherzo's canonical local/CI check script. This is the single source of truth
+# for "what the gate runs": the dogfood implementation workflows (via
+# `scherzo-implementation validate`), the devenv `check` command, and Buildkite
+# all drive these same targets so the three can no longer drift.
+#
+# Usage:
+#   scripts/scherzo-ci [target]
+#
+# Targets:
+#   all                 Everything below, in order (default).
+#   fmt                 gleam format --check
+#   lint                glinter + scherzo custom lint
+#   workflow-contracts  structured-output + review-lane offline contracts
+#   unit                gleam unit suite
+#   contract            gleam contract suites (runtime/orchestrator/tracker/workflow/repository)
+#   nix                 nix flake check
+#   package             nix build .#scherzo
+#
+# Toolchain steps run through `direnv exec .` so the script works whether or not
+# the caller has already entered the devenv shell. `nix`/`package` invoke `nix`
+# directly and do not require direnv.
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd "$script_dir/.." && pwd)
+cd "$repo_root"
+
+# The devenv shell includes pi from numtide/llm-agents.nix; make Nix use
+# Numtide's binary cache instead of source-building the pi package.
+numtide_nix_config="$(cat <<'NIX_CONFIG'
+accept-flake-config = true
+extra-substituters = https://cache.numtide.com
+extra-trusted-public-keys = niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g=
+NIX_CONFIG
+)"
+if [ -n "${NIX_CONFIG:-}" ]; then
+  export NIX_CONFIG="${NIX_CONFIG}"$'\n'"${numtide_nix_config}"
+else
+  export NIX_CONFIG="${numtide_nix_config}"
+fi
+
+run_step() {
+  local name="$1"
+  shift
+  printf '\n=== %s ===\n' "$name"
+  "$@"
+}
+
+ci_nix_cache() {
+  run_step "nix cache config" scripts/scherzo-ci-nix-cache
+}
+
+ci_direnv_allow() {
+  run_step "direnv allow" direnv allow .
+}
+
+ci_fmt() {
+  run_step "gleam format" direnv exec . gleam format --check src test
+}
+
+ci_lint() {
+  run_step "glinter" direnv exec . gleam run -m glinter
+  run_step "scherzo custom lint" direnv exec . gleam run -m scherzo_lint
+}
+
+ci_workflow_contracts() {
+  run_step "structured output contract" \
+    direnv exec . scripts/scherzo-structured-output-contract check-workflows \
+    --output-dir tmp/scherzo-structured-output-contract/scherzo-ci
+  run_step "review lane contract offline (implementation)" \
+    direnv exec . .scherzo/workflows/scripts/scherzo-review-lane-contract offline \
+    --workflow .scherzo/workflows/implementation.yaml \
+    --fixtures test/fixtures/review-lane-contract \
+    --output-dir tmp/scherzo-review-lane-contract/scherzo-ci/implementation
+  run_step "review lane contract offline (execplan implementation)" \
+    direnv exec . .scherzo/workflows/scripts/scherzo-review-lane-contract offline \
+    --workflow .scherzo/workflows/execplan-implementation.yaml \
+    --fixtures test/fixtures/review-lane-contract \
+    --output-dir tmp/scherzo-review-lane-contract/scherzo-ci/execplan-implementation
+}
+
+ci_unit() {
+  run_step "gleam unit test" direnv exec . scherzo-test-unit
+}
+
+ci_contract() {
+  run_step "gleam contract test runtime" direnv exec . scherzo-test-contract runtime
+  run_step "gleam contract test orchestrator" direnv exec . scherzo-test-contract orchestrator
+  run_step "gleam contract test tracker" direnv exec . scherzo-test-contract tracker
+  run_step "gleam contract test workflow" direnv exec . scherzo-test-contract workflow
+  run_step "gleam contract test repository" direnv exec . scherzo-test-contract repository
+}
+
+ci_flake_check() {
+  run_step "nix flake check" nix flake check --print-build-logs
+}
+
+ci_package() {
+  run_step "nix build" nix build .#scherzo --print-build-logs
+}
+
+usage() {
+  sed -n '4,21p' "$script_dir/scherzo-ci" | sed 's/^# \{0,1\}//'
+}
+
+target="${1:-all}"
+case "$target" in
+  all)
+    ci_nix_cache
+    ci_direnv_allow
+    ci_fmt
+    ci_lint
+    ci_workflow_contracts
+    ci_unit
+    ci_contract
+    ci_flake_check
+    ;;
+  fmt) ci_fmt ;;
+  lint) ci_lint ;;
+  workflow-contracts) ci_workflow_contracts ;;
+  unit) ci_unit ;;
+  contract) ci_contract ;;
+  nix)
+    ci_nix_cache
+    ci_flake_check
+    ;;
+  package)
+    ci_nix_cache
+    ci_package
+    ;;
+  -h | --help | help)
+    usage
+    ;;
+  *)
+    echo "scherzo-ci: unknown target '$target'" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

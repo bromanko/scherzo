@@ -30,7 +30,7 @@ Final response format:
 One short paragraph describing the completed change.
 
 ## Validation
-- `direnv exec . selfci check --base <base> --candidate @ --print-output`: passed or relevant note.
+- Repository validation gate: passed or relevant note.
 
 ## Files changed
 - Bullet list of important changed files/directories.
