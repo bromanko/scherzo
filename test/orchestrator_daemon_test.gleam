@@ -465,6 +465,13 @@ fn base_dependencies(
   )
 }
 
+fn wait_until_startup_recovery_ready(
+  daemon_subject: process.Subject(daemon.Message),
+) -> Nil {
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(daemon_subject, 1000)
+  Nil
+}
+
 type InvariantCheckCommand {
   CheckInvariants(
     process.Subject(Result(Nil, List(transition_invariants.InvariantError))),
@@ -540,6 +547,7 @@ fn test_transition_invariant_error() -> transition_invariants.InvariantError {
 }
 
 pub fn daemon_startup_invariant_failure_aborts_and_cleans_up_test() {
+  use <- expected_crash.suppressing(["transition_invariant_violation"])
   let workflow_path =
     write_workflow_with_absolute_root("test/tmp/daemon-startup-invariant", 1)
   let client = empty_tracker_client()
@@ -559,20 +567,122 @@ pub fn daemon_startup_invariant_failure_aborts_and_cleans_up_test() {
       check_transition_invariants: checker,
     )
 
-  let result = daemon.start(Some(workflow_path), deps)
-  process.send(checker_subject, StopInvariantChecker)
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(daemon_pid) = process.subject_owner(started.data)
+  process.unlink(daemon_pid)
+  let daemon_monitor = process.monitor(daemon_pid)
 
-  let assert Error(daemon.StartupError(code, _)) = result
-  assert code == "transition_invariant_violation"
   assert wait_for_event(log_subject, "transition_invariant_violation", 10)
-  assert process.receive(cleanup_subject, within: 1000) == Ok("control_stop")
+  let daemon_stopped = wait_for_monitor_down(daemon_monitor, 1000)
   let event_hub_stopped = wait_for_monitor_down(event_hub_monitor, 1000)
+  process.send(checker_subject, StopInvariantChecker)
+  case daemon_stopped {
+    True -> Nil
+    False -> process.kill(daemon_pid)
+  }
   case event_hub_stopped {
     True -> Nil
     False -> hub.stop(event_hub)
   }
+  process.demonitor_process(daemon_monitor)
   process.demonitor_process(event_hub_monitor)
+  assert process.receive(cleanup_subject, within: 1000) == Ok("control_stop")
+  assert daemon_stopped
   assert event_hub_stopped
+}
+
+pub fn daemon_start_maps_actor_init_timeout_to_specific_startup_error_test() {
+  let workflow_path =
+    write_workflow_with_absolute_root("test/tmp/daemon-startup-timeout", 1)
+  let barrier = test_async.new_barrier()
+  let log_fields_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(empty_tracker_client(), process.new_subject()),
+      logger: fn(_, event, fields, _) {
+        process.send(log_fields_subject, #(event, fields))
+        Ok(Nil)
+      },
+      start_control_server: fn(_, _) {
+        test_async.block_until_released(barrier)
+        Ok(daemon.NoControlServer)
+      },
+    )
+
+  let result =
+    daemon.start_with_initialiser_timeout(Some(workflow_path), deps, 10)
+  test_async.release_barrier_if_waiting(barrier)
+
+  let assert Error(daemon.StartupError(code, message)) = result
+  assert code == "daemon_actor_init_timeout"
+  assert string.contains(message, "control_plane_starting")
+
+  let assert Ok(fields) =
+    wait_for_log_fields(log_fields_subject, "daemon_startup_timeout", 20)
+  let field_map = dict.from_list(fields)
+  assert dict.get(field_map, "initialiser_timeout_ms") == Ok("10")
+  assert dict.get(field_map, "last_startup_phase")
+    == Ok("control_plane_starting")
+}
+
+pub fn daemon_start_returns_before_post_init_recovery_completes_test() {
+  let workflow_path =
+    write_workflow_with_absolute_root("test/tmp/daemon-post-init-recovery", 1)
+  let recovery_stage_subject = process.new_subject()
+  let recovery_continue_subject = process.new_subject()
+  let timer_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(empty_tracker_client(), process.new_subject()),
+      send_after: fn(_, delay_ms, message) {
+        process.send(timer_subject, #(delay_ms, message))
+        daemon.TestTimer(delay_ms)
+      },
+      enqueue_startup_recovery_message: fn(_, message) {
+        process.send(recovery_continue_subject, message)
+      },
+      observe_startup_recovery_stage: fn(stage) {
+        process.send(recovery_stage_subject, stage)
+      },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(_) = daemon.get_snapshot(started.data, 1000)
+  test_async.assert_no_extra_message(timer_subject)
+
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "startup_recovery" =
+    test_async.expect_message(recovery_stage_subject)
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "scheduled_startup_recovery" =
+    test_async.expect_message(recovery_stage_subject)
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "workflow_resumptions" =
+    test_async.expect_message(recovery_stage_subject)
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "startup_transition_invariants" =
+    test_async.expect_message(recovery_stage_subject)
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "startup_recovery_ready" =
+    test_async.expect_message(recovery_stage_subject)
+  assert test_async.expect_message(timer_subject) == #(0, daemon.PollTick(1))
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
 pub fn daemon_runtime_invariant_failure_stops_after_cleanup_test() {
@@ -596,6 +706,7 @@ pub fn daemon_runtime_invariant_failure_stops_after_cleanup_test() {
       check_transition_invariants: checker,
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(daemon_pid) = process.subject_owner(started.data)
   process.unlink(daemon_pid)
   let daemon_monitor = process.monitor(daemon_pid)
@@ -2418,6 +2529,7 @@ pub fn daemon_shutdown_stops_event_hub_test() {
       start_event_hub: fn() { Ok(event_hub) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   let stopped = wait_for_monitor_down(event_hub_monitor, 1000)
@@ -2447,6 +2559,7 @@ pub fn daemon_shutdown_logs_event_hub_timeout_test() {
       start_event_hub: fn() { Ok(event_hub) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   assert daemon.shutdown(started.data, 3000) == Ok(Nil)
   assert wait_for_event(log_subject, "event_hub_shutdown_timeout", 10)
@@ -2466,6 +2579,7 @@ pub fn daemon_shutdown_uses_cached_state_after_post_start_ledger_corruption_test
   let deps = base_dependencies(client, log_subject)
   let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(ledger_path) =
     ledger.path_for_workspace_root(bundle.effective.workspace.root)
   let assert Ok(Nil) = simplifile.create_directory_all(ledger_path.ledger_dir)
@@ -2497,6 +2611,7 @@ pub fn daemon_skips_invalid_workflow_candidate_and_reports_once_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert process.receive(triage_subject, within: 1000)
@@ -2532,6 +2647,7 @@ pub fn daemon_ignores_unlabeled_non_dispatch_state_candidate_test() {
   let triage_subject = process.new_subject()
   let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   test_async.assert_no_extra_message_within(triage_subject, 200)
@@ -2567,6 +2683,7 @@ pub fn daemon_ignores_workflow_labeled_non_dispatch_state_candidate_test() {
   let triage_subject = process.new_subject()
   let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   test_async.assert_no_extra_message_within(triage_subject, 200)
@@ -2600,6 +2717,7 @@ pub fn daemon_reports_invalid_workflow_candidate_when_slots_are_full_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert process.receive(triage_subject, within: 1000)
@@ -2624,6 +2742,7 @@ pub fn daemon_dispatches_valid_workflow_candidate_test() {
   let triage_subject = process.new_subject()
   let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "dispatch_started", 10)
@@ -2662,6 +2781,7 @@ pub fn daemon_claim_handoff_appends_parent_records_before_worker_spawn_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert process.receive(claim_subject, within: 1000)
@@ -2718,6 +2838,7 @@ pub fn daemon_final_validation_blocks_new_dependency_test() {
   let claim_subject = process.new_subject()
   let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   let assert Ok(reply) = process.receive(refresh_subject, within: 1000)
@@ -2768,6 +2889,7 @@ pub fn daemon_final_validation_allows_terminal_blocker_test() {
   let log_subject = process.new_subject()
   let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   let assert Ok(reply) = process.receive(refresh_subject, within: 1000)
@@ -2821,6 +2943,7 @@ pub fn daemon_worker_failure_parks_without_retry_refresh_test() {
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   let assert Ok(initial_refresh) =
@@ -2858,6 +2981,7 @@ pub fn daemon_yaml_agent_steps_get_concrete_sessions_test() {
       start_event_hub: fn() { Ok(event_hub) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -2899,6 +3023,7 @@ pub fn daemon_yaml_operator_prompt_routes_to_agent_step_session_test() {
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "agent_ready", 20)
@@ -2943,6 +3068,7 @@ pub fn daemon_stale_worker_finished_keeps_active_worker_commandable_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "agent_ready", 20)
@@ -2995,6 +3121,7 @@ pub fn daemon_yaml_parent_prompt_rejects_multiple_active_step_routes_test() {
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "agent_ready", 20)
@@ -3038,6 +3165,7 @@ pub fn daemon_yaml_parent_abort_kills_active_step_worker_test() {
       start_event_hub: fn() { Ok(event_hub) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "agent_started", 20)
@@ -3088,6 +3216,7 @@ pub fn daemon_yaml_agent_step_crash_cleans_command_route_test() {
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_event(log_subject, "agent_ready", 20)
@@ -3125,6 +3254,7 @@ pub fn daemon_scheduled_startup_uses_replayed_statuses_after_event_hub_start_tes
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let startup_logs = test_async.drain_subject(log_subject)
   assert !list.contains(
     startup_logs,
@@ -3163,6 +3293,7 @@ pub fn daemon_scheduled_append_failure_logs_and_continues_test() {
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   create_current_ledger_directory(root)
 
   set_clock(clock, 1000)
@@ -3198,6 +3329,7 @@ pub fn daemon_scheduled_due_tick_runs_command_workflow_test() {
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -3255,6 +3387,7 @@ pub fn daemon_scheduled_failure_cleans_active_yaml_step_child_test() {
       start_event_hub: fn() { Ok(event_hub) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -3330,6 +3463,7 @@ pub fn daemon_scheduled_startup_clamps_legacy_persisted_due_after_clock_baseline
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, ms("2026-05-05T12:00:11Z"))
   process.send(started.data, daemon.PollTick(1))
@@ -3377,6 +3511,7 @@ pub fn daemon_scheduled_overlap_records_skip_without_second_start_test() {
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -3460,6 +3595,7 @@ pub fn daemon_scheduled_capacity_starts_after_issue_failures_park_test() {
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_events(
@@ -3517,6 +3653,7 @@ pub fn daemon_scheduled_startup_records_active_run_failure_without_retry_test() 
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   assert wait_for_records(
     root,
@@ -3563,6 +3700,7 @@ pub fn daemon_scheduled_failure_reports_without_workflow_retry_test() {
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -3612,6 +3750,7 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -3687,6 +3826,7 @@ pub fn daemon_scheduled_report_permanent_failure_does_not_retry_test() {
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -3745,6 +3885,7 @@ pub fn daemon_scheduled_report_retry_stops_after_default_bound_test() {
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -3866,6 +4007,7 @@ pub fn daemon_scheduled_report_retry_retains_retry_when_outbox_append_fails_test
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -3923,6 +4065,7 @@ pub fn daemon_scheduled_report_retry_blocks_new_intervals_until_reported_test() 
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -3973,6 +4116,7 @@ pub fn daemon_scheduled_startup_removes_retry_waiting_timer_test() {
       now_ms: fn() { clock_now(clock) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   assert wait_for_records(
     root,
@@ -4010,6 +4154,7 @@ pub fn daemon_yaml_poll_dispatches_command_workflow_test() {
       start_event_hub: fn() { Ok(event_hub) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -4054,6 +4199,7 @@ pub fn daemon_command_failure_diagnostics_reach_events_and_report_test() {
       start_event_hub: fn() { Ok(event_hub) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -4098,6 +4244,7 @@ pub fn daemon_poll_dispatches_fake_worker_routes_update_and_shutdown_test() {
   let log_subject = process.new_subject()
   let assert Ok(started) =
     daemon.start(Some(workflow_path), base_dependencies(client, log_subject))
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -4133,6 +4280,7 @@ pub fn daemon_side_effect_crash_does_not_stall_future_polls_test() {
   let log_subject = process.new_subject()
   let assert Ok(started) =
     daemon.start(Some(workflow_path), base_dependencies(client, log_subject))
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   let assert Ok(FetchRequest(first_reply)) =
@@ -4193,6 +4341,7 @@ pub fn daemon_failed_issue_parks_without_rescheduling_test() {
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   let assert Ok(initial_refresh) =
@@ -4253,6 +4402,7 @@ pub fn daemon_failed_worker_runs_once_without_retry_timer_test() {
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   let assert Ok(initial_refresh) =
@@ -4293,6 +4443,7 @@ pub fn daemon_startup_parks_interrupted_run_without_retry_generation_test() {
   let log_subject = process.new_subject()
   let deps = base_dependencies(client, log_subject)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let identity = orchestrator_state.issue_identity(candidate)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
@@ -4335,6 +4486,7 @@ pub fn daemon_startup_cleanup_workspace_for_terminal_interrupted_run_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   assert wait_for_event(log_subject, "recovered_workspace_cleanup", 20)
   assert process.receive(cleanup_subject, within: 1000) == Ok(workspace_path)
@@ -4389,6 +4541,7 @@ pub fn daemon_startup_identity_mismatch_parks_without_resuming_test() {
       logger: fn(_, _, _, _) { Ok(Nil) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let assert Ok(#(issue_id, reason, Some(run_id))) =
     process.receive(park_subject, within: 1000)
@@ -4600,6 +4753,7 @@ pub fn daemon_startup_resume_preserves_recovered_success_outcome_test() {
       logger: fn(_, _, _, _) { Ok(Nil) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   assert wait_for_workflow_finished_outcomes(
     workspace_root,
@@ -4684,6 +4838,7 @@ pub fn daemon_startup_resume_preserves_recovered_failure_outcome_test() {
       logger: fn(_, _, _, _) { Ok(Nil) },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   assert wait_for_workflow_finished_outcomes(
     workspace_root,

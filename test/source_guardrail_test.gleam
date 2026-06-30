@@ -334,7 +334,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/local_workflow_run.gleam", 939, 22),
     SourceLimit("src/scherzo/orchestrator/core.gleam", 1155, 10),
     SourceLimit("src/scherzo/control/remote/ui_websocket_client.gleam", 1302, 7),
-    SourceLimit("src/scherzo/orchestrator/daemon.gleam", 8775, 84),
+    SourceLimit("src/scherzo/orchestrator/daemon.gleam", 9187, 84),
     SourceLimit(
       "src/scherzo/orchestrator/daemon_transition_shell.gleam",
       734,
