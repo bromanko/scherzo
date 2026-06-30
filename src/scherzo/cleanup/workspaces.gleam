@@ -7,6 +7,7 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_runtime
 import scherzo/control/file
 import scherzo/error
+import scherzo/hash
 import scherzo/path
 import scherzo/runtime_bundle
 import scherzo/state/artifact_store
@@ -51,6 +52,29 @@ type LedgerContext {
   LedgerContext(
     active_roots: dict.Dict(String, Bool),
     publication_protections: dict.Dict(String, List(PublicationProtection)),
+    signature: LedgerSignature,
+  )
+}
+
+type LedgerSignature {
+  LedgerSignature(snapshot_hash: String, current_hash: String)
+}
+
+type LedgerSignatureReadError {
+  LedgerSignatureReadError(String)
+}
+
+type LedgerFreshness {
+  LedgerFresh
+  LedgerChanged
+  LedgerUnavailable(String)
+}
+
+type ApplyContext {
+  ApplyContext(
+    workspace_root: String,
+    ledger_context: LedgerContext,
+    cleanup_bundle: Option(Result(runtime_bundle.RuntimeBundle, String)),
   )
 }
 
@@ -89,9 +113,34 @@ pub fn inventory(workspace_root: String) -> WorkspaceProviderResult {
 }
 
 pub fn apply(workspace_root: String) -> WorkspaceProviderResult {
-  let dry = inventory(workspace_root)
-  let applied = list.map(dry.items, apply_item(workspace_root, _))
-  WorkspaceProviderResult(..dry, items: applied)
+  let root = path.absolute_or_original(workspace_root)
+  let roots = [root]
+  let run_roots = discover_run_roots(root)
+  case ledger_context(root) {
+    Error(reason) ->
+      WorkspaceProviderResult(
+        available: False,
+        roots: roots,
+        items: list.map(run_roots, unavailable_item(root, reason, _)),
+        warnings: [reason],
+      )
+    Ok(context) -> {
+      let dry_items = list.map(run_roots, inventory_item(root, context, _))
+      let apply_context =
+        ApplyContext(
+          workspace_root: root,
+          ledger_context: context,
+          cleanup_bundle: cleanup_bundle_for_apply(root, dry_items),
+        )
+      let applied = list.map(dry_items, apply_item(apply_context, _))
+      WorkspaceProviderResult(
+        available: True,
+        roots: roots,
+        items: applied,
+        warnings: [],
+      )
+    }
+  }
 }
 
 fn unavailable_item(
@@ -223,64 +272,123 @@ fn classify_manifest_backed_run(
   }
 }
 
-fn apply_item(workspace_root: String, item: WorkspaceItem) -> WorkspaceItem {
+fn cleanup_bundle_for_apply(
+  workspace_root: String,
+  items: List(WorkspaceItem),
+) -> Option(Result(runtime_bundle.RuntimeBundle, String)) {
+  case list.any(items, fn(item) { item.status == "would_delete" }) {
+    True -> Some(load_bundle_for_workspace_root(workspace_root))
+    False -> None
+  }
+}
+
+fn apply_item(
+  apply_context: ApplyContext,
+  item: WorkspaceItem,
+) -> WorkspaceItem {
   case item.status {
-    "would_delete" -> apply_eligible_item(workspace_root, item)
+    "would_delete" -> apply_eligible_item(apply_context, item)
     _ -> item
   }
 }
 
 fn apply_eligible_item(
-  workspace_root: String,
+  apply_context: ApplyContext,
   item: WorkspaceItem,
 ) -> WorkspaceItem {
-  case ledger_context(path.absolute_or_original(workspace_root)) {
-    Error(reason) ->
+  let context = apply_context.ledger_context
+  case dict.get(context.active_roots, item.run_root) {
+    Ok(True) ->
       WorkspaceItem(
         ..item,
-        status: "unavailable",
-        reason: "active-run ledger unavailable; retaining workspace run root: "
-          <> reason,
-        warnings: [reason, ..item.warnings],
+        status: "retained",
+        reason: "workspace run became active and is protected from cleanup",
       )
-    Ok(context) ->
-      case dict.get(context.active_roots, item.run_root) {
-        Ok(True) ->
+    Ok(False) | Error(Nil) ->
+      case dict.get(context.publication_protections, item.run_root) {
+        Ok([protection, ..]) ->
           WorkspaceItem(
             ..item,
             status: "retained",
-            reason: "workspace run became active and is protected from cleanup",
+            reason: publication_protection_reason(
+              item.run_id,
+              protection,
+              item.run_root,
+            ),
           )
-        Ok(False) | Error(Nil) ->
-          case dict.get(context.publication_protections, item.run_root) {
-            Ok([protection, ..]) ->
-              WorkspaceItem(
-                ..item,
-                status: "retained",
-                reason: publication_protection_reason(
-                  item.run_id,
-                  protection,
-                  item.run_root,
-                ),
-              )
-            Ok([]) | Error(Nil) -> delegate_cleanup_item(workspace_root, item)
+        Ok([]) | Error(Nil) ->
+          case
+            cached_ledger_context_freshness(
+              apply_context.workspace_root,
+              context.signature,
+            )
+          {
+            LedgerUnavailable(reason) -> unavailable_apply_item(item, reason)
+            LedgerChanged -> retained_after_ledger_changed(item)
+            LedgerFresh -> delegate_cleanup_item(apply_context, item)
           }
       }
   }
 }
 
-fn delegate_cleanup_item(
+fn cached_ledger_context_freshness(
   workspace_root: String,
+  signature: LedgerSignature,
+) -> LedgerFreshness {
+  case ledger.path_for_workspace_root(workspace_root) {
+    Error(err) -> LedgerUnavailable(ledger.ledger_error_to_string(err))
+    Ok(paths) ->
+      case ledger_signature(paths) {
+        Error(error) -> LedgerUnavailable(ledger_signature_error_message(error))
+        Ok(current_signature) ->
+          case ledger_signature_equal(signature, current_signature) {
+            True -> LedgerFresh
+            False -> LedgerChanged
+          }
+      }
+  }
+}
+
+fn unavailable_apply_item(
+  item: WorkspaceItem,
+  reason: String,
+) -> WorkspaceItem {
+  WorkspaceItem(
+    ..item,
+    status: "unavailable",
+    reason: "active-run ledger unavailable; retaining workspace run root: "
+      <> reason,
+    warnings: [reason, ..item.warnings],
+  )
+}
+
+fn retained_after_ledger_changed(item: WorkspaceItem) -> WorkspaceItem {
+  let reason =
+    "active-run ledger changed during cleanup; retaining workspace run root until activity can be reproven"
+  WorkspaceItem(..item, status: "retained", reason: reason, warnings: [
+    reason,
+    ..item.warnings
+  ])
+}
+
+fn delegate_cleanup_item(
+  apply_context: ApplyContext,
   item: WorkspaceItem,
 ) -> WorkspaceItem {
-  case load_bundle_for_workspace_root(workspace_root) {
-    Error(reason) ->
+  case apply_context.cleanup_bundle {
+    None ->
+      WorkspaceItem(
+        ..item,
+        status: "failed",
+        reason: "workspace cleanup delegation unavailable: workflow bundle was not loaded",
+      )
+    Some(Error(reason)) ->
       WorkspaceItem(
         ..item,
         status: "failed",
         reason: "workspace cleanup delegation unavailable: " <> reason,
       )
-    Ok(bundle) ->
+    Some(Ok(bundle)) ->
       case manifest_context(item.run_root) {
         Error(reason) -> WorkspaceItem(..item, status: "failed", reason: reason)
         Ok(context) ->
@@ -506,7 +614,11 @@ fn run_root_workspaces_directory(path_: String) -> Bool {
 fn ledger_context(workspace_root: String) -> Result(LedgerContext, String) {
   case ledger.path_for_workspace_root(workspace_root) {
     Error(err) -> Error(ledger.ledger_error_to_string(err))
-    Ok(paths) ->
+    Ok(paths) -> {
+      use signature_before <- result.try(
+        ledger_signature(paths)
+        |> result.map_error(ledger_signature_error_message),
+      )
       case ledger.replay(paths) {
         Error(err) -> Error(ledger.ledger_error_to_string(err))
         Ok(replayed) ->
@@ -515,19 +627,70 @@ fn ledger_context(workspace_root: String) -> Result(LedgerContext, String) {
               Error(
                 "active-run ledger has a truncated tail; retaining workspace run roots until activity can be proven",
               )
-            False ->
-              Ok(LedgerContext(
-                active_roots: active_run_roots_from_projection(
-                  replayed.projection,
-                ),
-                publication_protections: publication_protections(
-                  workspace_root,
-                  replayed.projection,
-                ),
-              ))
+            False -> {
+              use signature_after <- result.try(
+                ledger_signature(paths)
+                |> result.map_error(ledger_signature_error_message),
+              )
+              case ledger_signature_equal(signature_before, signature_after) {
+                False ->
+                  Error(
+                    "active-run ledger changed while loading cleanup context; retaining workspace run roots until activity can be proven",
+                  )
+                True ->
+                  Ok(LedgerContext(
+                    active_roots: active_run_roots_from_projection(
+                      replayed.projection,
+                    ),
+                    publication_protections: publication_protections(
+                      workspace_root,
+                      replayed.projection,
+                    ),
+                    signature: signature_after,
+                  ))
+              }
+            }
           }
       }
+    }
   }
+}
+
+fn ledger_signature(
+  paths: ledger.LedgerPath,
+) -> Result(LedgerSignature, LedgerSignatureReadError) {
+  use snapshot_hash <- result.try(ledger_file_hash(paths.snapshot_path))
+  use current_hash <- result.try(ledger_file_hash(paths.current_path))
+  Ok(LedgerSignature(snapshot_hash: snapshot_hash, current_hash: current_hash))
+}
+
+fn ledger_file_hash(
+  file_path: String,
+) -> Result(String, LedgerSignatureReadError) {
+  case simplifile.read(file_path) {
+    Ok(contents) -> Ok(hash.sha256_hex(contents))
+    Error(simplifile.Enoent) -> Ok(hash.sha256_hex(""))
+    Error(error) ->
+      Error(LedgerSignatureReadError(
+        "read active-run ledger file for cleanup safety ("
+        <> file_path
+        <> "): "
+        <> simplifile.describe_error(error),
+      ))
+  }
+}
+
+fn ledger_signature_error_message(error: LedgerSignatureReadError) -> String {
+  let LedgerSignatureReadError(message) = error
+  message
+}
+
+fn ledger_signature_equal(
+  left: LedgerSignature,
+  right: LedgerSignature,
+) -> Bool {
+  left.snapshot_hash == right.snapshot_hash
+  && left.current_hash == right.current_hash
 }
 
 fn active_run_roots_from_projection(

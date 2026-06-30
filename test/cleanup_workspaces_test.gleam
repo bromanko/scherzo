@@ -277,6 +277,97 @@ pub fn workspace_cleanup_apply_delegates_remove_and_reports_failures_test() {
   assert string.contains(encoded, "\"status\":\"failed\"")
 }
 
+pub fn workspace_cleanup_apply_does_not_replay_ledger_context_per_eligible_item_test() {
+  let repo = "test/tmp/cleanup-workspaces/apply-ledger-cache"
+  let workspace_root = setup_repo(repo)
+  let first = create_manifest_run(repo, workspace_root, "run-first", "main")
+  let second = create_manifest_run(repo, workspace_root, "run-second", "main")
+  let assert Ok(Nil) =
+    simplifile.write(repo <> "/corrupt-ledger-after-remove", "yes\n")
+
+  let report = cleanup.apply(workspace_root, 0)
+  let items = workspace_items(report)
+
+  assert count_items_with_status(items, "deleted") == 1
+  assert count_items_with_status(items, "retained") == 1
+  assert count_items_with_status(items, "unavailable") == 0
+  let changed_reason =
+    item_reason_contains(
+      items,
+      first,
+      "active-run ledger changed during cleanup",
+    )
+    || item_reason_contains(
+      items,
+      second,
+      "active-run ledger changed during cleanup",
+    )
+  assert changed_reason
+  let assert Ok(corrupted_ledger) =
+    simplifile.read(workspace_root <> "/.scherzo-state/ledger/current.jsonl")
+  assert corrupted_ledger == "not-json\n"
+}
+
+pub fn workspace_cleanup_apply_retains_remaining_workspace_when_run_becomes_active_mid_apply_test() {
+  let repo = "test/tmp/cleanup-workspaces/apply-ledger-active-mid-apply"
+  let workspace_root = setup_repo(repo)
+  let first = create_manifest_run(repo, workspace_root, "run-first", "main")
+  let second = create_manifest_run(repo, workspace_root, "run-second", "main")
+  let active_records =
+    [
+      workflow_run_started_line("reactivated-run-first", 3, "run-first", first),
+      workflow_run_started_line(
+        "reactivated-run-second",
+        4,
+        "run-second",
+        second,
+      ),
+    ]
+    |> string.join(with: "\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      repo <> "/append-ledger-after-remove",
+      active_records <> "\n",
+    )
+
+  let report = cleanup.apply(workspace_root, 0)
+  let items = workspace_items(report)
+
+  assert count_items_with_status(items, "deleted") == 1
+  assert count_items_with_status(items, "retained") == 1
+  let changed_reason =
+    item_reason_contains(
+      items,
+      first,
+      "active-run ledger changed during cleanup",
+    )
+    || item_reason_contains(
+      items,
+      second,
+      "active-run ledger changed during cleanup",
+    )
+  assert changed_reason
+  let assert Ok(first_exists) = simplifile.is_directory(first)
+  let assert Ok(second_exists) = simplifile.is_directory(second)
+  assert first_exists != second_exists
+}
+
+pub fn workspace_cleanup_apply_loads_bundle_once_for_multiple_eligible_items_test() {
+  let repo = "test/tmp/cleanup-workspaces/apply-bundle-cache"
+  let workspace_root = setup_repo(repo)
+  let first = create_manifest_run(repo, workspace_root, "run-first", "main")
+  let second = create_manifest_run(repo, workspace_root, "run-second", "main")
+
+  let report = cleanup.apply(workspace_root, 0)
+  let items = workspace_items(report)
+
+  assert item_status(items, first) == Some("deleted")
+  assert item_status(items, second) == Some("deleted")
+  let assert Ok(driver_log) = simplifile.read(repo <> "/driver.log")
+  assert count_lines_containing(driver_log, "describe --json") == 1
+  assert count_lines_containing(driver_log, "lifecycle remove") == 2
+}
+
 pub fn workspace_cleanup_apply_retains_all_when_active_ledger_unreadable_test() {
   let repo = "test/tmp/cleanup-workspaces/ledger-unreadable"
   let workspace_root = setup_repo(repo)
@@ -423,13 +514,25 @@ fn setup_repo(repo: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       repo <> "/driver.sh",
-      "#!/bin/sh\nset -eu\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\nprintf '%s|workspace=%s|run=%s\\n' \"$1 $2\" \"$SCHERZO_WORKSPACE_PATH\" \"$SCHERZO_RUN_ROOT\" >> \""
+      "#!/bin/sh\nset -eu\nprintf '%s|workspace=%s|run=%s\\n' \"$1 $2\" \"${SCHERZO_WORKSPACE_PATH:-}\" \"${SCHERZO_RUN_ROOT:-}\" >> \""
         <> repo_abs
-        <> "/driver.log\"\ncase \"$1 $2\" in\n  'lifecycle remove')\n    if [ -f \""
+        <> "/driver.log\"\nif [ \"$1 $2\" = 'describe --json' ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"status\",\"assert-only\"]}'\n  exit 0\nfi\ncase \"$1 $2\" in\n  'lifecycle remove')\n    if [ -f \""
         <> repo_abs
         <> "/remove-fail-workspace\" ] && [ \"$(cat \""
         <> repo_abs
-        <> "/remove-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then\n      exit 23\n    fi\n    rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    ;;\n  'lifecycle create') mkdir -p \"$SCHERZO_WORKSPACE_PATH\" ;;
+        <> "/remove-fail-workspace\")\" = \"$SCHERZO_WORKSPACE_NAME\" ]; then\n      exit 23\n    fi\n    count_file=\""
+        <> repo_abs
+        <> "/remove-count\"\n    count=0\n    if [ -f \"$count_file\" ]; then\n      count=$(cat \"$count_file\")\n    fi\n    count=$((count + 1))\n    printf '%s\\n' \"$count\" > \"$count_file\"\n    if [ \"$count\" = 1 ]; then\n      if [ -f \""
+        <> repo_abs
+        <> "/corrupt-ledger-after-remove\" ]; then\n        printf '%s\\n' 'not-json' > \""
+        <> repo_abs
+        <> "/.scherzo/workspaces/.scherzo-state/ledger/current.jsonl\"\n      fi\n      if [ -f \""
+        <> repo_abs
+        <> "/append-ledger-after-remove\" ]; then\n        cat \""
+        <> repo_abs
+        <> "/append-ledger-after-remove\" >> \""
+        <> repo_abs
+        <> "/.scherzo/workspaces/.scherzo-state/ledger/current.jsonl\"\n      fi\n    fi\n    rm -rf \"$SCHERZO_WORKSPACE_PATH\"\n    ;;\n  'lifecycle create') mkdir -p \"$SCHERZO_WORKSPACE_PATH\" ;;
   'lifecycle before-step'|'lifecycle after-step') : ;;
   *) : ;;
 esac\n",
@@ -476,6 +579,28 @@ fn create_manifest_run(
     run_id,
     workspace_name,
   )
+}
+
+fn workflow_run_started_line(
+  record_id: String,
+  at_ms: Int,
+  run_id: String,
+  run_root: String,
+) -> String {
+  record.to_string(record.with_id(
+    record_id,
+    at_ms,
+    record.WorkflowRunStarted(
+      run_id,
+      "implementation",
+      "fingerprint",
+      "issue-id",
+      "LIV-1",
+      "issue-fingerprint",
+      1,
+      run_root,
+    ),
+  ))
 }
 
 fn create_manifest_run_with_keys(
@@ -855,4 +980,20 @@ fn item_reason_contains(
     Ok(item) -> string.contains(item.reason, expected)
     Error(Nil) -> False
   }
+}
+
+fn count_items_with_status(
+  items: List(cleanup.CleanupItemReport),
+  status: String,
+) -> Int {
+  items
+  |> list.filter(fn(item) { item.status == status })
+  |> list.length
+}
+
+fn count_lines_containing(contents: String, needle: String) -> Int {
+  contents
+  |> string.split(on: "\n")
+  |> list.filter(fn(line) { string.contains(line, needle) })
+  |> list.length
 }
