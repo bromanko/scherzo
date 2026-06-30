@@ -429,26 +429,15 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         line("", "Respond to an operator-managed UI request."),
       ],
     ),
-    command_spec.CommandSpec(
-      handler: CleanupKey,
-      path: ["cleanup"],
-      usage: "cleanup",
-      summary: "Dry-run owned cleanup inventory.",
-      positionals: [],
-      options: [
-        control_file_option(),
-        root_option(),
-        json_option(),
-        dry_run_option(),
-        yes_option(),
-      ],
-      help_lines: [
-        line("cleanup", "Dry-run owned cleanup inventory."),
-        line(
-          "cleanup --yes",
-          "Apply eligible owned cleanup after safety checks.",
-        ),
-      ],
+    outbox_command_spec.cleanup_command(
+      CleanupKey,
+      control_file_option(),
+      root_option(),
+      json_option(),
+      dry_run_option(),
+      yes_option(),
+      limit_option(),
+      cursor_option(),
     ),
     command_spec.CommandSpec(
       handler: SchedulesStatusKey,
@@ -1101,7 +1090,7 @@ fn limit_option() -> command_spec.OptionSpec {
   command_spec.value_option(
     "--limit",
     "<n>",
-    "Maximum task list items (daemon clamps to 100).",
+    "Maximum items to return or process.",
     False,
     validate_limit,
   )
@@ -1111,7 +1100,7 @@ fn cursor_option() -> command_spec.OptionSpec {
   command_spec.value_option(
     "--cursor",
     "<cursor>",
-    "Opaque cursor returned by task list.",
+    "Opaque cursor returned by a previous paged command.",
     False,
     validate_cursor,
   )

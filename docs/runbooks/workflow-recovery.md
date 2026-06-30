@@ -128,9 +128,13 @@ Cleanup starts read-only:
 scherzo cleanup
 scherzo cleanup --dry-run
 scherzo cleanup --json --dry-run
+scherzo cleanup --json --dry-run --limit 100 --max-runtime-ms 240000
+scherzo cleanup --json --yes --limit 100 --max-runtime-ms 240000 --cursor <opaque-cursor>
 ```
 
-Dry run reports `would_delete`, `retained`, `warnings`, `roots`, and `transcript_root_status`. It deletes nothing. Retained artifacts include active, interrupted, parked, old-state-reset-required, unknown, malformed, unsupported, missing-owner, missing-terminal-time, path-unsafe, and symlink-unsafe candidates. Pi transcript deletion is unavailable unless a concrete transcript root is verified.
+Dry run reports `would_delete`, `retained`, `warnings`, `roots`, and `transcript_root_status`. When bounded options are present it also reports `truncated`, `next_cursor`, `cursor`, `limit`, `max_runtime_ms`, `summary.scanned`, `summary.applied`, and `summary.truncated_reason`. It deletes nothing. Retained artifacts include active, interrupted, parked, old-state-reset-required, unknown, malformed, unsupported, missing-owner, missing-terminal-time, path-unsafe, and symlink-unsafe candidates. Pi transcript deletion is unavailable unless a concrete transcript root is verified.
+
+The scheduled dogfood cleanup workflow persists its resume cursor at `<workspace-root>/.scherzo-state/cleanup/scheduled/workspace-cleanup.cursor`. Operators may remove that file to restart scheduled cleanup from the beginning. Cursors are opaque and root-bound; malformed or wrong-root cursors fail closed for direct `scherzo cleanup` runs, and the scheduled workflow clears its saved cursor instead of deleting from an untrusted position.
 
 Review every warning. Warnings are redacted and bounded, but paths and identifiers may still reveal local project names or Linear issue identifiers.
 
@@ -141,9 +145,14 @@ Apply only when the dry run output is expected:
 ```sh
 scherzo cleanup --yes
 scherzo cleanup --json --yes
+scherzo cleanup --json --yes --limit 100 --max-runtime-ms 240000
 ```
 
-Apply classifies all candidates before deleting any file. It only deletes eligible artifacts under verified `<workspace-root>/.scherzo-state/` roots, rejects path escapes and symlink escapes, and writes redacted tombstones below `<workspace-root>/.scherzo-state/cleanup/tombstones/`.
+Apply classifies all candidates before deleting any file. It only deletes eligible artifacts under verified `<workspace-root>/.scherzo-state/` roots, rejects path escapes and symlink escapes, and writes redacted tombstones below `<workspace-root>/.scherzo-state/cleanup/tombstones/`. `--max-runtime-ms` stops only at item boundaries; once local tombstone/delete work or delegated workspace removal starts, that item is allowed to finish and the report explains partial progress with `truncated_reason`.
+
+Workspace cleanup still delegates deletions through `workspace_run.cleanup_run` and the configured workspace driver lifecycle remove hook; generic cleanup must not delete run roots directly. Provider-live state and remote-provider-cache data remain explicit unavailable boundary providers in cleanup output and are not mutated by generic cleanup.
+
+A `.scherzo-keep-workspace` file is a fail-closed hold. Legacy prose-only files remain indefinite manual holds. Schema-backed markers with `Schema: scherzo.retained-workspace.v1` use `Review state:` values `publication_guard`, `safe_to_delete`, `manual_hold`, or `abandoned`. `publication_guard` markers can age out only after their stale window elapses and active, parked, interrupted, or publication-required hard holds are gone.
 
 Do not run shell commands such as `rm -rf <workspace-root>/.scherzo-state` as a substitute for cleanup. Manual deletion can remove the only evidence needed to diagnose interrupted or parked recovery.
 

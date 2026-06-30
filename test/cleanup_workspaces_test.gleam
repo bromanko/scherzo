@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -240,6 +241,87 @@ pub fn workspace_cleanup_abandon_command_rejects_non_abandonable_latest_statuses
   assert string.contains(abandoned_message, "already abandoned")
 }
 
+pub type WorkspaceSequenceClockMessage {
+  NextWorkspaceTick(process.Subject(Int))
+  StopWorkspaceClock
+}
+
+pub fn workspace_cleanup_runtime_budget_truncates_and_resumes_test() {
+  let repo = "test/tmp/cleanup-workspaces/runtime-budget"
+  let workspace_root = setup_repo(repo)
+  let first = create_manifest_run(repo, workspace_root, "run-runtime-1", "main")
+  let second =
+    create_manifest_run(repo, workspace_root, "run-runtime-2", "review")
+  let clock = start_workspace_sequence_clock([0, 0, 1])
+
+  let assert Ok(first_page) =
+    cleanup.run_with_clock(
+      cleanup.CleanupRequest(
+        cleanup.Apply,
+        workspace_root,
+        0,
+        None,
+        None,
+        Some(1),
+      ),
+      fn() { next_workspace_tick(clock) },
+    )
+  stop_workspace_clock(clock)
+  let items = workspace_items(first_page)
+
+  assert first_page.truncated == True
+  assert first_page.truncated_reason == Some("runtime_budget")
+  assert first_page.applied == Some(1)
+  assert item_status(items, first) == Some("deleted")
+  let assert Some(next_cursor) = first_page.next_cursor
+  let assert Ok(False) = simplifile.is_directory(first)
+  let assert Ok(True) = simplifile.is_directory(second)
+
+  let assert Ok(second_page) =
+    cleanup.run_with_clock(
+      cleanup.CleanupRequest(
+        cleanup.Apply,
+        workspace_root,
+        0,
+        None,
+        Some(next_cursor),
+        Some(10),
+      ),
+      fn() { 0 },
+    )
+  let second_items = workspace_items(second_page)
+  assert second_page.truncated == False
+  assert item_status(second_items, second) == Some("deleted")
+}
+
+pub fn workspace_cleanup_bounded_apply_delegates_remove_test() {
+  let repo = "test/tmp/cleanup-workspaces/bounded-apply"
+  let workspace_root = setup_repo(repo)
+  let eligible =
+    create_manifest_run(repo, workspace_root, "run-bounded-eligible", "main")
+
+  let assert Ok(report) =
+    cleanup.run_request(cleanup.CleanupRequest(
+      cleanup.Apply,
+      workspace_root,
+      0,
+      Some(1),
+      None,
+      None,
+    ))
+  let items = workspace_items(report)
+
+  assert item_status(items, eligible) == Some("deleted")
+  assert report.applied == Some(1)
+  let assert Ok(False) = simplifile.is_directory(eligible)
+  let assert Ok(driver_log) = simplifile.read(repo <> "/driver.log")
+  assert string.contains(driver_log, "lifecycle remove")
+
+  let second = cleanup.apply(workspace_root, 0)
+  let second_items = workspace_items(second)
+  assert item_status(second_items, eligible) == None
+}
+
 pub fn workspace_cleanup_apply_delegates_remove_and_reports_failures_test() {
   let repo = "test/tmp/cleanup-workspaces/apply"
   let workspace_root = setup_repo(repo)
@@ -319,6 +401,112 @@ pub fn workspace_cleanup_inventory_skips_directory_symlink_roots_test() {
     simplifile.is_file(outside <> "/workspaces/main/sentinel")
 }
 
+pub fn workspace_cleanup_unmarked_interrupted_parked_runs_remain_retained_test() {
+  let repo = "test/tmp/cleanup-workspaces/unmarked-hard-hold"
+  let workspace_root = setup_repo(repo)
+  let run_root =
+    create_manifest_run(
+      repo,
+      workspace_root,
+      "run-unmarked-interrupted",
+      "main",
+    )
+  let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      paths,
+      [
+        record.with_id(
+          "issue-parked",
+          3,
+          record.IssueParked("issue-id", "LIV-1", "waiting for operator", 3),
+        ),
+        record.with_id(
+          "workflow-interrupted",
+          4,
+          record.WorkflowRunInterrupted(
+            "run-unmarked-interrupted",
+            "implementation",
+            "issue-id",
+            "operator review required",
+          ),
+        ),
+      ],
+      False,
+    )
+
+  let report = cleanup.inventory(workspace_root, 0)
+  let items = workspace_items(report)
+
+  assert item_status(items, run_root) == Some("retained")
+  assert item_reason_contains(items, run_root, "parked")
+}
+
+pub fn workspace_cleanup_schema_marker_publication_guard_ages_out_test() {
+  let repo = "test/tmp/cleanup-workspaces/schema-marker-age"
+  let workspace_root = setup_repo(repo)
+  let fresh =
+    create_manifest_run(repo, workspace_root, "run-fresh-marker", "main")
+  let stale =
+    create_manifest_run(repo, workspace_root, "run-stale-marker", "main")
+  write_schema_marker(fresh, "publication_guard", 2000)
+  write_schema_marker(stale, "publication_guard", 0)
+
+  let report = cleanup.inventory(workspace_root, 2_592_000_001)
+  let items = workspace_items(report)
+
+  assert item_status(items, fresh) == Some("retained")
+  assert item_status(items, stale) == Some("would_delete")
+}
+
+pub fn workspace_cleanup_schema_marker_safe_to_delete_still_retains_interrupted_run_test() {
+  let repo = "test/tmp/cleanup-workspaces/schema-marker-safe-to-delete"
+  let workspace_root = setup_repo(repo)
+  let run_root =
+    create_manifest_run(repo, workspace_root, "run-interrupted", "main")
+  write_schema_marker(run_root, "safe_to_delete", 0)
+  let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(Nil) =
+    ledger.append(
+      paths,
+      record.with_id(
+        "workflow-started",
+        1,
+        record.WorkflowRunStarted(
+          "run-interrupted",
+          "implementation",
+          "fingerprint",
+          "issue-safe-to-delete",
+          "LIV-55",
+          "issue-fingerprint",
+          1,
+          run_root,
+        ),
+      ),
+      False,
+    )
+  let assert Ok(Nil) =
+    ledger.append(
+      paths,
+      record.with_id(
+        "workflow-interrupted",
+        2,
+        record.WorkflowRunInterrupted(
+          "run-interrupted",
+          "implementation",
+          "issue-safe-to-delete",
+          "operator review required",
+        ),
+      ),
+      False,
+    )
+
+  let report = cleanup.inventory(workspace_root, 2_592_000_001)
+  let items = workspace_items(report)
+  assert item_status(items, run_root) == Some("retained")
+  assert item_reason_contains(items, run_root, "operator review")
+}
+
 pub fn workspace_cleanup_inventory_rejects_oversized_manifest_before_decode_test() {
   let repo = "test/tmp/cleanup-workspaces/oversized-manifest"
   let workspace_root = setup_repo(repo)
@@ -336,6 +524,76 @@ pub fn workspace_cleanup_inventory_rejects_oversized_manifest_before_decode_test
 
   assert item_status(items, run_root) == Some("retained")
   assert item_reason_contains(items, run_root, "too large")
+}
+
+fn start_workspace_sequence_clock(
+  values: List(Int),
+) -> process.Subject(WorkspaceSequenceClockMessage) {
+  let ready = process.new_subject()
+  let _ =
+    process.spawn(fn() {
+      let subject = process.new_subject()
+      process.send(ready, subject)
+      workspace_sequence_clock_loop(subject, values)
+    })
+  let assert Ok(subject) = process.receive(ready, within: 1000)
+  subject
+}
+
+fn workspace_sequence_clock_loop(
+  subject: process.Subject(WorkspaceSequenceClockMessage),
+  values: List(Int),
+) -> Nil {
+  case process.receive(subject, within: 1000) {
+    Ok(NextWorkspaceTick(reply)) ->
+      case values {
+        [value, ..rest] -> {
+          process.send(reply, value)
+          workspace_sequence_clock_loop(subject, case rest {
+            [] -> [value]
+            _ -> rest
+          })
+        }
+        [] -> {
+          process.send(reply, 0)
+          workspace_sequence_clock_loop(subject, [])
+        }
+      }
+    Ok(StopWorkspaceClock) -> Nil
+    Error(_) -> Nil
+  }
+}
+
+fn next_workspace_tick(
+  clock: process.Subject(WorkspaceSequenceClockMessage),
+) -> Int {
+  let reply = process.new_subject()
+  process.send(clock, NextWorkspaceTick(reply))
+  let assert Ok(now_ms) = process.receive(reply, within: 1000)
+  now_ms
+}
+
+fn stop_workspace_clock(
+  clock: process.Subject(WorkspaceSequenceClockMessage),
+) -> Nil {
+  process.send(clock, StopWorkspaceClock)
+}
+
+fn write_schema_marker(
+  run_root: String,
+  review_state: String,
+  created_at_ms: Int,
+) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      run_root <> "/.scherzo-keep-workspace",
+      "Schema: scherzo.retained-workspace.v1\nReview state: "
+        <> review_state
+        <> "\nCreated at ms: "
+        <> int.to_string(created_at_ms)
+        <> "\nSource kind: execplan\nSource: LIV-1266\n",
+    )
+  Nil
 }
 
 fn setup_repo(repo: String) -> String {

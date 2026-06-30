@@ -1376,6 +1376,11 @@ def write_implementation_retention_marker(source_kind: str, source_ref: str) -> 
     if marker is None:
         return None
     marker.write_text(
+        f"Schema: scherzo.retained-workspace.v1\n"
+        f"Review state: publication_guard\n"
+        f"Created at ms: {int(dt.datetime.now(tz=dt.timezone.utc).timestamp() * 1000)}\n"
+        f"Source kind: {source_kind}\n"
+        f"Source: {source_ref}\n"
         "Scherzo retained this run because an implementation workflow "
         "has not published a PR yet.\n"
         f"Source kind: {source_kind}\n"

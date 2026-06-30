@@ -8,6 +8,7 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
 import scherzo/artifact_repository/command_runner
+import scherzo/cleanup/cursor as cleanup_cursor
 import scherzo/commit_stack_artifact
 import scherzo/control/client as control_client
 import scherzo/control/command
@@ -926,11 +927,32 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       "ABC-1",
     ))
   assert ctl.parse(["cleanup"])
-    == Ok(ctl.Cleanup(None, None, False, True, False))
-  assert ctl.parse(["cleanup", "--dry-run", "--json", "--root", "work"])
-    == Ok(ctl.Cleanup(None, Some("work"), True, True, False))
+    == Ok(ctl.Cleanup(None, None, False, True, False, None, None, None))
+  assert ctl.parse([
+      "cleanup",
+      "--dry-run",
+      "--json",
+      "--root",
+      "work",
+      "--limit",
+      "25",
+      "--cursor",
+      "cursor-1",
+      "--max-runtime-ms",
+      "240000",
+    ])
+    == Ok(ctl.Cleanup(
+      None,
+      Some("work"),
+      True,
+      True,
+      False,
+      Some(25),
+      Some("cursor-1"),
+      Some(240_000),
+    ))
   assert ctl.parse(["cleanup", "--yes", "--root", "work"])
-    == Ok(ctl.Cleanup(None, Some("work"), False, False, True))
+    == Ok(ctl.Cleanup(None, Some("work"), False, False, True, None, None, None))
   assert ctl.parse(["schedules", "status", "--root", "work", "--json"])
     == Ok(ctl.SchedulesStatus(None, Some("work"), True, None))
   assert ctl.parse(["schedules", "status", "nightly", "--root", "work"])
@@ -1054,7 +1076,7 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
 
 pub fn parse_offline_accepts_canonical_top_level_commands_and_rejects_daemon_controls_test() {
   assert ctl.parse_offline(["cleanup", "--root", "work"])
-    == Ok(ctl.Cleanup(None, Some("work"), False, True, False))
+    == Ok(ctl.Cleanup(None, Some("work"), False, True, False, None, None, None))
   assert ctl.parse_offline(["schedules", "status", "nightly", "--root", "work"])
     == Ok(ctl.SchedulesStatus(None, Some("work"), False, Some("nightly")))
   let assert Ok(ctl.Workstream(_)) = ctl.parse_offline(["workstream", "list"])
@@ -1155,6 +1177,11 @@ pub fn parse_operator_commands_test() {
     ctl.parse(["schedules", "logs", "nightly"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["cleanup", "--yes", "--dry-run"])
+  let assert Error(ctl.UsageError(_)) = ctl.parse(["cleanup", "--limit", "0"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["cleanup", "--max-runtime-ms", "0"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["cleanup", "--cursor", "   "])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse([
       "recovery",
@@ -1202,7 +1229,7 @@ pub fn cleanup_json_output_uses_provider_report_test() {
 
   let result =
     ctl.run_with_deps(
-      ctl.Cleanup(None, Some(root), True, False, False),
+      ctl.Cleanup(None, Some(root), True, False, False, None, None, None),
       ps_deps([], ps_now_ms, ""),
       output(output_subject),
     )
@@ -1212,6 +1239,7 @@ pub fn cleanup_json_output_uses_provider_report_test() {
   assert string.contains(transcript, "\"mode\":\"dry_run\"")
   assert string.contains(transcript, "\"provider_id\":\"local_state\"")
   assert string.contains(transcript, "\"provider_id\":\"workspaces\"")
+  assert !string.contains(transcript, "\"truncated\"")
 }
 
 pub fn cleanup_text_output_uses_provider_report_test() {
@@ -1221,7 +1249,7 @@ pub fn cleanup_text_output_uses_provider_report_test() {
 
   let result =
     ctl.run_with_deps(
-      ctl.Cleanup(None, Some(root), False, True, False),
+      ctl.Cleanup(None, Some(root), False, True, False, None, None, None),
       ps_deps([], ps_now_ms, ""),
       output(output_subject),
     )
@@ -1232,6 +1260,41 @@ pub fn cleanup_text_output_uses_provider_report_test() {
   assert string.contains(transcript, "provider: local_state")
   assert string.contains(transcript, "provider: workspaces")
   assert string.contains(transcript, "available: true")
+  assert !string.contains(transcript, "page:")
+}
+
+pub fn cleanup_bounded_output_includes_page_metadata_test() {
+  let root = "test/tmp/ctl-cleanup/bounded"
+  test_helpers.reset_dir(root)
+  let output_subject = process.new_subject()
+  let cursor =
+    cleanup_cursor.encode(
+      root,
+      cleanup_cursor.Cursor("local_state", "cursor-1"),
+    )
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Cleanup(
+        None,
+        Some(root),
+        False,
+        True,
+        False,
+        Some(25),
+        Some(cursor),
+        Some(240_000),
+      ),
+      ps_deps([], ps_now_ms, ""),
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "page:")
+  assert string.contains(transcript, "limit: 25")
+  assert string.contains(transcript, "cursor: " <> cursor)
+  assert string.contains(transcript, "max_runtime_ms: 240000")
 }
 
 pub fn parse_rejects_usage_errors_test() {

@@ -51,10 +51,7 @@ pub fn main() -> Nil {
       io.println(test_usage())
       halt(0)
     }
-    _ -> {
-      io.println_error(test_usage())
-      halt(2)
-    }
+    explicit_files -> run_explicit_files_or_usage(explicit_files)
   }
 }
 
@@ -69,6 +66,7 @@ type Suite {
   LocalIntegration
   RealPiValidation
   All
+  Explicit
 }
 
 fn run_suite(suite: Suite) -> Nil {
@@ -112,6 +110,60 @@ fn file_belongs_to_suite(path: String, suite: Suite) -> Bool {
     LocalIntegration -> string.starts_with(path, local_integration_prefix)
     RealPiValidation -> string.starts_with(path, real_pi_validation_prefix)
     All -> True
+    Explicit -> False
+  }
+}
+
+fn run_explicit_files_or_usage(paths: List(String)) -> Nil {
+  case normalize_explicit_test_files(paths) {
+    Ok(files) -> {
+      let options = [
+        Verbose,
+        NoTty,
+        Report(#(GleeunitProgress, [Colored(True)])),
+        ScaleTimeouts(10),
+      ]
+      let result = run_files_with_shared_tmp_guard(files, options, Explicit)
+      case result {
+        Ok(_) -> halt(0)
+        Error(_) -> halt(1)
+      }
+    }
+    Error(Nil) -> {
+      io.println_error(test_usage())
+      halt(2)
+    }
+  }
+}
+
+fn normalize_explicit_test_files(
+  paths: List(String),
+) -> Result(List(String), Nil) {
+  case paths {
+    [] -> Ok([])
+    [path, ..rest] -> {
+      use normalized <- result.try(normalize_explicit_test_file(path))
+      use normalized_rest <- result.try(normalize_explicit_test_files(rest))
+      Ok([normalized, ..normalized_rest])
+    }
+  }
+}
+
+fn normalize_explicit_test_file(path: String) -> Result(String, Nil) {
+  let normalized = case string.starts_with(path, "test/") {
+    True -> string.drop_start(path, 5)
+    False -> path
+  }
+  case
+    string.ends_with(normalized, ".gleam")
+    || string.ends_with(normalized, ".erl")
+  {
+    False -> Error(Nil)
+    True ->
+      case simplifile.is_file("test/" <> normalized) {
+        Ok(True) -> Ok(normalized)
+        Ok(False) | Error(_) -> Error(Nil)
+      }
   }
 }
 
@@ -233,8 +285,8 @@ pub fn contract_repository_test_files() -> List(String) {
 }
 
 fn test_usage() -> String {
-  "Usage: gleam test [-- --suite unit|contract|contract-runtime|contract-orchestrator|contract-tracker|contract-workflow|contract-repository|local-integration|real-pi-validation|all]\n"
-  <> "Default with no suite runs the deterministic unit suite. Contract shards split shell-heavy coverage for CI timeouts."
+  "Usage: gleam test [test/<file>...] [-- --suite unit|contract|contract-runtime|contract-orchestrator|contract-tracker|contract-workflow|contract-repository|local-integration|real-pi-validation|all]\n"
+  <> "Default with no suite runs the deterministic unit suite. File arguments run only those test modules. Contract shards split shell-heavy coverage for CI timeouts."
 }
 
 fn suite_name(suite: Suite) -> String {
@@ -249,6 +301,7 @@ fn suite_name(suite: Suite) -> String {
     LocalIntegration -> "local-integration"
     RealPiValidation -> "real-pi-validation"
     All -> "all"
+    Explicit -> "explicit"
   }
 }
 

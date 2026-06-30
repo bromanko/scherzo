@@ -1,3 +1,4 @@
+import gleam/int
 import gleam/string
 import scherzo/control/query/types as query_types
 import scherzo/ctl/command_spec
@@ -31,6 +32,59 @@ pub fn command(
         "Filter list output by status: pending, in_flight, retryable, completed, failed, permanent.",
       ),
     ],
+  )
+}
+
+pub fn cleanup_command(
+  handler: handler,
+  control_file_option: command_spec.OptionSpec,
+  root_option: command_spec.OptionSpec,
+  json_option: command_spec.OptionSpec,
+  dry_run_option: command_spec.OptionSpec,
+  yes_option: command_spec.OptionSpec,
+  limit_option: command_spec.OptionSpec,
+  cursor_option: command_spec.OptionSpec,
+) -> command_spec.CommandSpec(handler) {
+  command_spec.CommandSpec(
+    handler: handler,
+    path: ["cleanup"],
+    usage: "cleanup [--yes] [--limit <n>] [--cursor <cursor>] [--max-runtime-ms <ms>]",
+    summary: "Dry-run owned cleanup inventory.",
+    positionals: [],
+    options: [
+      control_file_option,
+      root_option,
+      json_option,
+      dry_run_option,
+      yes_option,
+      limit_option,
+      cursor_option,
+      cleanup_max_runtime_option(),
+    ],
+    help_lines: [
+      line("cleanup", "Dry-run owned cleanup inventory."),
+      line("cleanup --yes", "Apply eligible owned cleanup after safety checks."),
+      line(
+        "cleanup --limit 100 --max-runtime-ms 240000",
+        "Request a bounded cleanup page and report resume metadata.",
+      ),
+    ],
+  )
+}
+
+fn cleanup_max_runtime_option() -> command_spec.OptionSpec {
+  command_spec.value_option(
+    "--max-runtime-ms",
+    "<ms>",
+    "Maximum cleanup runtime budget in milliseconds.",
+    False,
+    fn(value) {
+      case int.parse(value) {
+        Ok(limit) if limit > 0 -> Ok(value)
+        Ok(_) | Error(_) ->
+          Error("--max-runtime-ms requires a positive integer")
+      }
+    },
   )
 }
 

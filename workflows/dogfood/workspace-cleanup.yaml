@@ -19,6 +19,10 @@ steps:
       fi
 
       run_scherzo() {
+        if test -n "${SCHERZO_CTL:-}"; then
+          "$SCHERZO_CTL" "$@"
+          return
+        fi
         if test -n "${SCHERZO_BIN:-}"; then
           "$SCHERZO_BIN" "$@"
           return
@@ -35,6 +39,62 @@ steps:
         exit 127
       }
 
-      run_scherzo cleanup --root "$workspace_root" --json --yes
+      cleanup_state_dir="$workspace_root/.scherzo-state/cleanup/scheduled"
+      cleanup_cursor_path="$cleanup_state_dir/workspace-cleanup.cursor"
+      mkdir -p "$cleanup_state_dir"
+
+      cleanup_once() {
+        if test -f "$cleanup_cursor_path"; then
+          saved_cursor=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip())' "$cleanup_cursor_path")
+        else
+          saved_cursor=""
+        fi
+
+        if test -n "$saved_cursor"; then
+          run_scherzo cleanup --root "$workspace_root" --json --yes --limit 100 --max-runtime-ms 240000 --cursor "$saved_cursor"
+        else
+          run_scherzo cleanup --root "$workspace_root" --json --yes --limit 100 --max-runtime-ms 240000
+        fi
+      }
+
+      cleanup_output=$(cleanup_once 2>&1) || cleanup_status=$?
+      cleanup_status=${cleanup_status:-0}
+      if test "$cleanup_status" -ne 0; then
+        case "$cleanup_output" in
+          *cleanup_malformed_cursor*|*cleanup_wrong_root*|*cleanup_unknown_provider*|*cleanup_unknown_version*)
+            rm -f "$cleanup_cursor_path"
+            exit 0
+            ;;
+          *)
+            printf '%s\n' "$cleanup_output" >&2
+            exit "$cleanup_status"
+            ;;
+        esac
+      fi
+
+      printf '%s\n' "$cleanup_output"
+      python3 - "$cleanup_cursor_path" "$cleanup_output" <<'PY'
+      import json
+      import os
+      import pathlib
+      import sys
+      import tempfile
+
+      cursor_path = pathlib.Path(sys.argv[1])
+      payload = json.loads(sys.argv[2])
+      if payload.get("truncated") and payload.get("next_cursor"):
+          cursor_path.parent.mkdir(parents=True, exist_ok=True)
+          handle = tempfile.NamedTemporaryFile(
+              "w",
+              dir=str(cursor_path.parent),
+              delete=False,
+              encoding="utf-8",
+          )
+          handle.write(payload["next_cursor"] + "\n")
+          handle.close()
+          os.replace(handle.name, cursor_path)
+      else:
+          cursor_path.unlink(missing_ok=True)
+      PY
     timeout: 5m
     run_in: main
