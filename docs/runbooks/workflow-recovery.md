@@ -125,9 +125,9 @@ The historical LIV-509 retry remains deferred operator evidence after publish, n
 Cleanup starts read-only:
 
 ```sh
-scripts/scherzoctl cleanup
-scripts/scherzoctl cleanup --dry-run
-scripts/scherzoctl cleanup --json --dry-run
+scherzo cleanup
+scherzo cleanup --dry-run
+scherzo cleanup --json --dry-run
 ```
 
 Dry run reports `would_delete`, `retained`, `warnings`, `roots`, and `transcript_root_status`. It deletes nothing. Retained artifacts include active, interrupted, parked, old-state-reset-required, unknown, malformed, unsupported, missing-owner, missing-terminal-time, path-unsafe, and symlink-unsafe candidates. Pi transcript deletion is unavailable unless a concrete transcript root is verified.
@@ -139,8 +139,8 @@ Review every warning. Warnings are redacted and bounded, but paths and identifie
 Apply only when the dry run output is expected:
 
 ```sh
-scripts/scherzoctl cleanup --yes
-scripts/scherzoctl cleanup --json --yes
+scherzo cleanup --yes
+scherzo cleanup --json --yes
 ```
 
 Apply classifies all candidates before deleting any file. It only deletes eligible artifacts under verified `<workspace-root>/.scherzo-state/` roots, rejects path escapes and symlink escapes, and writes redacted tombstones below `<workspace-root>/.scherzo-state/cleanup/tombstones/`.
@@ -154,8 +154,8 @@ Cleanup deletion is irreversible unless you have an external backup. Tombstones 
 If daemon startup fails with an unsupported schema message, use offline state status:
 
 ```sh
-scripts/scherzoctl state status --root <workspace-root>
-scripts/scherzoctl state status --root <workspace-root> --json
+scherzo state status --root <workspace-root>
+scherzo state status --root <workspace-root> --json
 ```
 
 Status values are `current`, `unsupported`, `corrupt`, `missing`, or `archived`. Only `unsupported` is eligible for archive or discard controls. Corrupt or malformed state must be retained for manual inspection.
@@ -165,8 +165,8 @@ Status values are `current`, `unsupported`, `corrupt`, `missing`, or `archived`.
 Archive first when you may need evidence later:
 
 ```sh
-scripts/scherzoctl state archive-old --root <workspace-root> --yes
-scripts/scherzoctl state reinitialize --root <workspace-root> --yes
+scherzo state archive-old --root <workspace-root> --yes
+scherzo state reinitialize --root <workspace-root> --yes
 ```
 
 Archive moves the active ledger to `<workspace-root>/.scherzo-state/archive/old-state/<id>/ledger/`. Reinitialize then creates the current empty layout: `.scherzo-state/ledger/archive/` and `.scherzo-state/ledger/current.jsonl`.
@@ -178,8 +178,8 @@ To restore manually, stop Scherzo, move the archived `ledger/` directory back to
 Discard only when the old state is known to be disposable:
 
 ```sh
-scripts/scherzoctl state discard-old --root <workspace-root> --yes
-scripts/scherzoctl state reinitialize --root <workspace-root> --yes
+scherzo state discard-old --root <workspace-root> --yes
+scherzo state reinitialize --root <workspace-root> --yes
 ```
 
 Discard is not reversible. It deletes unsupported active ledger state. It refuses current, missing, archived, corrupt, or malformed state.

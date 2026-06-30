@@ -19,16 +19,16 @@ Auto-enqueue remains disabled in the checked-in playbooks. Queueing a phase reco
 List all workstreams, or filter by a Linear key:
 
 ```sh
-scripts/scherzoctl workstream list
-scripts/scherzoctl workstream list LIV-465
-scripts/scherzoctl workstream list --json
+direnv exec . gleam run -- workstream list
+direnv exec . gleam run -- workstream list LIV-465
+direnv exec . gleam run -- workstream list --json
 ```
 
 Inspect one workstream by workstream id or Linear key:
 
 ```sh
-scripts/scherzoctl workstream show linear:LIV-465
-scripts/scherzoctl workstream show LIV-465 --json
+direnv exec . gleam run -- workstream show linear:LIV-465
+direnv exec . gleam run -- workstream show LIV-465 --json
 ```
 
 Check `phases`, `handoffs`, `artifacts`, `queued_phase_runs`, `unresolved_next_actions`, `decisions`, and `warnings`. Treat snapshot warnings or hash mismatches as blockers; do not advance from a Linear comment when the retained snapshot is missing or stale.
@@ -38,7 +38,7 @@ Check `phases`, `handoffs`, `artifacts`, `queued_phase_runs`, `unresolved_next_a
 Use the snapshot ref and sha shown on the handoff or next-action input. For an approved ExecPlan handoff:
 
 ```sh
-scripts/scherzoctl workstream decision approve \
+direnv exec . gleam run -- workstream decision approve \
   linear:LIV-465 \
   implement_exec_plan \
   human_review \
@@ -54,7 +54,7 @@ Use `request-changes`, `reject`, or `deviate` with the same shape when the opera
 After approval, queue implementation from the retained handoff:
 
 ```sh
-scripts/scherzoctl workstream start-from-handoff \
+direnv exec . gleam run -- workstream start-from-handoff \
   execplan-implementation \
   implement_exec_plan \
   <handoff-ref> \
@@ -67,7 +67,7 @@ The command writes a `scherzo.input_bundle.v1` artifact, records a queued phase 
 To retry from an already retained input bundle:
 
 ```sh
-scripts/scherzoctl workstream start-from-input-bundle \
+direnv exec . gleam run -- workstream start-from-input-bundle \
   execplan-implementation \
   implement_exec_plan \
   <input-bundle-ref> \

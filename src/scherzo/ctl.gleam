@@ -22,12 +22,13 @@ import scherzo/ctl/renderers as ctl_renderers
 import scherzo/ctl/schedules as ctl_schedules
 import scherzo/ctl/state_handlers as ctl_state_handlers
 import scherzo/ctl/task_output
-import scherzo/ctl/usage as ctl_usage
 import scherzo/ctl/workstream as ctl_workstream
+import scherzo/instance_lock
 import scherzo/session/event
 import scherzo/state/local_artifacts
 import scherzo/terminal/render
 import scherzo/terminal/style
+import simplifile
 
 pub type OutputMode {
   Pretty
@@ -206,30 +207,127 @@ pub type Replay {
 }
 
 pub fn main(args: List(String)) -> Result(Nil, Error) {
-  case parse(args) {
-    Error(err) -> Error(err)
+  run_control_args_with_deps_and_env(
+    args,
+    real_control_client(),
+    real_output(),
+    io.println_error,
+    file.get_env,
+  )
+}
+
+pub fn offline_main(args: List(String)) -> Result(Nil, Error) {
+  run_offline_args_with_deps_and_env(
+    args,
+    real_control_client(),
+    real_output(),
+    io.println_error,
+    file.get_env,
+  )
+}
+
+pub fn run_control_args_with_deps_and_env(
+  args: List(String),
+  deps: ControlClient,
+  output: Output,
+  error_line: fn(String) -> Nil,
+  env: fn(String) -> Option(String),
+) -> Result(Nil, Error) {
+  use command <- try_ctl(parse(args))
+  case command_registry.deprecated_alias_hint(args) {
+    Some(message) -> error_line(message)
+    None -> Nil
+  }
+  run_with_deps_and_env(command, deps, output, env)
+}
+
+pub fn run_offline_args_with_deps_and_env(
+  args: List(String),
+  deps: ControlClient,
+  output: Output,
+  error_line: fn(String) -> Nil,
+  env: fn(String) -> Option(String),
+) -> Result(Nil, Error) {
+  let _ = error_line
+  case parse_offline(args) {
+    Error(error) -> Error(error)
     Ok(Help) -> {
-      io.println(usage())
+      output.line(offline_usage())
       Ok(Nil)
     }
-    Ok(command) -> run(command)
+    Ok(command) -> run_with_deps_and_env(command, deps, output, env)
   }
 }
 
 pub fn parse(args: List(String)) -> Result(Command, Error) {
+  parse_command(args, command_registry.parse_control, True)
+}
+
+pub fn parse_offline(args: List(String)) -> Result(Command, Error) {
+  parse_command(args, command_registry.parse_offline, False)
+}
+
+pub fn usage() -> String {
+  let lines =
+    [
+      "Usage: scherzo ctl <command> [options]",
+      "       scherzoctl <command> [options]",
+      "",
+      "Local Scherzo daemon inspection and operator controls. Commands:",
+    ]
+    |> list.append(command_registry.control_usage_lines())
+    |> list.append(["", "Options:"])
+    |> list.append(command_registry.control_option_usage_lines())
+
+  string.join(lines, with: "\n")
+}
+
+pub fn offline_usage() -> String {
+  let lines =
+    [
+      "Usage: scherzo <offline-command> [options]",
+      "",
+      "Local retained-state commands. Commands:",
+    ]
+    |> list.append(command_registry.offline_usage_lines())
+    |> list.append(["", "Options:"])
+    |> list.append(command_registry.offline_option_usage_lines())
+
+  string.join(lines, with: "\n")
+}
+
+fn parse_command(
+  args: List(String),
+  parse_with_registry: fn(List(String)) ->
+    Result(
+      command_spec.ParseOutcome(command_registry.HandlerKey),
+      command_spec.ParseError,
+    ),
+  control_context: Bool,
+) -> Result(Command, Error) {
   case args {
     [] -> Ok(Help)
     _ ->
-      case command_registry.parse(args) {
+      case parse_with_registry(args) {
         Ok(command_spec.HelpRequested) -> Ok(Help)
         Ok(command_spec.Parsed(parsed)) -> build_command(parsed)
-        Error(error) -> Error(UsageError(command_spec.error_message(error)))
+        Error(error) ->
+          Error(UsageError(parse_error_message(error, control_context)))
       }
   }
 }
 
-pub fn usage() -> String {
-  ctl_usage.text()
+fn parse_error_message(
+  error: command_spec.ParseError,
+  control_context: Bool,
+) -> String {
+  let message = command_spec.error_message(error)
+  case control_context, message {
+    False, "unknown or invalid ctl command: " <> command_name ->
+      "unknown or invalid command: " <> command_name
+    False, "unknown or invalid ctl command" -> "unknown or invalid command"
+    _, _ -> message
+  }
 }
 
 fn build_command(
@@ -1031,10 +1129,6 @@ fn repair_run_provenance_target(value: String) -> Result(String, Error) {
   }
 }
 
-fn run(command: Command) -> Result(Nil, Error) {
-  run_with_deps(command, real_control_client(), real_output())
-}
-
 pub fn run_with_deps(
   command: Command,
   deps: ControlClient,
@@ -1753,47 +1847,55 @@ fn run_artifact_publication_retry(
   output: Output,
   env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
+  let _ = deps
   case explicit_root {
-    None -> {
-      use target <- try_ctl(load_control_target(control_path, env))
-      let operator_command =
-        control_command.RetryArtifactPublication(run_id, publication_id)
-      case json_output {
-        True ->
-          print_raw_request(
-            target,
-            protocol.command_request("1", "", operator_command),
-            deps,
-            output,
-          )
-        False ->
-          case deps.apply_command(target.control_file, operator_command) {
-            Ok(result) -> {
-              ctl_renderers.print_command_result(result, line: output.line)
-              Ok(Nil)
-            }
-            Error(err) -> Error(client_error(err))
-          }
-      }
-    }
+    None ->
+      Error(UsageError(
+        "artifact publication retry requires --root <workspace-root>",
+      ))
     Some(_) -> {
       use root <- try_ctl(artifact_workspace_root(
         control_path,
         explicit_root,
         env,
       ))
-      ctl_artifact_publication_retry.retry(
-        root,
-        json_output,
-        run_id,
-        publication_id,
-        output.line,
+      use _ <- try_ctl(validate_artifact_retry_root(root))
+      use lock <- try_ctl(
+        instance_lock.acquire(root)
+        |> result.map_error(fn(error) {
+          Failed("instance_lock_failed", instance_lock.error_message(error))
+        }),
       )
-      |> result.map_error(fn(error) {
-        let #(code, message) = error
-        Failed(code, message)
-      })
+      let result =
+        ctl_artifact_publication_retry.retry(
+          root,
+          json_output,
+          run_id,
+          publication_id,
+          output.line,
+        )
+        |> result.map_error(fn(error) {
+          let #(code, message) = error
+          Failed(code, message)
+        })
+      instance_lock.release(lock)
+      result
     }
+  }
+}
+
+fn validate_artifact_retry_root(root: String) -> Result(Nil, Error) {
+  let has_state = simplifile.is_directory(root <> "/.scherzo-state") == Ok(True)
+  let has_config =
+    simplifile.is_file(root <> "/scherzo.yaml") == Ok(True)
+    || simplifile.is_file(root <> "/../scherzo.yaml") == Ok(True)
+  case has_state || has_config {
+    True -> Ok(Nil)
+    False ->
+      Error(Failed(
+        "publication_retry_root_invalid",
+        "artifact publication retry requires --root pointing at an existing Scherzo workspace root",
+      ))
   }
 }
 

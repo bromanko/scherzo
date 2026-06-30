@@ -1,5 +1,6 @@
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/ctl/command_spec
 import scherzo/ctl/outbox_command_spec
@@ -53,7 +54,19 @@ pub type HandlerKey {
 pub fn parse(
   args: List(String),
 ) -> Result(command_spec.ParseOutcome(HandlerKey), command_spec.ParseError) {
+  parse_control(args)
+}
+
+pub fn parse_control(
+  args: List(String),
+) -> Result(command_spec.ParseOutcome(HandlerKey), command_spec.ParseError) {
   command_spec.parse(args, commands())
+}
+
+pub fn parse_offline(
+  args: List(String),
+) -> Result(command_spec.ParseOutcome(HandlerKey), command_spec.ParseError) {
+  command_spec.parse(args, offline_commands())
 }
 
 pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
@@ -499,6 +512,17 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     ),
     command_spec.CommandSpec(
       handler: SchedulesRunKey,
+      path: ["run-schedule"],
+      usage: "run-schedule <job> --now",
+      summary: "Start a scheduled job immediately.",
+      positionals: [command_spec.Required("job")],
+      options: [control_file_option(), json_option(), now_option()],
+      help_lines: [
+        line("run-schedule <job> --now", "Start a scheduled job immediately."),
+      ],
+    ),
+    command_spec.CommandSpec(
+      handler: SchedulesRunKey,
       path: ["schedules", "run"],
       usage: "schedules run <job> --now",
       summary: "Start a scheduled job immediately.",
@@ -725,12 +749,58 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
   ]
 }
 
+pub fn control_commands() -> List(command_spec.CommandSpec(HandlerKey)) {
+  list.filter(commands(), is_canonical_control_command)
+}
+
+pub fn offline_commands() -> List(command_spec.CommandSpec(HandlerKey)) {
+  list.filter(commands(), is_offline_command)
+}
+
+pub fn deprecated_control_alias_commands() -> List(
+  command_spec.CommandSpec(HandlerKey),
+) {
+  list.filter(commands(), is_deprecated_control_alias)
+}
+
+pub fn deprecated_alias_hint(args: List(String)) -> Option(String) {
+  case parse_control(args) {
+    Ok(command_spec.Parsed(parsed)) ->
+      deprecated_alias_hint_from_parsed(args, parsed)
+    _ -> None
+  }
+}
+
 pub fn command_help_lines() -> List(command_spec.HelpLine) {
-  flatten_help_lines(commands())
+  flatten_help_lines(control_commands())
+}
+
+pub fn control_usage_lines() -> List(String) {
+  command_spec.render_help_lines(flatten_help_lines(control_commands()))
+}
+
+pub fn offline_usage_lines() -> List(String) {
+  command_spec.render_help_lines(flatten_help_lines(offline_commands()))
 }
 
 pub fn usage_lines() -> List(String) {
-  command_spec.render_help_lines(command_help_lines())
+  control_usage_lines()
+}
+
+pub fn control_option_help_lines() -> List(command_spec.HelpLine) {
+  list.map(control_option_specs_in_help_order(), command_spec.option_help_line)
+}
+
+pub fn control_option_usage_lines() -> List(String) {
+  command_spec.render_help_lines(control_option_help_lines())
+}
+
+pub fn offline_option_help_lines() -> List(command_spec.HelpLine) {
+  list.map(offline_option_specs_in_help_order(), command_spec.option_help_line)
+}
+
+pub fn offline_option_usage_lines() -> List(String) {
+  command_spec.render_help_lines(offline_option_help_lines())
 }
 
 pub fn option_help_lines() -> List(command_spec.HelpLine) {
@@ -750,10 +820,115 @@ fn flatten_help_lines(
   }
 }
 
-fn option_specs_in_help_order() -> List(command_spec.OptionSpec) {
+fn is_canonical_control_command(
+  spec: command_spec.CommandSpec(HandlerKey),
+) -> Bool {
+  let command_spec.CommandSpec(handler: handler, path: path, ..) = spec
+  case is_offline_handler(handler) {
+    True -> False
+    False ->
+      case handler, path {
+        SchedulesRunKey, ["run-schedule"] -> True
+        SchedulesRunKey, _ -> False
+        _, _ -> True
+      }
+  }
+}
+
+fn is_offline_command(spec: command_spec.CommandSpec(HandlerKey)) -> Bool {
+  let command_spec.CommandSpec(handler: handler, path: path, ..) = spec
+  case is_offline_handler(handler) {
+    True -> True
+    False ->
+      case handler, path {
+        SchedulesRunKey, ["schedules", "run"] -> False
+        _, _ -> False
+      }
+  }
+}
+
+fn is_deprecated_control_alias(
+  spec: command_spec.CommandSpec(HandlerKey),
+) -> Bool {
+  let command_spec.CommandSpec(handler: handler, path: path, ..) = spec
+  case is_offline_handler(handler) {
+    True -> True
+    False ->
+      case handler, path {
+        SchedulesRunKey, ["schedules", "run"] -> True
+        _, _ -> False
+      }
+  }
+}
+
+fn is_offline_handler(handler: HandlerKey) -> Bool {
+  case handler {
+    CleanupKey
+    | SchedulesStatusKey
+    | SchedulesHistoryKey
+    | SchedulesLogsKey
+    | SchedulesDoctorKey
+    | WorkstreamKey
+    | ArtifactPublicationListKey
+    | ArtifactPublicationShowKey
+    | ArtifactPublicationRetryKey
+    | ArtifactPublicationAbandonKey
+    | StateStatusKey
+    | StateArchiveOldKey
+    | StateDiscardOldKey
+    | StateReinitializeKey
+    | StateCompactKey
+    | StateRepairRunProvenanceKey -> True
+    _ -> False
+  }
+}
+
+fn deprecated_alias_hint_from_parsed(
+  args: List(String),
+  parsed: command_spec.ParsedCommand(HandlerKey),
+) -> Option(String) {
+  case is_deprecated_control_alias_spec(parsed.handler, parsed.path) {
+    False -> None
+    True ->
+      Some(
+        "Deprecated: scherzo ctl "
+        <> string.join(args, with: " ")
+        <> deprecated_alias_tail(args, parsed),
+      )
+  }
+}
+
+fn is_deprecated_control_alias_spec(
+  handler: HandlerKey,
+  path: List(String),
+) -> Bool {
+  case is_offline_handler(handler) {
+    True -> True
+    False ->
+      case handler, path {
+        SchedulesRunKey, ["schedules", "run"] -> True
+        _, _ -> False
+      }
+  }
+}
+
+fn deprecated_alias_tail(
+  args: List(String),
+  parsed: command_spec.ParsedCommand(HandlerKey),
+) -> String {
+  case parsed.handler, parsed.path {
+    SchedulesRunKey, ["schedules", "run"] ->
+      " will be removed after one release; use scherzo ctl run-schedule <job> --now."
+    _, _ ->
+      " will be removed after one release; use scherzo "
+      <> string.join(args, with: " ")
+      <> "."
+  }
+}
+
+fn control_option_specs_in_help_order() -> List(command_spec.OptionSpec) {
   [
     control_file_option(),
-    root_option(),
     raw_option(),
     pretty_option(),
     json_option(),
@@ -762,9 +937,6 @@ fn option_specs_in_help_order() -> List(command_spec.OptionSpec) {
     since_cursor_option(),
     verbose_option(),
     now_option(),
-    last_option(),
-    run_option(),
-    publication_option(),
     state_option(),
     outbox_command_spec.status_option(),
     outbox_command_spec.kind_option(),
@@ -778,6 +950,30 @@ fn option_specs_in_help_order() -> List(command_spec.OptionSpec) {
     value_option(),
     help_option(),
   ]
+}
+
+fn offline_option_specs_in_help_order() -> List(command_spec.OptionSpec) {
+  [
+    root_option(),
+    json_option(),
+    color_option(),
+    verbose_option(),
+    last_option(),
+    run_option(),
+    publication_option(),
+    yes_option(),
+    dry_run_option(),
+    reason_option(),
+    help_option(),
+  ]
+}
+
+fn option_specs_in_help_order() -> List(command_spec.OptionSpec) {
+  list.append(
+    [control_file_option()],
+    offline_option_specs_in_help_order()
+      |> list.append(control_option_specs_in_help_order()),
+  )
 }
 
 fn line(left: String, right: String) -> command_spec.HelpLine {

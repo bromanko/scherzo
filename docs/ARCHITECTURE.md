@@ -326,7 +326,7 @@ changes must also follow the upgrade policy in [docs/runbooks/upgrades.md](runbo
    the same change. Do not add a record that is never projected or a projection
    field that is never written.
 3. Decide compatibility explicitly. Unsupported local state should fail clearly
-   and be handled by `scherzoctl state ...` or documented reset steps; do not
+   and be handled by `scherzo state ...` or documented reset steps; do not
    silently reinterpret old records. Link diagnostics to the relevant upgrade
    runbook and include affected paths/fields when safe.
 4. Keep persisted strings bounded/redacted. Add or adjust redaction tests when a

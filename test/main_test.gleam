@@ -61,6 +61,16 @@ pub fn parse_args_default_explicit_and_help_test() {
     == Ok(main.Control(["events", "ABC-123"]))
   assert main.parse_args(["ctl", "attach", "--raw", "ABC-123"])
     == Ok(main.Control(["attach", "--raw", "ABC-123"]))
+  assert main.parse_args(["cleanup", "--root", "work"])
+    == Ok(main.Offline(["cleanup", "--root", "work"]))
+  assert main.parse_args(["schedules", "status", "nightly", "--root", "work"])
+    == Ok(main.Offline(["schedules", "status", "nightly", "--root", "work"]))
+  assert main.parse_args(["artifact", "publication", "list", "--run", "run-1"])
+    == Ok(main.Offline(["artifact", "publication", "list", "--run", "run-1"]))
+  assert main.parse_args(["workstream", "list"])
+    == Ok(main.Offline(["workstream", "list"]))
+  assert main.parse_args(["state", "status", "--root", "work"])
+    == Ok(main.Offline(["state", "status", "--root", "work"]))
   assert main.parse_args(["doctor"])
     == Ok(main.Doctor(doctor.Options(None, [], False, doctor.Human)))
   assert main.parse_args(["doctor", "scherzo.yaml"])
@@ -193,6 +203,27 @@ pub fn launcher_route_uses_canonical_cli_parser_test() {
   assert main.launcher_route(["__tracker-conformance-run", "manifest.json"])
     == main.LauncherDirect
   assert main.launcher_route(["ctl", "--help"]) == main.LauncherDirect
+  assert main.launcher_route(["cleanup", "--root", "work"])
+    == main.LauncherDirect
+  assert main.launcher_route([
+      "schedules",
+      "status",
+      "nightly",
+      "--root",
+      "work",
+    ])
+    == main.LauncherDirect
+  assert main.launcher_route([
+      "artifact",
+      "publication",
+      "list",
+      "--run",
+      "run-1",
+    ])
+    == main.LauncherDirect
+  assert main.launcher_route(["workstream", "list"]) == main.LauncherDirect
+  assert main.launcher_route(["state", "status", "--root", "work"])
+    == main.LauncherDirect
   assert main.launcher_route(["connect", "--help"]) == main.LauncherDirect
   assert main.launcher_route(["--once", ".scherzo/scherzo.yaml"])
     == main.LauncherDirect
@@ -241,6 +272,19 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "source/build identity")
   assert string.contains(usage, "ctl ps")
   assert string.contains(usage, "ctl attach --raw")
+  assert string.contains(usage, "ctl run-schedule <job> --now")
+  assert string.contains(usage, "cleanup --root <workspace-root>")
+  assert string.contains(
+    usage,
+    "schedules status [job] --root <workspace-root>",
+  )
+  assert string.contains(
+    usage,
+    "artifact publication list --run <run-id> --root <workspace-root>",
+  )
+  assert string.contains(usage, "workstream list [task]")
+  assert string.contains(usage, "state status --root <workspace-root>")
+  assert !string.contains(usage, "ctl schedules run <job> --now")
   assert string.contains(usage, "daemon mode")
   assert string.contains(usage, "SIGTERM gracefully")
   assert string.contains(usage, "Ctrl-C/SIGINT")
