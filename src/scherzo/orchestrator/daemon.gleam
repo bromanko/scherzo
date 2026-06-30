@@ -38,7 +38,7 @@ import scherzo/orchestrator/outbox_effects
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/query_runtime
 import scherzo/orchestrator/read_model
-import scherzo/orchestrator/remote_command_runtime
+import scherzo/orchestrator/remote_command_runtime as remote
 import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
@@ -229,15 +229,14 @@ pub type RuntimeDependencies {
       process.Subject(Message),
       List(String),
       fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
-    ) -> Result(remote_command_runtime.Handle, StartupError),
-    stop_remote_client: fn(remote_command_runtime.Handle, Int) ->
-      Result(Nil, Nil),
-    monitor_remote_client: fn(remote_command_runtime.Handle) -> process.Monitor,
+    ) -> Result(remote.Handle, StartupError),
+    stop_remote_client: fn(remote.Handle, Int) -> Result(Nil, Nil),
+    monitor_remote_client: fn(remote.Handle) -> process.Monitor,
     enqueue_startup_recovery_message: fn(process.Subject(Message), Message) ->
       Nil,
     observe_startup_recovery_stage: fn(String) -> Nil,
     emit_work_item_invalidation: fn(
-      Option(remote_command_runtime.Handle),
+      Option(remote.Handle),
       work_item_invalidation.Event,
     ) -> Nil,
     check_transition_invariants: daemon_transition_shell.InvariantChecker,
@@ -280,7 +279,7 @@ type State {
     query_service: query_service.Handle,
     read_model: read_model.ReadModel,
     ledger_projection: projection.Projection,
-    remote_client: Option(remote_command_runtime.Handle),
+    remote_client: Option(remote.Handle),
     remote_client_monitor: Option(process.Monitor),
     operator_paused: Bool,
     pending_operator_command_replies: Dict(
@@ -348,31 +347,30 @@ pub fn default_dependencies() -> RuntimeDependencies {
       secrets,
       logger,
     ) {
-      remote_command_runtime.start_remote_client(
+      remote.start_remote_client(
         effective,
         event_hub,
         daemon_subject,
         secrets,
         logger,
-        remote_command_runtime.control_dependencies(
+        remote.control_dependencies(
           apply_operator_command: apply_operator_command,
           get_remote_dispatch_paused: get_remote_dispatch_paused,
           execute_query: execute_query,
         ),
       )
       |> result.map_error(fn(err) {
-        let #(code, message) = remote_command_runtime.start_error_fields(err)
+        let #(code, message) = remote.start_error_fields(err)
         StartupError(code, message)
       })
     },
-    stop_remote_client: remote_command_runtime.stop,
-    monitor_remote_client: remote_command_runtime.monitor,
+    stop_remote_client: remote.stop,
+    monitor_remote_client: remote.monitor,
     enqueue_startup_recovery_message: process.send,
     observe_startup_recovery_stage: fn(_) { Nil },
     emit_work_item_invalidation: fn(remote_client, event) {
       case remote_client {
-        Some(handle) ->
-          remote_command_runtime.notify_work_item_invalidation(handle, event)
+        Some(handle) -> remote.notify_work_item_invalidation(handle, event)
         None -> Nil
       }
     },
@@ -820,7 +818,7 @@ fn stop_remote_client_and_clear(
       case state.dependencies.stop_remote_client(handle, 1000) {
         Ok(Nil) -> Nil
         Error(Nil) -> {
-          remote_command_runtime.kill(handle)
+          remote.kill(handle)
           log_state(state, "warn", "remote_client_shutdown_timeout", [
             #("timeout_ms", "1000"),
           ])
@@ -878,7 +876,7 @@ pub fn execute_query(
   query: query_types.QueryRequest,
   timeout_ms: Int,
 ) -> Result(query_types.QueryResponse, query_types.QueryError) {
-  remote_command_runtime.call_without_late_reply(
+  remote.call_without_late_reply(
     send_request: fn(reply) {
       process.send(daemon_subject, ExecuteQuery(query, timeout_ms, reply))
     },
@@ -894,9 +892,11 @@ pub fn get_remote_dispatch_paused(
   daemon_subject: process.Subject(Message),
   timeout_ms: Int,
 ) -> Result(Bool, Nil) {
-  let reply = process.new_subject()
-  process.send(daemon_subject, GetRemoteDispatchPaused(reply))
-  process.receive(reply, within: timeout_ms)
+  remote.call_result_without_late_reply(
+    fn(reply) { process.send(daemon_subject, GetRemoteDispatchPaused(reply)) },
+    timeout_ms,
+    Nil,
+  )
 }
 
 pub fn start(
@@ -9060,7 +9060,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
       case state.dependencies.stop_remote_client(handle, 1000) {
         Ok(Nil) -> Nil
         Error(Nil) -> {
-          remote_command_runtime.kill(handle)
+          remote.kill(handle)
           log_state(state, "warn", "remote_client_shutdown_timeout", [
             #("timeout_ms", "1000"),
           ])

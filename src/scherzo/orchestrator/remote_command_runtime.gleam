@@ -95,12 +95,39 @@ pub fn call_without_late_reply(
   timeout_ms timeout_ms: Int,
   timeout_value timeout_value: reply,
 ) -> reply {
+  call_without_late_reply_map(
+    send_request: send_request,
+    timeout_ms: timeout_ms,
+    timeout_value: timeout_value,
+    map_reply: fn(reply) { reply },
+  )
+}
+
+pub fn call_result_without_late_reply(
+  send_request send_request: fn(process.Subject(reply)) -> Nil,
+  timeout_ms timeout_ms: Int,
+  timeout_error timeout_error: error,
+) -> Result(reply, error) {
+  call_without_late_reply_map(
+    send_request: send_request,
+    timeout_ms: timeout_ms,
+    timeout_value: Error(timeout_error),
+    map_reply: Ok,
+  )
+}
+
+fn call_without_late_reply_map(
+  send_request send_request: fn(process.Subject(reply)) -> Nil,
+  timeout_ms timeout_ms: Int,
+  timeout_value timeout_value: mapped,
+  map_reply map_reply: fn(reply) -> mapped,
+) -> mapped {
   let reply = process.new_subject()
   let worker =
     process.spawn_unlinked(fn() {
       process.send(
         reply,
-        run_late_reply_call(send_request, timeout_ms, timeout_value),
+        run_late_reply_call(send_request, timeout_ms, timeout_value, map_reply),
       )
       Nil
     })
@@ -126,12 +153,13 @@ pub fn call_without_late_reply(
 fn run_late_reply_call(
   send_request: fn(process.Subject(reply)) -> Nil,
   timeout_ms: Int,
-  timeout_value: reply,
-) -> reply {
+  timeout_value: mapped,
+  map_reply: fn(reply) -> mapped,
+) -> mapped {
   let reply = process.new_subject()
   send_request(reply)
   case process.receive(reply, within: timeout_ms) {
-    Ok(reply) -> reply
+    Ok(reply) -> map_reply(reply)
     Error(Nil) -> timeout_value
   }
 }
