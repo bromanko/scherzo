@@ -92,7 +92,7 @@ pub fn parse(
         json_output: json_output,
         task_ref: Some(task_ref),
       ))
-    ["show", workstream_ref] | ["inspect", workstream_ref] ->
+    ["show", workstream_ref] ->
       Ok(Show(
         control_path: control_path,
         root: root,

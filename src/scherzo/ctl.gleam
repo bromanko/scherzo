@@ -629,9 +629,8 @@ fn parsed_attach_mode(
   let raw = command_spec.has_flag(parsed, "--raw")
   let json = command_spec.has_flag(parsed, "--json")
   case pretty, raw, json {
-    True, True, _ | True, _, True ->
+    True, True, _ | True, _, True | False, True, True ->
       Error(UsageError("choose only one of --pretty, --raw, or --json"))
-    _, True, True -> Ok(Json)
     True, False, False -> Ok(Pretty)
     False, True, False -> Ok(Raw)
     False, False, True -> Ok(Json)

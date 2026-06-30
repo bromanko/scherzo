@@ -17,6 +17,7 @@ import scherzo/control/query/types as query_types
 import scherzo/ctl
 import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
 import scherzo/ctl/command_registry
+import scherzo/ctl/workstream as ctl_workstream
 import scherzo/hash
 import scherzo/path
 import scherzo/runtime_bundle
@@ -893,16 +894,6 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       True,
       "ABC-1",
     ))
-  assert ctl.parse(["attach", "--raw", "ABC-1", "--json"])
-    == Ok(ctl.Attach(
-      None,
-      ctl.Json,
-      style.ColorNever,
-      ctl.Follow,
-      0,
-      False,
-      "ABC-1",
-    ))
   assert ctl.parse(["attach", "--no-follow", "ABC-1"])
     == Ok(ctl.Attach(
       None,
@@ -957,6 +948,15 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
   assert ctl.parse(["schedules", "doctor", "nightly", "--root", "work"])
     == Ok(ctl.SchedulesDoctor(None, Some("work"), False, "nightly"))
   let assert Ok(ctl.Workstream(_)) = ctl.parse(["workstream", "list", "LIV-1"])
+  assert ctl.parse(["workstream", "show", "workstream-1", "--json"])
+    == Ok(
+      ctl.Workstream(ctl_workstream.Show(
+        control_path: None,
+        root: None,
+        json_output: True,
+        workstream_ref: "workstream-1",
+      )),
+    )
   assert ctl.parse(["artifact", "publication", "list", "--run", "run-1"])
     == Ok(ctl.ArtifactPublicationList(None, None, False, "run-1"))
   assert ctl.parse([
@@ -1187,6 +1187,10 @@ pub fn cleanup_text_output_uses_provider_report_test() {
 pub fn parse_rejects_usage_errors_test() {
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["attach", "--raw", "--pretty", "ABC-1"])
+  assert ctl.parse(["attach", "--raw", "ABC-1", "--json"])
+    == Error(ctl.UsageError("choose only one of --pretty, --raw, or --json"))
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["workstream", "inspect", "workstream-1"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["attach", "--since-cursor", "-1", "ABC-1"])
   let assert Error(ctl.UsageError(_)) =
@@ -1281,7 +1285,7 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "attach <session-ref>")
   assert string.contains(usage, "attach --verbose <session-ref>")
   assert string.contains(usage, "attach --raw <session-ref>")
-  assert string.contains(usage, "attach --raw --json <session-ref>")
+  assert !string.contains(usage, "attach --raw --json <session-ref>")
   assert string.contains(usage, "pause")
   assert string.contains(usage, "retry-step <target>")
   assert string.contains(

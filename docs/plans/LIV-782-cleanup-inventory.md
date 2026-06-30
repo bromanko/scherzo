@@ -59,16 +59,16 @@ Named follow-up: **Runner tracker-client bridge retirement** — convert the wor
 - `--linear-smoke`
 - `--linear-contract-check`
 
-Status: generic docs and runbooks already prefer tracker names.
+Status: generic docs and runbooks already prefer tracker names; the top-level CLI flag aliases and their bespoke usage hints are retired.
 
 Evidence:
 
 - `docs/runbooks/tracker-adapters.md` says these Linear names are no longer accepted operator paths.
-- `src/scherzo/main.gleam` keeps explicit retirement hints such as `--linear-smoke was retired; use --tracker-smoke.`
-- `src/scherzo/orchestrator/service.gleam` keeps explicit retired doctor-check diagnostics.
-- `test/main_test.gleam`, `test/doctor_test.gleam`, and `test/orchestrator_service_doctor_test.gleam` cover the retirement behavior.
+- `src/scherzo/main.gleam` rejects `--linear-smoke` and `--linear-contract-check` through the generic usage path instead of retaining bespoke `usage_error_hint` branches.
+- `src/scherzo/orchestrator/service.gleam` keeps explicit retired doctor-check diagnostics for the doctor-check names.
+- `test/main_test.gleam`, `test/doctor_test.gleam`, and `test/orchestrator_service_doctor_test.gleam` cover the remaining retirement behavior.
 
-Decision: treat these as retired aliases with compatibility diagnostics still intentionally present. They do not block facade cleanup and do not need to be reintroduced.
+Decision: treat the top-level CLI flag aliases as fully retired and do not reintroduce their bespoke hints. Keep the doctor-check and config-key migration diagnostics until their supported compatibility windows close.
 
 ## Review-helper legacy backends
 

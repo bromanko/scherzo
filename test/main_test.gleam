@@ -138,21 +138,6 @@ pub fn usage_error_hint_reports_retired_flag_replacements_test() {
     "--linear-attach-comment-file was retired with no direct CLI replacement; "
     <> "configure task_updates.result.on_success: attachment for result uploads."
 
-  assert main.usage_error_hint(["--linear-smoke"])
-    == Some("--linear-smoke was retired; use doctor --check tracker-smoke.")
-  assert main.usage_error_hint(["--linear-smoke", "scherzo.yaml"])
-    == Some("--linear-smoke was retired; use doctor --check tracker-smoke.")
-  assert main.usage_error_hint(["--linear-contract-check"])
-    == Some(
-      "--linear-contract-check was retired; use doctor --check tracker-contract.",
-    )
-  assert main.usage_error_hint([
-      "--linear-contract-check",
-      "scherzo.yaml",
-    ])
-    == Some(
-      "--linear-contract-check was retired; use doctor --check tracker-contract.",
-    )
   assert main.usage_error_hint(["--tracker-smoke"])
     == Some("--tracker-smoke was retired; use doctor --check tracker-smoke.")
   assert main.usage_error_hint(["--tracker-smoke", "scherzo.yaml"])
