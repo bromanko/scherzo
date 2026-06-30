@@ -1385,9 +1385,32 @@ def write_implementation_retention_marker(source_kind: str, source_ref: str) -> 
     return marker
 
 
+def artifact_run_id(default: str = "local-run") -> str:
+    try:
+        return commit_stack_helper.require_artifact_run_id(
+            os.environ.get("SCHERZO_RUN_ID", default)
+        )
+    except commit_stack_helper.CommitStackError as exc:
+        fail(exc.message, code=exc.code)
+
+
 def run_artifact_dir() -> Path | None:
     value = os.environ.get("SCHERZO_RUN_ARTIFACT_DIR", "").strip()
-    return Path(value) if value else None
+    if value:
+        return Path(value)
+    return commit_stack_helper.run_artifact_dir(artifact_run_id())
+
+
+def materialization_run_artifact_dir(run_id: str) -> Path:
+    run_dir = run_artifact_dir()
+    if run_dir is not None:
+        return run_dir
+    if os.environ.get("SCHERZO_RUN_ROOT", "").strip() or os.environ.get("SCHERZO_REPO_ROOT", "").strip():
+        fail(
+            "could not resolve durable run artifact directory; set SCHERZO_RUN_ARTIFACT_DIR or provide SCHERZO_RUN_ROOT/SCHERZO_REPO_ROOT with an artifact store",
+            code="run_artifact_dir_missing",
+        )
+    return Path(".scherzo-state") / "artifacts" / "runs" / run_id
 
 
 def unique_paths(paths: Iterable[Path]) -> list[Path]:
@@ -3450,19 +3473,14 @@ def command_gate_no_conflict(args: list[str]) -> None:
     print("EXECPLAN_V2_CONFLICT=none")
 
 
-def copy_file_to_artifact(src: Path, dest: Path) -> dict[str, Any]:
+def copy_file_to_artifact(src: Path, dest: Path, *, run_id: str, run_dir: Path) -> dict[str, Any]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if src.exists():
         shutil.copyfile(src, dest)
     else:
         dest.write_text("", encoding="utf-8")
     data = dest.read_bytes()
-    run_id = os.environ.get("SCHERZO_RUN_ID", "local-run")
-    run_dir = run_artifact_dir()
-    if run_dir is None:
-        ref = "runs/" + run_id + "/" + str(dest).replace("\\", "/")
-    else:
-        ref = "runs/" + run_id + "/" + str(dest.relative_to(run_dir)).replace("\\", "/")
+    ref = "runs/" + run_id + "/" + str(dest.relative_to(run_dir)).replace("\\", "/")
     return {"ref": ref, "sha256": sha256_bytes(data), "bytes": len(data)}
 
 
@@ -3497,8 +3515,8 @@ def materialize_code_change_bundle(args: list[str]) -> None:
     publish = load_json(Path("tmp/scherzo-implementation-publish.json")) if Path("tmp/scherzo-implementation-publish.json").exists() else {}
     validation_path = Path("tmp/scherzo-implementation-validation.json")
     plan_completion_path = Path("tmp/scherzo-plan-completion-verdict.json")
-    run_id = os.environ.get("SCHERZO_RUN_ID", "local-run")
-    run_dir = run_artifact_dir() or (Path(".scherzo-state") / "artifacts" / "runs" / run_id)
+    run_id = artifact_run_id()
+    run_dir = materialization_run_artifact_dir(run_id)
     code_dir = run_dir / "execplan" / "code-change"
     diff_path = env_value("SCHERZO_EXECPLAN_DIFF_PATH", legacy="SCHERZO_EXECPLAN_V2_DIFF_PATH")
     diff_src = source_file_candidates([
@@ -3506,17 +3524,32 @@ def materialize_code_change_bundle(args: list[str]) -> None:
         Path(os.environ.get("SCHERZO_RUN_ROOT", "")) / "input.diff" if os.environ.get("SCHERZO_RUN_ROOT") else Path("__missing__"),
         Path("tmp/scherzo-implementation.diff"),
     ])
-    diff_meta = copy_file_to_artifact(diff_src or Path("__missing__"), code_dir / "diff.patch")
+    diff_meta = copy_file_to_artifact(
+        diff_src or Path("__missing__"),
+        code_dir / "diff.patch",
+        run_id=run_id,
+        run_dir=run_dir,
+    )
     changed_files = normalize_changed_files(publish.get("changed_files"))
     changed_path = code_dir / "changed-files.v1.json"
     changed_path.parent.mkdir(parents=True, exist_ok=True)
     changed_path.write_text(canonical_json(changed_files), encoding="utf-8")
     validation_artifacts: list[dict[str, Any]] = []
     if validation_path.exists():
-        meta = copy_file_to_artifact(validation_path, code_dir / "validation" / "scherzo-ci.json")
+        meta = copy_file_to_artifact(
+            validation_path,
+            code_dir / "validation" / "scherzo-ci.json",
+            run_id=run_id,
+            run_dir=run_dir,
+        )
         validation_artifacts.append({"name": "scherzo-ci", **meta})
     plan_completion_payload = load_json(plan_completion_path) if plan_completion_path.exists() else {"verdict": "blocked"}
-    pc_meta = copy_file_to_artifact(plan_completion_path if plan_completion_path.exists() else Path("__missing__"), code_dir / "plan-completion.json")
+    pc_meta = copy_file_to_artifact(
+        plan_completion_path if plan_completion_path.exists() else Path("__missing__"),
+        code_dir / "plan-completion.json",
+        run_id=run_id,
+        run_dir=run_dir,
+    )
     raw_verdict = str(plan_completion_payload.get("verdict") or "blocked")
     verdict = {"pass": "complete", "fail": "incomplete"}.get(raw_verdict, raw_verdict)
     if verdict not in {"complete", "incomplete", "blocked"}:
@@ -3529,7 +3562,12 @@ def materialize_code_change_bundle(args: list[str]) -> None:
         Path("tmp/final-review.v1.json"),
     ])
     if review_final:
-        meta = copy_file_to_artifact(review_final, code_dir / "review" / "final-review.v1.json")
+        meta = copy_file_to_artifact(
+            review_final,
+            code_dir / "review" / "final-review.v1.json",
+            run_id=run_id,
+            run_dir=run_dir,
+        )
         review_artifacts.append({"name": "final-review", **meta})
     extra_review_artifacts = [
         (
@@ -3556,7 +3594,7 @@ def materialize_code_change_bundle(args: list[str]) -> None:
     ]
     for name, src, dest in extra_review_artifacts:
         if src:
-            meta = copy_file_to_artifact(src, dest)
+            meta = copy_file_to_artifact(src, dest, run_id=run_id, run_dir=run_dir)
             review_artifacts.append({"name": name, **meta})
     pack = bundle["implementation_pack"]
     source_plan_sha = bundle_expected_plan_sha(bundle)
