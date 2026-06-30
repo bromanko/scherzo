@@ -141,12 +141,6 @@ pub fn usage() -> String {
 
 pub fn usage_error_hint(args: List(String)) -> Option(String) {
   case args {
-    ["--linear-smoke"] | ["--linear-smoke", _] ->
-      Some("--linear-smoke was retired; use doctor --check tracker-smoke.")
-    ["--linear-contract-check"] | ["--linear-contract-check", _] ->
-      Some(
-        "--linear-contract-check was retired; use doctor --check tracker-contract.",
-      )
     ["--tracker-smoke"] | ["--tracker-smoke", _] ->
       Some("--tracker-smoke was retired; use doctor --check tracker-smoke.")
     ["--tracker-contract-check"] | ["--tracker-contract-check", _] ->
