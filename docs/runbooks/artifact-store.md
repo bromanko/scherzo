@@ -92,6 +92,8 @@ Operators can inspect that state without a running daemon by using:
 - `scripts/scherzoctl artifact publication show --run <run-id> --publication <publication-id> --root <workspace-root>`
 - `scripts/scherzoctl artifact publication retry --run <run-id> --publication <publication-id> --root <workspace-root>`
 
+Without `--root`, daemon-side publication retry is asynchronous: a successful acknowledgement is `status: queued` with an `operation_id`, and `scripts/scherzoctl query operation-status <operation-id> --json` reports the durable lifecycle and failure details. With `--root`, retry runs synchronously against retained local state.
+
 ExecPlan authoring and revision publish their review document through explicit
 workflow driver commands before retaining the canonical `exec_plan_bundle`; the
 bundle remains the implementation handoff while GitHub stays a derived review

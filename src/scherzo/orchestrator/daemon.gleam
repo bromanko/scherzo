@@ -19,11 +19,11 @@ import scherzo/control/query/backend as query_backend
 import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
 import scherzo/control/server as control_server
-import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
 import scherzo/daemon_identity
 import scherzo/error
 import scherzo/log
 import scherzo/orchestrator/abandoned_claim
+import scherzo/orchestrator/artifact_publication_retry_control
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon_transition_shell
@@ -163,6 +163,7 @@ pub type QueuedControlOperationResult {
     List(record.RecordBody),
     recovery.RecoveredWorkflowRun,
   )
+  QueuedControlOperationCompleted(List(record.RecordBody))
   QueuedControlOperationRejected(List(record.RecordBody))
   QueuedControlOperationFailed(String, Option(String))
 }
@@ -1192,12 +1193,15 @@ fn replay_incomplete_control_operations(
   subject: process.Subject(Message),
   state: State,
 ) -> Nil {
-  projection.replayable_control_operation_ids(
-    state.ledger_projection,
-    "retry_step",
-  )
-  |> list.each(fn(operation_id) {
-    process.send(subject, RunQueuedControlOperation(operation_id))
+  ["retry_step", "artifact_publication_retry"]
+  |> list.each(fn(operation_kind) {
+    projection.replayable_control_operation_ids(
+      state.ledger_projection,
+      operation_kind,
+    )
+    |> list.each(fn(operation_id) {
+      process.send(subject, RunQueuedControlOperation(operation_id))
+    })
   })
 }
 
@@ -2553,6 +2557,7 @@ fn retry_workflow_step_for_operator(
                   issue_id: Some(issue_id),
                   issue_identifier: Some(issue_identifier),
                   requested_step_id: step_id,
+                  publication_id: None,
                 )
               let #(state, appended) =
                 append_ledger_bodies(
@@ -2828,37 +2833,56 @@ fn start_queued_control_operation(
   state: State,
   operation: projection.ControlOperationStatus,
 ) -> State {
-  let state =
-    State(
-      ..state,
-      active_control_operations: dict.insert(
-        state.active_control_operations,
-        operation.operation_id,
-        True,
-      ),
+  case
+    artifact_publication_retry_control.running_conflict(
+      state.ledger_projection,
+      operation,
     )
-  let state = case operation.status {
-    "queued" ->
-      append_ledger_bodies_best_effort(
+  {
+    Ok(existing) ->
+      append_control_operation_failure(
         state,
-        [record.ControlOperationStarted(operation.operation_id)],
-        "retry_step_operation_start_append_failed",
-      )
-    _ -> state
-  }
-  let subject = state.subject
-  let _queued_control_operation_worker =
-    process.spawn_unlinked(fn() {
-      process.send(
-        subject,
-        QueuedControlOperationFinished(
-          operation.operation_id,
-          execute_retry_step_operation(state, operation),
+        operation.operation_id,
+        "artifact_publication_retry_already_running",
+        Some(
+          "artifact publication retry already queued/running as "
+          <> existing.operation_id,
         ),
       )
-      Nil
-    })
-  state
+    Error(Nil) -> {
+      let state =
+        State(
+          ..state,
+          active_control_operations: dict.insert(
+            state.active_control_operations,
+            operation.operation_id,
+            True,
+          ),
+        )
+      let state = case operation.status {
+        "queued" ->
+          append_ledger_bodies_best_effort(
+            state,
+            [record.ControlOperationStarted(operation.operation_id)],
+            "control_operation_start_append_failed",
+          )
+        _ -> state
+      }
+      let subject = state.subject
+      let _queued_control_operation_worker =
+        process.spawn_unlinked(fn() {
+          process.send(
+            subject,
+            QueuedControlOperationFinished(
+              operation.operation_id,
+              execute_queued_control_operation(state, operation),
+            ),
+          )
+          Nil
+        })
+      state
+    }
+  }
 }
 
 fn finish_queued_control_operation(
@@ -2881,13 +2905,31 @@ fn finish_queued_control_operation(
         append_ledger_bodies(state, bodies, "retry_step_append_failed")
       case appended {
         False ->
-          append_retry_step_operation_failure(
+          append_control_operation_failure(
             state,
             operation_id,
             "ledger_append_failed",
             Some("failed to append retry-step repair records"),
           )
         True -> spawn_recovered_workflow_resumption(state, resumption)
+      }
+    }
+    QueuedControlOperationCompleted(bodies) -> {
+      let #(state, appended) =
+        append_ledger_bodies(
+          state,
+          bodies,
+          "control_operation_completion_append_failed",
+        )
+      case appended {
+        True -> state
+        False ->
+          append_control_operation_failure(
+            state,
+            operation_id,
+            "ledger_append_failed",
+            Some("failed to append control operation completion records"),
+          )
       }
     }
     QueuedControlOperationRejected(bodies) ->
@@ -2897,7 +2939,7 @@ fn finish_queued_control_operation(
         "retry_step_rejection_diagnostic_append_failed",
       )
     QueuedControlOperationFailed(reason, message) ->
-      append_retry_step_operation_failure(state, operation_id, reason, message)
+      append_control_operation_failure(state, operation_id, reason, message)
   }
 }
 
@@ -2912,6 +2954,38 @@ fn make_retry_step_operation_id(
   <> option.unwrap(step_id, "auto")
   <> ":"
   <> int.to_string(state.dependencies.now_ms())
+}
+
+fn execute_queued_control_operation(
+  state: State,
+  operation: projection.ControlOperationStatus,
+) -> QueuedControlOperationResult {
+  case operation.operation_kind {
+    "retry_step" -> execute_retry_step_operation(state, operation)
+    "artifact_publication_retry" -> {
+      let root = state.workflow.effective.workspace.root
+      case
+        artifact_publication_retry_control.execute_operation(
+          root,
+          operation,
+          state.workflow.bundle,
+          state.dependencies.publication_command_runner,
+        )
+      {
+        artifact_publication_retry_control.ExecutionCompleted(bodies) ->
+          QueuedControlOperationCompleted(bodies)
+        artifact_publication_retry_control.ExecutionFailed(reason, message) ->
+          QueuedControlOperationFailed(reason, message)
+      }
+    }
+    _ ->
+      QueuedControlOperationFailed(
+        "unsupported_control_operation",
+        Some(
+          "unsupported queued control operation: " <> operation.operation_kind,
+        ),
+      )
+  }
 }
 
 fn execute_retry_step_operation(
@@ -3023,7 +3097,7 @@ fn queued_control_operation_failure_result(
   )
 }
 
-fn append_retry_step_operation_failure(
+fn append_control_operation_failure(
   state: State,
   operation_id: String,
   reason: String,
@@ -3032,7 +3106,7 @@ fn append_retry_step_operation_failure(
   append_ledger_bodies_best_effort(
     state,
     [record.ControlOperationFailed(operation_id, reason, message)],
-    "retry_step_operation_failed_append_failed",
+    "control_operation_failed_append_failed",
   )
 }
 
@@ -3513,42 +3587,76 @@ fn retry_artifact_publication_for_operator(
   run_id: String,
   publication_id: Option(String),
 ) -> #(State, command.CommandResult) {
-  let root = state.workflow.effective.workspace.root
-  case
-    ctl_artifact_publication_retry.retry_attempts_with_bundle_runner(
-      root,
-      run_id,
-      publication_id,
-      state.workflow.bundle,
-      command_runner.production(),
+  case replay_projection_for_operator(state) {
+    Error(reason) -> #(
+      state,
+      command.rejected(operator_command, "ledger_read_failed", Some(reason)),
     )
-  {
-    Ok(attempts) -> {
-      let message = case attempts {
-        [attempt] ->
-          Some(
-            "publication retry recorded "
-            <> attempt.publication_id
-            <> " as "
-            <> attempt.status,
-          )
-        _ ->
-          Some(
-            "publication retry recorded "
-            <> int.to_string(list.length(attempts))
-            <> " attempt(s)",
-          )
+    Ok(projection_state) ->
+      case
+        artifact_publication_retry_control.queue_decision(
+          projection_state,
+          operator_command,
+          run_id,
+          publication_id,
+          state.dependencies.now_ms(),
+        )
+      {
+        Error(error) -> #(
+          state,
+          artifact_publication_retry_control.error_result(
+            operator_command,
+            error,
+          ),
+        )
+        Ok(artifact_publication_retry_control.ExistingOperation(operation_id)) -> #(
+          state,
+          command.queued_operation(
+            operator_command,
+            operation_id,
+            Some(
+              "artifact publication retry already queued/running; poll query operation-status for completion",
+            ),
+          ),
+        )
+        Ok(artifact_publication_retry_control.NewOperation(
+          operation_id,
+          queued_body,
+        )) -> {
+          let #(state, appended) =
+            append_ledger_bodies(
+              state,
+              [queued_body],
+              "artifact_publication_retry_queue_append_failed",
+            )
+          case appended {
+            False -> #(
+              state,
+              command.rejected(
+                operator_command,
+                "ledger_append_failed",
+                Some("failed to append artifact publication retry operation"),
+              ),
+            )
+            True -> {
+              process.send(
+                state.subject,
+                RunQueuedControlOperation(operation_id),
+              )
+              #(
+                state,
+                command.queued_operation(
+                  operator_command,
+                  operation_id,
+                  Some(
+                    "artifact publication retry accepted; poll query operation-status for completion",
+                  ),
+                ),
+              )
+            }
+          }
+        }
       }
-      #(state, command.applied(operator_command, message))
-    }
-    Error(#(code, message)) -> {
-      let result = case code {
-        "publication_run_not_found" | "publication_not_found" ->
-          command.not_found(operator_command, Some(message))
-        _ -> command.rejected(operator_command, code, Some(message))
-      }
-      #(state, result)
-    }
   }
 }
 
@@ -4957,10 +5065,9 @@ fn apply_dispatch_publication_recovery(
   workflow_id: String,
 ) -> State {
   case
-    ctl_artifact_publication_retry.retry_attempts_with_bundle_runner(
+    artifact_publication_retry_control.retry_all_attempts(
       state.workflow.effective.workspace.root,
       run_id,
-      None,
       state.workflow.bundle,
       state.dependencies.publication_command_runner,
     )

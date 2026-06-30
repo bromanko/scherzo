@@ -29,7 +29,7 @@ Retry every latest failed retryable publication for the run:
 
     direnv exec . gleam run -m scherzo ctl artifact publication retry --run <run-id>
 
-When a daemon control file is available, retry goes through the control/daemon operator path. When running against retained local state with `--root`, retry validates that the run still has a retained output manifest and that the current workflow publication config still matches the retained retry target.
+When a daemon control file is available and `--root` is not supplied, retry goes through the control/daemon operator path. Accepted daemon retries return promptly with `status: queued` and an `operation_id`; poll `scripts/scherzoctl query operation-status <operation-id> --json` for `queued`, `running`, `completed`, or `failed`. When running against retained local state with `--root`, retry remains synchronous and validates that the run still has a retained output manifest and that the current workflow publication config still matches the retained retry target.
 
 ## Common retry failures
 

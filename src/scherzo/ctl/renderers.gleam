@@ -204,6 +204,7 @@ pub fn print_operation_status(
   print_optional("issue_id", operation.issue_id, output_line)
   print_optional("issue_identifier", operation.issue_identifier, output_line)
   print_optional("requested_step_id", operation.requested_step_id, output_line)
+  print_optional("publication_id", operation.publication_id, output_line)
   print_optional("reason", operation.reason, output_line)
   print_optional("message", operation.message, output_line)
   print_optional_int("queued_at_ms", Some(operation.queued_at_ms), output_line)
