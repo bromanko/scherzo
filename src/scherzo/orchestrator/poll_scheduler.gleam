@@ -15,6 +15,10 @@ pub opaque type JitteredDelay {
   )
 }
 
+pub fn idle() -> State(timer) {
+  State(generation: 0, in_flight: None, timer: None)
+}
+
 pub fn start(schedule_initial: fn(Int) -> timer) -> State(timer) {
   let generation = 1
   State(

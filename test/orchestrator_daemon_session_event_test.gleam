@@ -329,6 +329,7 @@ pub fn daemon_records_session_summary_and_replay_events_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -405,6 +406,7 @@ pub fn daemon_keeps_successful_pi_auto_retry_events_in_one_yaml_step_session_tes
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -449,6 +451,7 @@ pub fn daemon_records_exhausted_pi_auto_retry_events_in_failed_yaml_step_session
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -507,6 +510,7 @@ pub fn daemon_classifies_tool_fields_as_tool_events_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -557,6 +561,7 @@ pub fn daemon_publishes_pi_update_before_worker_exit_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   test_async.expect_message_within(worker_update_sent, 5000)
@@ -623,6 +628,7 @@ pub fn daemon_worker_failure_does_not_create_retry_session_with_same_clock_test(
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   let assert Ok(initial_refresh) =
@@ -690,6 +696,7 @@ pub fn daemon_startup_recovery_parks_interrupted_run_without_retry_session_test(
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
   assert snapshot.counts.parked_tasks == 1
@@ -733,6 +740,7 @@ pub fn daemon_post_success_cleanup_warning_publishes_recovery_cleanup_event_test
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "worker_exited", 100)
@@ -795,6 +803,8 @@ pub fn daemon_scheduled_post_success_cleanup_warning_publishes_recovery_cleanup_
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   set_clock(clock, 1000)
   process.send(started.data, daemon.PollTick(1))
@@ -845,6 +855,7 @@ pub fn daemon_success_continuation_does_not_publish_retry_to_exited_session_test
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "worker_exited", 100)
@@ -883,6 +894,7 @@ pub fn daemon_worker_down_does_not_publish_retry_to_exited_session_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "worker_exited", 100)
@@ -943,6 +955,7 @@ pub fn daemon_stop_finishes_session_without_stale_lifecycle_events_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   let assert Ok(initial_refresh) =

@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/artifact_repository/command_runner
@@ -30,6 +31,17 @@ import simplifile
 import support/test_helpers
 import test_async
 
+fn apply_operator_command_after_startup_recovery(
+  daemon_subject: process.Subject(daemon.Message),
+  operator_command: command.OperatorCommand,
+) -> Result(command.CommandResult, Nil) {
+  use Nil <- result.try(daemon.await_startup_recovery_ready(
+    daemon_subject,
+    5000,
+  ))
+  daemon.apply_operator_command(daemon_subject, operator_command, 5000)
+}
+
 pub fn recollect_outputs_daemon_applies_without_worker_or_terminal_records_test() {
   let dir = "test/tmp/daemon-recollect-outputs/applied"
   let issue = issue()
@@ -48,10 +60,9 @@ pub fn recollect_outputs_daemon_applies_without_worker_or_terminal_records_test(
   let before_finished = count_kind(before, "workflow_run_finished")
 
   let assert Ok(result) =
-    daemon.apply_operator_command(
+    apply_operator_command_after_startup_recovery(
       started.data,
       command.RecollectWorkflowOutputs("run-1"),
-      5000,
     )
 
   let after = ledger_kinds(root)
@@ -106,10 +117,9 @@ pub fn recollect_outputs_daemon_rejects_parked_issue_without_mutation_test() {
   let before = ledger_kinds(root)
 
   let assert Ok(result) =
-    daemon.apply_operator_command(
+    apply_operator_command_after_startup_recovery(
       started.data,
       command.RecollectWorkflowOutputs("run-1"),
-      1000,
     )
 
   let after = ledger_kinds(root)
@@ -142,10 +152,9 @@ pub fn recollect_outputs_daemon_rejects_missing_artifact_without_mutation_test()
   let before = ledger_kinds(root)
 
   let assert Ok(result) =
-    daemon.apply_operator_command(
+    apply_operator_command_after_startup_recovery(
       started.data,
       command.RecollectWorkflowOutputs("run-1"),
-      1000,
     )
 
   let after = ledger_kinds(root)
@@ -179,10 +188,9 @@ pub fn recollect_outputs_daemon_applies_for_terminal_issue_state_test() {
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
 
   let assert Ok(result) =
-    daemon.apply_operator_command(
+    apply_operator_command_after_startup_recovery(
       started.data,
       command.RecollectWorkflowOutputs("run-1"),
-      1000,
     )
 
   assert command.status_to_string(result.status) == "applied"
@@ -211,10 +219,9 @@ pub fn recollect_outputs_daemon_is_idempotent_when_latest_manifest_valid_test() 
   let before = ledger_kinds(root)
 
   let assert Ok(result) =
-    daemon.apply_operator_command(
+    apply_operator_command_after_startup_recovery(
       started.data,
       command.RecollectWorkflowOutputs("run-1"),
-      1000,
     )
 
   let after = ledger_kinds(root)
@@ -246,10 +253,9 @@ pub fn recollect_outputs_daemon_rejects_current_workflow_unavailable_without_mut
   let before = ledger_kinds(root)
 
   let assert Ok(result) =
-    daemon.apply_operator_command(
+    apply_operator_command_after_startup_recovery(
       started.data,
       command.RecollectWorkflowOutputs("run-1"),
-      1000,
     )
 
   let after = ledger_kinds(root)

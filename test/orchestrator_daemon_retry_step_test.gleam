@@ -75,6 +75,8 @@ pub fn retry_step_rejects_active_issue_for_interrupted_run_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "agent_run:issue-1", 100)
@@ -119,6 +121,7 @@ pub fn retry_step_rejects_parked_issue_before_planning_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
   let before = ledger_bodies(root)
 
   let assert Ok(result) =
@@ -168,6 +171,8 @@ pub fn retry_step_queues_operation_and_records_lifecycle_before_spawning_recover
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -241,6 +246,8 @@ pub fn retry_step_repairs_claim_handoff_interrupted_run_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -299,6 +306,8 @@ pub fn retry_step_repairs_missing_provenance_after_finalization_accepts_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -359,6 +368,8 @@ pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnosti
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -416,6 +427,8 @@ pub fn retry_step_does_not_append_provenance_repair_when_finalization_rejects_te
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -460,6 +473,8 @@ pub fn retry_step_rejects_non_active_non_terminal_issue_state_for_retained_run_t
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "candidates_fetched", 100)
@@ -548,6 +563,7 @@ pub fn retry_step_abort_of_recovered_parent_cleans_review_children_and_exposes_o
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(retry_result) =
     daemon.apply_operator_command(
@@ -739,6 +755,7 @@ pub fn retry_step_shutdown_interrupts_active_review_children_with_registry_metad
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(retry_result) =
     daemon.apply_operator_command(
@@ -785,6 +802,13 @@ pub fn retry_step_shutdown_interrupts_active_review_children_with_registry_metad
   test_async.release_barrier_if_waiting(code_review_barrier)
   test_async.release_barrier_if_waiting(security_review_barrier)
   hub.stop(hub_subject)
+}
+
+fn wait_until_startup_recovery_ready(
+  daemon_subject: process.Subject(daemon.Message),
+) -> Nil {
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(daemon_subject, 1000)
+  Nil
 }
 
 pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_records_test() {
@@ -836,6 +860,7 @@ pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_rec
       },
     )
   let assert Ok(active_started) = daemon.start(Some(active_workflow_path), deps)
+  wait_until_startup_recovery_ready(active_started.data)
 
   let assert Ok(retry_result) =
     daemon.apply_operator_command(
@@ -912,6 +937,7 @@ pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_rec
     )
   let assert Ok(retained_started) =
     daemon.start(Some(retained_workflow_path), retained_deps)
+  wait_until_startup_recovery_ready(retained_started.data)
   let before_dry_run = ledger_bodies(retained_root)
 
   let assert Ok(dry_run_result) =
@@ -1049,6 +1075,7 @@ pub fn retry_step_active_command_session_has_no_orphan_cleanup_recovery_test() {
       ),
     )
   let assert Ok(active_started) = daemon.start(Some(active_workflow_path), deps)
+  wait_until_startup_recovery_ready(active_started.data)
 
   let assert Ok(retry_result) =
     daemon.apply_operator_command(
@@ -1138,6 +1165,7 @@ pub fn retry_step_non_active_parent_stop_interrupts_command_child_test() {
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(retry_result) =
     daemon.apply_operator_command(
@@ -1205,6 +1233,7 @@ pub fn retry_step_rejects_terminal_issue_state_for_retained_run_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
   let before = ledger_bodies(root)
 
   let assert Ok(result) =
@@ -1268,6 +1297,7 @@ pub fn retry_step_startup_replay_replays_queued_operation_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   assert wait_for_log(log_subject, "startup_replay_worker_started:issue-1", 100)
   let assert Ok(completed_operation) =
@@ -1330,6 +1360,7 @@ pub fn retry_step_operation_status_query_succeeds_while_startup_replay_is_runnin
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   assert wait_for_log(log_subject, "startup_replay_issue_lookup", 100)
   let assert Ok(running_operation) =
@@ -1403,6 +1434,7 @@ pub fn retry_step_startup_replay_replays_running_operation_without_duplicate_sta
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   assert wait_for_log(
     log_subject,
@@ -1490,6 +1522,7 @@ pub fn retry_step_startup_replay_skips_completed_and_failed_operations_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   assert !wait_for_log(log_subject, "unexpected_start:issue-1", 5)
   assert count_kind(root, "workflow_repair_requested") == 0
@@ -1531,6 +1564,7 @@ pub fn retry_step_replay_is_idempotent_and_queue_append_failure_rejects_without_
     )
   let assert Ok(duplicate_started) =
     daemon.start(Some(duplicate_workflow_path), duplicate_deps)
+  wait_until_startup_recovery_ready(duplicate_started.data)
 
   let assert Ok(duplicate_result) =
     daemon.apply_operator_command(
@@ -1607,6 +1641,7 @@ pub fn retry_step_replay_is_idempotent_and_queue_append_failure_rejects_without_
     )
   let assert Ok(failure_started) =
     daemon.start(Some(failure_workflow_path), failure_deps)
+  wait_until_startup_recovery_ready(failure_started.data)
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(failure_root)
   chmod_path("a-w", ledger_path.current_path)
 
@@ -2109,6 +2144,8 @@ pub fn dispatch_recovery_rejects_unsafe_publication_candidate_with_state_move_te
       }),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -2151,6 +2188,8 @@ pub fn dispatch_recovery_skips_recovered_published_run_without_parking_test() {
       }),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -2194,6 +2233,8 @@ pub fn dispatch_recovery_reuses_retry_step_on_poll_without_fresh_dispatch_test()
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -2238,6 +2279,8 @@ pub fn dispatch_recovery_repeated_poll_is_idempotent_while_recovered_run_active_
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
@@ -2283,6 +2326,8 @@ pub fn dispatch_recovery_reuses_retry_step_for_same_fingerprint_auto_parked_todo
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -2352,6 +2397,8 @@ pub fn dispatch_recovery_same_fingerprint_auto_parked_todo_without_retained_run_
       ),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -2399,6 +2446,8 @@ pub fn dispatch_recovery_same_fingerprint_auto_parked_todo_is_idempotent_test() 
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
@@ -2449,6 +2498,8 @@ pub fn dispatch_recovery_tracker_transition_failure_parks_and_suppresses_repeat_
       }),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -2507,6 +2558,8 @@ pub fn dispatch_recovery_publication_retry_honors_workflow_completion_override_t
       publication_retry_runner(),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -2556,6 +2609,8 @@ pub fn dispatch_recovery_retries_publication_and_moves_issue_out_of_todo_test() 
       publication_retry_runner(),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   process.send(started.data, daemon.PollTick(1))
 

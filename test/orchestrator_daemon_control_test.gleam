@@ -300,6 +300,13 @@ fn dependencies_with_tracker(
   )
 }
 
+fn wait_until_startup_recovery_ready(
+  daemon_subject: process.Subject(daemon.Message),
+) -> Nil {
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(daemon_subject, 1000)
+  Nil
+}
+
 fn dependencies_with_tracker_adapter(
   log_subject: process.Subject(String),
   tracker_adapter: adapter.TrackerAdapter,
@@ -817,6 +824,7 @@ pub fn daemon_writes_control_file_and_serves_session_list_test() {
   let log_subject = process.new_subject()
   let assert Ok(started) =
     daemon.start(Some(workflow_path), dependencies(log_subject))
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(path) = process.receive(log_subject, within: 1000)
   let assert Ok(control) = control_file.read(path)
   assert control.host == "127.0.0.1"
@@ -846,6 +854,7 @@ pub fn daemon_control_server_uses_extended_command_timeout_test() {
     )
 
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(command_timeout_ms) =
     process.receive(settings_subject, within: 1000)
   assert command_timeout_ms == control_server.default_command_timeout_ms
@@ -878,6 +887,7 @@ pub fn daemon_control_server_uses_configured_command_timeout_test() {
     )
 
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(command_timeout_ms) =
     process.receive(settings_subject, within: 1000)
   assert command_timeout_ms == 2000
@@ -906,6 +916,7 @@ pub fn daemon_stops_when_control_server_accept_loop_dies_test() {
     )
 
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.unlink(started.pid)
   let daemon_monitor = process.monitor(started.pid)
   let assert Ok(server_handle) = process.receive(server_subject, within: 1000)
@@ -934,6 +945,80 @@ pub fn daemon_stops_when_control_server_accept_loop_dies_test() {
   assert control_file_removed
 }
 
+pub fn daemon_rejects_mutating_commands_and_delays_remote_client_until_startup_recovery_ready_test() {
+  let #(workflow_path, root) =
+    write_workflow_with_extra_config(
+      "test/tmp/daemon-startup-recovery-gate",
+      0,
+      1,
+      ui_server_config_text(True),
+    )
+  let log_subject = process.new_subject()
+  let remote_starts = process.new_subject()
+  let remote_stops = process.new_subject()
+  let recovery_stage_subject = process.new_subject()
+  let recovery_continue_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..remote_client_dependencies(log_subject, remote_starts, remote_stops),
+      enqueue_startup_recovery_message: fn(_, message) {
+        process.send(recovery_continue_subject, message)
+      },
+      observe_startup_recovery_stage: fn(stage) {
+        process.send(recovery_stage_subject, stage)
+      },
+    )
+
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(blocked_result) =
+    daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
+  assert blocked_result.status
+    == command.Rejected("startup_recovery_in_progress")
+  test_async.assert_no_extra_message(remote_starts)
+
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "startup_recovery" =
+    test_async.expect_message(recovery_stage_subject)
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "scheduled_startup_recovery" =
+    test_async.expect_message(recovery_stage_subject)
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "workflow_resumptions" =
+    test_async.expect_message(recovery_stage_subject)
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "startup_transition_invariants" =
+    test_async.expect_message(recovery_stage_subject)
+  process.send(
+    started.data,
+    test_async.expect_message(recovery_continue_subject),
+  )
+  let assert "startup_recovery_ready" =
+    test_async.expect_message(recovery_stage_subject)
+
+  assert test_async.expect_message(remote_starts)
+    == expected_resolved_workspace_root(workflow_path, root)
+
+  let assert Ok(applied_result) =
+    daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
+  assert command.status_to_string(applied_result.status) == "applied"
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  assert test_async.expect_message(remote_stops) == "stop"
+}
+
 pub fn daemon_metrics_query_reports_runtime_counts_test() {
   let candidate = issue("metrics-issue", "ABC-METRICS", "Todo")
   let tracker_client = tracker_with(candidate)
@@ -951,6 +1036,7 @@ pub fn daemon_metrics_query_reports_runtime_counts_test() {
       long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "dispatch_started", 100)
 
@@ -1018,6 +1104,7 @@ pub fn daemon_metrics_count_active_yaml_child_steps_and_child_tokens_test() {
       token_reporting_blocking_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "agent_tokens_emitted", 100)
 
@@ -1061,6 +1148,7 @@ pub fn daemon_status_and_metrics_queries_do_not_call_tracker_adapter_test() {
     )
 
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(query_types.StatusResponse(status)) =
     daemon.execute_query(started.data, query_types.Status, 1000)
   let assert Ok(query_types.MetricsResponse(metrics)) =
@@ -1084,6 +1172,7 @@ pub fn daemon_execute_query_timeout_does_not_leave_late_reply_in_caller_mailbox_
       stop_control_server: fn(_) { Nil },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let done = process.new_subject()
 
   let _ =
@@ -1140,6 +1229,7 @@ pub fn daemon_outbox_queries_use_recovered_outbox_snapshot_test() {
       stop_control_server: fn(_) { Nil },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let assert Ok(query_types.OutboxListResponse(page)) =
     daemon.execute_query(
@@ -1190,6 +1280,7 @@ pub fn daemon_status_and_metrics_queries_stay_bounded_with_large_retained_histor
     )
 
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(query_types.StatusResponse(status)) =
     daemon.execute_query(started.data, query_types.Status, 1000)
   let assert Ok(query_types.MetricsResponse(metrics)) =
@@ -1231,6 +1322,7 @@ pub fn daemon_read_model_reports_remote_client_retrying_when_start_fails_test() 
     )
 
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   assert wait_for_log(log_subject, "remote_client_restart_failed", 100)
   let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
   assert snapshot.remote_client_status == read_model.Retrying("dial_failed")
@@ -1245,6 +1337,7 @@ pub fn daemon_control_server_routes_authenticated_command_to_actor_test() {
   let log_subject = process.new_subject()
   let assert Ok(started) =
     daemon.start(Some(workflow_path), dependencies(log_subject))
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(path) = process.receive(log_subject, within: 1000)
   let assert Ok(control) = control_file.read(path)
 
@@ -1288,6 +1381,7 @@ pub fn daemon_park_and_unpark_commands_mutate_runtime_state_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(path) = process.receive(log_subject, within: 1000)
   let assert Ok(control) = control_file.read(path)
 
@@ -1340,6 +1434,7 @@ pub fn pause_command_suppresses_dispatch_and_resume_allows_it_test() {
       long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let assert Ok(paused) =
     daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
@@ -1388,6 +1483,7 @@ pub fn startup_recovery_of_dispatch_pause_suppresses_dispatch_until_resume_test(
       long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(recovered_read_snapshot) =
     daemon.get_read_model_snapshot(started.data, 1000)
   assert recovered_read_snapshot.dispatch_paused
@@ -1431,6 +1527,7 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
       long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let assert Ok(_) =
     daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
@@ -1490,6 +1587,7 @@ pub fn retry_command_acknowledges_before_accepted_side_effects_finish_test() {
       Ok(Nil)
     })
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let assert Ok(accepted_retry) =
     daemon.apply_operator_command(
@@ -1539,6 +1637,7 @@ pub fn workflow_reload_changed_route_preserves_pending_claim_snapshot_test() {
       prompt_logging_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "claim_started", 100)
 
@@ -1576,6 +1675,7 @@ pub fn workflow_reload_removed_route_preserves_pending_claim_snapshot_test() {
       prompt_logging_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "claim_started", 100)
 
@@ -1611,6 +1711,7 @@ pub fn retry_rejects_active_pending_and_accepts_inactive_issues_test() {
       long_running_agent(log_subject, active_worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "dispatch_started", 100)
 
@@ -1642,6 +1743,7 @@ pub fn retry_rejects_active_pending_and_accepts_inactive_issues_test() {
       long_running_agent(log_subject, pending_worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "claim_started", 100)
 
@@ -1672,6 +1774,7 @@ pub fn retry_rejects_active_pending_and_accepts_inactive_issues_test() {
       active_success_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "worker_exited", 100)
   let claimed_identity = orchestrator_state.issue_identity(claimed)
@@ -1709,6 +1812,7 @@ pub fn park_inactive_issue_without_retry_queue_test() {
       active_success_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "worker_exited", 100)
 
@@ -1752,6 +1856,7 @@ pub fn daemon_candidate_dispatch_clears_stale_auto_park_test() {
       fail_original_then_block_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "agent_run:Title ABC-AUTO", 100)
@@ -1819,6 +1924,7 @@ pub fn startup_recovery_of_parked_issue_does_not_repost_park_comment_test() {
       failing_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   let assert Ok(read_snapshot) =
     daemon.get_read_model_snapshot(started.data, 1000)
@@ -1868,6 +1974,7 @@ pub fn startup_recovery_new_park_posts_park_comment_test() {
       failing_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
   assert dict.has_key(
     snapshot.parked,
@@ -1896,6 +2003,7 @@ pub fn reload_workflow_updates_runtime_limits_before_reply_test() {
       failing_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let assert Ok(initial_snapshot) = daemon.get_snapshot(started.data, 1000)
   assert initial_snapshot.max_concurrent_agents == 0
@@ -1942,6 +2050,7 @@ pub fn reload_workflow_emits_manual_work_item_invalidation_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let assert Ok(reloaded) =
     daemon.apply_operator_command(started.data, command.ReloadWorkflow, 1000)
@@ -2105,6 +2214,7 @@ pub fn reload_workflow_command_reports_success_and_missing_file_failure_test() {
       failing_agent(log_subject),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let assert Ok(reloaded) =
     daemon.apply_operator_command(started.data, command.ReloadWorkflow, 1000)
@@ -2158,6 +2268,7 @@ pub fn abort_command_timeout_fallback_does_not_block_daemon_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "agent_run:abort-timeout-issue", 100)
 
@@ -2196,6 +2307,7 @@ pub fn work_item_action_replays_from_daemon_receipts_test() {
   let tracker_adapter = counting_work_item_tracker_adapter(lookup_calls)
   let deps = dependencies_with_tracker_adapter(log_subject, tracker_adapter)
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
 
   let detail = fake_work_item_detail_with_actions()
   let assert [run_workflow] = detail.summary.actions
@@ -2255,6 +2367,7 @@ pub fn prompt_command_reaches_live_worker_command_subject_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "agent_run:prompt-live-issue", 100)
 
@@ -2304,6 +2417,7 @@ pub fn prompt_command_reports_worker_timeout_without_blocking_daemon_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "agent_run:prompt-timeout-issue", 100)
 
@@ -2348,6 +2462,7 @@ pub fn prompt_and_respond_ui_commands_reject_workers_without_command_subject_tes
       long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "dispatch_started", 100)
   assert wait_for_log(log_subject, "agent_run:prompt-issue", 100)
@@ -2383,6 +2498,7 @@ pub fn daemon_shutdown_closes_control_server_and_removes_control_file_test() {
   let log_subject = process.new_subject()
   let assert Ok(started) =
     daemon.start(Some(workflow_path), dependencies(log_subject))
+  wait_until_startup_recovery_ready(started.data)
   let assert Ok(path) = process.receive(log_subject, within: 1000)
   let assert Ok(control) = control_file.read(path)
 
@@ -2447,6 +2563,7 @@ fn assert_session_stop_command(
       long_running_agent(log_subject, worker_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
   process.send(started.data, daemon.PollTick(1))
   assert wait_for_log(log_subject, "dispatch_started", 100)
 
