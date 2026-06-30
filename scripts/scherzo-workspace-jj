@@ -921,6 +921,32 @@ def run_jj_proc(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]
         fail("jj executable not found")
 
 
+def run_jj_proc_no_snapshot(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    ensure_workspace(root)
+    try:
+        return subprocess.run(
+            ["jj", "--ignore-working-copy", *args],
+            cwd=str(root),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError:
+        fail("jj executable not found")
+
+
+def run_jj_proc_for_publication(
+    root: Path,
+    args: list[str],
+    *,
+    ignore_working_copy: bool,
+) -> subprocess.CompletedProcess[str]:
+    if ignore_working_copy:
+        return run_jj_proc_no_snapshot(root, args)
+    return run_jj_proc(root, args)
+
+
 def run_jj_capture(root: Path, args: list[str]) -> str:
     completed = run_jj_proc(root, args)
     if completed.returncode != 0:
@@ -1048,10 +1074,18 @@ def assert_only(root: Path, target: str) -> None:
     raise SystemExit(1)
 
 
-def revision_value(root: Path, revision: str, template: str, *, default: str = "") -> str:
-    proc = run_jj_proc(
+def revision_value(
+    root: Path,
+    revision: str,
+    template: str,
+    *,
+    default: str = "",
+    ignore_working_copy: bool = False,
+) -> str:
+    proc = run_jj_proc_for_publication(
         root,
         ["log", "-r", revision, "--no-graph", "-T", template, "--color=never"],
+        ignore_working_copy=ignore_working_copy,
     )
     if proc.returncode != 0:
         return default
@@ -1343,8 +1377,12 @@ def read_required_file(path: str, label: str) -> str:
         usage_error(f"could not read {label}: {exc}")
 
 
-def remote_url(root: Path, remote: str) -> str | None:
-    proc = run_jj_proc(root, ["git", "remote", "list", "--color=never"])
+def remote_url(root: Path, remote: str, *, ignore_working_copy: bool = False) -> str | None:
+    proc = run_jj_proc_for_publication(
+        root,
+        ["git", "remote", "list", "--color=never"],
+        ignore_working_copy=ignore_working_copy,
+    )
     if proc.returncode != 0:
         return None
     for line in proc.stdout.splitlines():
@@ -1386,8 +1424,8 @@ def explicit_repo_env() -> tuple[str, str] | None:
     return None
 
 
-def default_repo(root: Path, remote: str) -> str:
-    url = remote_url(root, remote)
+def default_repo(root: Path, remote: str, *, ignore_working_copy: bool = False) -> str:
+    url = remote_url(root, remote, ignore_working_copy=ignore_working_copy)
     if not url:
         json_failure(status="invalid_request", failure_code="repo_not_found", message=f"could not find jj git remote: {remote}")
     remote_repo = owner_repo_from_url(url)
@@ -1467,6 +1505,33 @@ def validate_expected_target_head(root: Path, remote: str, branch: str, expected
         )
 
 
+def validate_expected_selected_head(root: Path, expected: str) -> str:
+    expected = expected.strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", expected):
+        usage_error("--expected-head must be a 40-character Git object ID")
+    actual = revision_value(
+        root,
+        "@",
+        "commit_id",
+        default="",
+        ignore_working_copy=True,
+    ).lower()
+    if actual != expected:
+        json_failure(
+            status="invalid_commit_stack",
+            failure_code="selected_commit_stack_head_mismatch",
+            message=(
+                "publish-commit-stack refused before push because the selected "
+                f"workspace head is {actual or '<unknown>'} but the expected "
+                f"commit_stack head is {expected}; rerun commit-stack "
+                "materialization and validation before retrying publication"
+            ),
+            expected_head=expected,
+            actual_head=actual,
+        )
+    return expected
+
+
 def publish_needs_repo(operation: str, values: dict[str, str]) -> bool:
     if values.get("target-pr"):
         return True
@@ -1517,8 +1582,19 @@ def reject_unsafe_stable_commit_stack_branch(branch: str, base: str) -> None:
         )
 
 
-def require_commit_stack_head_description(root: Path) -> None:
-    description = revision_value(root, "@", "description", default="")
+def require_commit_stack_head_description(
+    root: Path,
+    revision: str = "@",
+    *,
+    ignore_working_copy: bool = False,
+) -> None:
+    description = revision_value(
+        root,
+        revision,
+        "description",
+        default="",
+        ignore_working_copy=ignore_working_copy,
+    )
     if description.strip():
         return
     json_failure(
@@ -1716,40 +1792,56 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-com
     title = read_required_file(values["title-file"], "title-file").strip().splitlines()
     title_text = title[0].strip() if title else "Scherzo change"
     _body = read_required_file(values["body-file"], "body-file")
-    records = changed_file_records(root)
     allow_no_changes = values["allow-no-changes"] == "true"
     remote = selected_publication_remote()
+    expected_selected_head = ""
     if values.get("target-branch") and values.get("expected-head"):
         validate_expected_target_head(root, remote, values["target-branch"], values["expected-head"])
-    repo = default_repo(root, remote) if publish_needs_repo(operation, values) else ""
+    elif operation == "publish-commit-stack" and values.get("expected-head"):
+        expected_selected_head = validate_expected_selected_head(root, values["expected-head"])
+    ignore_working_copy = bool(expected_selected_head)
+    publish_revision = expected_selected_head or "@"
+    repo = default_repo(root, remote, ignore_working_copy=ignore_working_copy) if publish_needs_repo(operation, values) else ""
 
-    if not records and allow_no_changes:
-        branch = values.get("target-branch") or (values["branch-prefix"] if stable_commit_stack_branch else "")
-        url = ""
-        if values.get("target-pr"):
-            url = view_pull_request_url(root, repo, values["target-pr"])
-        elif stable_commit_stack_branch:
-            url = view_pull_request_url(root, repo, branch)
-        json_dump({
-            "version": 1,
-            "status": "unchanged",
-            "url": url,
-            "branch": branch,
-            "base_ref": base,
-            "base_revision": base,
-            "head_revision": revision_value(root, "@", "commit_id", default=""),
-            "change_id": revision_value(root, "@", "change_id.short()", default=""),
-            "created": False,
-            "updated": False,
-        })
-        return
-    if not records:
-        json_failure(status="nothing_to_publish", failure_code="nothing_to_publish", message="no changed files to publish")
+    if not ignore_working_copy:
+        records = changed_file_records(root)
+        if not records and allow_no_changes:
+            branch = values.get("target-branch") or (values["branch-prefix"] if stable_commit_stack_branch else "")
+            url = ""
+            if values.get("target-pr"):
+                url = view_pull_request_url(root, repo, values["target-pr"])
+            elif stable_commit_stack_branch:
+                url = view_pull_request_url(root, repo, branch)
+            json_dump({
+                "version": 1,
+                "status": "unchanged",
+                "url": url,
+                "branch": branch,
+                "base_ref": base,
+                "base_revision": base,
+                "head_revision": revision_value(root, "@", "commit_id", default=""),
+                "change_id": revision_value(root, "@", "change_id.short()", default=""),
+                "created": False,
+                "updated": False,
+            })
+            return
+        if not records:
+            json_failure(status="nothing_to_publish", failure_code="nothing_to_publish", message="no changed files to publish")
 
     if operation == "publish-commit-stack":
-        require_commit_stack_head_description(root)
+        require_commit_stack_head_description(
+            root,
+            publish_revision,
+            ignore_working_copy=ignore_working_copy,
+        )
 
-    change_id = revision_value(root, "@", "change_id.short()", default="change")
+    change_id = revision_value(
+        root,
+        publish_revision,
+        "change_id.short()",
+        default="change",
+        ignore_working_copy=ignore_working_copy,
+    )
     branch = publication_branch(operation, values, title_text, change_id)
     # publish-commit-stack receives an already-selected commit_stack head;
     # describing it here would rewrite the commit object and break head checks.
@@ -1759,7 +1851,11 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-com
         # PR/head branch. Ensure jj treats the selected remote bookmark as the
         # tracking source, then allow replacing stale local resolver bookmarks.
         # The subsequent git push remains non-force and remote fast-forward-safe.
-        track = run_jj_proc(root, ["bookmark", "track", branch, f"--remote={remote}"])
+        track = run_jj_proc_for_publication(
+            root,
+            ["bookmark", "track", branch, f"--remote={remote}"],
+            ignore_working_copy=ignore_working_copy,
+        )
         if track.returncode != 0:
             json_failure(
                 status="publication_failed",
@@ -1772,14 +1868,22 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-com
         # bookmark across retries. Allow local replacement here; the subsequent
         # non-force git push remains the remote safety check.
         bookmark_args.append("--allow-backwards")
-    bookmark_args.extend([branch, "--revision", "@"])
-    bookmark = run_jj_proc(root, bookmark_args)
+    bookmark_args.extend([branch, "--revision", publish_revision])
+    bookmark = run_jj_proc_for_publication(
+        root,
+        bookmark_args,
+        ignore_working_copy=ignore_working_copy,
+    )
     if bookmark.returncode != 0:
         json_failure(status="publication_failed", failure_code="bookmark_failed", message=(bookmark.stderr or bookmark.stdout or "jj bookmark failed").strip())
     push_args = ["git", "push", "--remote", remote, "--bookmark", branch]
     if not values.get("target-branch"):
         push_args.append("--allow-new")
-    push = run_jj_proc(root, push_args)
+    push = run_jj_proc_for_publication(
+        root,
+        push_args,
+        ignore_working_copy=ignore_working_copy,
+    )
     if push.returncode != 0:
         push_message = (push.stderr or push.stdout or "jj git push failed").strip()
         if stable_commit_stack_branch and stable_commit_stack_push_needs_reconcile(push_message):
@@ -1880,7 +1984,7 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-com
         "branch": branch,
         "base_ref": base,
         "base_revision": base,
-        "head_revision": revision_value(root, "@", "commit_id", default=""),
+        "head_revision": expected_selected_head or revision_value(root, "@", "commit_id", default=""),
         "change_id": change_id,
         "created": created,
         "updated": updated,

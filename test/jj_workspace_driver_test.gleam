@@ -1217,6 +1217,99 @@ pub fn jj_driver_publish_commit_stack_pr_create_preserves_head_test() {
   assert string.contains(logged, "gh: pr create")
 }
 
+pub fn jj_driver_publish_commit_stack_expected_head_ignores_workspace_artifacts_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-expected-head-artifacts"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      workspace <> "/.scherzo-state/artifacts/runs/run-1/execplan/code-change",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workspace
+        <> "/.scherzo-state/artifacts/runs/run-1/execplan/code-change/diff.patch",
+      "artifact diff\n",
+    )
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let expected_head = "1111111111111111111111111111111111111111"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_expected_head_artifacts",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --expected-head "
+        <> expected_head
+        <> " --json",
+      fake_env(workspace, bin, log, [
+        #(
+          "SCHERZO_FAKE_JJ_CHANGED_FILES",
+          ".scherzo-state/artifacts/runs/run-1/execplan/code-change/diff.patch\n",
+        ),
+        #("SCHERZO_FAKE_JJ_LOG_OUTPUT", expected_head),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(
+    artifact.stdout,
+    "\"head_revision\":\"" <> expected_head <> "\"",
+  )
+  let logged = log_text(log)
+  assert string.contains(
+    logged,
+    "--ignore-working-copy log -r @ --no-graph -T commit_id",
+  )
+  assert string.contains(
+    logged,
+    "--ignore-working-copy bookmark set --allow-backwards scherzo/test --revision "
+      <> expected_head,
+  )
+  assert string.contains(logged, "--ignore-working-copy git push")
+  assert !string.contains(logged, "diff --name-only")
+}
+
+pub fn jj_driver_publish_commit_stack_expected_head_mismatch_fails_before_push_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-expected-head-mismatch"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let expected_head = "1111111111111111111111111111111111111111"
+  let actual_head = "2222222222222222222222222222222222222222"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_commit_stack_expected_head_mismatch",
+      "publish-commit-stack --kind implementation --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --expected-head "
+        <> expected_head
+        <> " --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_LOG_OUTPUT", actual_head),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"selected_commit_stack_head_mismatch\"",
+  )
+  assert string.contains(artifact.stdout, expected_head)
+  assert string.contains(artifact.stdout, actual_head)
+  let logged = log_text(log)
+  assert string.contains(
+    logged,
+    "--ignore-working-copy log -r @ --no-graph -T commit_id",
+  )
+  assert !string.contains(logged, "git push")
+  assert !string.contains(logged, "gh: pr")
+}
+
 pub fn jj_driver_publish_commit_stack_create_failure_reports_gh_diagnostics_test() {
   let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-create-fail"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
