@@ -100,6 +100,7 @@ pub type Command {
     json: Bool,
     dry_run: Bool,
     yes: Bool,
+    provider_selection: cleanup.CleanupProviderSelection,
   )
   SchedulesStatus(
     control_file: Option(String),
@@ -865,6 +866,7 @@ fn build_ui_respond_command(
 fn build_cleanup_command(
   parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
 ) -> Result(Command, Error) {
+  use provider_selection <- try_ctl(parsed_cleanup_provider(parsed))
   case
     command_spec.has_flag(parsed, "--yes"),
     command_spec.has_flag(parsed, "--dry-run")
@@ -878,6 +880,7 @@ fn build_cleanup_command(
         json_output(parsed),
         False,
         True,
+        provider_selection,
       ))
     False, _ ->
       Ok(Cleanup(
@@ -886,7 +889,21 @@ fn build_cleanup_command(
         json_output(parsed),
         True,
         False,
+        provider_selection,
       ))
+  }
+}
+
+fn parsed_cleanup_provider(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(cleanup.CleanupProviderSelection, Error) {
+  case command_spec.option_value(parsed, "--provider") {
+    Some(provider) ->
+      cleanup.parse_provider_selection(provider)
+      |> result.map_error(fn(error) {
+        UsageError(cleanup.provider_selection_error_message(error))
+      })
+    None -> Ok(cleanup.AllProviders)
   }
 }
 
@@ -1398,8 +1415,17 @@ pub fn run_with_deps_and_env(
           }
       }
     }
-    Cleanup(control_path, root, json, dry_run, yes) ->
-      run_cleanup(control_path, root, json, dry_run, yes, output, env)
+    Cleanup(control_path, root, json, dry_run, yes, provider_selection) ->
+      run_cleanup(
+        control_path,
+        root,
+        json,
+        dry_run,
+        yes,
+        provider_selection,
+        output,
+        env,
+      )
     SchedulesStatus(control_path, root, json, job_id) ->
       run_schedules_status(control_path, root, json, job_id, output, env)
     SchedulesHistory(control_path, root, json, job_id) ->
@@ -1539,6 +1565,7 @@ fn run_cleanup(
   json_output: Bool,
   dry_run: Bool,
   yes: Bool,
+  provider_selection: cleanup.CleanupProviderSelection,
   output: Output,
   env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
@@ -1549,8 +1576,8 @@ fn run_cleanup(
   ))
   let now_ms = local_artifacts.now_ms()
   let result = case dry_run || !yes {
-    True -> cleanup.inventory(workspace_root, now_ms)
-    False -> cleanup.apply(workspace_root, now_ms)
+    True -> cleanup.inventory_for(workspace_root, now_ms, provider_selection)
+    False -> cleanup.apply_for(workspace_root, now_ms, provider_selection)
   }
   case json_output {
     True ->
@@ -1579,6 +1606,7 @@ fn print_cleanup_result(result: cleanup.CleanupReport, output: Output) -> Nil {
   list.each(result.providers, fn(provider) {
     output.line("provider: " <> provider.provider_id)
     output.line("  available: " <> bool_to_text(provider.available))
+    output.line("  elapsed_ms: " <> int.to_string(provider.elapsed_ms))
     output.line("  transcript_root_status: " <> provider.transcript_root_status)
     output.line("  roots:")
     case provider.roots {

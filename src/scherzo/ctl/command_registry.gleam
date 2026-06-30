@@ -432,18 +432,22 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     command_spec.CommandSpec(
       handler: CleanupKey,
       path: ["cleanup"],
-      usage: "cleanup",
+      usage: "cleanup [--provider <provider>]",
       summary: "Dry-run owned cleanup inventory.",
       positionals: [],
       options: [
         control_file_option(),
         root_option(),
+        provider_option(),
         json_option(),
         dry_run_option(),
         yes_option(),
       ],
       help_lines: [
-        line("cleanup", "Dry-run owned cleanup inventory."),
+        line(
+          "cleanup [--provider <provider>]",
+          "Dry-run owned cleanup inventory.",
+        ),
         line(
           "cleanup --yes",
           "Apply eligible owned cleanup after safety checks.",
@@ -955,6 +959,7 @@ fn control_option_specs_in_help_order() -> List(command_spec.OptionSpec) {
 fn offline_option_specs_in_help_order() -> List(command_spec.OptionSpec) {
   [
     root_option(),
+    provider_option(),
     json_option(),
     color_option(),
     verbose_option(),
@@ -985,22 +990,26 @@ fn ctl_workstream_summary() -> String {
 }
 
 fn control_file_option() -> command_spec.OptionSpec {
-  command_spec.value_option(
+  command_spec.passthrough_value_option(
     "--control-file",
     "<path>",
     "Use an explicit control.json path; relative paths resolve from the caller working directory.",
-    False,
-    command_spec.passthrough_value,
   )
 }
 
 fn root_option() -> command_spec.OptionSpec {
-  command_spec.value_option(
+  command_spec.passthrough_value_option(
     "--root",
     "<workspace-root>",
     "Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.",
-    False,
-    command_spec.passthrough_value,
+  )
+}
+
+fn provider_option() -> command_spec.OptionSpec {
+  command_spec.passthrough_value_option(
+    "--provider",
+    "<provider>",
+    "Cleanup provider: all, local-state, workspaces. Diagnostic-only unavailable providers: artifact-store, task-store, provider-live, remote-provider-cache, browser.",
   )
 }
 
@@ -1068,22 +1077,18 @@ fn last_option() -> command_spec.OptionSpec {
 }
 
 fn run_option() -> command_spec.OptionSpec {
-  command_spec.value_option(
+  command_spec.passthrough_value_option(
     "--run",
     "<run-id>",
     "Workflow run id for artifact publication inspection.",
-    False,
-    command_spec.passthrough_value,
   )
 }
 
 fn publication_option() -> command_spec.OptionSpec {
-  command_spec.value_option(
+  command_spec.passthrough_value_option(
     "--publication",
     "<publication>",
     "Publication id for artifact publication show/retry/abandon.",
-    False,
-    command_spec.passthrough_value,
   )
 }
 
@@ -1126,22 +1131,18 @@ fn dry_run_option() -> command_spec.OptionSpec {
 }
 
 fn reason_option() -> command_spec.OptionSpec {
-  command_spec.value_option(
+  command_spec.passthrough_value_option(
     "--reason",
     "<text>",
     "Reason for parking a task.",
-    False,
-    command_spec.passthrough_value,
   )
 }
 
 fn step_option() -> command_spec.OptionSpec {
-  command_spec.value_option(
+  command_spec.passthrough_value_option(
     "--step",
     "<step-id>",
     "Select a failed or interrupted workflow step for retry-step.",
-    False,
-    command_spec.passthrough_value,
   )
 }
 
@@ -1150,12 +1151,10 @@ fn cancel_option() -> command_spec.OptionSpec {
 }
 
 fn value_option() -> command_spec.OptionSpec {
-  command_spec.value_option(
+  command_spec.passthrough_value_option(
     "--value",
     "<text>",
     "Value for a UI request response.",
-    False,
-    command_spec.passthrough_value,
   )
 }
 

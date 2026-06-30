@@ -13,6 +13,25 @@ pub type CleanupMode {
   Apply
 }
 
+pub type CleanupProviderSelection {
+  AllProviders
+  SelectedProvider(CleanupProvider)
+}
+
+pub type CleanupProvider {
+  LocalState
+  Workspaces
+  ArtifactStore
+  TaskStore
+  ProviderLive
+  RemoteProviderCache
+  Browser
+}
+
+pub type CleanupProviderSelectionError {
+  InvalidCleanupProvider(value: String)
+}
+
 pub type CleanupReport {
   CleanupReport(
     mode: CleanupMode,
@@ -27,6 +46,7 @@ pub type CleanupProviderReport {
   CleanupProviderReport(
     provider_id: String,
     available: Bool,
+    elapsed_ms: Int,
     roots: List(String),
     transcript_root_status: String,
     items: List(CleanupItemReport),
@@ -53,79 +73,193 @@ pub type CleanupItemReport {
 }
 
 pub fn inventory(workspace_root: String, now_ms: Int) -> CleanupReport {
+  inventory_for(workspace_root, now_ms, AllProviders)
+}
+
+pub fn inventory_for(
+  workspace_root: String,
+  now_ms: Int,
+  provider_selection: CleanupProviderSelection,
+) -> CleanupReport {
   CleanupReport(
     mode: DryRun,
     workspace_root: workspace_root,
     now_ms: now_ms,
-    providers: [
-      local_state_provider_report(local_state.inventory(workspace_root, now_ms)),
-      workspaces_provider_report(workspaces.inventory(workspace_root)),
-      unavailable_provider_report(
-        "artifact_store",
-        workspace_root,
-        "artifact repositories are read-only to generic cleanup",
-      ),
-      unavailable_provider_report(
-        "task_store",
-        workspace_root,
-        "task stores are read-only to generic cleanup",
-      ),
-      unavailable_provider_report(
-        "provider_live",
-        workspace_root,
-        "provider-live state is not mutated by generic cleanup",
-      ),
-      unavailable_provider_report(
-        "remote_provider_cache",
-        workspace_root,
-        "remote-provider cache cleanup requires an explicit owning provider",
-      ),
-      unavailable_provider_report(
-        "browser",
-        workspace_root,
-        "browser and UI state are outside generic cleanup scope",
-      ),
-    ],
+    providers: cleanup_provider_reports(
+      workspace_root,
+      now_ms,
+      DryRun,
+      provider_selection,
+    ),
     warnings: [],
   )
 }
 
 pub fn apply(workspace_root: String, now_ms: Int) -> CleanupReport {
+  apply_for(workspace_root, now_ms, AllProviders)
+}
+
+pub fn apply_for(
+  workspace_root: String,
+  now_ms: Int,
+  provider_selection: CleanupProviderSelection,
+) -> CleanupReport {
   CleanupReport(
     mode: Apply,
     workspace_root: workspace_root,
     now_ms: now_ms,
-    providers: [
-      local_state_provider_report(local_state.apply(workspace_root, now_ms)),
-      workspaces_provider_report(workspaces.apply(workspace_root)),
-      unavailable_provider_report(
-        "artifact_store",
-        workspace_root,
-        "artifact repositories are read-only to generic cleanup",
-      ),
-      unavailable_provider_report(
-        "task_store",
-        workspace_root,
-        "task stores are read-only to generic cleanup",
-      ),
-      unavailable_provider_report(
-        "provider_live",
-        workspace_root,
-        "provider-live state is not mutated by generic cleanup",
-      ),
-      unavailable_provider_report(
-        "remote_provider_cache",
-        workspace_root,
-        "remote-provider cache cleanup requires an explicit owning provider",
-      ),
-      unavailable_provider_report(
-        "browser",
-        workspace_root,
-        "browser and UI state are outside generic cleanup scope",
-      ),
-    ],
+    providers: cleanup_provider_reports(
+      workspace_root,
+      now_ms,
+      Apply,
+      provider_selection,
+    ),
     warnings: [],
   )
+}
+
+pub fn parse_provider_selection(
+  value: String,
+) -> Result(CleanupProviderSelection, CleanupProviderSelectionError) {
+  case normalized_provider_name(value) {
+    "all" -> Ok(AllProviders)
+    "local_state" -> Ok(SelectedProvider(LocalState))
+    "workspaces" -> Ok(SelectedProvider(Workspaces))
+    "artifact_store" -> Ok(SelectedProvider(ArtifactStore))
+    "task_store" -> Ok(SelectedProvider(TaskStore))
+    "provider_live" -> Ok(SelectedProvider(ProviderLive))
+    "remote_provider_cache" -> Ok(SelectedProvider(RemoteProviderCache))
+    "browser" -> Ok(SelectedProvider(Browser))
+    _ -> Error(InvalidCleanupProvider(value))
+  }
+}
+
+pub fn provider_selection_error_message(
+  error: CleanupProviderSelectionError,
+) -> String {
+  case error {
+    InvalidCleanupProvider(value) ->
+      "invalid cleanup provider '"
+      <> value
+      <> "'; expected one of: "
+      <> provider_selection_usage()
+  }
+}
+
+fn cleanup_provider_reports(
+  workspace_root: String,
+  now_ms: Int,
+  mode: CleanupMode,
+  provider_selection: CleanupProviderSelection,
+) -> List(CleanupProviderReport) {
+  provider_selection
+  |> selected_providers
+  |> list.map(fn(provider) {
+    cleanup_provider_report(workspace_root, now_ms, mode, provider)
+  })
+}
+
+fn cleanup_provider_report(
+  workspace_root: String,
+  now_ms: Int,
+  mode: CleanupMode,
+  provider: CleanupProvider,
+) -> CleanupProviderReport {
+  timed_provider(fn() {
+    case provider {
+      LocalState ->
+        local_state_provider_report(case mode {
+          DryRun -> local_state.inventory(workspace_root, now_ms)
+          Apply -> local_state.apply(workspace_root, now_ms)
+        })
+      Workspaces ->
+        workspaces_provider_report(case mode {
+          DryRun -> workspaces.inventory(workspace_root)
+          Apply -> workspaces.apply(workspace_root)
+        })
+      ArtifactStore ->
+        unavailable_provider_report(
+          "artifact_store",
+          workspace_root,
+          "artifact repositories are read-only to generic cleanup",
+        )
+      TaskStore ->
+        unavailable_provider_report(
+          "task_store",
+          workspace_root,
+          "task stores are read-only to generic cleanup",
+        )
+      ProviderLive ->
+        unavailable_provider_report(
+          "provider_live",
+          workspace_root,
+          "provider-live state is not mutated by generic cleanup",
+        )
+      RemoteProviderCache ->
+        unavailable_provider_report(
+          "remote_provider_cache",
+          workspace_root,
+          "remote-provider cache cleanup requires an explicit owning provider",
+        )
+      Browser ->
+        unavailable_provider_report(
+          "browser",
+          workspace_root,
+          "browser and UI state are outside generic cleanup scope",
+        )
+    }
+  })
+}
+
+fn selected_providers(
+  provider_selection: CleanupProviderSelection,
+) -> List(CleanupProvider) {
+  case provider_selection {
+    AllProviders -> all_providers()
+    SelectedProvider(provider) -> [provider]
+  }
+}
+
+fn all_providers() -> List(CleanupProvider) {
+  [
+    LocalState,
+    Workspaces,
+    ArtifactStore,
+    TaskStore,
+    ProviderLive,
+    RemoteProviderCache,
+    Browser,
+  ]
+}
+
+fn timed_provider(
+  provider_report: fn() -> CleanupProviderReport,
+) -> CleanupProviderReport {
+  let started_ms = local_artifacts.now_ms()
+  let provider = provider_report()
+  CleanupProviderReport(
+    ..provider,
+    elapsed_ms: elapsed_ms(started_ms, local_artifacts.now_ms()),
+  )
+}
+
+fn elapsed_ms(started_ms: Int, finished_ms: Int) -> Int {
+  let elapsed = finished_ms - started_ms
+  case elapsed < 0 {
+    True -> 0
+    False -> elapsed
+  }
+}
+
+fn normalized_provider_name(value: String) -> String {
+  value
+  |> string.trim
+  |> string.lowercase
+  |> string.replace(each: "-", with: "_")
+}
+
+fn provider_selection_usage() -> String {
+  "all, local-state, workspaces (actionable), artifact-store, task-store, provider-live, remote-provider-cache, or browser (diagnostic-only unavailable)"
 }
 
 pub fn cleanup_report_to_json(report: CleanupReport) -> json.Json {
@@ -168,6 +302,7 @@ pub fn cleanup_provider_report_to_json(
   json.object([
     #("provider_id", json.string(provider.provider_id)),
     #("available", json.bool(provider.available)),
+    #("elapsed_ms", json.int(provider.elapsed_ms)),
     #("roots", json.array(provider.roots, of: json.string)),
     #("transcript_root_status", json.string(provider.transcript_root_status)),
     #("items", json.array(provider.items, of: cleanup_item_report_to_json)),
@@ -203,6 +338,7 @@ fn local_state_provider_report(
   CleanupProviderReport(
     provider_id: "local_state",
     available: True,
+    elapsed_ms: 0,
     roots: result.roots,
     transcript_root_status: result.transcript_root_status,
     items: list.flatten([
@@ -244,6 +380,7 @@ fn workspaces_provider_report(
   CleanupProviderReport(
     provider_id: "workspaces",
     available: result.available,
+    elapsed_ms: 0,
     roots: result.roots,
     transcript_root_status: "not_applicable",
     items: list.map(result.items, workspace_item),
@@ -277,6 +414,7 @@ fn unavailable_provider_report(
   CleanupProviderReport(
     provider_id: provider_id,
     available: False,
+    elapsed_ms: 0,
     roots: [workspace_root],
     transcript_root_status: "not_applicable",
     items: [

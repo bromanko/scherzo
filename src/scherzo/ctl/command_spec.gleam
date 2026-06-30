@@ -78,6 +78,14 @@ pub fn passthrough_value(value: String) -> Result(String, String) {
   Ok(value)
 }
 
+pub fn passthrough_value_option(
+  name: String,
+  value_name: String,
+  help: String,
+) -> OptionSpec {
+  value_option(name, value_name, help, False, passthrough_value)
+}
+
 pub fn parse(
   args: List(String),
   specs: List(CommandSpec(handler)),
