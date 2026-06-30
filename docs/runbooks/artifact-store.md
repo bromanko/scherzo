@@ -88,9 +88,9 @@ Artifact publication state is retained locally in the state ledger plus immutabl
 publication manifest artifacts under `.scherzo-state/artifacts/runs/<run-id>/publications/`.
 Operators can inspect that state without a running daemon by using:
 
-- `scripts/scherzoctl artifact publication list --run <run-id> --root <workspace-root>`
-- `scripts/scherzoctl artifact publication show --run <run-id> --publication <publication-id> --root <workspace-root>`
-- `scripts/scherzoctl artifact publication retry --run <run-id> --publication <publication-id> --root <workspace-root>`
+- `scherzo artifact publication list --run <run-id> --root <workspace-root>`
+- `scherzo artifact publication show --run <run-id> --publication <publication-id> --root <workspace-root>`
+- `scherzo artifact publication retry --run <run-id> --publication <publication-id> --root <workspace-root>`
 
 Without `--root`, daemon-side publication retry is asynchronous: a successful acknowledgement is `status: queued` with an `operation_id`, and `scripts/scherzoctl query operation-status <operation-id> --json` reports the durable lifecycle and failure details. With `--root`, retry runs synchronously against retained local state.
 
@@ -114,7 +114,7 @@ recorded the retained manifest and current publication config needed for replay.
 
 For commit-stack publication, retry reuses the retained workflow workspace and the
 configured workspace driver. Do not reset or clean active workflow workspaces as
-artifact publication recovery; retry or abandon through `scripts/scherzoctl artifact publication ...`.
+artifact publication recovery; retry or abandon through `scherzo artifact publication ...`.
 
 When operators encounter a historical dirty managed-checkout attempt, do not reset
 or clean the active workflow workspace as part of recovery. Preserve the retained

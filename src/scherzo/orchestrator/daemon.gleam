@@ -96,9 +96,16 @@ pub type StartupError {
   StartupError(code: String, message: String)
 }
 
+type StartupPhaseMessage {
+  SetStartupPhase(String)
+  GetStartupPhase(process.Subject(String))
+  StopStartupPhaseTracker
+}
+
 pub type Message {
   PollTick(Int)
   RetryTick(String, Int)
+  ContinueStartupRecovery
   DispatchRecoveryContinue(List(tracker_issue.Issue))
   WorkerFinished(
     String,
@@ -142,6 +149,8 @@ pub type Message {
   GetOutboxSnapshot(process.Subject(List(#(String, projection.OutboxStatus))))
   GetWorkflowSnapshot(process.Subject(workflow_reloader.State))
   GetRemoteDispatchPaused(process.Subject(Bool))
+  AwaitStartupRecoveryReady(process.Subject(Result(Nil, Nil)), Int)
+  StartupRecoveryWaiterTimedOut(Int)
   StartRemoteClient
   RunQueuedControlOperation(String)
   QueuedControlOperationFinished(String, QueuedControlOperationResult)
@@ -182,6 +191,21 @@ type ControlPlane {
   ControlPlane(handle: ControlServerHandle, control_file_path: Option(String))
 }
 
+type StartupRecoveryPhase {
+  StartupRecoveryPending(startup_recovery.StartupRecovery)
+  StartupRecoveryRunning(StartupRecoveryStep, startup_recovery.StartupRecovery)
+  StartupRecoveryReady
+  StartupRecoveryFailed(String)
+}
+
+type StartupRecoveryStep {
+  StartupRecoveryStageApplyRecovery
+  StartupRecoveryStageApplyScheduledRecovery
+  StartupRecoveryStageResumeWorkflows
+  StartupRecoveryStageCheckInvariants
+  StartupRecoveryStageFinish
+}
+
 pub type RuntimeDependencies {
   RuntimeDependencies(
     make_tracker_adapter: fn(config_types.EffectiveConfig) ->
@@ -209,6 +233,9 @@ pub type RuntimeDependencies {
     ) -> Result(remote.Handle, StartupError),
     stop_remote_client: fn(remote.Handle, Int) -> Result(Nil, Nil),
     monitor_remote_client: fn(remote.Handle) -> process.Monitor,
+    enqueue_startup_recovery_message: fn(process.Subject(Message), Message) ->
+      Nil,
+    observe_startup_recovery_stage: fn(String) -> Nil,
     emit_work_item_invalidation: fn(
       Option(remote.Handle),
       work_item_invalidation.Event,
@@ -264,6 +291,12 @@ type State {
     active_control_operations: Dict(String, Bool),
     work_item_action_receipts: Dict(String, action_receipts.Receipt),
     next_operator_command_correlation_id: Int,
+    startup_recovery: StartupRecoveryPhase,
+    next_startup_recovery_waiter_id: Int,
+    pending_startup_recovery_waiters: Dict(
+      Int,
+      process.Subject(Result(Nil, Nil)),
+    ),
     transition_invariant_violation_pending: Bool,
     dependencies: RuntimeDependencies,
   )
@@ -334,6 +367,8 @@ pub fn default_dependencies() -> RuntimeDependencies {
     },
     stop_remote_client: remote.stop,
     monitor_remote_client: remote.monitor,
+    enqueue_startup_recovery_message: process.send,
+    observe_startup_recovery_stage: fn(_) { Nil },
     emit_work_item_invalidation: fn(remote_client, event) {
       case remote_client {
         Some(handle) -> remote.notify_work_item_invalidation(handle, event)
@@ -355,6 +390,59 @@ fn emit_runtime_log(
     Ok(Nil) -> Nil
     Error(Nil) -> Nil
   }
+}
+
+fn start_startup_phase_tracker(
+  initial_phase: String,
+) -> process.Subject(StartupPhaseMessage) {
+  let ready = process.new_subject()
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let subject = process.new_subject()
+      process.send(ready, subject)
+      startup_phase_tracker_loop(subject, initial_phase)
+    })
+  let assert Ok(subject) = process.receive(ready, within: 1000)
+  subject
+}
+
+fn startup_phase_tracker_loop(
+  subject: process.Subject(StartupPhaseMessage),
+  current_phase: String,
+) -> Nil {
+  case process.receive(subject, within: 60_000) {
+    Ok(SetStartupPhase(phase)) -> startup_phase_tracker_loop(subject, phase)
+    Ok(GetStartupPhase(reply)) -> {
+      process.send(reply, current_phase)
+      startup_phase_tracker_loop(subject, current_phase)
+    }
+    Ok(StopStartupPhaseTracker) -> Nil
+    Error(Nil) -> startup_phase_tracker_loop(subject, current_phase)
+  }
+}
+
+fn set_startup_phase(
+  tracker: process.Subject(StartupPhaseMessage),
+  phase: String,
+) -> Nil {
+  process.send(tracker, SetStartupPhase(phase))
+}
+
+fn current_startup_phase(
+  tracker: process.Subject(StartupPhaseMessage),
+) -> String {
+  let reply = process.new_subject()
+  process.send(tracker, GetStartupPhase(reply))
+  case process.receive(reply, within: 1000) {
+    Ok(phase) -> phase
+    Error(Nil) -> "unknown"
+  }
+}
+
+fn stop_startup_phase_tracker(
+  tracker: process.Subject(StartupPhaseMessage),
+) -> Nil {
+  process.send(tracker, StopStartupPhaseTracker)
 }
 
 fn validate_tracker_capabilities(
@@ -816,6 +904,14 @@ pub fn start(
   workflow_path: Option(String),
   dependencies: RuntimeDependencies,
 ) -> Result(actor.Started(process.Subject(Message)), StartupError) {
+  start_with_initialiser_timeout(workflow_path, dependencies, 60_000)
+}
+
+pub fn start_with_initialiser_timeout(
+  workflow_path: Option(String),
+  dependencies: RuntimeDependencies,
+  initialiser_timeout_ms: Int,
+) -> Result(actor.Started(process.Subject(Message)), StartupError) {
   use bundle <- try_startup(
     runtime_bundle.load(workflow_path)
     |> map_bundle_error,
@@ -850,8 +946,10 @@ pub fn start(
       StartupError("daemon_identity_failed", daemon_identity.error_message(err))
     }),
   )
+  let startup_phase = start_startup_phase_tracker("pre_actor_startup_complete")
   let builder =
-    actor.new_with_initialiser(60_000, fn(subject) {
+    actor.new_with_initialiser(initialiser_timeout_ms, fn(subject) {
+      set_startup_phase(startup_phase, "query_service_starting")
       case
         start_query_service(
           effective,
@@ -862,7 +960,8 @@ pub fn start(
         )
       {
         Error(err) -> Error(encode_startup_error(err))
-        Ok(query_handle) ->
+        Ok(query_handle) -> {
+          set_startup_phase(startup_phase, "control_plane_starting")
           case
             start_control_plane(
               dependencies,
@@ -877,7 +976,8 @@ pub fn start(
               let _best_effort = query_service.stop(query_handle, 1000)
               Error(encode_startup_error(err))
             }
-            Ok(control_plane) ->
+            Ok(control_plane) -> {
+              set_startup_phase(startup_phase, "effect_runner_starting")
               case
                 effect_runner.start(
                   effect_runner.Dependencies(
@@ -914,16 +1014,12 @@ pub fn start(
                       )
                     }
                     True -> {
+                      set_startup_phase(
+                        startup_phase,
+                        "constructing_startup_state",
+                      )
                       let control_server_monitor =
                         monitor_control_server(control_plane.handle)
-                      let poll =
-                        poll_scheduler.start(fn(generation) {
-                          dependencies.send_after(
-                            subject,
-                            0,
-                            PollTick(generation),
-                          )
-                        })
                       let state =
                         State(
                           subject: subject,
@@ -935,7 +1031,7 @@ pub fn start(
                           scheduled_report_retry_timers: dict.new(),
                           runtime: runtime,
                           workers: transition_types.new_worker_directory(),
-                          poll: poll,
+                          poll: poll_scheduler.idle(),
                           retry: retry_scheduler.new(),
                           registry: worker_registry.new(),
                           yaml_step_tokens: session_metrics.new(),
@@ -968,70 +1064,76 @@ pub fn start(
                           active_control_operations: dict.new(),
                           work_item_action_receipts: action_receipts.empty(),
                           next_operator_command_correlation_id: 1,
+                          startup_recovery: StartupRecoveryPending(
+                            startup_recovery,
+                          ),
+                          next_startup_recovery_waiter_id: 1,
+                          pending_startup_recovery_waiters: dict.new(),
                           transition_invariant_violation_pending: False,
                           dependencies: dependencies,
                         )
                         |> log_startup_invariant_warn_mode
-                        |> apply_startup_recovery(startup_recovery)
-                        |> apply_scheduled_startup_recovery(
-                          startup_recovery.scheduled,
+                      dependencies.enqueue_startup_recovery_message(
+                        subject,
+                        ContinueStartupRecovery,
+                      )
+                      let selector =
+                        process.new_selector()
+                        |> process.select(subject)
+                        |> process.select_specific_monitor(
+                          effect_runner_monitor,
+                          fn(down) { EffectRunnerDown(down) },
                         )
-                        |> spawn_recovered_workflow_resumptions(
-                          startup_recovery.workflow_resumptions,
-                        )
-                        |> check_startup_transition_invariants
-                      case state.transition_invariant_violation_pending {
-                        True -> {
-                          let _shutdown_state =
-                            shutdown_runtime_shell(state, True)
-                          Error(
-                            encode_startup_error(StartupError(
-                              "transition_invariant_violation",
-                              "transition invariant violation during startup",
-                            )),
+                      let selector = case control_server_monitor {
+                        Some(monitor) ->
+                          process.select_specific_monitor(
+                            selector,
+                            monitor,
+                            fn(down) { ControlServerDown(down) },
                           )
-                        }
-                        False -> {
-                          let state = refresh_read_model(state)
-                          replay_incomplete_control_operations(subject, state)
-                          process.send(subject, StartRemoteClient)
-                          let selector =
-                            process.new_selector()
-                            |> process.select(subject)
-                            |> process.select_specific_monitor(
-                              effect_runner_monitor,
-                              fn(down) { EffectRunnerDown(down) },
-                            )
-                          let selector = case control_server_monitor {
-                            Some(monitor) ->
-                              process.select_specific_monitor(
-                                selector,
-                                monitor,
-                                fn(down) { ControlServerDown(down) },
-                              )
-                            None -> selector
-                          }
-                          let selector =
-                            process.select_monitors(selector, WorkerDown)
-                          actor.initialised(state)
-                          |> actor.selecting(selector)
-                          |> actor.returning(subject)
-                          |> Ok
-                        }
+                        None -> selector
                       }
+                      let selector =
+                        process.select_monitors(selector, WorkerDown)
+                      set_startup_phase(startup_phase, "actor_initialised")
+                      actor.initialised(state)
+                      |> actor.selecting(selector)
+                      |> actor.returning(subject)
+                      |> Ok
                     }
                   }
                 }
               }
+            }
           }
+        }
       }
     })
     |> actor.on_message(handle_message)
-  case actor.start(builder) {
+  let result = case actor.start(builder) {
     Ok(started) -> Ok(started)
     Error(actor.InitFailed(reason)) -> Error(decode_startup_error(reason))
+    Error(actor.InitTimeout) -> {
+      let last_phase = current_startup_phase(startup_phase)
+      emit_runtime_log(
+        dependencies,
+        "error",
+        "daemon_startup_timeout",
+        [
+          #("initialiser_timeout_ms", int.to_string(initialiser_timeout_ms)),
+          #("last_startup_phase", last_phase),
+        ],
+        secrets,
+      )
+      Error(StartupError(
+        "daemon_actor_init_timeout",
+        "daemon actor initializer timed out during " <> last_phase,
+      ))
+    }
     Error(_) -> Error(StartupError("daemon_start_failed", "actor start failed"))
   }
+  stop_startup_phase_tracker(startup_phase)
+  result
 }
 
 fn encode_startup_error(error: StartupError) -> String {
@@ -1088,6 +1190,18 @@ pub fn get_outbox_snapshot(
   let reply = process.new_subject()
   process.send(subject, GetOutboxSnapshot(reply))
   process.receive(reply, within: timeout_ms)
+}
+
+pub fn await_startup_recovery_ready(
+  subject: process.Subject(Message),
+  timeout_ms: Int,
+) -> Result(Nil, Nil) {
+  let reply = process.new_subject()
+  process.send(subject, AwaitStartupRecoveryReady(reply, timeout_ms))
+  case process.receive(reply, within: timeout_ms) {
+    Ok(result) -> result
+    Error(Nil) -> Error(Nil)
+  }
 }
 
 pub fn get_workflow_snapshot(
@@ -1203,6 +1317,215 @@ fn replay_incomplete_control_operations(
       process.send(subject, RunQueuedControlOperation(operation_id))
     })
   })
+}
+
+fn startup_recovery_ready(state: State) -> Bool {
+  case state.startup_recovery {
+    StartupRecoveryReady -> True
+    StartupRecoveryPending(_)
+    | StartupRecoveryRunning(_, _)
+    | StartupRecoveryFailed(_) -> False
+  }
+}
+
+fn queue_startup_recovery_continuation(state: State) -> State {
+  state.dependencies.enqueue_startup_recovery_message(
+    state.subject,
+    ContinueStartupRecovery,
+  )
+  state
+}
+
+fn start_initial_poll(state: State) -> State {
+  let poll =
+    poll_scheduler.start(fn(generation) {
+      state.dependencies.send_after(state.subject, 0, PollTick(generation))
+    })
+  State(..state, poll: poll)
+}
+
+fn notify_startup_recovery_waiters(
+  waiters: Dict(Int, process.Subject(Result(Nil, Nil))),
+  result: Result(Nil, Nil),
+) -> Nil {
+  waiters
+  |> dict.values
+  |> list.each(fn(reply) { process.send(reply, result) })
+}
+
+fn fail_pending_startup_recovery_waiters(state: State) -> State {
+  notify_startup_recovery_waiters(
+    state.pending_startup_recovery_waiters,
+    Error(Nil),
+  )
+  State(..state, pending_startup_recovery_waiters: dict.new())
+}
+
+fn defer_until_startup_recovery_ready(
+  state: State,
+  message: Message,
+) -> actor.Next(State, Message) {
+  process.send(state.subject, message)
+  actor.continue(state)
+}
+
+fn startup_recovery_should_defer(state: State, message: Message) -> Bool {
+  case startup_recovery_ready(state) {
+    True -> False
+    False ->
+      case message {
+        ContinueStartupRecovery
+        | PollTick(_)
+        | AwaitStartupRecoveryReady(_, _)
+        | StartRemoteClient
+        | RunQueuedControlOperation(_) -> False
+        RetryTick(_, _)
+        | DispatchRecoveryContinue(_)
+        | WorkerFinished(_, _, _)
+        | ScheduledWorkerFinished(_, _)
+        | ScheduledRetryTick(_, _)
+        | ScheduledReportRetryTick(_, _)
+        | WorkerUpdate(_, _)
+        | WorkerCommandReady(_, _, _)
+        | YamlStepStarted(_, _, _, _, _)
+        | YamlStepUpdate(_, _)
+        | YamlStepCommandReady(_, _)
+        | YamlStepFinished(_, _)
+        | SideEffectCompleted(_)
+        | QueuedControlOperationFinished(_, _) -> True
+        WorkerCommandCompleted(_, _, _)
+        | WorkerCommandTimedOut(_, _)
+        | AbortWorkerCommandTimedOut(_, _, _)
+        | WorkerDown(_)
+        | EffectRunnerDown(_)
+        | ControlServerDown(_)
+        | Shutdown(_)
+        | GetSnapshot(_)
+        | GetReadModelSnapshot(_)
+        | GetProjectionSnapshot(_)
+        | GetOutboxSnapshot(_)
+        | GetWorkflowSnapshot(_)
+        | GetRemoteDispatchPaused(_)
+        | StartupRecoveryWaiterTimedOut(_)
+        | ApplyOperatorCommand(_, _, _)
+        | ExecuteQuery(_, _, _) -> False
+      }
+  }
+}
+
+fn complete_startup_recovery(state: State) -> State {
+  let state = refresh_read_model(state)
+  let waiters = state.pending_startup_recovery_waiters
+  let state =
+    State(
+      ..state,
+      startup_recovery: StartupRecoveryReady,
+      pending_startup_recovery_waiters: dict.new(),
+    )
+  replay_incomplete_control_operations(state.subject, state)
+  let state = start_initial_poll(state)
+  process.send(state.subject, StartRemoteClient)
+  notify_startup_recovery_waiters(waiters, Ok(Nil))
+  state
+}
+
+fn advance_startup_recovery(state: State) -> State {
+  case state.startup_recovery {
+    StartupRecoveryReady | StartupRecoveryFailed(_) -> state
+    StartupRecoveryPending(plan) -> {
+      state.dependencies.observe_startup_recovery_stage("startup_recovery")
+      apply_startup_recovery(state, plan)
+      |> fn(state) {
+        State(
+          ..state,
+          startup_recovery: StartupRecoveryRunning(
+            StartupRecoveryStageApplyScheduledRecovery,
+            plan,
+          ),
+        )
+      }
+      |> queue_startup_recovery_continuation
+    }
+    StartupRecoveryRunning(stage, plan) ->
+      case stage {
+        StartupRecoveryStageApplyRecovery -> {
+          state.dependencies.observe_startup_recovery_stage("startup_recovery")
+          apply_startup_recovery(state, plan)
+          |> fn(state) {
+            State(
+              ..state,
+              startup_recovery: StartupRecoveryRunning(
+                StartupRecoveryStageApplyScheduledRecovery,
+                plan,
+              ),
+            )
+          }
+          |> queue_startup_recovery_continuation
+        }
+        StartupRecoveryStageApplyScheduledRecovery -> {
+          state.dependencies.observe_startup_recovery_stage(
+            "scheduled_startup_recovery",
+          )
+          apply_scheduled_startup_recovery(state, plan.scheduled)
+          |> fn(state) {
+            State(
+              ..state,
+              startup_recovery: StartupRecoveryRunning(
+                StartupRecoveryStageResumeWorkflows,
+                plan,
+              ),
+            )
+          }
+          |> queue_startup_recovery_continuation
+        }
+        StartupRecoveryStageResumeWorkflows -> {
+          state.dependencies.observe_startup_recovery_stage(
+            "workflow_resumptions",
+          )
+          spawn_recovered_workflow_resumptions(state, plan.workflow_resumptions)
+          |> fn(state) {
+            State(
+              ..state,
+              startup_recovery: StartupRecoveryRunning(
+                StartupRecoveryStageCheckInvariants,
+                plan,
+              ),
+            )
+          }
+          |> queue_startup_recovery_continuation
+        }
+        StartupRecoveryStageCheckInvariants -> {
+          state.dependencies.observe_startup_recovery_stage(
+            "startup_transition_invariants",
+          )
+          let state = check_startup_transition_invariants(state)
+          case state.transition_invariant_violation_pending {
+            True ->
+              State(
+                ..fail_pending_startup_recovery_waiters(state),
+                startup_recovery: StartupRecoveryFailed(
+                  "transition_invariant_violation",
+                ),
+              )
+            False ->
+              State(
+                ..state,
+                startup_recovery: StartupRecoveryRunning(
+                  StartupRecoveryStageFinish,
+                  plan,
+                ),
+              )
+              |> queue_startup_recovery_continuation
+          }
+        }
+        StartupRecoveryStageFinish -> {
+          state.dependencies.observe_startup_recovery_stage(
+            "startup_recovery_ready",
+          )
+          complete_startup_recovery(state)
+        }
+      }
+  }
 }
 
 fn spawn_recovered_workflow_resumption(
@@ -1536,6 +1859,7 @@ fn map_startup_recovery_error(
 fn continue_with_refreshed_state(state: State) -> actor.Next(State, Message) {
   case state.transition_invariant_violation_pending {
     True -> {
+      let state = fail_pending_startup_recovery_waiters(state)
       let _shutdown_state = shutdown_runtime_shell(state, True)
       actor.stop_abnormal("transition_invariant_violation")
     }
@@ -1648,217 +1972,286 @@ fn handle_message(
   state: State,
   message: Message,
 ) -> actor.Next(State, Message) {
-  case message {
-    PollTick(generation) ->
-      continue_with_refreshed_state(poll_tick_shell(state, generation))
-    RetryTick(issue_id, generation) ->
-      continue_with_refreshed_state(
-        run_transition_messages(state, [
-          transition_types.RetryTick(
+  case startup_recovery_should_defer(state, message) {
+    True -> defer_until_startup_recovery_ready(state, message)
+    False ->
+      case message {
+        PollTick(generation) ->
+          case startup_recovery_ready(state) {
+            True ->
+              continue_with_refreshed_state(poll_tick_shell(state, generation))
+            False -> actor.continue(state)
+          }
+        RetryTick(issue_id, generation) ->
+          continue_with_refreshed_state(
+            run_transition_messages(state, [
+              transition_types.RetryTick(
+                issue_id,
+                generation,
+                transition_dispatch_context(state),
+              ),
+            ]),
+          )
+        ContinueStartupRecovery ->
+          continue_with_refreshed_state(advance_startup_recovery(state))
+        DispatchRecoveryContinue(remaining_candidates) ->
+          continue_with_refreshed_state(
+            run_transition_messages(state, [
+              transition_types.DispatchCandidates(
+                remaining_candidates,
+                transition_dispatch_context(state),
+              ),
+            ]),
+          )
+        WorkerFinished(issue_id, run_id, result) ->
+          continue_with_refreshed_state(handle_issue_worker_finished(
+            state,
             issue_id,
+            run_id,
+            result,
+          ))
+        ScheduledWorkerFinished(run_id, result) ->
+          continue_with_refreshed_state(handle_scheduled_worker_finished(
+            state,
+            run_id,
+            result,
+          ))
+        ScheduledRetryTick(run_id, generation) ->
+          continue_with_refreshed_state(handle_scheduled_retry_tick(
+            state,
+            run_id,
             generation,
-            transition_dispatch_context(state),
-          ),
-        ]),
-      )
-    DispatchRecoveryContinue(remaining_candidates) ->
-      continue_with_refreshed_state(
-        run_transition_messages(state, [
-          transition_types.DispatchCandidates(
-            remaining_candidates,
-            transition_dispatch_context(state),
-          ),
-        ]),
-      )
-    WorkerFinished(issue_id, run_id, result) ->
-      continue_with_refreshed_state(handle_issue_worker_finished(
-        state,
-        issue_id,
-        run_id,
-        result,
-      ))
-    ScheduledWorkerFinished(run_id, result) ->
-      continue_with_refreshed_state(handle_scheduled_worker_finished(
-        state,
-        run_id,
-        result,
-      ))
-    ScheduledRetryTick(run_id, generation) ->
-      continue_with_refreshed_state(handle_scheduled_retry_tick(
-        state,
-        run_id,
-        generation,
-      ))
-    ScheduledReportRetryTick(run_id, generation) ->
-      continue_with_refreshed_state(handle_scheduled_report_retry_tick(
-        state,
-        run_id,
-        generation,
-      ))
-    WorkerUpdate(issue_id, update) ->
-      continue_with_refreshed_state(worker_lifecycle.handle_worker_update(
-        worker_update_context(state),
-        issue_id,
-        update,
-      ))
-    WorkerCommandReady(issue_id, run_id, command_subject) ->
-      continue_with_refreshed_state(
-        worker_lifecycle.handle_worker_command_ready(
-          worker_command_ready_context(state),
-          issue_id,
-          run_id,
-          command_subject,
-        ),
-      )
-    YamlStepStarted(session_id, run_id, workflow_id, step_id, attempt_index) ->
-      continue_with_refreshed_state(handle_yaml_step_started(
-        state,
-        session_id,
-        run_id,
-        workflow_id,
-        step_id,
-        attempt_index,
-      ))
-    YamlStepUpdate(session_id, update) -> {
-      event_publisher.worker_update(state.event_hub, session_id, update)
-      log_yaml_step_update(state, session_id, update)
-      actor.continue(
-        State(
-          ..state,
-          yaml_step_tokens: session_metrics.update_from_runner(
-            state.yaml_step_tokens,
-            session_id,
+          ))
+        ScheduledReportRetryTick(run_id, generation) ->
+          continue_with_refreshed_state(handle_scheduled_report_retry_tick(
+            state,
+            run_id,
+            generation,
+          ))
+        WorkerUpdate(issue_id, update) ->
+          continue_with_refreshed_state(worker_lifecycle.handle_worker_update(
+            worker_update_context(state),
+            issue_id,
             update,
-          ),
-        ),
-      )
-    }
-    YamlStepCommandReady(session_id, command_subject) ->
-      continue_with_refreshed_state(handle_yaml_step_command_ready(
-        state,
-        session_id,
-        command_subject,
-      ))
-    YamlStepFinished(session_id, tokens) ->
-      continue_with_refreshed_state(handle_yaml_step_finished(
-        state,
-        session_id,
-        tokens,
-      ))
-    WorkerCommandCompleted(operator_command, worker_reply, reply) -> {
-      let result =
-        operator_worker_command.reply_result(operator_command, worker_reply)
-      process.send(reply, result)
-      log_operator_result(state, result, [])
-      actor.continue(state)
-    }
-    WorkerCommandTimedOut(operator_command, reply) -> {
-      let result = operator_worker_command.timeout_result(operator_command)
-      process.send(reply, result)
-      log_operator_result(state, result, [])
-      actor.continue(state)
-    }
-    AbortWorkerCommandTimedOut(operator_command, session_id, reply) -> {
-      let #(state, result, follow_ups) =
-        stop_session_for_operator(
-          state,
-          operator_command,
-          session_id,
-          session_reason.OperatorAbort,
-        )
-      let state = run_transition_messages(state, follow_ups)
-      process.send(reply, result)
-      log_operator_result(state, result, [])
-      continue_with_refreshed_state(state)
-    }
-    WorkerDown(down) ->
-      continue_with_refreshed_state(worker_lifecycle.worker_down_to_transition(
-        worker_down_context(state),
-        down,
-      ))
-    EffectRunnerDown(down) -> {
-      let _shutdown_state = handle_effect_runner_down(state, down)
-      actor.stop_abnormal("effect_runner_down")
-    }
-    ControlServerDown(down) -> {
-      let _shutdown_state = handle_control_server_down(state, down)
-      actor.stop_abnormal("control_server_down")
-    }
-    SideEffectCompleted(completion) ->
-      continue_with_refreshed_state(handle_side_effect_completed(
-        state,
-        completion,
-      ))
-    GetSnapshot(reply) -> {
-      effect_runner.reply_snapshot(state.runtime, reply)
-      actor.continue(state)
-    }
-    GetReadModelSnapshot(reply) -> {
-      let refreshed = refresh_read_model(state)
-      process.send(reply, read_model_snapshot_from_state(refreshed))
-      actor.continue(refreshed)
-    }
-    GetProjectionSnapshot(reply) -> {
-      process.send(reply, state.ledger_projection)
-      actor.continue(state)
-    }
-    GetOutboxSnapshot(reply) -> {
-      process.send(reply, dict.to_list(state.ledger_projection.outbox))
-      actor.continue(state)
-    }
-    GetWorkflowSnapshot(reply) -> {
-      process.send(reply, state.workflow)
-      actor.continue(state)
-    }
-    GetRemoteDispatchPaused(reply) -> {
-      process.send(reply, state.operator_paused)
-      actor.continue(state)
-    }
-    StartRemoteClient ->
-      case state.transition_invariant_violation_pending {
-        True -> continue_with_refreshed_state(state)
-        False -> continue_with_refreshed_state(start_remote_client_now(state))
-      }
-    RunQueuedControlOperation(operation_id) ->
-      continue_with_refreshed_state(run_queued_control_operation(
-        state,
-        operation_id,
-      ))
-    QueuedControlOperationFinished(operation_id, execution_result) ->
-      continue_with_refreshed_state(finish_queued_control_operation(
-        state,
-        operation_id,
-        execution_result,
-      ))
-    ApplyOperatorCommand(operator_command, timeout_ms, reply) ->
-      continue_with_refreshed_state(operator_command_reply(
-        state,
-        operator_command,
-        timeout_ms,
-        reply,
-      ))
-    ExecuteQuery(query, _timeout_ms, reply) -> {
-      let _query_worker_pid =
-        process.spawn_unlinked(fn() {
-          process.send(reply, query_service.query(state.query_service, query))
-          Nil
-        })
-      actor.continue(state)
-    }
-    Shutdown(reply) -> {
-      let state =
-        run_transition_messages(state, [
-          transition_types.ShutdownRequested(True),
-        ])
-      case state.transition_invariant_violation_pending {
-        True -> actor.stop_abnormal("transition_invariant_violation")
-        False -> {
-          log_state(state, "info", "daemon_shutdown", [])
-          process.send(reply, Nil)
-          actor.stop()
+          ))
+        WorkerCommandReady(issue_id, run_id, command_subject) ->
+          continue_with_refreshed_state(
+            worker_lifecycle.handle_worker_command_ready(
+              worker_command_ready_context(state),
+              issue_id,
+              run_id,
+              command_subject,
+            ),
+          )
+        YamlStepStarted(session_id, run_id, workflow_id, step_id, attempt_index) ->
+          continue_with_refreshed_state(handle_yaml_step_started(
+            state,
+            session_id,
+            run_id,
+            workflow_id,
+            step_id,
+            attempt_index,
+          ))
+        YamlStepUpdate(session_id, update) -> {
+          event_publisher.worker_update(state.event_hub, session_id, update)
+          log_yaml_step_update(state, session_id, update)
+          actor.continue(
+            State(
+              ..state,
+              yaml_step_tokens: session_metrics.update_from_runner(
+                state.yaml_step_tokens,
+                session_id,
+                update,
+              ),
+            ),
+          )
+        }
+        YamlStepCommandReady(session_id, command_subject) ->
+          continue_with_refreshed_state(handle_yaml_step_command_ready(
+            state,
+            session_id,
+            command_subject,
+          ))
+        YamlStepFinished(session_id, tokens) ->
+          continue_with_refreshed_state(handle_yaml_step_finished(
+            state,
+            session_id,
+            tokens,
+          ))
+        WorkerCommandCompleted(operator_command, worker_reply, reply) -> {
+          let result =
+            operator_worker_command.reply_result(operator_command, worker_reply)
+          process.send(reply, result)
+          log_operator_result(state, result, [])
+          actor.continue(state)
+        }
+        WorkerCommandTimedOut(operator_command, reply) -> {
+          let result = operator_worker_command.timeout_result(operator_command)
+          process.send(reply, result)
+          log_operator_result(state, result, [])
+          actor.continue(state)
+        }
+        AbortWorkerCommandTimedOut(operator_command, session_id, reply) -> {
+          let #(state, result, follow_ups) =
+            stop_session_for_operator(
+              state,
+              operator_command,
+              session_id,
+              session_reason.OperatorAbort,
+            )
+          let state = run_transition_messages(state, follow_ups)
+          process.send(reply, result)
+          log_operator_result(state, result, [])
+          continue_with_refreshed_state(state)
+        }
+        WorkerDown(down) ->
+          continue_with_refreshed_state(
+            worker_lifecycle.worker_down_to_transition(
+              worker_down_context(state),
+              down,
+            ),
+          )
+        EffectRunnerDown(down) -> {
+          let _shutdown_state = handle_effect_runner_down(state, down)
+          actor.stop_abnormal("effect_runner_down")
+        }
+        ControlServerDown(down) -> {
+          let _shutdown_state = handle_control_server_down(state, down)
+          actor.stop_abnormal("control_server_down")
+        }
+        SideEffectCompleted(completion) ->
+          continue_with_refreshed_state(handle_side_effect_completed(
+            state,
+            completion,
+          ))
+        GetSnapshot(reply) -> {
+          effect_runner.reply_snapshot(state.runtime, reply)
+          actor.continue(state)
+        }
+        GetReadModelSnapshot(reply) -> {
+          let refreshed = refresh_read_model(state)
+          process.send(reply, read_model_snapshot_from_state(refreshed))
+          actor.continue(refreshed)
+        }
+        GetProjectionSnapshot(reply) -> {
+          process.send(reply, state.ledger_projection)
+          actor.continue(state)
+        }
+        GetOutboxSnapshot(reply) -> {
+          process.send(reply, dict.to_list(state.ledger_projection.outbox))
+          actor.continue(state)
+        }
+        GetWorkflowSnapshot(reply) -> {
+          process.send(reply, state.workflow)
+          actor.continue(state)
+        }
+        GetRemoteDispatchPaused(reply) -> {
+          process.send(reply, state.operator_paused)
+          actor.continue(state)
+        }
+        AwaitStartupRecoveryReady(reply, timeout_ms) ->
+          case startup_recovery_ready(state) {
+            True -> {
+              process.send(reply, Ok(Nil))
+              actor.continue(state)
+            }
+            False ->
+              case timeout_ms <= 0 {
+                True -> {
+                  process.send(reply, Error(Nil))
+                  actor.continue(state)
+                }
+                False -> {
+                  let waiter_id = state.next_startup_recovery_waiter_id
+                  let _timer =
+                    state.dependencies.send_after(
+                      state.subject,
+                      timeout_ms,
+                      StartupRecoveryWaiterTimedOut(waiter_id),
+                    )
+                  actor.continue(
+                    State(
+                      ..state,
+                      next_startup_recovery_waiter_id: waiter_id + 1,
+                      pending_startup_recovery_waiters: dict.insert(
+                        state.pending_startup_recovery_waiters,
+                        waiter_id,
+                        reply,
+                      ),
+                    ),
+                  )
+                }
+              }
+          }
+        StartupRecoveryWaiterTimedOut(waiter_id) -> {
+          let pending_waiters =
+            dict.delete(state.pending_startup_recovery_waiters, waiter_id)
+          case dict.get(state.pending_startup_recovery_waiters, waiter_id) {
+            Ok(reply) -> process.send(reply, Error(Nil))
+            Error(Nil) -> Nil
+          }
+          actor.continue(
+            State(..state, pending_startup_recovery_waiters: pending_waiters),
+          )
+        }
+        StartRemoteClient ->
+          case
+            state.transition_invariant_violation_pending
+            || !startup_recovery_ready(state)
+          {
+            True -> continue_with_refreshed_state(state)
+            False ->
+              continue_with_refreshed_state(start_remote_client_now(state))
+          }
+        RunQueuedControlOperation(operation_id) ->
+          case startup_recovery_ready(state) {
+            True ->
+              continue_with_refreshed_state(run_queued_control_operation(
+                state,
+                operation_id,
+              ))
+            False -> actor.continue(state)
+          }
+        QueuedControlOperationFinished(operation_id, execution_result) ->
+          continue_with_refreshed_state(finish_queued_control_operation(
+            state,
+            operation_id,
+            execution_result,
+          ))
+        ApplyOperatorCommand(operator_command, timeout_ms, reply) ->
+          continue_with_refreshed_state(operator_command_reply(
+            state,
+            operator_command,
+            timeout_ms,
+            reply,
+          ))
+        ExecuteQuery(query, _timeout_ms, reply) -> {
+          let _query_worker_pid =
+            process.spawn_unlinked(fn() {
+              process.send(
+                reply,
+                query_service.query(state.query_service, query),
+              )
+              Nil
+            })
+          actor.continue(state)
+        }
+        Shutdown(reply) -> {
+          let state =
+            run_transition_messages(state, [
+              transition_types.ShutdownRequested(True),
+            ])
+            |> fail_pending_startup_recovery_waiters
+          case state.transition_invariant_violation_pending {
+            True -> actor.stop_abnormal("transition_invariant_violation")
+            False -> {
+              log_state(state, "info", "daemon_shutdown", [])
+              process.send(reply, Nil)
+              actor.stop()
+            }
+          }
         }
       }
-    }
   }
 }
 
@@ -2137,32 +2530,51 @@ type OperatorCommandReplyState {
   OperatorCommandPending(State)
 }
 
+fn startup_recovery_rejection(
+  operator_command: command.OperatorCommand,
+) -> command.CommandResult {
+  command.rejected(
+    operator_command,
+    "startup_recovery_in_progress",
+    Some("startup recovery is still in progress"),
+  )
+}
+
 fn operator_command_reply(
   state: State,
   operator_command: command.OperatorCommand,
   timeout_ms: Int,
   reply: process.Subject(command.CommandResult),
 ) -> State {
-  case operator_command {
-    command.WorkItemAction(request) ->
-      reply_for_work_item_action(state, request, reply)
-    command.AbortSession(_)
-    | command.StopAfterCurrentTurn(_)
-    | command.PromptSession(_, _)
-    | command.RespondUi(_, _, _) ->
-      reply_for_worker_operator_command(
-        state,
-        operator_command,
-        timeout_ms,
-        reply,
-      )
-    _ ->
-      transition_operator_command_reply(
-        state,
-        operator_command,
-        timeout_ms,
-        reply,
-      )
+  case startup_recovery_ready(state) {
+    False -> {
+      let result = startup_recovery_rejection(operator_command)
+      process.send(reply, result)
+      log_operator_result(state, result, [])
+      state
+    }
+    True ->
+      case operator_command {
+        command.WorkItemAction(request) ->
+          reply_for_work_item_action(state, request, reply)
+        command.AbortSession(_)
+        | command.StopAfterCurrentTurn(_)
+        | command.PromptSession(_, _)
+        | command.RespondUi(_, _, _) ->
+          reply_for_worker_operator_command(
+            state,
+            operator_command,
+            timeout_ms,
+            reply,
+          )
+        _ ->
+          transition_operator_command_reply(
+            state,
+            operator_command,
+            timeout_ms,
+            reply,
+          )
+      }
   }
 }
 

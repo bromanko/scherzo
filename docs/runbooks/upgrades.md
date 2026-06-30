@@ -39,7 +39,7 @@ A good breaking-change diagnostic is short, searchable, and actionable. It shoul
 - a stable `code` or event name, such as `invalid_config`, `legacy_tracker_field_ignored`, or `old_state_reset_required`;
 - the old path or shape, for example `workspace.hooks`;
 - the replacement or required action, for example `workspace.driver` / `workspace.drivers.<name>`;
-- the boundary where it was detected, such as config load, `doctor`, driver discovery, ledger replay, or `scherzoctl state status`;
+- the boundary where it was detected, such as config load, `doctor`, driver discovery, ledger replay, or `scherzo state status`;
 - a link to upgrade guidance; and
 - bounded context that avoids secrets, full prompts, raw tracker comments, and raw tool payloads.
 
@@ -66,16 +66,16 @@ Durable state is evidence and recovery input, not a place to guess. If a new Sch
 Recommended flow for unsupported local state:
 
 ```sh
-scherzoctl state status --root <workspace-root>
-scherzoctl state archive-old --root <workspace-root> --yes
-scherzoctl state reinitialize --root <workspace-root> --yes
+scherzo state status --root <workspace-root>
+scherzo state archive-old --root <workspace-root> --yes
+scherzo state reinitialize --root <workspace-root> --yes
 ```
 
 Use `archive-old` first when the old state may be needed for forensics. Use `discard-old` only when the old state is known to be disposable:
 
 ```sh
-scherzoctl state discard-old --root <workspace-root> --yes
-scherzoctl state reinitialize --root <workspace-root> --yes
+scherzo state discard-old --root <workspace-root> --yes
+scherzo state reinitialize --root <workspace-root> --yes
 ```
 
 Do not silently replay unsupported records as partial current state. Do not delete old state automatically during daemon startup. See [workflow recovery](workflow-recovery.md) for recovery vocabulary, cleanup, and old-state handling.
@@ -149,10 +149,10 @@ Current behavior rejects removed simplified-YAML keys during config loading with
 Old ledger or snapshot schema markers are durable runtime shapes. If the current tree cannot support them, Scherzo reports unsupported state instead of partially replaying it. Operator-facing recovery uses `old_state_reset_required` vocabulary and the offline state commands:
 
 ```sh
-scherzoctl state status --root <workspace-root>
-scherzoctl state archive-old --root <workspace-root> --yes
-scherzoctl state discard-old --root <workspace-root> --yes
-scherzoctl state reinitialize --root <workspace-root> --yes
+scherzo state status --root <workspace-root>
+scherzo state archive-old --root <workspace-root> --yes
+scherzo state discard-old --root <workspace-root> --yes
+scherzo state reinitialize --root <workspace-root> --yes
 ```
 
 Prefer archive plus reinitialize when evidence may matter; discard only after accepting loss of old local history.

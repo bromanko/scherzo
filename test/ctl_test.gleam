@@ -19,6 +19,7 @@ import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
 import scherzo/ctl/command_registry
 import scherzo/ctl/workstream as ctl_workstream
 import scherzo/hash
+import scherzo/instance_lock
 import scherzo/path
 import scherzo/runtime_bundle
 import scherzo/session/event
@@ -958,6 +959,8 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     ))
   assert ctl.parse(["schedules", "doctor", "nightly", "--root", "work"])
     == Ok(ctl.SchedulesDoctor(None, Some("work"), False, "nightly"))
+  assert ctl.parse(["run-schedule", "nightly", "--now"])
+    == Ok(ctl.Operator(None, False, command.RunScheduleNow("nightly")))
   let assert Ok(ctl.Workstream(_)) = ctl.parse(["workstream", "list", "LIV-1"])
   assert ctl.parse(["workstream", "show", "workstream-1", "--json"])
     == Ok(
@@ -1060,6 +1063,22 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     == Ok(ctl.StateRepairRunProvenance("work", True, "run-1", True, False))
 }
 
+pub fn parse_offline_accepts_canonical_top_level_commands_and_rejects_daemon_controls_test() {
+  assert ctl.parse_offline(["cleanup", "--root", "work"])
+    == Ok(ctl.Cleanup(None, Some("work"), False, True, False))
+  assert ctl.parse_offline(["schedules", "status", "nightly", "--root", "work"])
+    == Ok(ctl.SchedulesStatus(None, Some("work"), False, Some("nightly")))
+  let assert Ok(ctl.Workstream(_)) = ctl.parse_offline(["workstream", "list"])
+  assert ctl.parse_offline(["state", "status", "--root", "work"])
+    == Ok(ctl.StateStatus("work", False))
+  let assert Error(ctl.UsageError(run_schedule_error)) =
+    ctl.parse_offline(["run-schedule", "nightly", "--now"])
+  assert string.contains(run_schedule_error, "unknown")
+  let assert Error(ctl.UsageError(schedule_run_error)) =
+    ctl.parse_offline(["schedules", "run", "nightly", "--now"])
+  assert string.contains(schedule_run_error, "unknown")
+}
+
 pub fn parse_operator_commands_test() {
   assert ctl.parse(["pause"])
     == Ok(ctl.Operator(None, False, command.PauseDispatch))
@@ -1140,6 +1159,7 @@ pub fn parse_operator_commands_test() {
     ))
   assert ctl.parse(["schedules", "run", "nightly", "--now"])
     == Ok(ctl.Operator(None, False, command.RunScheduleNow("nightly")))
+  let assert Error(ctl.UsageError(_)) = ctl.parse(["run-schedule", "nightly"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["schedules", "run", "nightly"])
   let assert Error(ctl.UsageError(_)) =
@@ -1154,6 +1174,36 @@ pub fn parse_operator_commands_test() {
       "--yes",
       "--dry-run",
     ])
+}
+
+pub fn deprecated_ctl_offline_alias_prints_hint_and_top_level_offline_does_not_test() {
+  let root = "test/tmp/ctl-cleanup/deprecated-alias"
+  test_helpers.reset_dir(root)
+  let stdout_subject = process.new_subject()
+  let stderr_subject = process.new_subject()
+
+  assert ctl.run_control_args_with_deps_and_env(
+      ["cleanup", "--root", root],
+      ps_deps([], ps_now_ms, ""),
+      output(stdout_subject),
+      subject_line(stderr_subject),
+      path.env,
+    )
+    == Ok(Nil)
+  let hint = drain_output(stderr_subject)
+  assert string.contains(hint, "Deprecated: scherzo ctl cleanup")
+  assert string.contains(hint, "use scherzo cleanup")
+
+  let offline_stderr = process.new_subject()
+  assert ctl.run_offline_args_with_deps_and_env(
+      ["cleanup", "--root", root],
+      ps_deps([], ps_now_ms, ""),
+      output(process.new_subject()),
+      subject_line(offline_stderr),
+      path.env,
+    )
+    == Ok(Nil)
+  assert drain_output(offline_stderr) == ""
 }
 
 pub fn cleanup_json_output_uses_provider_report_test() {
@@ -1280,7 +1330,7 @@ pub fn parse_rejects_duplicate_singleton_options_test() {
     == Error(ctl.UsageError("option may only be supplied once: --run"))
 }
 
-pub fn usage_mentions_commands_and_options_test() {
+pub fn usage_mentions_daemon_only_commands_and_options_test() {
   let usage = ctl.usage()
   assert string.contains(usage, "ping")
   assert string.contains(usage, "ps")
@@ -1310,37 +1360,12 @@ pub fn usage_mentions_commands_and_options_test() {
   )
   assert string.contains(usage, "abort <session-ref> --yes")
   assert string.contains(usage, "ui respond")
-  assert string.contains(usage, "cleanup")
-  assert string.contains(usage, "schedules status")
-  assert string.contains(usage, "schedules logs <job> --last")
-  assert string.contains(usage, "schedules doctor <job>")
-  assert string.contains(usage, "schedules run <job> --now")
-  assert string.contains(usage, "artifact publication list --run <run-id>")
-  assert string.contains(
-    usage,
-    "artifact publication show --run <run-id> --publication <publication-id>",
-  )
-  assert string.contains(
-    usage,
-    "artifact publication retry --run <run-id> [--publication <publication-id>]",
-  )
-  assert string.contains(
-    usage,
-    "Without --root, the daemon returns status queued with an operation_id",
-  )
-  assert string.contains(
-    usage,
-    "artifact publication abandon --run <run-id> --publication <publication-id>",
-  )
-  assert string.contains(usage, "state status")
-  assert string.contains(usage, "state compact")
+  assert string.contains(usage, "run-schedule <job> --now")
+  assert string.contains(usage, "recovery cleanup-orphan-steps run:<run-id>")
   assert string.contains(usage, "--control-file <path>")
-  assert string.contains(usage, "--root <workspace-root>")
   assert string.contains(usage, "--json")
   assert string.contains(usage, "--verbose")
   assert string.contains(usage, "--since-cursor <n>")
-  assert string.contains(usage, "--run <run-id>")
-  assert string.contains(usage, "--publication <publication>")
   assert string.contains(usage, "--state <state>")
   assert string.contains(usage, "--status <status>")
   assert string.contains(usage, "--kind <kind>")
@@ -1348,12 +1373,35 @@ pub fn usage_mentions_commands_and_options_test() {
   assert string.contains(usage, "--cursor <cursor>")
   assert string.contains(usage, "--dry-run")
   assert string.contains(usage, "--step <step-id>")
+  assert !string.contains(usage, "cleanup --yes")
+  assert !string.contains(usage, "schedules status")
+  assert !string.contains(usage, "artifact publication list --run <run-id>")
+  assert !string.contains(usage, "workstream list [task]")
+  assert !string.contains(usage, "state status --root <workspace-root>")
+  assert !string.contains(usage, "--root <workspace-root>")
+  assert !string.contains(usage, "--run <run-id>")
+  assert !string.contains(usage, "--publication <publication>")
 }
 
-pub fn usage_contains_every_registered_command_line_test() {
+pub fn usage_contains_every_registered_control_command_line_test() {
   let usage = ctl.usage()
-  let lines = command_registry.usage_lines()
+  let lines = command_registry.control_usage_lines()
   assert list.all(lines, fn(line) { string.contains(usage, line) })
+}
+
+pub fn offline_usage_mentions_offline_commands_and_options_test() {
+  let usage = ctl.offline_usage()
+  assert string.contains(usage, "Usage: scherzo <offline-command> [options]")
+  assert string.contains(usage, "cleanup --yes")
+  assert string.contains(usage, "schedules status [job]")
+  assert string.contains(usage, "artifact publication list --run <run-id>")
+  assert string.contains(usage, "workstream list [task]")
+  assert string.contains(usage, "state status --root <workspace-root>")
+  assert string.contains(usage, "--root <workspace-root>")
+  assert string.contains(usage, "--run <run-id>")
+  assert string.contains(usage, "--publication <publication>")
+  assert !string.contains(usage, "run-schedule <job> --now")
+  assert !string.contains(usage, "--control-file <path>")
 }
 
 pub fn schedules_logs_last_replays_retained_session_events_test() {
@@ -2360,27 +2408,10 @@ pub fn artifact_publication_uses_control_file_root_and_reports_not_found_test() 
   assert ctl.error_code(missing_publication) == "publication_not_found"
 }
 
-pub fn artifact_publication_retry_without_root_uses_discovered_daemon_test() {
-  let base = "test/tmp/ctl-artifact-publication-retry-daemon"
-  let root = base <> "/workspaces"
-  let caller = base <> "/consumer"
-  let control_path =
-    caller <> "/.scherzo/workspaces/.scherzo-state/control.json"
-  test_helpers.reset_dir(base)
-  write_control_file_for_root(control_path, root)
+pub fn artifact_publication_retry_without_root_requires_explicit_workspace_root_test() {
   let subject = process.new_subject()
-  let apply_calls = process.new_subject()
-  let deps =
-    ctl.ControlClient(
-      ..ps_deps([], ps_now_ms, ""),
-      apply_command: fn(control_file, operator_command) {
-        process.send(apply_calls, #(control_file, operator_command))
-        Ok(command.applied(operator_command, Some("retry queued")))
-      },
-    )
 
-  let result =
-    ctl.run_with_deps_and_env(
+  assert ctl.run_with_deps(
       ctl.ArtifactPublicationRetry(
         None,
         None,
@@ -2388,18 +2419,70 @@ pub fn artifact_publication_retry_without_root_uses_discovered_daemon_test() {
         "run-1",
         Some("execplan_review_doc"),
       ),
-      deps,
+      ps_deps([], ps_now_ms, ""),
       output(subject),
-      caller_cwd_env(caller),
     )
+    == Error(ctl.UsageError(
+      "artifact publication retry requires --root <workspace-root>",
+    ))
+  assert drain_output(subject) == ""
+}
 
-  assert result == Ok(Nil)
-  let assert Ok(#(called_control_file, called_command)) =
-    process.receive(apply_calls, within: 1000)
-  assert called_control_file.workspace_root == root
-  assert called_command
-    == command.RetryArtifactPublication("run-1", Some("execplan_review_doc"))
-  assert string.contains(drain_output(subject), "applied")
+pub fn artifact_publication_retry_refuses_when_instance_lock_is_held_test() {
+  let base = "test/tmp/ctl-artifact-publication-retry-lock-held"
+  let root = base <> "/workspaces"
+  test_helpers.reset_dir(base)
+  seed_publication_state(root)
+  let assert Ok(lock) = instance_lock.acquire(root)
+
+  let assert Error(error) =
+    ctl.run_with_deps(
+      ctl.ArtifactPublicationRetry(None, Some(root), False, "run-1", None),
+      ps_deps([], ps_now_ms, ""),
+      output(process.new_subject()),
+    )
+  assert ctl.error_code(error) == "instance_lock_failed"
+  assert string.contains(
+    ctl.error_message(error),
+    "instance lock already exists",
+  )
+
+  instance_lock.release(lock)
+}
+
+pub fn artifact_publication_retry_releases_instance_lock_after_failure_test() {
+  let base = "test/tmp/ctl-artifact-publication-retry-lock-release"
+  let root = base <> "/workspaces"
+  let config_path = base <> "/scherzo.yaml"
+  test_helpers.reset_dir(base)
+  seed_publication_state(root)
+  let assert Ok(Nil) = simplifile.write(config_path, "version: [")
+
+  let assert Error(error) =
+    ctl.run_with_deps(
+      ctl.ArtifactPublicationRetry(None, Some(root), False, "run-1", None),
+      ps_deps([], ps_now_ms, ""),
+      output(process.new_subject()),
+    )
+  assert ctl.error_code(error) != "instance_lock_failed"
+
+  let assert Ok(lock) = instance_lock.acquire(root)
+  instance_lock.release(lock)
+}
+
+pub fn artifact_publication_retry_invalid_root_does_not_create_lock_state_test() {
+  let base = "test/tmp/ctl-artifact-publication-retry-invalid-root"
+  let root = base <> "/workspaces"
+  test_helpers.reset_dir(base)
+
+  let assert Error(error) =
+    ctl.run_with_deps(
+      ctl.ArtifactPublicationRetry(None, Some(root), False, "run-1", None),
+      ps_deps([], ps_now_ms, ""),
+      output(process.new_subject()),
+    )
+  assert ctl.error_code(error) != "instance_lock_failed"
+  assert simplifile.is_directory(root <> "/.scherzo-state") == Ok(False)
 }
 
 pub fn state_repair_run_provenance_dry_run_yes_and_idempotent_test() {

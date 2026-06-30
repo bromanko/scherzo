@@ -54,6 +54,8 @@ Milestone 5 completes resilience validation. The implementer must run the focuse
 - [x] (2026-06-29) Wrote this concise review document for the follow-up implementation bundle.
 - [x] (2026-06-29) Validated this review document with `direnv exec . .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-1298-post-init-startup-recovery-review.md`; it reported `REVIEW_DOC_VALID=ok`.
 - [x] (2026-06-29) Incorporated review feedback by tightening milestone acceptance evidence, explicit test obligations, manual dogfood scope, non-applicable docs/helper and provider-live/cache scope, contract validation, and production lint expectations.
+- [x] (2026-06-29) Implemented Milestone 1 startup-timeout diagnostics in `src/scherzo/orchestrator/daemon.gleam`, including a test seam for low initializer timeouts, specific `daemon_actor_init_timeout` mapping, and actionable timeout logging with the last known startup phase.
+- [x] (2026-06-29) Recorded the initializer-side effect inventory for the follow-up post-init move: `apply_startup_recovery`, `apply_scheduled_startup_recovery`, recovered workflow resumption, transition invariant checks, read-model refresh, queued control-operation replay, initial poll scheduling, and `StartRemoteClient`.
 
 ## Surprises & Discoveries
 
@@ -68,9 +70,23 @@ Milestone 5 completes resilience validation. The implementer must run the focuse
 - Decision: Keep network publication idempotence in the existing outbox and ledger model. Rationale: in-memory startup flags cannot survive crashes, while current outbox IDs and dedupe keys are designed for restart safety. Date: 2026-06-29.
 - Decision: Treat manual daemon restart dogfood as a deferred human/operator check, not as a pre-publish implementation gate. Rationale: the required pre-publish evidence is deterministic fake-dependency testing and repository validation; live daemon dogfood is still useful after handoff but should not require provider credentials or live tracker state for this implementation pack. Date: 2026-06-29.
 
+## Implementation Notes
+
+Initializer-side effect inventory for the post-init refactor:
+
+- `apply_startup_recovery(startup_recovery)` moves post-init.
+- `apply_scheduled_startup_recovery(startup_recovery.scheduled)` moves post-init.
+- `spawn_recovered_workflow_resumptions(startup_recovery.workflow_resumptions)` moves post-init.
+- `check_startup_transition_invariants` moves post-init.
+- `refresh_read_model` moves post-init.
+- `replay_incomplete_control_operations(subject, state)` moves post-init.
+- The initial `poll_scheduler.start(...)` immediate tick remains initializer-side in the current tree and should be delayed in Milestone 2/4.
+- `process.send(subject, StartRemoteClient)` moves post-init.
+- `startup_recovery.load(...)`, `start_query_service(...)`, `start_control_plane(...)`, `effect_runner.start(...)`, and daemon identity loading remain pre-actor work in this milestone.
+
 ## Outcomes & Retrospective
 
-This review document defines the implementation shape and evidence requirements but does not implement the refactor. The expected outcome after implementation is fast actor readiness, clear timeout diagnostics, preserved recovery semantics, and deterministic evidence that heavy recovery no longer causes a generic actor startup failure.
+Milestone 1 is now partially implemented: startup timeout failures no longer collapse into the generic `daemon_start_failed` path, and the daemon emits `daemon_startup_timeout` with `initialiser_timeout_ms` and `last_startup_phase` fields. The larger post-init recovery refactor remains to be implemented in later milestones.
 
 ## Validation and Acceptance
 

@@ -841,7 +841,7 @@ Use `ps --json` and `session --json` when scripting or when an agent is acting a
 | Unsure if the tracker board matches config | `scherzo doctor --check tracker-contract .scherzo/scherzo.yaml` | Requires API key and configured project slug |
 | No tasks dispatch | `scherzo doctor --check tracker-smoke .scherzo/scherzo.yaml` | Check project, ready state, active state, terminal state, and workflow labels |
 | Driver problem | `<driver> describe --json` | Then run the relevant driver lifecycle/capability command by hand |
-| Upgrade or breaking-change diagnostic | `scherzo doctor .scherzo/scherzo.yaml` or `scherzoctl state status --root <workspace-root>` | Follow the [simplified YAML migration guide](runbooks/simplified-yaml-migration.md), [upgrade policy](runbooks/upgrades.md), or any specific runbook named by the diagnostic |
+| Upgrade or breaking-change diagnostic | `scherzo doctor .scherzo/scherzo.yaml` or `scherzo state status --root <workspace-root>` | Follow the [simplified YAML migration guide](runbooks/simplified-yaml-migration.md), [upgrade policy](runbooks/upgrades.md), or any specific runbook named by the diagnostic |
 | jj workspace problem | `jj status` and driver env review | Verify base, remote, fetch policy, and publish remote before daemon mode |
 | Agent cannot start | `pi --mode rpc --no-session --rpc-message-updates off` | Fix `pi` install, model/provider credentials, or `agents.runtime` config |
 | Structured output rejected | Read retained step diagnostics and schema validator stderr | Final-response source must be one JSON document; command validators should print concise stderr |

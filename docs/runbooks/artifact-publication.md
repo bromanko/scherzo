@@ -6,11 +6,11 @@ Use Scherzo's retained publication ledger to inspect and retry publication work 
 
 List the latest publication attempt for each configured publication on a run:
 
-    direnv exec . gleam run -m scherzo ctl artifact publication list --run <run-id> --root <workspace-root>
+    direnv exec . gleam run -- artifact publication list --run <run-id> --root <workspace-root>
 
 Show the full attempt history for one publication:
 
-    direnv exec . gleam run -m scherzo ctl artifact publication show --run <run-id> --publication <publication-id> --root <workspace-root>
+    direnv exec . gleam run -- artifact publication show --run <run-id> --publication <publication-id> --root <workspace-root>
 
 Both commands also accept `--json`.
 
@@ -18,7 +18,7 @@ Both commands also accept `--json`.
 
 Retry one failed retryable publication:
 
-    direnv exec . gleam run -m scherzo ctl artifact publication retry --run <run-id> --publication <publication-id>
+    direnv exec . gleam run -- artifact publication retry --run <run-id> --publication <publication-id> --root <workspace-root>
 
 For same-repository GitHub repository-change publication, retry the configured
 `mode: commit_stack` publication. Review-doc helper output is outside the
@@ -27,9 +27,9 @@ diagnostics rather than a single `execplan_review_doc` publication route.
 
 Retry every latest failed retryable publication for the run:
 
-    direnv exec . gleam run -m scherzo ctl artifact publication retry --run <run-id>
+    direnv exec . gleam run -- artifact publication retry --run <run-id> --root <workspace-root>
 
-When a daemon control file is available and `--root` is not supplied, retry goes through the control/daemon operator path. Accepted daemon retries return promptly with `status: queued` and an `operation_id`; poll `scripts/scherzoctl query operation-status <operation-id> --json` for `queued`, `running`, `completed`, or `failed`. When running against retained local state with `--root`, retry remains synchronous and validates that the run still has a retained output manifest and that the current workflow publication config still matches the retained retry target.
+Retry is an offline retained-state command. It requires `--root`, acquires the workspace instance lock before mutating retained publication state, validates that the run still has a retained output manifest, and checks that the current workflow publication config still matches the retained retry target.
 
 ## Common retry failures
 
