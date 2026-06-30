@@ -3680,3 +3680,103 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
     "\"name\": \"review-finding-dispositions-markdown\"",
   )
 }
+
+pub fn materialize_code_change_bundle_uses_run_root_artifact_store_test() {
+  let dir = "test/tmp/execplan-code-change-run-root-store"
+  test_helpers.reset_dir(dir)
+  let run_root = dir <> "/run-root"
+  let durable_run_dir = run_root <> "/.scherzo-state/artifacts/runs/run-durable"
+  let assert Ok(Nil) = simplifile.create_directory_all(durable_run_dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(
+      run_root <> "/artifacts/review/final_dispositions",
+    )
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-publish.json",
+      "{\"changed_files\":[\"src/example.gleam\"]}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-validation.json",
+      "{\"status\":\"passed\"}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-plan-completion-verdict.json",
+      "{\"verdict\":\"pass\"}\n",
+    )
+  let assert Ok(Nil) = simplifile.write(dir <> "/input.diff", "diff\n")
+  let output = "tmp/execplan-code-change-bundle.json"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "env SCHERZO_RUN_ID=run-durable SCHERZO_RUN_ROOT="
+        <> test_helpers.shell_quote("run-root")
+        <> " SCHERZO_EXECPLAN_DIFF_PATH=input.diff ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-code-change-bundle --bundle ../../../test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
+        <> test_helpers.shell_quote(output),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(bundle) = simplifile.read(dir <> "/" <> output)
+  assert string.contains(
+    bundle,
+    "runs/run-durable/execplan/code-change/diff.patch",
+  )
+  let assert Ok(True) =
+    simplifile.is_file(durable_run_dir <> "/execplan/code-change/diff.patch")
+  let assert Ok(True) =
+    simplifile.is_file(
+      durable_run_dir <> "/execplan/code-change/validation/scherzo-ci.json",
+    )
+  let assert Ok(False) =
+    simplifile.is_directory(dir <> "/.scherzo-state/artifacts")
+}
+
+pub fn materialize_code_change_bundle_no_env_local_store_keeps_stable_refs_test() {
+  let dir = "test/tmp/execplan-code-change-local-store"
+  test_helpers.reset_dir(dir)
+  let local_run_dir = dir <> "/.scherzo-state/artifacts/runs/run-local"
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-publish.json",
+      "{\"changed_files\":[\"src/example.gleam\"]}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-validation.json",
+      "{\"status\":\"passed\"}\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-plan-completion-verdict.json",
+      "{\"verdict\":\"pass\"}\n",
+    )
+  let assert Ok(Nil) = simplifile.write(dir <> "/input.diff", "diff\n")
+  let output = "tmp/execplan-code-change-bundle.json"
+
+  let artifact =
+    run_shell_in(
+      dir,
+      "unset SCHERZO_RUN_ROOT SCHERZO_REPO_ROOT SCHERZO_RUN_ARTIFACT_DIR; env SCHERZO_RUN_ID=run-local SCHERZO_EXECPLAN_DIFF_PATH=input.diff ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-code-change-bundle --bundle ../../../test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
+        <> test_helpers.shell_quote(output),
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  let assert Ok(bundle) = simplifile.read(dir <> "/" <> output)
+  assert string.contains(
+    bundle,
+    "runs/run-local/execplan/code-change/diff.patch",
+  )
+  let assert Ok(True) =
+    simplifile.is_file(local_run_dir <> "/execplan/code-change/diff.patch")
+  let assert Ok(True) =
+    simplifile.is_file(
+      local_run_dir <> "/execplan/code-change/validation/scherzo-ci.json",
+    )
+}

@@ -235,10 +235,6 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
           "attach --json <session-ref>",
           "Replay and follow JSON stream event envelopes.",
         ),
-        line(
-          "attach --raw --json <session-ref>",
-          "Legacy alias for attach --json.",
-        ),
       ],
     ),
     command_spec.CommandSpec(

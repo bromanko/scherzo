@@ -246,12 +246,28 @@ fn driver_publish_args(
   ]
   list.append(
     base_args,
-    list.append(target_args(operation, planned.target), [
-      "--allow-no-changes",
-      "true",
-      "--json",
-    ]),
+    list.append(
+      target_args(operation, planned.target),
+      list.append(selected_head_args(operation, planned), [
+        "--allow-no-changes",
+        "true",
+        "--json",
+      ]),
+    ),
   )
+}
+
+fn selected_head_args(
+  operation: String,
+  planned: artifact_publication_planner.DryRunPublicationManifest,
+) -> List(String) {
+  case operation, planned.target, planned.publication {
+    "publish-commit-stack",
+      artifact_publication_planner.StableBranchTargetPlan,
+      artifact_publication_planner.PlannedCommitStackPublication(stack)
+    -> ["--expected-head", stack.stack.head_sha]
+    _, _, _ -> []
+  }
 }
 
 fn target_args(

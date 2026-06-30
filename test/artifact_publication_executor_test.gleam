@@ -523,6 +523,10 @@ pub fn execute_routes_commit_stack_retry_adopts_pr_after_head_mismatch_test() {
     transcript,
     "--branch-prefix " <> stable_commit_stack_branch(),
   )
+  assert string.contains(
+    transcript,
+    "--expected-head " <> commit_stack_head_sha(),
+  )
 }
 
 pub fn execute_routes_redacts_sensitive_commit_stack_driver_failure_test() {
@@ -1022,6 +1026,7 @@ fn stable_driver_args_have_required_shape(args: List(String)) -> Bool {
   string.contains(joined, "publish-commit-stack --kind implementation")
   && string.contains(joined, "--branch-prefix " <> stable_commit_stack_branch())
   && string.contains(joined, "--base main")
+  && string.contains(joined, "--expected-head " <> commit_stack_head_sha())
   && string.contains(joined, "--allow-no-changes true --json")
   && !string.contains(joined, "--target-branch")
 }
