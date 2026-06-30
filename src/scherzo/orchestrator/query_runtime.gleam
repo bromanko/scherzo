@@ -82,6 +82,7 @@ pub fn start(
                         issue_id: operation.issue_id,
                         issue_identifier: operation.issue_identifier,
                         requested_step_id: operation.requested_step_id,
+                        publication_id: operation.publication_id,
                         status: operation.status,
                         reason: operation.reason,
                         message: operation.message,

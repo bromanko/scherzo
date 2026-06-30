@@ -330,6 +330,7 @@ pub type ControlOperationStatus {
     issue_id: Option(String),
     issue_identifier: Option(String),
     requested_step_id: Option(String),
+    publication_id: Option(String),
     status: String,
     reason: Option(String),
     message: Option(String),
@@ -1980,6 +1981,7 @@ pub fn apply(
       issue_id,
       issue_identifier,
       requested_step_id,
+      publication_id,
     ) ->
       Projection(
         ..projection,
@@ -1995,6 +1997,7 @@ pub fn apply(
             issue_id: issue_id,
             issue_identifier: issue_identifier,
             requested_step_id: requested_step_id,
+            publication_id: publication_id,
             status: "queued",
             reason: None,
             message: None,
@@ -4576,6 +4579,7 @@ fn control_operation_entry_to_json(
     #("issue_id", option_string_to_json(status.issue_id)),
     #("issue_identifier", option_string_to_json(status.issue_identifier)),
     #("requested_step_id", option_string_to_json(status.requested_step_id)),
+    #("publication_id", option_string_to_json(status.publication_id)),
     #("status", json.string(status.status)),
     #("reason", option_string_to_json(status.reason)),
     #("message", option_string_to_json(status.message)),
@@ -5934,6 +5938,11 @@ fn control_operation_snapshot_decoder() -> decode.Decoder(
     "requested_step_id",
     decode.optional(decode.string),
   )
+  use publication_id <- decode.optional_field(
+    "publication_id",
+    None,
+    decode.optional(decode.string),
+  )
   use status <- decode.field("status", decode.string)
   use reason <- decode.field("reason", decode.optional(decode.string))
   use message <- decode.field("message", decode.optional(decode.string))
@@ -5957,6 +5966,7 @@ fn control_operation_snapshot_decoder() -> decode.Decoder(
       issue_id: issue_id,
       issue_identifier: issue_identifier,
       requested_step_id: requested_step_id,
+      publication_id: publication_id,
       status: status,
       reason: reason,
       message: message,

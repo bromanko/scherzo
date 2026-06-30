@@ -1274,6 +1274,7 @@ pub fn retry_step_startup_replay_replays_queued_operation_test() {
         issue_id: Some(issue.id),
         issue_identifier: Some(issue.identifier),
         requested_step_id: Some("apply_feedback"),
+        publication_id: None,
       ),
     ),
   ])
@@ -1329,6 +1330,7 @@ pub fn retry_step_operation_status_query_succeeds_while_startup_replay_is_runnin
         issue_id: Some(issue.id),
         issue_identifier: Some(issue.identifier),
         requested_step_id: Some("apply_feedback"),
+        publication_id: None,
       ),
     ),
   ])
@@ -1406,6 +1408,7 @@ pub fn retry_step_startup_replay_replays_running_operation_without_duplicate_sta
         issue_id: Some(issue.id),
         issue_identifier: Some(issue.identifier),
         requested_step_id: Some("apply_feedback"),
+        publication_id: None,
       ),
     ),
     record.with_id(
@@ -1470,6 +1473,7 @@ pub fn retry_step_startup_replay_skips_completed_and_failed_operations_test() {
         issue_id: Some(issue.id),
         issue_identifier: Some(issue.identifier),
         requested_step_id: Some("apply_feedback"),
+        publication_id: None,
       ),
     ),
     record.with_id(
@@ -1492,6 +1496,7 @@ pub fn retry_step_startup_replay_skips_completed_and_failed_operations_test() {
         issue_id: Some(issue.id),
         issue_identifier: Some(issue.identifier),
         requested_step_id: Some("apply_feedback"),
+        publication_id: None,
       ),
     ),
     record.with_id(
@@ -2630,6 +2635,441 @@ pub fn dispatch_recovery_retries_publication_and_moves_issue_out_of_todo_test() 
   hub.stop(hub_subject)
 }
 
+pub fn artifact_publication_retry_queues_operation_before_publication_driver_work_test() {
+  let dir = "test/tmp/daemon-artifact-publication-retry-queued"
+  let issue = issue("issue-1", "LIV-1264", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let publish_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      fn(_) {
+        adapter_legacy.adapter_from_legacy_client(
+          tracker_issue_only(issue),
+          "linear",
+        )
+      },
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      blocking_publication_retry_runner(log_subject, publish_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryArtifactPublication("run-1", Some("execplan_review_doc")),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "queued"
+  assert result.message
+    == Some(
+      "artifact publication retry accepted; poll query operation-status for completion",
+    )
+  let assert Some(operation_id) = result.operation_id
+  assert string.starts_with(
+    operation_id,
+    "artifact-publication-retry:run-1:execplan_review_doc:",
+  )
+  let assert Ok(operation) =
+    projection.control_operation(load_projection_or_panic(root), operation_id)
+  assert operation.publication_id == Some("execplan_review_doc")
+  assert operation.run_id == Some("run-1")
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
+
+  assert wait_for_log(log_subject, "publication_driver_started", 100)
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
+
+  test_async.release_barrier(publish_barrier)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.message
+    == Some("publication retry recorded execplan_review_doc as published")
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn artifact_publication_retry_reuses_existing_operation_for_duplicate_target_test() {
+  let dir = "test/tmp/daemon-artifact-publication-retry-duplicate"
+  let issue = issue("issue-1", "LIV-1264", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let publish_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      fn(_) {
+        adapter_legacy.adapter_from_legacy_client(
+          tracker_issue_only(issue),
+          "linear",
+        )
+      },
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      blocking_publication_retry_runner(log_subject, publish_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(first) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryArtifactPublication("run-1", Some("execplan_review_doc")),
+      1000,
+    )
+  let assert Some(first_operation_id) = first.operation_id
+  assert wait_for_log(log_subject, "publication_driver_started", 100)
+
+  let assert Ok(second) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryArtifactPublication("run-1", Some("execplan_review_doc")),
+      1000,
+    )
+  assert command.status_to_string(second.status) == "queued"
+  assert second.operation_id == Some(first_operation_id)
+  assert second.message
+    == Some(
+      "artifact publication retry already queued/running; poll query operation-status for completion",
+    )
+  assert count_kind(root, "control_operation_queued") == 1
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
+
+  test_async.release_barrier(publish_barrier)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, first_operation_id, "completed", 20)
+  assert completed_operation.publication_id == Some("execplan_review_doc")
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn artifact_publication_retry_rejects_invalid_targets_without_queued_work_test() {
+  let dir = "test/tmp/daemon-artifact-publication-retry-rejects"
+  let issue = issue("issue-1", "LIV-1264", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      fn(_) {
+        adapter_legacy.adapter_from_legacy_client(
+          tracker_issue_only(issue),
+          "linear",
+        )
+      },
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      command_runner.Runner(run: fn(_) {
+        process.send(log_subject, "unexpected_publication_retry")
+        Error(command_runner.command_error("unexpected_publication_retry"))
+      }),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(missing_run) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryArtifactPublication("missing-run", None),
+      1000,
+    )
+  assert command.status_to_string(missing_run.status) == "not_found"
+
+  let assert Ok(missing_publication) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryArtifactPublication("run-1", Some("missing-publication")),
+      1000,
+    )
+  assert command.status_to_string(missing_publication.status) == "not_found"
+
+  seed_non_retryable_failed_publication_attempt(root, "run-1", at_ms: 1030)
+  let assert Ok(non_retryable) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryArtifactPublication("run-1", Some("execplan_review_doc")),
+      1000,
+    )
+  assert command.status_to_string(non_retryable.status) == "rejected"
+  assert command.status_reason(non_retryable.status)
+    == Some("publication_not_retryable")
+  assert count_kind(root, "control_operation_queued") == 0
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
+  assert !wait_for_log(log_subject, "unexpected_publication_retry", 5)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn artifact_publication_retry_rejects_when_operation_intent_append_fails_test() {
+  let dir = "test/tmp/daemon-artifact-publication-retry-append-fails"
+  let issue = issue("issue-1", "LIV-1264", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      fn(_) {
+        adapter_legacy.adapter_from_legacy_client(
+          tracker_issue_only(issue),
+          "linear",
+        )
+      },
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      command_runner.Runner(run: fn(_) {
+        process.send(log_subject, "unexpected_publication_retry")
+        Error(command_runner.command_error("unexpected_publication_retry"))
+      }),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  chmod_path("a-w", ledger_path.current_path)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryArtifactPublication("run-1", Some("execplan_review_doc")),
+      1000,
+    )
+
+  chmod_path("u+w", ledger_path.current_path)
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("ledger_append_failed")
+  assert result.message
+    == Some("failed to append artifact publication retry operation")
+  assert count_kind(root, "control_operation_queued") == 0
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
+  assert !wait_for_log(log_subject, "unexpected_publication_retry", 5)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn artifact_publication_retry_async_failure_records_failed_operation_test() {
+  let dir = "test/tmp/daemon-artifact-publication-retry-async-failure"
+  let issue = issue("issue-1", "LIV-1264", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      fn(_) {
+        adapter_legacy.adapter_from_legacy_client(
+          tracker_issue_only(issue),
+          "linear",
+        )
+      },
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      failing_publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryArtifactPublication("run-1", Some("execplan_review_doc")),
+      1000,
+    )
+  let assert Some(operation_id) = result.operation_id
+  let assert Ok(failed_operation) =
+    wait_for_operation_status(root, operation_id, "failed", 20)
+  assert failed_operation.reason == Some("publication_retry_attempt_failed")
+  let assert Some(message) = failed_operation.message
+  assert string.contains(message, "workspace_driver_publish_failed")
+  assert string.contains(message, "driver exploded")
+  let assert Ok(latest) =
+    projection.latest_publication_for_run(
+      load_projection_or_panic(root),
+      "run-1",
+      "execplan_review_doc",
+    )
+  assert latest.status == "failed"
+  assert latest.error_code == Some("workspace_driver_publish_failed")
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn artifact_publication_retry_startup_replay_replays_queued_and_skips_completed_test() {
+  let dir = "test/tmp/daemon-artifact-publication-retry-startup-replay"
+  let issue = issue("issue-1", "LIV-1264", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let operation_id =
+    "artifact-publication-retry:run-1:execplan_review_doc:queued-replay"
+  append_ledger_records(root, [
+    record.with_id(
+      "publication-retry-queued-op",
+      1040,
+      record.ControlOperationQueued(
+        operation_id: operation_id,
+        operation_kind: "artifact_publication_retry",
+        command_name: "retry_artifact_publication",
+        target: "run:run-1:execplan_review_doc",
+        run_id: Some("run-1"),
+        issue_id: Some(issue.id),
+        issue_identifier: Some(issue.identifier),
+        requested_step_id: None,
+        publication_id: Some("execplan_review_doc"),
+      ),
+    ),
+  ])
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      fn(_) {
+        adapter_legacy.adapter_from_legacy_client(
+          tracker_issue_only(issue),
+          "linear",
+        )
+      },
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.publication_id == Some("execplan_review_doc")
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+
+  let skip_log_subject = process.new_subject()
+  let skip_deps =
+    in_process_dependencies_with_adapter(
+      skip_log_subject,
+      tracker_issue_only(issue),
+      fn(_) {
+        adapter_legacy.adapter_from_legacy_client(
+          tracker_issue_only(issue),
+          "linear",
+        )
+      },
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      command_runner.Runner(run: fn(_) {
+        process.send(skip_log_subject, "unexpected_completed_replay")
+        Error(command_runner.command_error("unexpected_completed_replay"))
+      }),
+    )
+  let assert Ok(skip_started) = daemon.start(Some(workflow_path), skip_deps)
+  assert !wait_for_log(skip_log_subject, "unexpected_completed_replay", 20)
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
+
+  assert daemon.shutdown(skip_started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 fn issue(id: String, identifier: String, state: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
     id: id,
@@ -2774,7 +3214,10 @@ fn in_process_dependencies_with_adapter(
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     ..daemon.default_dependencies(),
-    make_tracker_adapter: make_tracker_adapter,
+    make_tracker_adapter: fn(effective) {
+      make_tracker_adapter(effective)
+      |> ensure_state_transition_capability
+    },
     cleanup: fn(_, _, _) { Ok(Nil) },
     logger: fn(_, event, _fields, _) {
       process.send(log_subject, event)
@@ -2795,6 +3238,30 @@ fn in_process_dependencies_with_adapter(
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
+}
+
+fn ensure_state_transition_capability(
+  tracker_adapter: adapter.TrackerAdapter,
+) -> adapter.TrackerAdapter {
+  case tracker_adapter.state_transitions {
+    Some(_) -> tracker_adapter
+    None ->
+      adapter.TrackerAdapter(
+        ..tracker_adapter,
+        state_transitions: Some(
+          adapter.StateTransitionCapability(transition: fn(request) {
+            Ok(adapter.StateTransitionReceipt(
+              task: request.task,
+              state: task.TaskState(
+                id: None,
+                name: request.target_state_name,
+                category: task.Ready,
+              ),
+            ))
+          }),
+        ),
+      )
+  }
 }
 
 fn tracker_adapter_with_transition_logging(
@@ -3792,6 +4259,43 @@ fn write_seed_artifact(root: String, ref: String, contents: String) -> Nil {
   let assert Ok(Nil) = simplifile.create_directory_all(dir)
   let assert Ok(Nil) = simplifile.write(absolute, contents)
   Nil
+}
+
+fn publication_attempt_count(
+  root: String,
+  run_id: String,
+  publication_id: String,
+) -> Int {
+  projection.publication_attempts_for_run(
+    load_projection_or_panic(root),
+    run_id,
+    publication_id,
+  )
+  |> list.length
+}
+
+fn blocking_publication_retry_runner(
+  log_subject: process.Subject(String),
+  publish_barrier: test_async.Barrier,
+) -> command_runner.Runner {
+  let base = publication_retry_runner()
+  command_runner.Runner(run: fn(spec) {
+    let command_runner.CommandSpec(args: args, ..) = spec
+    case args {
+      ["publish-commit-stack", ..] -> {
+        process.send(log_subject, "publication_driver_started")
+        test_async.block_until_released(publish_barrier)
+        base.run(spec)
+      }
+      _ -> base.run(spec)
+    }
+  })
+}
+
+fn failing_publication_retry_runner() -> command_runner.Runner {
+  command_runner.Runner(run: fn(_) {
+    Error(command_runner.command_error("driver exploded"))
+  })
 }
 
 fn publication_retry_runner() -> command_runner.Runner {

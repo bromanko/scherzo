@@ -507,6 +507,81 @@ pub fn workspace_cleanup_schema_marker_safe_to_delete_still_retains_interrupted_
   assert item_reason_contains(items, run_root, "operator review")
 }
 
+pub fn workspace_cleanup_inventory_skips_generated_fixture_subtrees_test() {
+  let repo = "test/tmp/cleanup-workspaces/generated-fixtures"
+  let workspace_root = setup_repo(repo)
+  let legitimate =
+    create_manifest_run(repo, workspace_root, "run-legitimate", "main")
+  let build_workflow =
+    create_manifest_run_with_keys(
+      repo,
+      workspace_root,
+      "build",
+      "LIV-build",
+      "run-build-workflow",
+      "main",
+    )
+  let test_tmp_issue =
+    create_manifest_run_with_keys(
+      repo,
+      workspace_root,
+      "test",
+      "tmp",
+      "run-test-tmp-issue",
+      "main",
+    )
+  let retained =
+    create_manifest_run(repo, workspace_root, "run-retained", "main")
+  let assert Ok(Nil) =
+    simplifile.write(retained <> "/.scherzo-keep-workspace", "keep\n")
+
+  let retained_fixture_scherzo =
+    retained <> "/workspaces/main/test/tmp/.scherzo"
+  let retained_fixture_run =
+    create_generated_workspace_fixture(
+      retained_fixture_scherzo,
+      "run-retained-fixture",
+    )
+  let nested_workspace_scherzo = workspace_root <> "/generated/source/.scherzo"
+  let nested_workspace_run =
+    create_generated_workspace_fixture(
+      nested_workspace_scherzo,
+      "run-nested-workspace",
+    )
+  let test_tmp_fixture_scherzo =
+    workspace_root <> "/generated/source/test/tmp/.scherzo"
+  let test_tmp_fixture_run =
+    create_generated_workspace_fixture(test_tmp_fixture_scherzo, "run-test-tmp")
+  let build_fixture_scherzo = workspace_root <> "/build/generated/.scherzo"
+  let build_fixture_run =
+    create_generated_workspace_fixture(build_fixture_scherzo, "run-build")
+  let generated_build_marker =
+    workspace_root <> "/generated/source/assets/build"
+  let assert Ok(Nil) = simplifile.create_directory_all(generated_build_marker)
+  let assert Ok(Nil) =
+    simplifile.write(
+      generated_build_marker <> "/.scherzo-keep-workspace",
+      "keep\n",
+    )
+
+  let report = cleanup.inventory(workspace_root, 0)
+  let items = workspace_items(report)
+
+  assert item_status(items, legitimate) == Some("would_delete")
+  assert item_status(items, build_workflow) == Some("would_delete")
+  assert item_status(items, test_tmp_issue) == Some("would_delete")
+  assert item_status(items, retained) == Some("retained")
+  assert item_status(items, retained_fixture_scherzo) == None
+  assert item_status(items, retained_fixture_run) == None
+  assert item_status(items, nested_workspace_scherzo) == None
+  assert item_status(items, nested_workspace_run) == None
+  assert item_status(items, test_tmp_fixture_scherzo) == None
+  assert item_status(items, test_tmp_fixture_run) == None
+  assert item_status(items, build_fixture_scherzo) == None
+  assert item_status(items, build_fixture_run) == None
+  assert item_status(items, generated_build_marker) == None
+}
+
 pub fn workspace_cleanup_inventory_rejects_oversized_manifest_before_decode_test() {
   let repo = "test/tmp/cleanup-workspaces/oversized-manifest"
   let workspace_root = setup_repo(repo)
@@ -633,13 +708,50 @@ esac\n",
   workspace_root
 }
 
+fn create_generated_workspace_fixture(
+  scherzo_dir: String,
+  run_id: String,
+) -> String {
+  let run_root =
+    scherzo_dir <> "/workspaces/implementation/LIV-fixture/" <> run_id
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root)
+  let assert Ok(Nil) =
+    simplifile.write(run_root <> "/.scherzo-keep-workspace", "keep\n")
+  run_root
+}
+
 fn create_manifest_run(
   repo: String,
   workspace_root: String,
   run_id: String,
   workspace_name: String,
 ) -> String {
-  let run_root = repo <> "/.scherzo/workspaces/implementation/LIV-1/" <> run_id
+  create_manifest_run_with_keys(
+    repo,
+    workspace_root,
+    "implementation",
+    "LIV-1",
+    run_id,
+    workspace_name,
+  )
+}
+
+fn create_manifest_run_with_keys(
+  repo: String,
+  workspace_root: String,
+  workflow_id: String,
+  issue_identifier: String,
+  run_id: String,
+  workspace_name: String,
+) -> String {
+  let run_root =
+    workspace_root
+    <> "/"
+    <> workflow_id
+    <> "/"
+    <> issue_identifier
+    <> "/"
+    <> run_id
   let workspace_path = run_root <> "/workspaces/" <> workspace_name
   let assert Ok(Nil) = simplifile.create_directory_all(workspace_path)
   let assert Ok(Nil) = simplifile.write(workspace_path <> "/note", run_id)
@@ -653,7 +765,7 @@ fn create_manifest_run(
         [
           workspace_manifest.Entry(
             run_id: run_id,
-            workflow_id: "implementation",
+            workflow_id: workflow_id,
             step_id: "implement",
             attempt_index: 1,
             workspace_name: workspace_name,
@@ -666,7 +778,7 @@ fn create_manifest_run(
           ),
         ],
         run_id,
-        "implementation",
+        workflow_id,
       ),
     )
   let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
@@ -679,10 +791,10 @@ fn create_manifest_run(
           1,
           record.WorkflowRunStarted(
             run_id,
-            "implementation",
+            workflow_id,
             "fingerprint",
             "issue-id",
-            "LIV-1",
+            issue_identifier,
             "issue-fingerprint",
             1,
             run_root,
@@ -693,7 +805,7 @@ fn create_manifest_run(
           2,
           record.WorkflowRunFinished(
             run_id,
-            "implementation",
+            workflow_id,
             "issue-id",
             "success",
             0,

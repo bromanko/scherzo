@@ -277,6 +277,7 @@ pub fn projection_tracks_control_operation_lifecycle_and_replayable_ids_test() {
           issue_id: Some("issue-1"),
           issue_identifier: Some("LIV-1"),
           requested_step_id: Some("apply_feedback"),
+          publication_id: None,
         ),
       ),
       record.with_id(
@@ -304,6 +305,7 @@ pub fn projection_tracks_control_operation_lifecycle_and_replayable_ids_test() {
           issue_id: Some("issue-2"),
           issue_identifier: Some("LIV-2"),
           requested_step_id: Some("validate"),
+          publication_id: None,
         ),
       ),
       record.with_id(
@@ -318,6 +320,7 @@ pub fn projection_tracks_control_operation_lifecycle_and_replayable_ids_test() {
           issue_id: Some("issue-3"),
           issue_identifier: Some("LIV-3"),
           requested_step_id: Some("apply_feedback"),
+          publication_id: None,
         ),
       ),
       record.with_id(

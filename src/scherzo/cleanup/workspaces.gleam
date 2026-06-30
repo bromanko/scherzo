@@ -818,7 +818,12 @@ fn discover_run_roots_loop(
                 let #(visited, found) = state
                 let child = path.join(current, entry)
                 case
-                  ignored_directory_name(entry),
+                  ignored_discovery_subtree(
+                    workspace_root,
+                    current,
+                    entry,
+                    child,
+                  ),
                   safe_discovery_directory(workspace_root_real, child)
                 {
                   True, _ | _, False -> #(visited, found)
@@ -857,6 +862,18 @@ fn safe_discovery_directory(
   }
 }
 
+fn ignored_discovery_subtree(
+  workspace_root: String,
+  current: String,
+  entry: String,
+  child: String,
+) -> Bool {
+  ignored_directory_name(entry)
+  || generated_build_directory(workspace_root, entry, child)
+  || nested_test_tmp(workspace_root, current, entry, child)
+  || nested_scherzo_workspaces(workspace_root, current, entry, child)
+}
+
 fn ignored_directory_name(name: String) -> Bool {
   name == ".scherzo-state"
   || name == ".git"
@@ -864,14 +881,85 @@ fn ignored_directory_name(name: String) -> Bool {
   || name == ".direnv"
 }
 
+fn generated_build_directory(
+  workspace_root: String,
+  entry: String,
+  child: String,
+) -> Bool {
+  entry == "build" && below_top_level_run_prefix(workspace_root, child)
+}
+
+fn nested_test_tmp(
+  workspace_root: String,
+  current: String,
+  entry: String,
+  child: String,
+) -> Bool {
+  entry == "tmp"
+  && string.ends_with(current, "/test")
+  && below_top_level_run_prefix(workspace_root, child)
+}
+
+fn nested_scherzo_workspaces(
+  workspace_root: String,
+  current: String,
+  entry: String,
+  child: String,
+) -> Bool {
+  entry == "workspaces"
+  && child != workspace_root
+  && string.ends_with(current, "/.scherzo")
+  && below_top_level_run_prefix(workspace_root, child)
+}
+
+fn below_top_level_run_prefix(workspace_root: String, child: String) -> Bool {
+  path_depth_below_workspace_root(workspace_root, child) > 3
+}
+
+fn path_depth_below_workspace_root(
+  workspace_root: String,
+  child: String,
+) -> Int {
+  let root = trim_trailing_slash(workspace_root)
+  let child = trim_trailing_slash(child)
+  case child == root {
+    True -> 0
+    False ->
+      case string.starts_with(child, root <> "/") {
+        True ->
+          child
+          |> string.drop_start(string.length(root) + 1)
+          |> string.split(on: "/")
+          |> list.filter(fn(segment) { segment != "" })
+          |> list.length
+        False -> 0
+      }
+  }
+}
+
+fn trim_trailing_slash(value: String) -> String {
+  case value != "/" && string.ends_with(value, "/") {
+    True -> string.drop_end(value, 1)
+    False -> value
+  }
+}
+
 fn looks_like_run_root(path_: String) -> Bool {
-  result.unwrap(simplifile.is_directory(path.join(path_, "workspaces")), False)
+  run_root_workspaces_directory(path_)
   || result.unwrap(
     simplifile.is_file(workspace_manifest.manifest_path(path_)),
     False,
   )
   || result.unwrap(
     simplifile.is_file(workspace_run.cleanup_retention_marker(path_)),
+    False,
+  )
+}
+
+fn run_root_workspaces_directory(path_: String) -> Bool {
+  !string.ends_with(path_, "/.scherzo")
+  && result.unwrap(
+    simplifile.is_directory(path.join(path_, "workspaces")),
     False,
   )
 }

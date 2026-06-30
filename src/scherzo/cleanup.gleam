@@ -31,6 +31,25 @@ pub type CleanupError {
   CleanupError(code: String, message: String)
 }
 
+pub type CleanupProviderSelection {
+  AllProviders
+  SelectedProvider(CleanupProvider)
+}
+
+pub type CleanupProvider {
+  LocalState
+  Workspaces
+  ArtifactStore
+  TaskStore
+  ProviderLive
+  RemoteProviderCache
+  Browser
+}
+
+pub type CleanupProviderSelectionError {
+  InvalidCleanupProvider(value: String)
+}
+
 pub type CleanupReport {
   CleanupReport(
     mode: CleanupMode,
@@ -53,6 +72,7 @@ pub type CleanupProviderReport {
   CleanupProviderReport(
     provider_id: String,
     available: Bool,
+    elapsed_ms: Int,
     roots: List(String),
     transcript_root_status: String,
     items: List(CleanupItemReport),
@@ -82,6 +102,7 @@ type ProviderInput {
   ProviderInput(
     provider_id: String,
     available: Bool,
+    elapsed_ms: Int,
     roots: List(String),
     transcript_root_status: String,
     warnings: List(String),
@@ -123,12 +144,41 @@ pub fn inventory(workspace_root: String, now_ms: Int) -> CleanupReport {
   run(CleanupRequest(DryRun, workspace_root, now_ms, None, None, None))
 }
 
+pub fn inventory_for(
+  workspace_root: String,
+  now_ms: Int,
+  provider_selection: CleanupProviderSelection,
+) -> CleanupReport {
+  run_for(
+    CleanupRequest(DryRun, workspace_root, now_ms, None, None, None),
+    provider_selection,
+  )
+}
+
 pub fn apply(workspace_root: String, now_ms: Int) -> CleanupReport {
   run(CleanupRequest(Apply, workspace_root, now_ms, None, None, None))
 }
 
+pub fn apply_for(
+  workspace_root: String,
+  now_ms: Int,
+  provider_selection: CleanupProviderSelection,
+) -> CleanupReport {
+  run_for(
+    CleanupRequest(Apply, workspace_root, now_ms, None, None, None),
+    provider_selection,
+  )
+}
+
 pub fn run(request: CleanupRequest) -> CleanupReport {
-  case run_request(request) {
+  run_for(request, AllProviders)
+}
+
+pub fn run_for(
+  request: CleanupRequest,
+  provider_selection: CleanupProviderSelection,
+) -> CleanupReport {
+  case run_request_for(request, provider_selection) {
     Ok(report) -> report
     Error(CleanupError(code, message)) ->
       CleanupReport(
@@ -152,40 +202,132 @@ pub fn run(request: CleanupRequest) -> CleanupReport {
 pub fn run_request(
   request: CleanupRequest,
 ) -> Result(CleanupReport, CleanupError) {
-  run_with_clock(request, monotonic_ms)
+  run_request_for(request, AllProviders)
+}
+
+pub fn run_request_for(
+  request: CleanupRequest,
+  provider_selection: CleanupProviderSelection,
+) -> Result(CleanupReport, CleanupError) {
+  run_with_clock_for(request, provider_selection, monotonic_ms)
 }
 
 pub fn run_with_clock(
   request: CleanupRequest,
   clock: fn() -> Int,
 ) -> Result(CleanupReport, CleanupError) {
+  run_with_clock_for(request, AllProviders, clock)
+}
+
+pub fn run_with_clock_for(
+  request: CleanupRequest,
+  provider_selection: CleanupProviderSelection,
+  clock: fn() -> Int,
+) -> Result(CleanupReport, CleanupError) {
   case cleanup_is_bounded(request) {
     False ->
       Ok(unbounded_report(
         request,
-        provider_inputs(request.workspace_root, request.now_ms),
+        provider_inputs(
+          request.workspace_root,
+          request.now_ms,
+          provider_selection,
+        ),
       ))
-    True -> bounded_report(request, clock)
+    True -> bounded_report(request, provider_selection, clock)
   }
+}
+
+pub fn parse_provider_selection(
+  value: String,
+) -> Result(CleanupProviderSelection, CleanupProviderSelectionError) {
+  case normalized_provider_name(value) {
+    "all" -> Ok(AllProviders)
+    "local_state" -> Ok(SelectedProvider(LocalState))
+    "workspaces" -> Ok(SelectedProvider(Workspaces))
+    "artifact_store" -> Ok(SelectedProvider(ArtifactStore))
+    "task_store" -> Ok(SelectedProvider(TaskStore))
+    "provider_live" -> Ok(SelectedProvider(ProviderLive))
+    "remote_provider_cache" -> Ok(SelectedProvider(RemoteProviderCache))
+    "browser" -> Ok(SelectedProvider(Browser))
+    _ -> Error(InvalidCleanupProvider(value))
+  }
+}
+
+pub fn provider_selection_error_message(
+  error: CleanupProviderSelectionError,
+) -> String {
+  case error {
+    InvalidCleanupProvider(value) ->
+      "invalid cleanup provider '"
+      <> value
+      <> "'; expected one of: "
+      <> provider_selection_usage()
+  }
+}
+
+fn selected_providers(
+  provider_selection: CleanupProviderSelection,
+) -> List(CleanupProvider) {
+  case provider_selection {
+    AllProviders -> all_providers()
+    SelectedProvider(provider) -> [provider]
+  }
+}
+
+fn all_providers() -> List(CleanupProvider) {
+  [
+    LocalState,
+    Workspaces,
+    ArtifactStore,
+    TaskStore,
+    ProviderLive,
+    RemoteProviderCache,
+    Browser,
+  ]
+}
+
+fn selected_provider_ids(
+  provider_selection: CleanupProviderSelection,
+) -> List(String) {
+  provider_selection
+  |> selected_providers
+  |> list.map(provider_id)
+}
+
+fn provider_id(provider: CleanupProvider) -> String {
+  case provider {
+    LocalState -> "local_state"
+    Workspaces -> "workspaces"
+    ArtifactStore -> "artifact_store"
+    TaskStore -> "task_store"
+    ProviderLive -> "provider_live"
+    RemoteProviderCache -> "remote_provider_cache"
+    Browser -> "browser"
+  }
+}
+
+fn normalized_provider_name(value: String) -> String {
+  value
+  |> string.trim
+  |> string.lowercase
+  |> string.replace(each: "-", with: "_")
+}
+
+fn provider_selection_usage() -> String {
+  "all, local-state, workspaces (actionable), artifact-store, task-store, provider-live, remote-provider-cache, or browser (diagnostic-only unavailable)"
 }
 
 fn bounded_report(
   request: CleanupRequest,
+  provider_selection: CleanupProviderSelection,
   clock: fn() -> Int,
 ) -> Result(CleanupReport, CleanupError) {
   use resume <- result.try(decode_resume_cursor(request))
   let started_ms = clock()
   let state =
     bounded_provider_loop(
-      [
-        "local_state",
-        "workspaces",
-        "artifact_store",
-        "task_store",
-        "provider_live",
-        "remote_provider_cache",
-        "browser",
-      ],
+      selected_provider_ids(provider_selection),
       request,
       started_ms,
       clock,
@@ -343,6 +485,7 @@ fn process_local_state_provider(
   after_key: Option(String),
   state: BoundedState,
 ) -> BoundedState {
+  let provider_started_ms = local_artifacts.now_ms()
   let page =
     local_state.cleanup_page(
       request.workspace_root,
@@ -358,6 +501,7 @@ fn process_local_state_provider(
     CleanupProviderReport(
       provider_id: "local_state",
       available: True,
+      elapsed_ms: elapsed_ms(provider_started_ms, local_artifacts.now_ms()),
       roots: page.roots,
       transcript_root_status: page.transcript_root_status,
       items: list.map(page.items, local_state_page_item_to_report),
@@ -415,6 +559,7 @@ fn process_workspace_provider(
   after_key: Option(String),
   state: BoundedState,
 ) -> BoundedState {
+  let provider_started_ms = local_artifacts.now_ms()
   let page =
     workspaces.cleanup_page(
       request.workspace_root,
@@ -430,6 +575,7 @@ fn process_workspace_provider(
     CleanupProviderReport(
       provider_id: "workspaces",
       available: page.available,
+      elapsed_ms: elapsed_ms(provider_started_ms, local_artifacts.now_ms()),
       roots: page.roots,
       transcript_root_status: "not_applicable",
       items: list.map(page.items, workspace_item_to_report),
@@ -502,6 +648,7 @@ fn process_provider_input(
     CleanupProviderReport(
       provider_id: input.provider_id,
       available: input.available,
+      elapsed_ms: input.elapsed_ms,
       roots: input.roots,
       transcript_root_status: input.transcript_root_status,
       items: list.reverse(selected),
@@ -766,53 +913,91 @@ fn remaining_limit(limit: Option(Int), scanned: Int) -> Option(Int) {
   }
 }
 
-fn provider_inputs(workspace_root: String, now_ms: Int) -> List(ProviderInput) {
-  let local_state_result =
-    local_artifacts.inventory(workspace_root, now_ms, True)
-  let workspaces_result = workspaces.inventory(workspace_root, now_ms)
-  [
-    ProviderInput(
-      provider_id: "local_state",
-      available: True,
-      roots: local_state_result.roots,
-      transcript_root_status: local_state_result.transcript_root_status,
-      warnings: local_state_result.warnings,
-      items: local_state_items(local_state_result),
-    ),
-    ProviderInput(
-      provider_id: "workspaces",
-      available: workspaces_result.available,
-      roots: workspaces_result.roots,
-      transcript_root_status: "not_applicable",
-      warnings: workspaces_result.warnings,
-      items: workspace_items_page(workspaces_result),
-    ),
-    boundary_provider_input(
-      "artifact_store",
-      workspace_root,
-      "artifact repositories are read-only to generic cleanup",
-    ),
-    boundary_provider_input(
-      "task_store",
-      workspace_root,
-      "task stores are read-only to generic cleanup",
-    ),
-    boundary_provider_input(
-      "provider_live",
-      workspace_root,
-      "provider-live state is not mutated by generic cleanup",
-    ),
-    boundary_provider_input(
-      "remote_provider_cache",
-      workspace_root,
-      "remote-provider cache cleanup requires an explicit owning provider",
-    ),
-    boundary_provider_input(
-      "browser",
-      workspace_root,
-      "browser and UI state are outside generic cleanup scope",
-    ),
-  ]
+fn provider_inputs(
+  workspace_root: String,
+  now_ms: Int,
+  provider_selection: CleanupProviderSelection,
+) -> List(ProviderInput) {
+  provider_selection
+  |> selected_providers
+  |> list.map(provider_input(workspace_root, now_ms, _))
+}
+
+fn provider_input(
+  workspace_root: String,
+  now_ms: Int,
+  provider: CleanupProvider,
+) -> ProviderInput {
+  timed_provider_input(fn() {
+    case provider {
+      LocalState -> {
+        let local_state_result =
+          local_artifacts.inventory(workspace_root, now_ms, True)
+        ProviderInput(
+          provider_id: "local_state",
+          available: True,
+          elapsed_ms: 0,
+          roots: local_state_result.roots,
+          transcript_root_status: local_state_result.transcript_root_status,
+          warnings: local_state_result.warnings,
+          items: local_state_items(local_state_result),
+        )
+      }
+      Workspaces -> {
+        let workspaces_result = workspaces.inventory(workspace_root, now_ms)
+        ProviderInput(
+          provider_id: "workspaces",
+          available: workspaces_result.available,
+          elapsed_ms: 0,
+          roots: workspaces_result.roots,
+          transcript_root_status: "not_applicable",
+          warnings: workspaces_result.warnings,
+          items: workspace_items_page(workspaces_result),
+        )
+      }
+      ArtifactStore ->
+        boundary_provider_input(
+          "artifact_store",
+          workspace_root,
+          "artifact repositories are read-only to generic cleanup",
+        )
+      TaskStore ->
+        boundary_provider_input(
+          "task_store",
+          workspace_root,
+          "task stores are read-only to generic cleanup",
+        )
+      ProviderLive ->
+        boundary_provider_input(
+          "provider_live",
+          workspace_root,
+          "provider-live state is not mutated by generic cleanup",
+        )
+      RemoteProviderCache ->
+        boundary_provider_input(
+          "remote_provider_cache",
+          workspace_root,
+          "remote-provider cache cleanup requires an explicit owning provider",
+        )
+      Browser ->
+        boundary_provider_input(
+          "browser",
+          workspace_root,
+          "browser and UI state are outside generic cleanup scope",
+        )
+    }
+  })
+}
+
+fn timed_provider_input(
+  provider_input: fn() -> ProviderInput,
+) -> ProviderInput {
+  let started_ms = local_artifacts.now_ms()
+  let input = provider_input()
+  ProviderInput(
+    ..input,
+    elapsed_ms: elapsed_ms(started_ms, local_artifacts.now_ms()),
+  )
 }
 
 fn hit_limit(limit: Option(Int), scanned: Int) -> Bool {
@@ -830,6 +1015,14 @@ fn hit_runtime_budget(
   case max_runtime_ms {
     Some(value) -> value > 0 && now_ms - started_ms >= value
     None -> False
+  }
+}
+
+fn elapsed_ms(started_ms: Int, finished_ms: Int) -> Int {
+  let elapsed = finished_ms - started_ms
+  case elapsed < 0 {
+    True -> 0
+    False -> elapsed
   }
 }
 
@@ -871,6 +1064,7 @@ fn provider_inputs_to_reports(
     CleanupProviderReport(
       provider_id: input.provider_id,
       available: input.available,
+      elapsed_ms: input.elapsed_ms,
       roots: input.roots,
       transcript_root_status: input.transcript_root_status,
       items: input.items |> list.map(page_item_to_report),
@@ -886,12 +1080,17 @@ fn provider_inputs_to_apply_reports(
 ) -> List(CleanupProviderReport) {
   inputs
   |> list.map(fn(input) {
+    let started_ms = local_artifacts.now_ms()
+    let items =
+      input.items |> list.map(apply_page_item(workspace_root, now_ms, _))
     CleanupProviderReport(
       provider_id: input.provider_id,
       available: input.available,
+      elapsed_ms: input.elapsed_ms
+        + elapsed_ms(started_ms, local_artifacts.now_ms()),
       roots: input.roots,
       transcript_root_status: input.transcript_root_status,
-      items: input.items |> list.map(apply_page_item(workspace_root, now_ms, _)),
+      items: items,
       warnings: input.warnings,
     )
   })
@@ -925,6 +1124,7 @@ fn boundary_provider_input(
   ProviderInput(
     provider_id: provider_id,
     available: False,
+    elapsed_ms: 0,
     roots: [workspace_root],
     transcript_root_status: "not_applicable",
     warnings: [],
@@ -1190,6 +1390,7 @@ pub fn cleanup_provider_report_to_json(
   json.object([
     #("provider_id", json.string(provider.provider_id)),
     #("available", json.bool(provider.available)),
+    #("elapsed_ms", json.int(provider.elapsed_ms)),
     #("roots", json.array(provider.roots, of: json.string)),
     #("transcript_root_status", json.string(provider.transcript_root_status)),
     #("items", json.array(provider.items, of: cleanup_item_report_to_json)),

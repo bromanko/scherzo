@@ -381,6 +381,7 @@ pub type RecordBody {
     issue_id: Option(String),
     issue_identifier: Option(String),
     requested_step_id: Option(String),
+    publication_id: Option(String),
   )
   ControlOperationStarted(operation_id: String)
   ControlOperationCompleted(operation_id: String, message: Option(String))
@@ -1495,6 +1496,7 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       issue_id,
       issue_identifier,
       requested_step_id,
+      publication_id,
     ) -> [
       #("operation_id", json.string(operation_id)),
       #("operation_kind", json.string(operation_kind)),
@@ -1504,6 +1506,7 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
       #("issue_id", json.nullable(issue_id, of: json.string)),
       #("issue_identifier", json.nullable(issue_identifier, of: json.string)),
       #("requested_step_id", json.nullable(requested_step_id, of: json.string)),
+      #("publication_id", json.nullable(publication_id, of: json.string)),
     ]
     ControlOperationStarted(operation_id) -> [
       #("operation_id", json.string(operation_id)),
@@ -2942,6 +2945,7 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
         fields.issue_id,
         fields.issue_identifier,
         fields.requested_step_id,
+        fields.publication_id,
       ))
     }
     "control_operation_started" -> {

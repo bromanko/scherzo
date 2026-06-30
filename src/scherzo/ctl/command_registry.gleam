@@ -429,15 +429,37 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         line("", "Respond to an operator-managed UI request."),
       ],
     ),
-    outbox_command_spec.cleanup_command(
-      CleanupKey,
-      control_file_option(),
-      root_option(),
-      json_option(),
-      dry_run_option(),
-      yes_option(),
-      limit_option(),
-      cursor_option(),
+    command_spec.CommandSpec(
+      handler: CleanupKey,
+      path: ["cleanup"],
+      usage: "cleanup [--provider <provider>] [--yes] [--limit <n>] [--cursor <cursor>] [--max-runtime-ms <ms>]",
+      summary: "Dry-run owned cleanup inventory.",
+      positionals: [],
+      options: [
+        control_file_option(),
+        root_option(),
+        provider_option(),
+        json_option(),
+        dry_run_option(),
+        yes_option(),
+        limit_option(),
+        cursor_option(),
+        cleanup_max_runtime_option(),
+      ],
+      help_lines: [
+        line(
+          "cleanup [--provider <provider>]",
+          "Dry-run owned cleanup inventory.",
+        ),
+        line(
+          "cleanup --yes",
+          "Apply eligible owned cleanup after safety checks.",
+        ),
+        line(
+          "cleanup --limit 100 --max-runtime-ms 240000",
+          "Request a bounded cleanup page and report resume metadata.",
+        ),
+      ],
     ),
     command_spec.CommandSpec(
       handler: SchedulesStatusKey,
@@ -944,6 +966,7 @@ fn control_option_specs_in_help_order() -> List(command_spec.OptionSpec) {
 fn offline_option_specs_in_help_order() -> List(command_spec.OptionSpec) {
   [
     root_option(),
+    provider_option(),
     json_option(),
     color_option(),
     verbose_option(),
@@ -990,6 +1013,30 @@ fn root_option() -> command_spec.OptionSpec {
     "Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.",
     False,
     command_spec.passthrough_value,
+  )
+}
+
+fn provider_option() -> command_spec.OptionSpec {
+  command_spec.passthrough_value_option(
+    "--provider",
+    "<provider>",
+    "Cleanup provider: all, local-state, workspaces. Diagnostic-only unavailable providers: artifact-store, task-store, provider-live, remote-provider-cache, browser.",
+  )
+}
+
+fn cleanup_max_runtime_option() -> command_spec.OptionSpec {
+  command_spec.value_option(
+    "--max-runtime-ms",
+    "<ms>",
+    "Maximum cleanup runtime budget in milliseconds.",
+    False,
+    fn(value) {
+      case int.parse(value) {
+        Ok(limit) if limit > 0 -> Ok(value)
+        Ok(_) | Error(_) ->
+          Error("--max-runtime-ms requires a positive integer")
+      }
+    },
   )
 }
 

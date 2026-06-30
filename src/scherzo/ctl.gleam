@@ -103,6 +103,7 @@ pub type Command {
     limit: Option(Int),
     cursor: Option(String),
     max_runtime_ms: Option(Int),
+    provider_selection: cleanup.CleanupProviderSelection,
   )
   SchedulesStatus(
     control_file: Option(String),
@@ -868,6 +869,7 @@ fn build_ui_respond_command(
 fn build_cleanup_command(
   parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
 ) -> Result(Command, Error) {
+  use provider_selection <- try_ctl(parsed_cleanup_provider(parsed))
   let limit =
     option_int_value(parsed, "--limit", "--limit requires a positive integer")
   let max_runtime_ms =
@@ -902,6 +904,7 @@ fn build_cleanup_command(
             limit,
             cursor,
             max_runtime_ms,
+            provider_selection,
           ))
         False, _ ->
           Ok(Cleanup(
@@ -913,8 +916,22 @@ fn build_cleanup_command(
             limit,
             cursor,
             max_runtime_ms,
+            provider_selection,
           ))
       }
+  }
+}
+
+fn parsed_cleanup_provider(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(cleanup.CleanupProviderSelection, Error) {
+  case command_spec.option_value(parsed, "--provider") {
+    Some(provider) ->
+      cleanup.parse_provider_selection(provider)
+      |> result.map_error(fn(error) {
+        UsageError(cleanup.provider_selection_error_message(error))
+      })
+    None -> Ok(cleanup.AllProviders)
   }
 }
 
@@ -1435,6 +1452,7 @@ pub fn run_with_deps_and_env(
       limit,
       cursor,
       max_runtime_ms,
+      provider_selection,
     ) ->
       run_cleanup(
         control_path,
@@ -1445,6 +1463,7 @@ pub fn run_with_deps_and_env(
         limit,
         cursor,
         max_runtime_ms,
+        provider_selection,
         output,
         env,
       )
@@ -1590,6 +1609,7 @@ fn run_cleanup(
   limit: Option(Int),
   cursor: Option(String),
   max_runtime_ms: Option(Int),
+  provider_selection: cleanup.CleanupProviderSelection,
   output: Output,
   env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
@@ -1604,14 +1624,17 @@ fn run_cleanup(
     False -> cleanup.Apply
   }
   case
-    cleanup.run_request(cleanup.CleanupRequest(
-      mode,
-      workspace_root,
-      now_ms,
-      limit,
-      cursor,
-      max_runtime_ms,
-    ))
+    cleanup.run_request_for(
+      cleanup.CleanupRequest(
+        mode,
+        workspace_root,
+        now_ms,
+        limit,
+        cursor,
+        max_runtime_ms,
+      ),
+      provider_selection,
+    )
     |> result.map_error(fn(err) {
       let cleanup.CleanupError(code, message) = err
       Failed("cleanup_" <> code, message)
@@ -1650,6 +1673,7 @@ fn print_cleanup_result(result: cleanup.CleanupReport, output: Output) -> Nil {
   list.each(result.providers, fn(provider) {
     output.line("provider: " <> provider.provider_id)
     output.line("  available: " <> bool_to_text(provider.available))
+    output.line("  elapsed_ms: " <> int.to_string(provider.elapsed_ms))
     output.line("  transcript_root_status: " <> provider.transcript_root_status)
     output.line("  roots:")
     case provider.roots {

@@ -8,6 +8,7 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
 import scherzo/artifact_repository/command_runner
+import scherzo/cleanup
 import scherzo/cleanup/cursor as cleanup_cursor
 import scherzo/commit_stack_artifact
 import scherzo/control/client as control_client
@@ -221,6 +222,7 @@ fn query_operation_status_response() -> query_types.QueryResponse {
     issue_id: Some("issue-1"),
     issue_identifier: Some("LIV-1262"),
     requested_step_id: Some("apply_feedback"),
+    publication_id: None,
     status: "completed",
     reason: None,
     message: Some("retry-step completed"),
@@ -927,7 +929,17 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       "ABC-1",
     ))
   assert ctl.parse(["cleanup"])
-    == Ok(ctl.Cleanup(None, None, False, True, False, None, None, None))
+    == Ok(ctl.Cleanup(
+      None,
+      None,
+      False,
+      True,
+      False,
+      None,
+      None,
+      None,
+      cleanup.AllProviders,
+    ))
   assert ctl.parse([
       "cleanup",
       "--dry-run",
@@ -950,9 +962,56 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       Some(25),
       Some("cursor-1"),
       Some(240_000),
+      cleanup.AllProviders,
+    ))
+  assert ctl.parse(["cleanup", "--dry-run", "--json", "--root", "work"])
+    == Ok(ctl.Cleanup(
+      None,
+      Some("work"),
+      True,
+      True,
+      False,
+      None,
+      None,
+      None,
+      cleanup.AllProviders,
     ))
   assert ctl.parse(["cleanup", "--yes", "--root", "work"])
-    == Ok(ctl.Cleanup(None, Some("work"), False, False, True, None, None, None))
+    == Ok(ctl.Cleanup(
+      None,
+      Some("work"),
+      False,
+      False,
+      True,
+      None,
+      None,
+      None,
+      cleanup.AllProviders,
+    ))
+  assert ctl.parse(["cleanup", "--provider", "local-state"])
+    == Ok(ctl.Cleanup(
+      None,
+      None,
+      False,
+      True,
+      False,
+      None,
+      None,
+      None,
+      cleanup.SelectedProvider(cleanup.LocalState),
+    ))
+  assert ctl.parse(["cleanup", "--provider", "all"])
+    == Ok(ctl.Cleanup(
+      None,
+      None,
+      False,
+      True,
+      False,
+      None,
+      None,
+      None,
+      cleanup.AllProviders,
+    ))
   assert ctl.parse(["schedules", "status", "--root", "work", "--json"])
     == Ok(ctl.SchedulesStatus(None, Some("work"), True, None))
   assert ctl.parse(["schedules", "status", "nightly", "--root", "work"])
@@ -1076,7 +1135,17 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
 
 pub fn parse_offline_accepts_canonical_top_level_commands_and_rejects_daemon_controls_test() {
   assert ctl.parse_offline(["cleanup", "--root", "work"])
-    == Ok(ctl.Cleanup(None, Some("work"), False, True, False, None, None, None))
+    == Ok(ctl.Cleanup(
+      None,
+      Some("work"),
+      False,
+      True,
+      False,
+      None,
+      None,
+      None,
+      cleanup.AllProviders,
+    ))
   assert ctl.parse_offline(["schedules", "status", "nightly", "--root", "work"])
     == Ok(ctl.SchedulesStatus(None, Some("work"), False, Some("nightly")))
   let assert Ok(ctl.Workstream(_)) = ctl.parse_offline(["workstream", "list"])
@@ -1229,7 +1298,17 @@ pub fn cleanup_json_output_uses_provider_report_test() {
 
   let result =
     ctl.run_with_deps(
-      ctl.Cleanup(None, Some(root), True, False, False, None, None, None),
+      ctl.Cleanup(
+        None,
+        Some(root),
+        True,
+        False,
+        False,
+        None,
+        None,
+        None,
+        cleanup.AllProviders,
+      ),
       ps_deps([], ps_now_ms, ""),
       output(output_subject),
     )
@@ -1240,6 +1319,64 @@ pub fn cleanup_json_output_uses_provider_report_test() {
   assert string.contains(transcript, "\"provider_id\":\"local_state\"")
   assert string.contains(transcript, "\"provider_id\":\"workspaces\"")
   assert !string.contains(transcript, "\"truncated\"")
+  assert string.contains(transcript, "\"elapsed_ms\":")
+}
+
+pub fn cleanup_json_output_filters_provider_test() {
+  let root = "test/tmp/ctl-cleanup/json-filter"
+  test_helpers.reset_dir(root)
+  let output_subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Cleanup(
+        None,
+        Some(root),
+        True,
+        False,
+        False,
+        None,
+        None,
+        None,
+        cleanup.SelectedProvider(cleanup.Workspaces),
+      ),
+      ps_deps([], ps_now_ms, ""),
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"provider_id\":\"workspaces\"")
+  assert !string.contains(transcript, "\"provider_id\":\"local_state\"")
+}
+
+pub fn cleanup_apply_output_filters_provider_test() {
+  let root = "test/tmp/ctl-cleanup/apply-filter"
+  test_helpers.reset_dir(root)
+  let output_subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Cleanup(
+        None,
+        Some(root),
+        False,
+        False,
+        True,
+        None,
+        None,
+        None,
+        cleanup.SelectedProvider(cleanup.Workspaces),
+      ),
+      ps_deps([], ps_now_ms, ""),
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "cleanup apply")
+  assert string.contains(transcript, "provider: workspaces")
+  assert !string.contains(transcript, "provider: local_state")
 }
 
 pub fn cleanup_text_output_uses_provider_report_test() {
@@ -1249,7 +1386,17 @@ pub fn cleanup_text_output_uses_provider_report_test() {
 
   let result =
     ctl.run_with_deps(
-      ctl.Cleanup(None, Some(root), False, True, False, None, None, None),
+      ctl.Cleanup(
+        None,
+        Some(root),
+        False,
+        True,
+        False,
+        None,
+        None,
+        None,
+        cleanup.AllProviders,
+      ),
       ps_deps([], ps_now_ms, ""),
       output(output_subject),
     )
@@ -1284,6 +1431,7 @@ pub fn cleanup_bounded_output_includes_page_metadata_test() {
         Some(25),
         Some(cursor),
         Some(240_000),
+        cleanup.AllProviders,
       ),
       ps_deps([], ps_now_ms, ""),
       output(output_subject),
@@ -1295,6 +1443,7 @@ pub fn cleanup_bounded_output_includes_page_metadata_test() {
   assert string.contains(transcript, "limit: 25")
   assert string.contains(transcript, "cursor: " <> cursor)
   assert string.contains(transcript, "max_runtime_ms: 240000")
+  assert string.contains(transcript, "elapsed_ms:")
 }
 
 pub fn parse_rejects_usage_errors_test() {
@@ -1325,6 +1474,11 @@ pub fn parse_rejects_usage_errors_test() {
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["outbox", "--status", "unknown"])
   let assert Error(ctl.UsageError(_)) = ctl.parse(["outbox", "--kind", ""])
+  let assert Error(ctl.UsageError(provider_error)) =
+    ctl.parse(["cleanup", "--provider", "unknown"])
+  assert string.contains(provider_error, "invalid cleanup provider 'unknown'")
+  assert string.contains(provider_error, "local-state")
+  assert string.contains(provider_error, "diagnostic-only unavailable")
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["artifact", "publication", "list"])
   let assert Error(ctl.UsageError(_)) =
