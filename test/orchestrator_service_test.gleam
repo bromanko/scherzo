@@ -53,11 +53,6 @@ pub type CapturedLog {
   )
 }
 
-fn fake_pi() -> String {
-  let assert Ok(abs) = path.absolute("test/fixtures/fake_pi_rpc.sh")
-  abs
-}
-
 fn issue(state: String) -> tracker_issue.Issue {
   tracker_issue.Issue(
     id: "issue-id",
@@ -329,38 +324,6 @@ pub fn paused_config_skips_dispatch_but_loads_workflow_test() {
     )
   assert result.dispatched == 0
   assert contains_log(result.logs, "dispatch_paused")
-}
-
-pub fn pi_probe_mode_launches_without_prompt_test() {
-  let root = "test/tmp/service-pi-probe/workspaces"
-  test_helpers.reset_dir("test/tmp/service-pi-probe")
-  let assert Ok(Nil) =
-    simplifile.create_directory_all("test/tmp/service-pi-probe/workflows")
-  let workflow_path = "test/tmp/service-pi-probe/scherzo.yaml"
-  let transcript_path = "test/tmp/service-pi-probe/transcript.jsonl"
-  let assert Ok(transcript) = path.absolute(transcript_path)
-  let assert Ok(Nil) =
-    simplifile.write(
-      workflow_path,
-      yaml_config(
-        root,
-        "  runtime:\n    type: pi\n    compatibility_check: true\n    pi:\n      executable: \""
-          <> fake_pi()
-          <> "\"\n      env:\n        FAKE_PI_TRANSCRIPT: \""
-          <> transcript
-          <> "\"\n",
-      ),
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      "test/tmp/service-pi-probe/workflows/implementation.yaml",
-      command_workflow_yaml("printf ok"),
-    )
-  assert service.start_pi_probe(Some(workflow_path)) == Ok(Nil)
-  let assert Ok(contents) = simplifile.read(transcript)
-  assert string.contains(contents, "set_session_name")
-  assert string.contains(contents, "get_session_stats")
-  assert !string.contains(contents, "prompt")
 }
 
 pub fn linear_contract_check_success_logs_structured_summary_test() {

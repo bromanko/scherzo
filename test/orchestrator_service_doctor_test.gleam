@@ -1026,7 +1026,7 @@ pub fn doctor_pi_probe_prepare_failure_reports_only_pi_probe_test() {
   assert doctor.has_failures(report) == True
 }
 
-pub fn doctor_pi_probe_cleanup_failure_does_not_report_workspace_hooks_test() {
+pub fn doctor_pi_probe_cleanup_failure_reports_pi_probe_failure_test() {
   let config_path = write_config("test/tmp/doctor-pi-cleanup-warning", "")
   let subject = process.new_subject()
   let deps =
@@ -1049,14 +1049,17 @@ pub fn doctor_pi_probe_cleanup_failure_does_not_report_workspace_hooks_test() {
     )
   let summary = doctor.summary(report)
   assert summary.warned == 0
-  assert summary.failed == 0
+  assert summary.failed == 1
   assert result_for(report, doctor.InstanceLock) == None
   assert result_for(report, doctor.WorkspaceHooks) == None
   let assert Some(pi_result) = result_for(report, doctor.PiProbe)
-  assert pi_result.status == doctor.Pass
+  assert pi_result.status == doctor.Fail
+  assert pi_result.code == "workspace_cleanup_failed"
+  assert field_value(pi_result.fields, "error") == Some("workspace_io")
+  assert doctor.has_failures(report) == True
 }
 
-pub fn doctor_pi_probe_does_not_prompt_test() {
+pub fn doctor_pi_probe_replaces_retired_mode_without_prompt_test() {
   let dir = "test/tmp/doctor-pi-probe"
   let transcript_path = dir <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
@@ -1091,6 +1094,12 @@ pub fn doctor_pi_probe_does_not_prompt_test() {
   assert result_for(report, doctor.WorkspaceHooks) == None
   let assert Some(pi_result) = result_for(report, doctor.PiProbe)
   assert pi_result.status == doctor.Pass
+  assert pi_result.code == "ok"
+  let assert Some(workspace_path) =
+    field_value(pi_result.fields, "workspace_path")
+  assert string.contains(workspace_path, "SCHERZO-DOCTOR")
+  let assert Ok(LockAcquired(_)) = process.receive(subject, within: 1000)
+  let assert Ok(LockReleased) = process.receive(subject, within: 1000)
   let assert Ok(contents) = simplifile.read(transcript)
   assert string.contains(contents, "get_state")
   assert string.contains(contents, "get_session_stats")

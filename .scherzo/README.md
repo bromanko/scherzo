@@ -199,7 +199,7 @@ Use the research workflow for the first supervised run:
 ```sh
 direnv exec . gleam run -- doctor --check tracker-smoke .scherzo/scherzo.yaml
 direnv exec . gleam run -- doctor --check tracker-contract .scherzo/scherzo.yaml
-direnv exec . gleam run -- --pi-probe .scherzo/scherzo.yaml
+direnv exec . gleam run -- doctor --check pi-probe .scherzo/scherzo.yaml
 LINEAR_API_KEY=$LINEAR_API_KEY SCHERZO_REPO_ROOT=$(pwd) \
   nix run .#scherzo -- .scherzo/scherzo.yaml
 ```

@@ -1007,8 +1007,10 @@ fn append_cleanup_warning_if_needed(
     dependencies.cleanup_run(prepared.run_root, bundle.orchestrator, profile)
   {
     Ok(Nil) -> results
-    Error(err) ->
-      case doctor.contains_check(selected, doctor.WorkspaceHooks) {
+    Error(err) -> {
+      let workspace_hooks_selected =
+        doctor.contains_check(selected, doctor.WorkspaceHooks)
+      let results = case workspace_hooks_selected {
         False -> results
         True ->
           list.append(results, [
@@ -1017,15 +1019,54 @@ fn append_cleanup_warning_if_needed(
               status: doctor.Warn,
               code: "workspace_cleanup_failed",
               message: "doctor workspace cleanup failed",
-              fields: [
-                #("run_root", prepared.run_root),
-                #("workspace_path", prepared.path),
-                #("error", error.workspace_code(err)),
-              ],
+              fields: cleanup_failure_fields(prepared, err),
             ),
           ])
       }
+      case
+        doctor.contains_check(selected, doctor.PiProbe)
+        && !workspace_hooks_selected
+      {
+        False -> results
+        True -> mark_pi_probe_cleanup_failure(results, prepared, err)
+      }
+    }
   }
+}
+
+fn mark_pi_probe_cleanup_failure(
+  results: List(doctor.CheckResult),
+  prepared: workspace_run.PreparedStepWorkspace,
+  err: error.WorkspaceError,
+) -> List(doctor.CheckResult) {
+  case results {
+    [] -> []
+    [result, ..rest] ->
+      case result.check == doctor.PiProbe && result.status == doctor.Pass {
+        True -> [
+          doctor.CheckResult(
+            ..result,
+            status: doctor.Fail,
+            code: "workspace_cleanup_failed",
+            message: "doctor workspace cleanup failed",
+            fields: cleanup_failure_fields(prepared, err),
+          ),
+          ..rest
+        ]
+        False -> [result, ..mark_pi_probe_cleanup_failure(rest, prepared, err)]
+      }
+  }
+}
+
+fn cleanup_failure_fields(
+  prepared: workspace_run.PreparedStepWorkspace,
+  err: error.WorkspaceError,
+) -> List(log.Field) {
+  [
+    #("run_root", prepared.run_root),
+    #("workspace_path", prepared.path),
+    #("error", error.workspace_code(err)),
+  ]
 }
 
 fn write_doctor_report(
@@ -1245,20 +1286,6 @@ fn diagnostic_log_fields(
   }
 }
 
-pub fn start_pi_probe(
-  workflow_path: Option(String),
-) -> Result(Nil, StartupError) {
-  use bundle <- try_startup(
-    runtime_bundle.load(workflow_path)
-    |> map_bundle_error,
-  )
-  use lock <- try_startup(acquire_lock(bundle.effective.workspace.root))
-  let probe_result =
-    run_pi_probe_orchestrator(bundle.orchestrator, bundle.secrets)
-  instance_lock.release(lock)
-  probe_result
-}
-
 pub fn log_stderr(
   level: String,
   event: String,
@@ -1300,91 +1327,6 @@ fn acquire_lock(
   workspace_root: String,
 ) -> Result(instance_lock.Lock, StartupError) {
   instance_lock.acquire(workspace_root) |> map_lock_error
-}
-
-fn run_pi_probe_orchestrator(
-  orchestrator: config_types.OrchestratorConfig,
-  secrets: List(String),
-) -> Result(Nil, StartupError) {
-  let issue =
-    tracker_issue.Issue(
-      id: "SCHERZO-PROBE",
-      identifier: "SCHERZO-PROBE",
-      title: "Scherzo probe",
-      description: None,
-      priority: None,
-      state: issue_state.from_string_unchecked(""),
-      branch_name: None,
-      url: None,
-      labels: [],
-      blocked_by: [],
-      blocked_by_complete: True,
-      created_at: None,
-      updated_at: None,
-    )
-  case default_workspace_profile(orchestrator) {
-    Error(_) ->
-      Error(StartupError(
-        "workspace_profile_unavailable",
-        "default workspace profile unavailable",
-      ))
-    Ok(profile) ->
-      case
-        workspace_run.prepare_step(
-          issue,
-          "probe",
-          "probe",
-          "probe",
-          workflow_dag.WorkspaceRef(name: "main", from: None),
-          orchestrator,
-          profile,
-          dict.new(),
-        )
-      {
-        Error(workspace_run.WorkspaceFailure(err)) ->
-          Error(StartupError(error.workspace_code(err), "workspace error"))
-        Error(workspace_run.HookFailure(err)) ->
-          Error(StartupError(error.hook_code(err), "hook error"))
-        Ok(prepared) -> {
-          let probe_result =
-            probe.probe_config(
-              orchestrator.effective.pi,
-              prepared.path,
-              orchestrator.effective.pi.read_timeout_ms,
-            )
-          let cleanup_result =
-            workspace_run.cleanup_run(prepared.run_root, orchestrator, profile)
-          case probe_result {
-            Ok(Nil) ->
-              case cleanup_result {
-                Ok(Nil) -> Ok(Nil)
-                Error(err) ->
-                  Error(StartupError(
-                    error.workspace_code(err),
-                    "probe workspace cleanup error",
-                  ))
-              }
-            Error(err) -> {
-              case cleanup_result {
-                Ok(Nil) -> Nil
-                Error(cleanup_err) ->
-                  log_stderr_best_effort(
-                    "warn",
-                    "pi_probe_cleanup_failed",
-                    [
-                      #("run_root", prepared.run_root),
-                      #("workspace_path", prepared.path),
-                      #("error", error.workspace_code(cleanup_err)),
-                    ],
-                    secrets,
-                  )
-              }
-              Error(StartupError(error.pi_rpc_code(err), "pi probe error"))
-            }
-          }
-        }
-      }
-  }
 }
 
 pub fn run_once_with_dependencies(
