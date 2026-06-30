@@ -175,6 +175,38 @@ pub fn human_report_scheduled_jobs_remediation_uses_current_config_keys_test() {
   assert !string.contains(output, "on_failure.linear")
 }
 
+pub fn human_report_tracker_remediation_uses_doctor_checks_test() {
+  let report =
+    doctor.Report([
+      doctor.CheckResult(
+        check: doctor.LinearContract,
+        status: doctor.Fail,
+        code: "linear_contract_state_missing",
+        message: "missing state",
+        fields: [],
+      ),
+      doctor.CheckResult(
+        check: doctor.LinearSmoke,
+        status: doctor.Fail,
+        code: "linear_api_status",
+        message: "tracker read failed",
+        fields: [],
+      ),
+    ])
+  let output = doctor.human_report(report, None)
+  assert string.contains(
+    output,
+    "gleam run -- doctor --check tracker-contract <path-to-scherzo.yaml>",
+  )
+  assert string.contains(
+    output,
+    "gleam run -- doctor --check tracker-smoke <path-to-scherzo.yaml>",
+  )
+  assert !string.contains(output, "--tracker-contract-check")
+  assert !string.contains(output, "--tracker-smoke")
+  assert !string.contains(output, "tracker-contract-check")
+}
+
 pub fn result_events_and_log_fields_are_stable_test() {
   let result =
     doctor.CheckResult(

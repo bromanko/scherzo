@@ -15,10 +15,6 @@ pub fn parse_args_default_explicit_and_help_test() {
     == Ok(main.Run(main.Daemon, Some("scherzo.yaml")))
   assert main.parse_args(["--once", "scherzo.yaml"])
     == Ok(main.Run(main.Once, Some("scherzo.yaml")))
-  assert main.parse_args(["--tracker-smoke", "scherzo.yaml"])
-    == Ok(main.Run(main.LinearSmoke, Some("scherzo.yaml")))
-  assert main.parse_args(["--tracker-contract-check", "scherzo.yaml"])
-    == Ok(main.Run(main.LinearContractCheck, Some("scherzo.yaml")))
   assert main.parse_args(["--help"]) == Ok(main.Help)
   assert main.parse_args(["--version"]) == Ok(main.Version)
   assert main.parse_args([
@@ -54,20 +50,12 @@ pub fn parse_args_default_explicit_and_help_test() {
       )),
     )
   assert main.parse_args([
-      "tracker-conformance",
-      "run",
+      "__tracker-conformance-run",
       "manifest.json",
       "--report",
       "report.json",
     ])
-    == Ok(
-      main.TrackerConformance([
-        "run",
-        "manifest.json",
-        "--report",
-        "report.json",
-      ]),
-    )
+    == Ok(main.TrackerConformance(["manifest.json", "--report", "report.json"]))
   assert main.parse_args(["ctl", "ps"]) == Ok(main.Control(["ps"]))
   assert main.parse_args(["ctl", "events", "ABC-123"])
     == Ok(main.Control(["events", "ABC-123"]))
@@ -110,6 +98,14 @@ pub fn parse_args_rejects_usage_errors_test() {
   assert main.parse_args(["--linear-contract-check"]) == Error(main.UsageError)
   assert main.parse_args(["--linear-contract-check", "scherzo.yaml"])
     == Error(main.UsageError)
+  assert main.parse_args(["--tracker-smoke"]) == Error(main.UsageError)
+  assert main.parse_args(["--tracker-smoke", "scherzo.yaml"])
+    == Error(main.UsageError)
+  assert main.parse_args(["--tracker-contract-check"]) == Error(main.UsageError)
+  assert main.parse_args(["--tracker-contract-check", "scherzo.yaml"])
+    == Error(main.UsageError)
+  assert main.parse_args(["tracker-conformance", "run", "manifest.json"])
+    == Error(main.UsageError)
   assert main.parse_args(["--pi-probe"]) == Error(main.UsageError)
   assert main.parse_args(["--pi-probe", "scherzo.yaml"])
     == Error(main.UsageError)
@@ -143,19 +139,48 @@ pub fn usage_error_hint_reports_retired_flag_replacements_test() {
     <> "configure task_updates.result.on_success: attachment for result uploads."
 
   assert main.usage_error_hint(["--linear-smoke"])
-    == Some("--linear-smoke was retired; use --tracker-smoke.")
+    == Some("--linear-smoke was retired; use doctor --check tracker-smoke.")
   assert main.usage_error_hint(["--linear-smoke", "scherzo.yaml"])
-    == Some("--linear-smoke was retired; use --tracker-smoke.")
+    == Some("--linear-smoke was retired; use doctor --check tracker-smoke.")
   assert main.usage_error_hint(["--linear-contract-check"])
     == Some(
-      "--linear-contract-check was retired; use --tracker-contract-check.",
+      "--linear-contract-check was retired; use doctor --check tracker-contract.",
     )
   assert main.usage_error_hint([
       "--linear-contract-check",
       "scherzo.yaml",
     ])
     == Some(
-      "--linear-contract-check was retired; use --tracker-contract-check.",
+      "--linear-contract-check was retired; use doctor --check tracker-contract.",
+    )
+  assert main.usage_error_hint(["--tracker-smoke"])
+    == Some("--tracker-smoke was retired; use doctor --check tracker-smoke.")
+  assert main.usage_error_hint(["--tracker-smoke", "scherzo.yaml"])
+    == Some("--tracker-smoke was retired; use doctor --check tracker-smoke.")
+  assert main.usage_error_hint(["--tracker-contract-check"])
+    == Some(
+      "--tracker-contract-check was retired; use doctor --check tracker-contract.",
+    )
+  assert main.usage_error_hint([
+      "--tracker-contract-check",
+      "scherzo.yaml",
+    ])
+    == Some(
+      "--tracker-contract-check was retired; use doctor --check tracker-contract.",
+    )
+  assert main.usage_error_hint(["tracker-conformance", "run"])
+    == Some(
+      "tracker-conformance run was retired; use scripts/scherzo-linear-conformance run for Linear dogfood or repo-maintainer contract tests for generic fixtures.",
+    )
+  assert main.usage_error_hint([
+      "tracker-conformance",
+      "run",
+      "manifest.json",
+      "--report",
+      "report.json",
+    ])
+    == Some(
+      "tracker-conformance run was retired; use scripts/scherzo-linear-conformance run for Linear dogfood or repo-maintainer contract tests for generic fixtures.",
     )
   assert main.usage_error_hint(["--pi-probe"])
     == Some("--pi-probe was retired; use doctor --check pi-probe.")
@@ -180,7 +205,7 @@ pub fn launcher_route_uses_canonical_cli_parser_test() {
   assert main.launcher_route(["doctor", "--list-checks"]) == main.LauncherDirect
   assert main.launcher_route(["workflow", "run", "workflow.yml"])
     == main.LauncherDirect
-  assert main.launcher_route(["tracker-conformance", "run", "manifest.json"])
+  assert main.launcher_route(["__tracker-conformance-run", "manifest.json"])
     == main.LauncherDirect
   assert main.launcher_route(["ctl", "--help"]) == main.LauncherDirect
   assert main.launcher_route(["connect", "--help"]) == main.LauncherDirect
@@ -202,14 +227,14 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "scherzo --version")
   assert string.contains(usage, "doctor [options]")
   assert string.contains(usage, "workflow run <workflow.yml>")
-  assert string.contains(
+  assert !string.contains(
     usage,
     "tracker-conformance run <manifest.json> --report <report.json>",
   )
   assert string.contains(usage, "doctor --check <name>")
   assert string.contains(usage, "doctor --list-checks")
   assert string.contains(usage, "doctor --logfmt")
-  assert string.contains(
+  assert !string.contains(
     usage,
     "tracker-conformance run Run the black-box tracker adapter conformance MVP",
   )
@@ -218,9 +243,9 @@ pub fn usage_mentions_required_operational_constraints_test() {
     "workflow-config, tracker-contract, tracker-smoke",
   )
   assert string.contains(usage, "--once")
-  assert string.contains(usage, "--tracker-smoke")
+  assert !string.contains(usage, "--tracker-smoke")
   assert !string.contains(usage, "--linear-smoke")
-  assert string.contains(usage, "--tracker-contract-check")
+  assert !string.contains(usage, "--tracker-contract-check")
   assert !string.contains(usage, "--linear-contract-check")
   assert !string.contains(usage, "--linear-attach-comment-file")
   assert !string.contains(usage, "<comment-id> <file.md>")

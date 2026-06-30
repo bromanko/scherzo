@@ -543,12 +543,12 @@ fn remediation(check: CheckName, code: String) -> List(String) {
     LinearContract -> [
       "- Confirm tracker.linear.tasks_from (or compatibility tracker.linear.project / tracker.linear.project_slug / tracker.project_slug) points to the expected Linear project scope.",
       "- Confirm configured active, terminal, required, and handoff states exist on the board.",
-      "- Run: gleam run -- --tracker-contract-check <path-to-scherzo.yaml>",
+      "- Run: gleam run -- doctor --check tracker-contract <path-to-scherzo.yaml>",
     ]
     LinearSmoke -> [
       "- Confirm LINEAR_API_KEY is valid and can read the Linear project scope.",
       "- Confirm tracker.linear.tasks_from (or compatibility tracker.linear.project / tracker.linear.project_slug / tracker.project_slug) points to the expected Linear project scope.",
-      "- Run: gleam run -- --tracker-smoke <path-to-scherzo.yaml>",
+      "- Run: gleam run -- doctor --check tracker-smoke <path-to-scherzo.yaml>",
     ]
     InstanceLock -> [
       "- Stop any other Scherzo process using this workspace root.",

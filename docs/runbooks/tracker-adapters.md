@@ -12,11 +12,11 @@ Prefer the backend-neutral names in new docs, prompts, and scripts:
 
 - Use **task** for work selected by Scherzo.
 - Use **tracker adapter** for the integration with Linear or a future task system.
-- Use `tracker-smoke`, `tracker-contract`, `--tracker-smoke`, and `--tracker-contract-check` in operator instructions.
+- Use `tracker-smoke` and `tracker-contract` as `doctor --check` readiness names in operator instructions.
 
-The old Linear-named smoke and contract operator aliases are retired:
+The old top-level smoke and contract operator aliases are retired:
 
-- `linear-smoke`, `--linear-smoke`, `linear-contract`, and `--linear-contract-check` are no longer accepted operator paths. Use `tracker-smoke`, `--tracker-smoke`, `tracker-contract`, and `--tracker-contract-check` instead.
+- `linear-smoke`, `--linear-smoke`, `linear-contract`, `--linear-contract-check`, `--tracker-smoke`, and `--tracker-contract-check` are no longer accepted operator paths. Use `doctor --check tracker-smoke` and `doctor --check tracker-contract` instead.
 - `tracker.linear.check_setup` is the current Linear board validation switch. The old `linear_contract` section is replaced by fields derived from `tracker`, `workflows`, `task_routing`, and `task_updates`; leaving it in config is a startup validation error with migration guidance. `linear_commands` and `remote_commands` are also removed command-transport settings; leaving either section in config is a startup validation error, and operators should use `scherzoctl` instead. Keep the removed-key diagnostics until supported configs no longer need migration guidance for those names.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_*`, `issue_id`, `issue_identifier`, issue-shaped ledger fields, and `linear_command_*` ledger/event/outbox records remain legacy-reader compatibility surfaces until the runtime task context and command history are fully migrated. Retirement gate: do not remove them before dual-read prompt, helper, retained-ledger, and legacy command-record tests prove task-native replacements preserve old artifacts.
 - `--linear-attach-comment-file` is retired with no direct CLI replacement. Automatic result attachments remain available through configured handoff/task update behavior, such as `task_updates.result.on_success: attachment`.
@@ -95,41 +95,23 @@ Before enabling a new production adapter, verify these facts with tests and oper
 
 ## Black-box conformance MVP
 
-The repository now includes a black-box tracker adapter conformance runner for external adapters that expose the MVP CLI driver protocol described in `docs/specs/TRACKER_CONFORMANCE_PROTOCOL.md`. Adapter authors who need a task-oriented walkthrough should start with `docs/runbooks/tracker-adapter-author-guide.md` and then return here for operator context.
+The repository keeps a black-box tracker adapter conformance harness for adapters that expose the MVP CLI driver protocol described in `docs/specs/TRACKER_CONFORMANCE_PROTOCOL.md`. The harness is no longer exposed as a public `tracker-conformance run` CLI; Scherzo-maintained wrappers and tests invoke the private runner route. Adapter authors who need a task-oriented walkthrough should start with `docs/runbooks/tracker-adapter-author-guide.md` and then return here for operator context.
 
 LIV-410 baseline note: the existing MVP already covers the CLI `task_source` path, `fixtures.task_file`, optional setup and cleanup hooks, optional probes, support-failure counters, fixture/probe/hook namespace rejection inside `profile.adapter_operations`, configured redaction, and truncated external diagnostics.
 
-Run the local MVP suite from the repository root with:
+Run the retained fake-driver coverage from the repository root with the stable test target:
 
 ```sh
-direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/task-source-pass.manifest.json --report test/tmp/tracker-conformance/task-source-pass.report.json
+direnv exec . gleam test contract-tracker
 ```
 
-The command exits `0` only when the selected profile passes and setup, probe, and cleanup counters remain zero. Report JSON distinguishes adapter case failures from `setup_failed`, `probe_failed`, and `cleanup_failed` support-path failures, configured redaction strings are replaced with `[REDACTED]` before Scherzo writes the report or prints the CLI summary, and captured driver or hook diagnostics are truncated before reporting.
+The test target passes only when selected profiles pass and setup, probe, and cleanup counters remain zero. Report JSON distinguishes adapter case failures from `setup_failed`, `probe_failed`, and `cleanup_failed` support-path failures, configured redaction strings are replaced with `[REDACTED]` before Scherzo writes reports or prints summaries, and captured driver or hook diagnostics are truncated before reporting.
 
 The enriched report contract is additive. Existing top-level counters remain, and a grouped `counts` object repeats them for consumers that prefer a nested shape. Each case result now includes `expected_summary`, `actual_summary`, bounded `request_transcript`, bounded `response_transcript`, and `recovery_guidance`. Hook and probe results add `recovery_guidance` so failures can be triaged as setup, backend-visibility, cleanup, or adapter defects instead of being lumped together.
 
 Use explicit `fixtures.tasks` declarations when you already know the trusted pre-provisioned task identities a profile should exercise. Each declaration names the fixture, pins the durable task ref, records one or more operator refs, and states its purpose. The runner still loads expected payloads from `fixtures.task_file`, but refresh and known-lookup cases use the explicit declarations when present.
 
-Deterministic fake-driver dogfood command:
-
-```sh
-direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/task-source-pass.manifest.json --report test/tmp/tracker-conformance/task-source-pass.report.json
-! grep -R "SECRET_TOKEN" test/tmp/tracker-conformance/task-source-pass.report.json
-```
-
-The grep check should produce no matches. That proves the fake-driver run wrote enriched evidence without leaking configured secrets into retained report artifacts.
-
-Optional-pack fake-driver examples from the repository root:
-
-```sh
-direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/comments-pass.manifest.json --report test/tmp/tracker-conformance/comments-pass.report.json
-direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/remote-commands-pass.manifest.json --report test/tmp/tracker-conformance/remote-commands-pass.report.json
-direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/state-transition-pass.manifest.json --report test/tmp/tracker-conformance/state-transition-pass.report.json
-direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/routing-metadata-pass.manifest.json --report test/tmp/tracker-conformance/routing-metadata-pass.report.json
-direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/handoff-pass.manifest.json --report test/tmp/tracker-conformance/handoff-pass.report.json
-direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/scheduled-failures-pass.manifest.json --report test/tmp/tracker-conformance/scheduled-failures-pass.report.json
-```
+The same contract test target exercises the deterministic fake-driver manifests, redaction examples, and optional-pack fixtures retained under `test/fixtures/tracker_conformance/`.
 
 Request optional packs explicitly in `profile.requested_packs`, claim the matching granular capabilities in `profile.capabilities`, and keep `probe.*` names out of `profile.adapter_operations`. Claimed-but-unrequested optional capabilities do not run extra cases. Requested-but-unclaimed optional packs fail manifest validation before setup, probe, cleanup, or driver commands run. `remote_commands` also requires `comments.create`, and side-effect packs such as `remote_commands` and `handoff` must declare `profile.retry_behavior` so reports can classify same-event acknowledgement and same-run handoff retries as `idempotent_update_or_dedupe` or `duplicate_visible`. `handoff` manifests must also include at least one backend-visibility probe because retry classification is probe-backed. `scheduled_failures` must claim `scheduled_failures`, include `scheduled_failures.publish`, and configure at least one backend-visibility probe named with the `scheduled-failures` prefix because duplicate suppression and no-visible-task checks are probe-backed even though the public receipt remains the adapter evidence. Scheduled-failure reports retain created remote ids, retry classifications, duplicate counts, visible task counts, cleanup status, and probe status so operators can recover duplicate or cleanup-failure runs safely. Remote-command fetch events are bounded: `event_id`, `author_id`, `command_name`, `body`, and `excerpt` all fail conformance when they exceed the protocol limits. Side-effect manifests should keep setup and cleanup hooks idempotent so reruns do not leave duplicate marker data behind.
 
@@ -137,7 +119,7 @@ Optional live-backend checklist for operators who already have trusted manifests
 
 1. Keep privileged setup, probe, and cleanup hooks inside operator-reviewed manifests only.
 2. Prefer explicit `fixtures.tasks` declarations over inferred fixture selection when task identities are known ahead of time.
-3. Run the same `tracker-conformance run ... --report ...` command shape against the live manifest.
+3. Use a reviewed wrapper for the live manifest; today that means `scripts/scherzo-linear-conformance run ...` for Linear dogfood, not the private runner route.
 4. Inspect only redacted report excerpts before sharing them outside the trusted operator context.
 5. Treat provider-live cache behavior as not applicable here unless a future conformance change introduces a cache layer.
 
@@ -153,7 +135,10 @@ Use explicit `fixtures.tasks` declarations for Linear dogfood manifests so the o
 The offline manifest is now runnable without a live Linear credential through the dedicated wrapper and fake transport:
 
 ```sh
-env -u LINEAR_API_KEY SCHERZO_LINEAR_CONFORMANCE_API_KEY=fake-linear-token direnv exec . gleam run -- tracker-conformance run test/fixtures/tracker_conformance/linear-task-source-offline.manifest.json --report test/tmp/tracker-conformance/linear-task-source-offline.report.json
+env -u LINEAR_API_KEY SCHERZO_LINEAR_CONFORMANCE_API_KEY=fake-linear-token \
+  direnv exec . scripts/scherzo-linear-conformance run \
+  --manifest test/fixtures/tracker_conformance/linear-task-source-offline.manifest.json \
+  --run-id linear-task-source-offline
 ```
 
 The operator-facing wrapper keeps live execution behind explicit approval and preflight:

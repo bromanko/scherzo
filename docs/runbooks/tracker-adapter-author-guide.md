@@ -1,14 +1,10 @@
 # Tracker adapter author guide
 
-This guide is for an external adapter author who wants one reliable path from a local driver to a conformance report. The normative protocol remains [docs/specs/TRACKER_CONFORMANCE_PROTOCOL.md](../specs/TRACKER_CONFORMANCE_PROTOCOL.md). The operator-focused context and capability matrix remain in [docs/runbooks/tracker-adapters.md](tracker-adapters.md).
+This guide is for an external adapter author implementing the conformance MVP CLI driver protocol. The normative protocol remains [docs/specs/TRACKER_CONFORMANCE_PROTOCOL.md](../specs/TRACKER_CONFORMANCE_PROTOCOL.md). The operator-focused context and capability matrix remain in [docs/runbooks/tracker-adapters.md](tracker-adapters.md).
 
 ## What is stable today
 
-The stable local author path today is the CLI runner:
-
-```sh
-direnv exec . gleam run -- tracker-conformance run <manifest.json> --report <report.json>
-```
+Scherzo does not expose a public tracker conformance CLI. The old `tracker-conformance run ...` shape is retired, and the remaining double-underscore runner route is private repository automation used by Scherzo-maintained wrappers and tests. External adapter packages should not depend on that private route as a contract.
 
 The stable transport today is a **CLI driver**. Scherzo writes one JSON request to the driver's stdin, reads one JSON response line from stdout, and captures stderr as private diagnostics.
 
@@ -28,16 +24,14 @@ The repository also has an HTTP manifest shape in schemas and decoders, but the 
 
 ## Step 1: start from the passing example
 
-Make the driver executable, then run the passing example from the repository root:
+Make the driver executable, then run the checked-in contract test target from the repository root:
 
 ```sh
 chmod +x examples/tracker-conformance/adapter-author/driver.sh
-direnv exec . gleam run -- tracker-conformance run \
-  examples/tracker-conformance/adapter-author/manifest.pass.json \
-  --report test/tmp/tracker-conformance/adapter-author-pass.report.json
+direnv exec . gleam test contract-tracker
 ```
 
-A passing run exits `0`, prints a `tracker-conformance` summary, and writes a report whose top-level counters keep `failed`, `setup_failed`, `probe_failed`, and `cleanup_failed` at zero.
+A passing run proves the checked-in adapter-author manifest, driver envelope, redaction behavior, and failure examples still satisfy the repository conformance expectations.
 
 ## Step 2: shape the manifest
 
@@ -99,16 +93,14 @@ When you ship an adapter package:
 1. Ship a driver executable or wrapper that can run non-interactively from the repository root or a known working directory.
 2. Pin the manifest to the current schema version and keep fixture paths repository-relative.
 3. Bundle any fake fixtures needed for local dogfood.
-4. Run the conformance command in CI and retain only sanitized JSON reports.
+4. Keep conformance report artifacts sanitized before retaining them in CI.
 5. Treat fake-driver dogfood as the required pre-publish proof. Treat live-backend runs as deferred operator checks with unique markers, idempotent cleanup, and redacted excerpts only.
 
-A minimal CI command is:
+A minimal repository CI command is:
 
 ```sh
 chmod +x examples/tracker-conformance/adapter-author/driver.sh
-direnv exec . gleam run -- tracker-conformance run \
-  examples/tracker-conformance/adapter-author/manifest.pass.json \
-  --report test/tmp/tracker-conformance/adapter-author-pass.report.json
+direnv exec . gleam test contract-tracker
 ```
 
 If you change checked-in docs examples in this repository, also run:
