@@ -17,23 +17,6 @@ pub fn parse_args_default_explicit_and_help_test() {
     == Ok(main.Run(main.Once, Some("scherzo.yaml")))
   assert main.parse_args(["--pi-probe", "scherzo.yaml"])
     == Ok(main.Run(main.PiProbe, Some("scherzo.yaml")))
-  assert main.parse_args([
-      "--linear-attach-comment-file",
-      "comment-id",
-      "result.md",
-    ])
-    == Ok(main.LinearAttachCommentFile("comment-id", "result.md", None))
-  assert main.parse_args([
-      "--linear-attach-comment-file",
-      "comment-id",
-      "result.md",
-      "scherzo.yaml",
-    ])
-    == Ok(main.LinearAttachCommentFile(
-      "comment-id",
-      "result.md",
-      Some("scherzo.yaml"),
-    ))
   assert main.parse_args(["--help"]) == Ok(main.Help)
   assert main.parse_args(["--version"]) == Ok(main.Version)
   assert main.parse_args([
@@ -138,13 +121,22 @@ pub fn parse_args_rejects_usage_errors_test() {
       "--linear-attach-comment-file",
       "comment-id",
       "result.md",
-      "one.yaml",
-      "two.yaml",
+    ])
+    == Error(main.UsageError)
+  assert main.parse_args([
+      "--linear-attach-comment-file",
+      "comment-id",
+      "result.md",
+      "scherzo.yaml",
     ])
     == Error(main.UsageError)
 }
 
 pub fn usage_error_hint_reports_retired_flag_replacements_test() {
+  let attach_hint =
+    "--linear-attach-comment-file was retired with no direct CLI replacement; "
+    <> "configure task_updates.result.on_success: attachment for result uploads."
+
   assert main.usage_error_hint(["--linear-smoke"])
     == Some("--linear-smoke was retired; use doctor --check tracker-smoke.")
   assert main.usage_error_hint(["--linear-smoke", "scherzo.yaml"])
@@ -189,6 +181,14 @@ pub fn usage_error_hint_reports_retired_flag_replacements_test() {
     == Some(
       "tracker-conformance run was retired; use scripts/scherzo-linear-conformance run for Linear dogfood or repo-maintainer contract tests for generic fixtures.",
     )
+  assert main.usage_error_hint(["--linear-attach-comment-file"])
+    == Some(attach_hint)
+  assert main.usage_error_hint([
+      "--linear-attach-comment-file",
+      "comment-id",
+      "result.md",
+    ])
+    == Some(attach_hint)
   assert main.usage_error_hint(["--unknown"]) == None
 }
 
@@ -241,9 +241,8 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert !string.contains(usage, "--linear-smoke")
   assert !string.contains(usage, "--tracker-contract-check")
   assert !string.contains(usage, "--linear-contract-check")
-  assert string.contains(usage, "--linear-attach-comment-file")
-  assert string.contains(usage, "<comment-id> <file.md>")
-  assert string.contains(usage, "mutates Linear")
+  assert !string.contains(usage, "--linear-attach-comment-file")
+  assert !string.contains(usage, "<comment-id> <file.md>")
   assert string.contains(usage, "--pi-probe")
   assert string.contains(usage, "--version")
   assert string.contains(usage, "source/build identity")

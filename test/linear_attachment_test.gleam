@@ -11,7 +11,6 @@ import scherzo/linear_attachment
 import scherzo/linear_body_data
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
-import simplifile
 import test_async
 
 fn tracker_config() -> config_types.TrackerConfig {
@@ -310,72 +309,6 @@ pub fn invalid_asset_url_fails_before_upload_test() {
   assert string.contains(file_upload_request.body, "ScherzoFileUpload")
   test_async.assert_no_extra_message_within(upload_subject, 20)
   test_async.assert_no_extra_message_within(graphql_subject, 20)
-}
-
-pub fn attach_markdown_file_rejects_non_markdown_extension_before_graphql_test() {
-  let graphql_subject = process.new_subject()
-  let upload_subject = process.new_subject()
-  let assert Error(error.LinearAttachmentError(_)) =
-    linear_attachment.attach_markdown_file_to_comment(
-      tracker_config(),
-      "comment-id",
-      "test/tmp/result.txt",
-      options(True, False),
-      deps(graphql_subject, upload_subject, 204, "hello", empty_body_data()),
-    )
-  test_async.assert_no_extra_message_within(graphql_subject, 20)
-  test_async.assert_no_extra_message_within(upload_subject, 20)
-}
-
-pub fn attach_markdown_file_rejects_oversize_file_before_graphql_test() {
-  let dir = "test/tmp/linear-attachment-too-large"
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  let path = dir <> "/too-large.md"
-  let assert Ok(Nil) =
-    simplifile.write(
-      path,
-      string.repeat("a", times: linear_attachment.max_attachment_bytes() + 1),
-    )
-  let graphql_subject = process.new_subject()
-  let upload_subject = process.new_subject()
-  let assert Error(error.LinearAttachmentError(_)) =
-    linear_attachment.attach_markdown_file_to_comment(
-      tracker_config(),
-      "comment-id",
-      path,
-      options(True, False),
-      deps(graphql_subject, upload_subject, 204, "hello", empty_body_data()),
-    )
-  test_async.assert_no_extra_message_within(graphql_subject, 20)
-  test_async.assert_no_extra_message_within(upload_subject, 20)
-}
-
-pub fn attach_markdown_file_uses_utf8_byte_size_test() {
-  let dir = "test/tmp/linear-attachment-file"
-  let _ = simplifile.delete(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir)
-  let path = dir <> "/unicode.md"
-  let content = "hello 🌍"
-  let assert Ok(Nil) = simplifile.write(path, content)
-  let graphql_subject = process.new_subject()
-  let upload_subject = process.new_subject()
-  let assert Ok(linear_attachment.AttachedNative(_, "unicode.md", _)) =
-    linear_attachment.attach_markdown_file_to_comment(
-      tracker_config(),
-      "comment-id",
-      path,
-      options(True, False),
-      deps(graphql_subject, upload_subject, 204, "hello", empty_body_data()),
-    )
-  let assert Ok(_) = process.receive(graphql_subject, within: 100)
-  let assert Ok(file_upload_request) =
-    process.receive(graphql_subject, within: 100)
-  assert string.contains(
-    file_upload_request.body,
-    "\"size\":"
-      <> int_to_string(bit_array.byte_size(bit_array.from_string(content))),
-  )
 }
 
 fn empty_body_data() -> String {

@@ -11,7 +11,6 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/linear
 import scherzo/linear_body_data
-import simplifile
 
 pub type UploadRequest {
   UploadRequest(
@@ -146,64 +145,6 @@ pub fn attach_markdown_to_comment(
         content_type,
         dependencies,
       )
-  }
-}
-
-pub fn attach_markdown_file_to_comment(
-  config: config_types.TrackerConfig,
-  comment_id: String,
-  path: String,
-  options: AttachOptions,
-  dependencies: Dependencies,
-) -> Result(AttachmentOutcome, error.TrackerError) {
-  let filename = basename(path)
-  use filename <- try_tracker(validate_markdown_filename(filename))
-  use info <- try_tracker(
-    simplifile.file_info(path)
-    |> result.map_error(fn(err) {
-      error.LinearAttachmentError(
-        "failed to stat attachment file "
-        <> path
-        <> ": "
-        <> simplifile.describe_error(err),
-      )
-    }),
-  )
-  case simplifile.file_info_type(info) {
-    simplifile.File -> {
-      use _ <- try_tracker(validate_attachment_size(info.size))
-      use bits <- try_tracker(
-        simplifile.read_bits(path)
-        |> result.map_error(fn(err) {
-          error.LinearAttachmentError(
-            "failed to read attachment file "
-            <> path
-            <> ": "
-            <> simplifile.describe_error(err),
-          )
-        }),
-      )
-      attach_markdown_to_comment(
-        config,
-        comment_id,
-        filename,
-        bits,
-        options,
-        dependencies,
-      )
-    }
-    _ ->
-      Error(error.LinearAttachmentError(
-        "attachment path is not a regular file: " <> path,
-      ))
-  }
-}
-
-pub fn outcome_mode(outcome: AttachmentOutcome) -> String {
-  case outcome {
-    AttachedNative(_, _, _) -> "native"
-    AttachedMarkdownLink(_, _, _) -> "markdown_link"
-    AlreadyAttached(_, _) -> "already_attached"
   }
 }
 
@@ -422,20 +363,6 @@ fn validate_markdown_filename(
             "attachment filename must end with .md or .markdown",
           ))
       }
-  }
-}
-
-fn basename(path: String) -> String {
-  path
-  |> string.split(on: "/")
-  |> list.reverse
-  |> first_or_empty
-}
-
-fn first_or_empty(values: List(String)) -> String {
-  case values {
-    [] -> ""
-    [value, ..] -> value
   }
 }
 
