@@ -404,7 +404,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Local diagnostic helper for empty noop/jj Scherzo workspaces. "
-            "The authoritative scheduled cleanup path is scherzoctl cleanup; "
+            "The authoritative scheduled cleanup path is scherzo cleanup; "
             "this helper only inspects local workspace contents. Defaults to "
             "dry-run; pass --apply to delete."
         )

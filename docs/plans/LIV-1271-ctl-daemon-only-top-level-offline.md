@@ -41,12 +41,17 @@ Milestone 4 updates tests, docs, helpers, packaging checks, and dogfood command 
 - [x] (2026-06-30) Read the repo-local ExecPlan workflow guidance and inspected the current CLI, parser, handler, usage, wrapper, and test surfaces needed to author this plan.
 - [x] (2026-06-30) Wrote the concise checked-in review document and prepared the detailed implementation pack for follow-up implementation.
 - [x] (2026-06-30) Incorporated review feedback by making acceptance evidence, test obligations, milestone specificity, manual/dogfood timing, docs/helper migration, provider-live/cache non-scope, full validation, and linting explicit in this review document and the updated structured implementation-pack submission.
+- [x] (2026-06-29 23:35Z) Implemented the CLI split so top-level offline nouns route directly, `ctl` help is daemon-only, and `ctl run-schedule <job> --now` is the canonical daemon schedule trigger.
+- [x] (2026-06-30 00:05Z) Added one-release deprecated `ctl` alias hints, made artifact publication retry offline-only with an instance-lock guard, and updated parser/handler tests.
+- [x] (2026-06-30 00:40Z) Updated dogfood/docs/package checks for the new command shape and re-ran format, unit tests, `gleam test`, `glinter`, and `scherzo_lint`.
 
 ## Surprises & Discoveries
 
 The current `artifact publication retry` path already has two execution modes: with `--root` it performs local retry logic, and without `--root` it sends a daemon operator command. Evidence: `src/scherzo/ctl.gleam` dispatches `ArtifactPublicationRetry` to a daemon `RetryArtifactPublication` command when `explicit_root` is absent and to `ctl_artifact_publication_retry.retry` when `--root` is present.
 
 The docs/helper migration surface is broader than the parser. Evidence from repository search shows offline `scherzoctl` examples in `workflows/dogfood/workspace-cleanup.yaml`, `scripts/scherzo-workspace-cleanup`, `docs/GETTING_STARTED.md`, `docs/runbooks/artifact-store.md`, `docs/runbooks/scheduled-jobs.md`, and `docs/runbooks/workflow-recovery.md`; the implementation pack must keep those updates coupled to the CLI change.
+
+Top-level offline parsing rejects `schedules run` via option validation rather than the same unknown-command message as other daemon-only verbs. Evidence: `ctl.parse_offline(["schedules", "run", "nightly", "--now"])` currently returns `Error(UsageError("unknown option: --now"))`, so tests should assert rejection rather than one exact message.
 
 ## Decision Log
 
@@ -55,10 +60,11 @@ The docs/helper migration surface is broader than the parser. Evidence from repo
 - Decision: Keep deprecated aliases hidden from the main happy-path help but test and document their retirement hints. Rationale: aliases are for one-release transition only and should not keep teaching the old shape. Date: 2026-06-30.
 - Decision: Treat review feedback about evidence, tests, milestone proof, docs/helper migration, provider-live/cache boundaries, manual/dogfood timing, full validation, and linting as structured implementation-pack obligations. Rationale: Scherzo materializes follow-up implementation instructions from the pack, so prose-only obligations would be easy for a later implementer to miss. Date: 2026-06-30.
 - Decision: Require local or fake-root CLI evidence before publish, but defer live daemon dogfood to a human/operator check unless a safe daemon and retained run are available during implementation. Rationale: this CLI split can be proven without mutating production-like retained state, while real operator dogfood may be unsafe or unavailable in a disposable workspace. Date: 2026-06-30.
+- Decision: Keep the existing offline handler modules under `src/scherzo/ctl/` for now and split behavior with parser/help filtering plus top-level routing instead of a large module move. Rationale: this preserved behavior while avoiding a wide internal refactor that would have increased the guardrail and regression burden during the public CLI change. Date: 2026-06-29.
 
 ## Outcomes & Retrospective
 
-No implementation has run yet. The intended outcome is a clearer CLI where an operator can infer whether a command talks to a live daemon or local retained state from the first noun after `scherzo`. Review incorporation is complete for this handoff: the remaining work belongs to the implementation workflow, not to unchecked Progress items in this review document.
+Implementation completed the planned CLI split. `scherzo ctl` now advertises daemon inspection/control only, top-level `scherzo cleanup|schedules|artifact publication|workstream|state` route directly to offline handlers, deprecated `ctl` offline spellings emit one-release hints, and `artifact publication retry` now requires `--root` plus the instance lock before mutating retained state. The remaining gap is only real-daemon operator dogfood, which this plan already allowed to defer when no safe retained target is available in the disposable workspace.
 
 ## Validation and Acceptance
 

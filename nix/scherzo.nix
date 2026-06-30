@@ -184,6 +184,11 @@ stdenvNoCC.mkDerivation {
 
         PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" --help > scherzo-help
         grep -q "Usage: scherzo" scherzo-help
+        grep -q "scherzo cleanup" scherzo-help
+        grep -q "scherzo schedules" scherzo-help
+        grep -q "scherzo artifact publication" scherzo-help
+        grep -q "scherzo workstream" scherzo-help
+        grep -q "scherzo state" scherzo-help
 
         PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" --version > scherzo-version
         grep -q "^scherzo revision=" scherzo-version
@@ -195,6 +200,11 @@ stdenvNoCC.mkDerivation {
 
         PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" ctl --help > scherzo-ctl-help
         grep -q "Usage: scherzo ctl" scherzo-ctl-help
+        grep -q "run-schedule <job> --now" scherzo-ctl-help
+        if grep -Eq "(^|[[:space:]])cleanup --yes|schedules status|artifact publication|workstream list|state status --root|--root <workspace-root>|--run <run-id>|--publication <publication>" scherzo-ctl-help; then
+          echo "ctl help should stay daemon-only" >&2
+          exit 1
+        fi
 
         PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" connect --help > scherzo-connect-help
         grep -q "Usage: scherzo connect" scherzo-connect-help
@@ -213,6 +223,11 @@ stdenvNoCC.mkDerivation {
 
         PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzoctl" --help > scherzoctl-help
         grep -q "Usage: scherzo ctl" scherzoctl-help
+        grep -q "run-schedule <job> --now" scherzoctl-help
+        if grep -Eq "(^|[[:space:]])cleanup --yes|schedules status|artifact publication|workstream list|state status --root|--root <workspace-root>|--run <run-id>|--publication <publication>" scherzoctl-help; then
+          echo "scherzoctl help should stay daemon-only" >&2
+          exit 1
+        fi
 
         PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo-workspace-noop" describe --json > noop-describe
         test "$(cat noop-describe)" = '{"version":1,"capabilities":["status","changed-files","assert-only"]}'

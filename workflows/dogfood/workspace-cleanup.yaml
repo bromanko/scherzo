@@ -18,23 +18,23 @@ steps:
         workspace_root="$config_dir/workspaces"
       fi
 
-      run_scherzoctl() {
-        if test -n "${SCHERZO_CTL:-}"; then
-          "$SCHERZO_CTL" "$@"
+      run_scherzo() {
+        if test -n "${SCHERZO_BIN:-}"; then
+          "$SCHERZO_BIN" "$@"
           return
         fi
-        if command -v scherzoctl >/dev/null 2>&1; then
-          scherzoctl "$@"
+        if command -v scherzo >/dev/null 2>&1; then
+          scherzo "$@"
           return
         fi
-        if test -x "$repo_root/scripts/scherzoctl"; then
-          "$repo_root/scripts/scherzoctl" "$@"
+        if command -v direnv >/dev/null 2>&1 && test -f "$repo_root/.envrc"; then
+          direnv exec "$repo_root" gleam run -- "$@"
           return
         fi
-        echo "scherzoctl not found; set SCHERZO_CTL or add scherzoctl to PATH" >&2
+        echo "scherzo not found; set SCHERZO_BIN or add scherzo to PATH" >&2
         exit 127
       }
 
-      run_scherzoctl cleanup --root "$workspace_root" --json --yes
+      run_scherzo cleanup --root "$workspace_root" --json --yes
     timeout: 5m
     run_in: main

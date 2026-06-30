@@ -50,7 +50,7 @@ The resolver's generic helper validates conflict-specific invariants only: unres
 
 When `on_failure.task.enabled: true`, the scheduler also applies reserved Linear labels `scherzo:scheduled` and `scherzo:scheduled-job:<job-id>` and writes the marker `<!-- scherzo-dedupe: scheduled-job:<job-id> -->` into the failure task body/comments. Do not rely on configured labels for dedupe.
 
-For Scherzo's checked-in workspace maintenance, `workspace-cleanup` now calls `scherzoctl cleanup --root <workspace-root> --json --yes`. Treat `scherzoctl cleanup --json` as the authoritative dry-run inventory for daemon-owned local state and delegated workspace cleanup. The legacy `scripts/scherzo-workspace-cleanup` helper remains only as a local diagnostic shim for empty noop/jj workspaces and is not the scheduled authority.
+For Scherzo's checked-in workspace maintenance, `workspace-cleanup` now calls `scherzo cleanup --root <workspace-root> --json --yes`. Treat `scherzo cleanup --json` as the authoritative dry-run inventory for daemon-owned local state and delegated workspace cleanup. The legacy `scripts/scherzo-workspace-cleanup` helper remains only as a local diagnostic shim for empty noop/jj workspaces and is not the scheduled authority.
 
 ## Workflow and command shape
 
@@ -103,9 +103,9 @@ Start with `enabled: false` or `on_failure.task.enabled: false` while validating
 After reload or daemon start, inspect local state:
 
 ```sh
-scherzoctl schedules status github-pr-conflict-scout
-scherzoctl schedules history github-pr-conflict-scout
-scherzoctl schedules doctor github-pr-conflict-scout
+scherzo schedules status github-pr-conflict-scout
+scherzo schedules history github-pr-conflict-scout
+scherzo schedules doctor github-pr-conflict-scout
 ```
 
 `scherzoctl query metrics` distinguishes scheduled configuration from due work: `scheduled_job_count` is the configured job count, `scheduled_next_due_count` is the number of jobs with a remembered next due timestamp, and `scheduled_due_count` is only the number whose next due timestamp is currently due. During a healthy terminal-success interval, expect `scheduled_next_due_count` to remain non-zero while `scheduled_due_count` and `running_scheduled_workers` are zero.
@@ -113,8 +113,8 @@ scherzoctl schedules doctor github-pr-conflict-scout
 Force a safe manual run only when dispatch is not paused and the same job is not already pending, active, or retrying:
 
 ```sh
-scherzoctl schedules run github-pr-conflict-scout --now
-scherzoctl schedules logs github-pr-conflict-scout --last
+scherzoctl run-schedule github-pr-conflict-scout --now
+scherzo schedules logs github-pr-conflict-scout --last
 ```
 
 ## Failure triage
@@ -128,7 +128,7 @@ If tracker failure reporting fails, Scherzo records `scheduled_failure_report_fa
 Once scheduled records have been written, older Scherzo binaries may not understand the local ledger. Before rolling back, run:
 
 ```sh
-scherzoctl state status --root <workspace-root>
+scherzo state status --root <workspace-root>
 ```
 
 If the status warns about scheduled records, keep the newer binary, archive old state with the existing state archive command, or reinitialize only after accepting loss of local scheduled history.
