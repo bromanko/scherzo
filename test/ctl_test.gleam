@@ -8,6 +8,7 @@ import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
 import scherzo/artifact_repository/command_runner
+import scherzo/cleanup
 import scherzo/commit_stack_artifact
 import scherzo/control/client as control_client
 import scherzo/control/command
@@ -937,11 +938,36 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       "ABC-1",
     ))
   assert ctl.parse(["cleanup"])
-    == Ok(ctl.Cleanup(None, None, False, True, False))
+    == Ok(ctl.Cleanup(None, None, False, True, False, cleanup.AllProviders))
   assert ctl.parse(["cleanup", "--dry-run", "--json", "--root", "work"])
-    == Ok(ctl.Cleanup(None, Some("work"), True, True, False))
+    == Ok(ctl.Cleanup(
+      None,
+      Some("work"),
+      True,
+      True,
+      False,
+      cleanup.AllProviders,
+    ))
   assert ctl.parse(["cleanup", "--yes", "--root", "work"])
-    == Ok(ctl.Cleanup(None, Some("work"), False, False, True))
+    == Ok(ctl.Cleanup(
+      None,
+      Some("work"),
+      False,
+      False,
+      True,
+      cleanup.AllProviders,
+    ))
+  assert ctl.parse(["cleanup", "--provider", "local-state"])
+    == Ok(ctl.Cleanup(
+      None,
+      None,
+      False,
+      True,
+      False,
+      cleanup.SelectedProvider(cleanup.LocalState),
+    ))
+  assert ctl.parse(["cleanup", "--provider", "all"])
+    == Ok(ctl.Cleanup(None, None, False, True, False, cleanup.AllProviders))
   assert ctl.parse(["schedules", "status", "--root", "work", "--json"])
     == Ok(ctl.SchedulesStatus(None, Some("work"), True, None))
   assert ctl.parse(["schedules", "status", "nightly", "--root", "work"])
@@ -1065,7 +1091,14 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
 
 pub fn parse_offline_accepts_canonical_top_level_commands_and_rejects_daemon_controls_test() {
   assert ctl.parse_offline(["cleanup", "--root", "work"])
-    == Ok(ctl.Cleanup(None, Some("work"), False, True, False))
+    == Ok(ctl.Cleanup(
+      None,
+      Some("work"),
+      False,
+      True,
+      False,
+      cleanup.AllProviders,
+    ))
   assert ctl.parse_offline(["schedules", "status", "nightly", "--root", "work"])
     == Ok(ctl.SchedulesStatus(None, Some("work"), False, Some("nightly")))
   let assert Ok(ctl.Workstream(_)) = ctl.parse_offline(["workstream", "list"])
@@ -1213,7 +1246,7 @@ pub fn cleanup_json_output_uses_provider_report_test() {
 
   let result =
     ctl.run_with_deps(
-      ctl.Cleanup(None, Some(root), True, False, False),
+      ctl.Cleanup(None, Some(root), True, False, False, cleanup.AllProviders),
       ps_deps([], ps_now_ms, ""),
       output(output_subject),
     )
@@ -1223,6 +1256,58 @@ pub fn cleanup_json_output_uses_provider_report_test() {
   assert string.contains(transcript, "\"mode\":\"dry_run\"")
   assert string.contains(transcript, "\"provider_id\":\"local_state\"")
   assert string.contains(transcript, "\"provider_id\":\"workspaces\"")
+  assert string.contains(transcript, "\"elapsed_ms\":")
+}
+
+pub fn cleanup_json_output_filters_provider_test() {
+  let root = "test/tmp/ctl-cleanup/json-filter"
+  test_helpers.reset_dir(root)
+  let output_subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Cleanup(
+        None,
+        Some(root),
+        True,
+        False,
+        False,
+        cleanup.SelectedProvider(cleanup.Workspaces),
+      ),
+      ps_deps([], ps_now_ms, ""),
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"provider_id\":\"workspaces\"")
+  assert !string.contains(transcript, "\"provider_id\":\"local_state\"")
+}
+
+pub fn cleanup_apply_output_filters_provider_test() {
+  let root = "test/tmp/ctl-cleanup/apply-filter"
+  test_helpers.reset_dir(root)
+  let output_subject = process.new_subject()
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Cleanup(
+        None,
+        Some(root),
+        False,
+        False,
+        True,
+        cleanup.SelectedProvider(cleanup.Workspaces),
+      ),
+      ps_deps([], ps_now_ms, ""),
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "cleanup apply")
+  assert string.contains(transcript, "provider: workspaces")
+  assert !string.contains(transcript, "provider: local_state")
 }
 
 pub fn cleanup_text_output_uses_provider_report_test() {
@@ -1232,7 +1317,7 @@ pub fn cleanup_text_output_uses_provider_report_test() {
 
   let result =
     ctl.run_with_deps(
-      ctl.Cleanup(None, Some(root), False, True, False),
+      ctl.Cleanup(None, Some(root), False, True, False, cleanup.AllProviders),
       ps_deps([], ps_now_ms, ""),
       output(output_subject),
     )
@@ -1243,6 +1328,7 @@ pub fn cleanup_text_output_uses_provider_report_test() {
   assert string.contains(transcript, "provider: local_state")
   assert string.contains(transcript, "provider: workspaces")
   assert string.contains(transcript, "available: true")
+  assert string.contains(transcript, "elapsed_ms:")
 }
 
 pub fn parse_rejects_usage_errors_test() {
@@ -1273,6 +1359,11 @@ pub fn parse_rejects_usage_errors_test() {
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["outbox", "--status", "unknown"])
   let assert Error(ctl.UsageError(_)) = ctl.parse(["outbox", "--kind", ""])
+  let assert Error(ctl.UsageError(provider_error)) =
+    ctl.parse(["cleanup", "--provider", "unknown"])
+  assert string.contains(provider_error, "invalid cleanup provider 'unknown'")
+  assert string.contains(provider_error, "local-state")
+  assert string.contains(provider_error, "diagnostic-only unavailable")
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["artifact", "publication", "list"])
   let assert Error(ctl.UsageError(_)) =
@@ -1400,6 +1491,8 @@ pub fn offline_usage_mentions_offline_commands_and_options_test() {
   assert string.contains(usage, "--root <workspace-root>")
   assert string.contains(usage, "--run <run-id>")
   assert string.contains(usage, "--publication <publication>")
+  assert string.contains(usage, "--provider <provider>")
+  assert string.contains(usage, "Diagnostic-only unavailable providers")
   assert !string.contains(usage, "run-schedule <job> --now")
   assert !string.contains(usage, "--control-file <path>")
 }
