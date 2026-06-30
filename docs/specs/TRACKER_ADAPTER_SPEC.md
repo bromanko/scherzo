@@ -159,7 +159,7 @@ Capability names in this table are canonical and MUST match the public fields in
 | `scheduled_failures` | No | Scheduled job failure publication for enabled `schedules.<id>.on_failure.task` | Publication MUST be idempotent by `dedupe_key`. |
 | `readiness` | No | Tracker contract/readiness checks when a caller enables `readiness_checks_enabled` | Current Linear contract doctor uses a compatibility path rather than this adapter capability. |
 | `smoke` | No | Tracker smoke checks when a caller enables `smoke_checks_enabled` | Linear exposes this capability; Linear CLI aliases remain. |
-| `attachments` | No | No required startup feature today | Linear attachment upload is still a Linear-only compatibility helper, not this generic capability. |
+| `attachments` | No | No required startup feature today | Handoff result attachments on the Linear path are legacy behavior, not this generic capability. |
 
 ## 6. Capability operation contracts
 
@@ -297,7 +297,7 @@ Smoke checks SHOULD perform low-risk read operations that prove candidate fetch 
 
 `AttachmentCapability.upload(task_ref, attachment)` uploads a generic task attachment and returns the resulting `TaskAttachment`.
 
-The operation SHOULD be idempotent when the backend supports content hashes or stable attachment ids. It MUST reject unsafe or unsupported attachment URLs/files with `Permanent` or `UnsupportedCapability("attachments.upload")`. No current startup feature requires `attachments`; Linear attachment upload remains a Linear-only comment-file helper rather than this generic adapter capability.
+The operation SHOULD be idempotent when the backend supports content hashes or stable attachment ids. It MUST reject unsafe or unsupported attachment URLs/files with `Permanent` or `UnsupportedCapability("attachments.upload")`. No current startup feature requires `attachments`; Linear handoff result attachments remain legacy Linear-path behavior rather than this generic adapter capability.
 
 ## 7. `TrackerError` semantics
 
@@ -367,7 +367,7 @@ Linear compatibility surfaces are intentionally preserved and are not generic ad
 - `tracker/issue.gleam` and `task.from_legacy_issue`/`task.to_legacy_issue` preserve existing Linear issue behavior.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_*`, `issue_id`, and `issue_identifier` remain compatibility names.
 - The old `linear_contract` config section and Linear-named smoke/contract CLI/check aliases are retired; use `tracker.linear.check_setup`, `tracker-smoke`, `tracker-contract`, `--tracker-smoke`, and `--tracker-contract-check`. `linear_commands` is also a removed config surface; leaving either removed config section in config is rejected.
-- Linear-only helper scripts and options that create, update, or inspect Linear tasks directly remain Linear-specific until replaced by generic adapter capabilities.
+- Linear-only helper scripts that create, update, or inspect Linear tasks directly remain Linear-specific until replaced by generic adapter capabilities.
 
 Future Jira/Trello work MUST add production adapters and tests before docs or examples claim support. A fake or historical plan is not evidence of production conformance.
 
@@ -415,13 +415,13 @@ A Linear-equivalent adapter for today's production behavior provides:
 - `scheduled_failures`
 - `smoke`
 
-The current Linear adapter does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Linear readiness/contract checks still use the Linear-specific doctor implementation configured by `tracker.linear.check_setup`, and attachment upload still uses Linear-only comment-file helpers.
+The current Linear adapter does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Linear readiness/contract checks still use the Linear-specific doctor implementation configured by `tracker.linear.check_setup`, and handoff result attachments remain legacy Linear-path behavior rather than this generic adapter capability.
 
 ## 13. Current adapter conformance status
 
 | Adapter | Status | Conformance summary |
 | --- | --- | --- |
-| Linear | Production | Provides `task_source`, `comments`, `state_transitions`, `routing_metadata`, `handoff`, `scheduled_failures`, and `smoke`. Does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Contract/readiness still use Linear-specific doctor code, and attachment upload remains a Linear-only helper. |
+| Linear | Production | Provides `task_source`, `comments`, `state_transitions`, `routing_metadata`, `handoff`, `scheduled_failures`, and `smoke`. Does not expose `remote_commands`, generic `links`, `readiness`, or `attachments`. Contract/readiness still use Linear-specific doctor code, and handoff result attachments remain legacy Linear-path behavior. |
 | `test-memory` | Test fixture | Provides the fake non-Linear seam used by tests. It is not a production backend. |
 | Jira | Future work | No production adapter is supported today. |
 | Trello | Future work | No production adapter is supported today. |

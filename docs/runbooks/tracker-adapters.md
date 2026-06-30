@@ -19,7 +19,8 @@ The old Linear-named smoke and contract operator aliases are retired:
 - `linear-smoke`, `--linear-smoke`, `linear-contract`, and `--linear-contract-check` are no longer accepted operator paths. Use `tracker-smoke`, `--tracker-smoke`, `tracker-contract`, and `--tracker-contract-check` instead.
 - `tracker.linear.check_setup` is the current Linear board validation switch. The old `linear_contract` section is replaced by fields derived from `tracker`, `workflows`, `task_routing`, and `task_updates`; leaving it in config is a startup validation error with migration guidance. `linear_commands` and `remote_commands` are also removed command-transport settings; leaving either section in config is a startup validation error, and operators should use `scherzoctl` instead. Keep the removed-key diagnostics until supported configs no longer need migration guidance for those names.
 - `issue.*` prompt variables, `SCHERZO_ISSUE_*`, `issue_id`, `issue_identifier`, issue-shaped ledger fields, and `linear_command_*` ledger/event/outbox records remain legacy-reader compatibility surfaces until the runtime task context and command history are fully migrated. Retirement gate: do not remove them before dual-read prompt, helper, retained-ledger, and legacy command-record tests prove task-native replacements preserve old artifacts.
-- `--linear-attach-comment-file`, `.scherzo/workflows/scripts/scherzo-execplan`, and `.scherzo/workflows/scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today. Retirement gate: keep these names until adapter-backed task-context fetch/publish helpers exist and the old Linear-only flows have replacement tests.
+- `--linear-attach-comment-file` is retired with no direct CLI replacement. Automatic result attachments remain available through configured handoff/task update behavior, such as `task_updates.result.on_success: attachment`.
+- `.scherzo/workflows/scripts/scherzo-execplan` and `.scherzo/workflows/scripts/scherzo-merge-conflict` are Linear-only because they create, update, or inspect Linear tasks directly through Linear issues today. Retirement gate: keep these names until adapter-backed task-context fetch/publish helpers exist and the old Linear-only flows have replacement tests.
 
 ## Preferred Linear tracker config
 
@@ -65,7 +66,7 @@ The matrix summarizes current operator readiness. The normative capability defin
 
 | Adapter | Status | task_source | comments | remote_commands | state_transitions | routing_metadata | links | handoff | scheduled_failures | readiness | smoke | attachments | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Linear | Production | Yes | Yes | No | Yes | Yes | No adapter capability | Yes | Yes | Compatibility path | Yes | No adapter capability | Linear is the only production backend. Contract/readiness checks use `tracker.linear.check_setup`; inbound Linear command comments are removed; attachment upload is still exposed through the Linear-only comment-file helper rather than generic `attachments`. |
+| Linear | Production | Yes | Yes | No | Yes | Yes | No adapter capability | Yes | Yes | Compatibility path | Yes | No adapter capability | Linear is the only production backend. Contract/readiness checks use `tracker.linear.check_setup`; inbound Linear command comments and the direct comment-file attachment CLI are removed. Handoff result attachments remain Linear-path behavior rather than generic `attachments`. |
 | Jira follow-up | Future | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Requires a future production adapter plan and live backend design. Do not claim support from the current architecture alone. |
 | Trello follow-up | Future | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Requires a future production adapter plan and live backend design. Do not claim support from the current architecture alone. |
 | test-memory | Test fixture | Yes | Yes | No by default | Yes | Yes | No | No | Yes | No | No | No | Test-only fake adapter for adapter contract and non-Linear seam tests. Do not use it in production examples. |
@@ -76,7 +77,7 @@ Capability names used in code and config diagnostics include `task_source`, `com
 
 Linear-specific modules are expected inside Linear adapter internals, Linear compatibility tests, and Linear setup docs. The current tree also keeps a few generic-looking entrypoints on Linear compatibility paths:
 
-- `src/scherzo/orchestrator/service.gleam` still imports Linear contract, smoke, attachment, and transport modules for the current Linear-backed doctor and CLI checks.
+- `src/scherzo/orchestrator/service.gleam` still imports Linear tracker, contract, smoke, and transport modules for the current Linear-backed doctor and CLI checks.
 - `src/scherzo/template.gleam` still exposes `issue.*` variables only; prompts can describe the source as a task while rendering through the compatibility variables.
 - `.scherzo/workflows/scripts/scherzo-implementation` currently fetches workflow source context from Linear, so its fetch errors and fixture helper remain Linear-specific even when its operator summaries say task.
 
