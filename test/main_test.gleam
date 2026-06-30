@@ -19,8 +19,6 @@ pub fn parse_args_default_explicit_and_help_test() {
     == Ok(main.Run(main.LinearSmoke, Some("scherzo.yaml")))
   assert main.parse_args(["--tracker-contract-check", "scherzo.yaml"])
     == Ok(main.Run(main.LinearContractCheck, Some("scherzo.yaml")))
-  assert main.parse_args(["--pi-probe", "scherzo.yaml"])
-    == Ok(main.Run(main.PiProbe, Some("scherzo.yaml")))
   assert main.parse_args(["--help"]) == Ok(main.Help)
   assert main.parse_args(["--version"]) == Ok(main.Version)
   assert main.parse_args([
@@ -112,6 +110,9 @@ pub fn parse_args_rejects_usage_errors_test() {
   assert main.parse_args(["--linear-contract-check"]) == Error(main.UsageError)
   assert main.parse_args(["--linear-contract-check", "scherzo.yaml"])
     == Error(main.UsageError)
+  assert main.parse_args(["--pi-probe"]) == Error(main.UsageError)
+  assert main.parse_args(["--pi-probe", "scherzo.yaml"])
+    == Error(main.UsageError)
   assert main.parse_args(["doctor", "--unknown"]) == Error(main.UsageError)
   assert main.parse_args(["doctor", "--check"]) == Error(main.UsageError)
   assert main.parse_args(["doctor", "one.yaml", "two.yaml"])
@@ -156,6 +157,10 @@ pub fn usage_error_hint_reports_retired_flag_replacements_test() {
     == Some(
       "--linear-contract-check was retired; use --tracker-contract-check.",
     )
+  assert main.usage_error_hint(["--pi-probe"])
+    == Some("--pi-probe was retired; use doctor --check pi-probe.")
+  assert main.usage_error_hint(["--pi-probe", "scherzo.yaml"])
+    == Some("--pi-probe was retired; use doctor --check pi-probe.")
   assert main.usage_error_hint(["--linear-attach-comment-file"])
     == Some(attach_hint)
   assert main.usage_error_hint([
@@ -182,6 +187,7 @@ pub fn launcher_route_uses_canonical_cli_parser_test() {
   assert main.launcher_route(["--once", ".scherzo/scherzo.yaml"])
     == main.LauncherDirect
   assert main.launcher_route(["--linear-smoke"]) == main.LauncherDirect
+  assert main.launcher_route(["--pi-probe"]) == main.LauncherDirect
   assert main.launcher_route(["one.yaml", "two.yaml"]) == main.LauncherDirect
 }
 
@@ -218,7 +224,9 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert !string.contains(usage, "--linear-contract-check")
   assert !string.contains(usage, "--linear-attach-comment-file")
   assert !string.contains(usage, "<comment-id> <file.md>")
-  assert string.contains(usage, "--pi-probe")
+  assert !string.contains(usage, "mutates Linear")
+  assert !string.contains(usage, "--pi-probe")
+  assert string.contains(usage, "pi-probe")
   assert string.contains(usage, "--version")
   assert string.contains(usage, "source/build identity")
   assert string.contains(usage, "ctl ps")
