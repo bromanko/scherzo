@@ -94,6 +94,7 @@ pub fn operation_status_query_request_response_roundtrip_test() {
       issue_id: Some("issue-1"),
       issue_identifier: Some("LIV-1"),
       requested_step_id: Some("apply_feedback"),
+      publication_id: Some("execplan_review_doc"),
       status: "completed",
       reason: None,
       message: Some("retry-step completed"),
@@ -111,6 +112,10 @@ pub fn operation_status_query_request_response_roundtrip_test() {
   assert string.contains(encoded_response, "\"type\":\"operation_status\"")
   assert string.contains(encoded_response, "\"status\":\"completed\"")
   assert string.contains(encoded_response, "\"operation_id\":\"op-123\"")
+  assert string.contains(
+    encoded_response,
+    "\"publication_id\":\"execplan_review_doc\"",
+  )
   assert codec.decode_response(encoded_response) == Ok(response)
 }
 

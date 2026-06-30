@@ -511,6 +511,10 @@ pub fn operation_status_to_json(
       "requested_step_id",
       json.nullable(operation.requested_step_id, of: json.string),
     ),
+    #(
+      "publication_id",
+      json.nullable(operation.publication_id, of: json.string),
+    ),
     #("status", json.string(operation.status)),
     #("reason", json.nullable(operation.reason, of: json.string)),
     #("message", json.nullable(operation.message, of: json.string)),
@@ -728,6 +732,11 @@ fn operation_status_decoder() -> decode.Decoder(types.OperationStatusDto) {
     "requested_step_id",
     decode.optional(decode.string),
   )
+  use publication_id <- decode.optional_field(
+    "publication_id",
+    None,
+    decode.optional(decode.string),
+  )
   use status <- decode.field("status", decode.string)
   use reason <- decode.field("reason", decode.optional(decode.string))
   use message <- decode.field("message", decode.optional(decode.string))
@@ -749,6 +758,7 @@ fn operation_status_decoder() -> decode.Decoder(types.OperationStatusDto) {
     issue_id: issue_id,
     issue_identifier: issue_identifier,
     requested_step_id: requested_step_id,
+    publication_id: publication_id,
     status: status,
     reason: reason,
     message: message,

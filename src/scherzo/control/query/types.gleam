@@ -204,6 +204,7 @@ pub type OperationStatusDto {
     issue_id: Option(String),
     issue_identifier: Option(String),
     requested_step_id: Option(String),
+    publication_id: Option(String),
     status: String,
     reason: Option(String),
     message: Option(String),

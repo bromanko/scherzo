@@ -154,6 +154,7 @@ pub fn encodes_and_decodes_control_operation_records_test() {
       issue_id: Some("issue-1"),
       issue_identifier: Some("LIV-1"),
       requested_step_id: Some("apply_feedback"),
+      publication_id: None,
     ),
   ))
   assert_roundtrip(record.with_id(

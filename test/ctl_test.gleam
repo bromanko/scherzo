@@ -212,17 +212,18 @@ fn query_metrics_response() -> query_types.QueryResponse {
 
 fn query_operation_status_response() -> query_types.QueryResponse {
   query_types.OperationStatusResponse(query_types.OperationStatusDto(
-    operation_id: "op-123",
-    kind: "retry_step",
-    command: "retry_step",
-    target: "run:run-1",
+    operation_id: "artifact-publication-retry:run-1:execplan_review_doc:42",
+    kind: "artifact_publication_retry",
+    command: "retry_artifact_publication",
+    target: "run:run-1:execplan_review_doc",
     run_id: Some("run-1"),
     issue_id: Some("issue-1"),
     issue_identifier: Some("LIV-1262"),
-    requested_step_id: Some("apply_feedback"),
+    requested_step_id: None,
+    publication_id: Some("execplan_review_doc"),
     status: "completed",
     reason: None,
-    message: Some("retry-step completed"),
+    message: Some("publication retry recorded execplan_review_doc as published"),
     queued_at_ms: 1000,
     started_at_ms: Some(1001),
     finished_at_ms: Some(1002),
@@ -486,9 +487,12 @@ pub fn query_operation_status_human_executes_query_and_formats_operation_test() 
       operation_id: "op-123",
     ))
   let transcript = drain_output(output_subject)
-  assert string.contains(transcript, "operation_id: op-123")
+  assert string.contains(
+    transcript,
+    "operation_id: artifact-publication-retry:run-1:execplan_review_doc:42",
+  )
   assert string.contains(transcript, "status: completed")
-  assert string.contains(transcript, "requested_step_id: apply_feedback")
+  assert string.contains(transcript, "publication_id: execplan_review_doc")
 }
 
 pub fn query_status_json_uses_raw_request_with_query_payload_test() {
@@ -568,7 +572,14 @@ pub fn query_operation_status_json_uses_raw_request_with_query_payload_test() {
   assert called_request == protocol.Query("1", "", query)
   let transcript = drain_output(output_subject)
   assert string.contains(transcript, "\"type\":\"operation_status\"")
-  assert string.contains(transcript, "\"operation_id\":\"op-123\"")
+  assert string.contains(
+    transcript,
+    "\"operation_id\":\"artifact-publication-retry:run-1:execplan_review_doc:42\"",
+  )
+  assert string.contains(
+    transcript,
+    "\"publication_id\":\"execplan_review_doc\"",
+  )
   assert string.contains(transcript, "\"target\"")
 }
 

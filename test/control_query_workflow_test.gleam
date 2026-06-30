@@ -184,13 +184,14 @@ pub fn operation_status_query_executes_through_query_runtime_test() {
         1000,
         record.ControlOperationQueued(
           operation_id: "op-123",
-          operation_kind: "retry_step",
-          command_name: "retry_step",
-          target: "run:run-1",
+          operation_kind: "artifact_publication_retry",
+          command_name: "retry_artifact_publication",
+          target: "run:run-1:execplan_review_doc",
           run_id: Some("run-1"),
           issue_id: Some("issue-1"),
           issue_identifier: Some("LIV-1"),
-          requested_step_id: Some("apply_feedback"),
+          requested_step_id: None,
+          publication_id: Some("execplan_review_doc"),
         ),
       ),
       record.with_id(
@@ -212,6 +213,7 @@ pub fn operation_status_query_executes_through_query_runtime_test() {
   assert operation.operation_id == "op-123"
   assert operation.status == "running"
   assert operation.started_at_ms == Some(1001)
+  assert operation.publication_id == Some("execplan_review_doc")
   assert operation.finished_at_ms == None
 
   assert query_service.stop(handle, 1000) == Ok(Nil)

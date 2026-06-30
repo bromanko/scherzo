@@ -625,7 +625,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       handler: ArtifactPublicationRetryKey,
       path: ["artifact", "publication", "retry"],
       usage: "artifact publication retry --run <run-id> [--publication <publication-id>] [--root <workspace-root>]",
-      summary: "Retry failed publication; same-repo commit_stack retries use the retained workflow workspace driver.",
+      summary: "Retry failed publication; daemon retries return a queued operation id for status polling.",
       positionals: [],
       options: [
         control_file_option(),
@@ -641,7 +641,11 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         ),
         line(
           "",
-          "Retry failed publication; same-repo commit_stack retries use the retained workflow workspace driver.",
+          "Retry failed publication. Without --root, the daemon returns status queued with an operation_id; poll query operation-status <operation-id> for completion.",
+        ),
+        line(
+          "",
+          "With --root, retry runs synchronously against retained local state. Same-repo commit_stack retries use the retained workflow workspace driver.",
         ),
       ],
     ),
