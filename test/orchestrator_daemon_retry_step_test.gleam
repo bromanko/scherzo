@@ -3035,6 +3035,7 @@ pub fn artifact_publication_retry_startup_replay_replays_queued_and_skips_comple
       publication_retry_runner(),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(completed_operation) =
     wait_for_operation_status(root, operation_id, "completed", 20)
@@ -3068,6 +3069,8 @@ pub fn artifact_publication_retry_startup_replay_replays_queued_and_skips_comple
       }),
     )
   let assert Ok(skip_started) = daemon.start(Some(workflow_path), skip_deps)
+  let assert Ok(Nil) =
+    daemon.await_startup_recovery_ready(skip_started.data, 1000)
   assert !wait_for_log(skip_log_subject, "unexpected_completed_replay", 20)
   assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
 

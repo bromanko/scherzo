@@ -402,6 +402,7 @@ steps:
     kind: command
     depends_on: [repair_base_drift]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" assert-base-drift-repair'
+    timeout: 5m
     run_in: main
 
   - id: final_validate
