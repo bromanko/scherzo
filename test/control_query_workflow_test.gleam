@@ -1,3 +1,4 @@
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -216,6 +217,33 @@ pub fn operation_status_query_executes_through_query_runtime_test() {
   assert operation.publication_id == Some("execplan_review_doc")
   assert operation.finished_at_ms == None
 
+  assert query_service.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn operation_status_query_uses_standard_snapshot_timeout_test() {
+  let state =
+    state_for("test/tmp/control-query-workflow-operation-status-timeout-budget")
+  let timeout_subject = process.new_subject()
+  let handle =
+    start_query_runtime_with_projection(
+      state,
+      fn(_) { Ok(state) },
+      fn(timeout_ms) {
+        process.send(timeout_subject, timeout_ms)
+        Ok(projection.new())
+      },
+    )
+
+  let assert Error(types.QueryError(code: code, message: message)) =
+    query_service.query(
+      handle,
+      types.OperationStatus(types.OperationStatusQuery(operation_id: "missing")),
+    )
+  assert code == types.QueryNotFound
+  assert message == "operation not found: missing"
+
+  let assert Ok(timeout_ms) = process.receive(timeout_subject, within: 1000)
+  assert timeout_ms == 1000
   assert query_service.stop(handle, 1000) == Ok(Nil)
 }
 

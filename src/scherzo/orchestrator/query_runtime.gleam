@@ -62,7 +62,7 @@ pub fn start(
             query: outbox_query,
           )
         query_types.OperationStatus(operation_query) ->
-          case get_projection_snapshot(100) {
+          case get_projection_snapshot(state_snapshot_timeout_ms) {
             Ok(snapshot) ->
               case
                 projection.control_operation(
