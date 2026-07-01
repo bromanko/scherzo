@@ -81,7 +81,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 def usage() -> None:
     print(
-        """Usage: scherzo-implementation <prepare|refresh-base|analyze|restore-execplan-artifacts|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|validate|publish|plan-brief|extract-plan|languages|ticket-brief>
+        """Usage: scherzo-implementation <prepare|refresh-base|analyze|restore-execplan-artifacts|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|extract-plan|languages|ticket-brief>
 
 Run from a Scherzo jj workflow workspace root.
 
@@ -123,6 +123,10 @@ plan-completion-recovery --phase before-late-repair|before-final-repair|after-la
 refresh-base --stage <stage>
               Fetch the canonical jj workspace base, rebase @ when needed,
               and write structured base-refresh JSON under tmp/.
+assert-base-drift-repair
+              Fail closed when the bounded base-drift repair worker wrote a
+              nonrepairable failure marker; otherwise report that final
+              validation may proceed.
 validate      Run the final direnv-backed scripts/scherzo-ci gate.
 publish       Normalize and validate the final change, then materialize the
               commit_stack and PR metadata consumed by Scherzo core's
@@ -2720,6 +2724,25 @@ def previous_validation_failure_details() -> str:
     return "\n".join(lines)
 
 
+def assert_base_drift_repair_command(args: list[str]) -> None:
+    if args:
+        usage()
+        sys.exit(2)
+    if not BASE_DRIFT_REPAIR_FAILURE_PATH.exists():
+        print("BASE_DRIFT_REPAIR_DECISION=ok")
+        return
+
+    failure = BASE_DRIFT_REPAIR_FAILURE_PATH.read_text().strip()
+    previous_validation = previous_validation_failure_details()
+    fail(
+        f"base drift repair requested workflow failure via {BASE_DRIFT_REPAIR_FAILURE_PATH}:"
+        + ("\n" + failure if failure else "")
+        + "\n\n"
+        + previous_validation,
+        failure_code="base_drift_repair_failed",
+    )
+
+
 def validation_fingerprint() -> str | None:
     # Fingerprint the exact tree state validation runs against: the base commit
     # the change is stacked on plus the change's own diff. base_commit + diff
@@ -2765,16 +2788,6 @@ def cached_passing_validation(fingerprint: str | None) -> dict[str, Any] | None:
 
 
 def validate_command(*, failure_code: str | None = None) -> None:
-    if BASE_DRIFT_REPAIR_FAILURE_PATH.exists():
-        failure = BASE_DRIFT_REPAIR_FAILURE_PATH.read_text().strip()
-        previous_validation = previous_validation_failure_details()
-        fail(
-            f"base drift repair requested workflow failure via {BASE_DRIFT_REPAIR_FAILURE_PATH}:"
-            + ("\n" + failure if failure else "")
-            + "\n\n"
-            + previous_validation,
-            failure_code=failure_code,
-        )
     if command_exists("jj") and has_unresolved_conflicts_at_current_change():
         files = conflicted_files()
         details = ""
@@ -3275,6 +3288,8 @@ def main(argv: list[str]) -> None:
         gate_plan_completion_command(args)
     elif command == "plan-completion-recovery":
         plan_completion_recovery_command(args)
+    elif command == "assert-base-drift-repair":
+        assert_base_drift_repair_command(args)
     elif command == "validate" and not args:
         validate_command()
     elif command == "publish" and not args:

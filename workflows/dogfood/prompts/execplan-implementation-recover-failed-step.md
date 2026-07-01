@@ -32,6 +32,7 @@ Rules:
 - Do not create, forget, finish, switch, push, bookmark, commit, squash, abandon, or otherwise manage workflow workspaces, branches, bookmarks, pushes, or pull requests.
 - Do not create or update PRs, branches, Linear issues, or remote resources from recovery.
 - Do not change the active workflow retry policy, original step prompt, structured-output contract, ExecPlan handoff inputs, or helper scripts merely to bypass the failure.
+- If the failure is the `assert_base_drift_repair` command reporting `tmp/scherzo-implementation-base-drift-failure.md`, inspect the marker and validation diagnostics. If you make a safe local repair and choose `recheck`, remove that stale failure marker before submitting recovery; keep it when choosing `gave_up`.
 - If the ExecPlan task legitimately changed workflow YAML, prompts, schemas, scripts, or tests, edit those files only when the edit is the smallest safe fix for the requested implementation and validation failure.
 - Do not broaden product scope, rewrite the implementation, or perform unrelated cleanup.
 - When you have repaired the cause and the original failed step should pass if rerun unchanged, call `submit_workflow_step_recovery_result` exactly once with `decision: "recheck"`.

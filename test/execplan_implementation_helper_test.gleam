@@ -1402,7 +1402,33 @@ pub fn validate_runs_when_prior_pass_fingerprint_differs_test() {
   assert !string.contains(validation_json, "\"cached\": true")
 }
 
-pub fn validate_base_drift_marker_reports_previous_validation_summary_test() {
+pub fn validate_ignores_base_drift_failure_marker_test() {
+  let dir = "test/tmp/implementation-helper-validate-ignores-base-drift-marker"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  write_fake_direnv(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/direnv")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/tmp/scherzo-implementation-base-drift-failure.md",
+      "# Base drift repair failure\n\n## Reason\nStale marker from an earlier validation failure.\n",
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation validate",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "FINAL_VALIDATION=passed")
+  let assert Ok(direnv_log) = simplifile.read(dir <> "/direnv.log")
+  assert string.contains(direnv_log, "exec . scripts/scherzo-ci")
+}
+
+pub fn assert_base_drift_repair_marker_reports_previous_validation_summary_test() {
   let dir = "test/tmp/implementation-helper-base-drift-validation-summary"
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
@@ -1426,11 +1452,12 @@ pub fn validate_base_drift_marker_reports_previous_validation_summary_test() {
   let artifact =
     run_helper_in(
       dir,
-      "../../../.scherzo/workflows/scripts/scherzo-implementation validate",
+      "../../../.scherzo/workflows/scripts/scherzo-implementation assert-base-drift-repair",
     )
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("base_drift_repair_failed")
   assert string.contains(
     artifact.stderr,
     "base drift repair requested workflow failure",
@@ -1933,7 +1960,7 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
     "implement",
     "apply_feedback",
     "prompts/repair-base-drift.md",
-    "repair_base_drift",
+    "assert_base_drift_repair",
     "final_validate",
   )
   assert_workflow_refresh_ordering(
@@ -2132,11 +2159,14 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
     workflow,
     "depends_on: [finalize_plan_completion_gate_recovery]",
   )
+  assert string.contains(workflow, "- id: assert_base_drift_repair")
+  assert string.contains(workflow, "depends_on: [repair_base_drift]")
+  assert string.contains(workflow, "assert-base-drift-repair")
   assert string.contains(
     workflow,
     "- id: restore_execplan_artifacts_before_final_verification",
   )
-  assert string.contains(workflow, "depends_on: [repair_base_drift]")
+  assert string.contains(workflow, "depends_on: [assert_base_drift_repair]")
   assert string.contains(
     workflow,
     "- id: verify_plan_completion_before_final_validation",
@@ -2206,6 +2236,9 @@ fn assert_workflow_refresh_ordering(
   assert string.contains(workflow, "- id: repair_base_drift")
   assert string.contains(workflow, "depends_on: [validate_after_refresh]")
   assert string.contains(workflow, repair_prompt)
+  assert string.contains(workflow, "- id: assert_base_drift_repair")
+  assert string.contains(workflow, "depends_on: [repair_base_drift]")
+  assert string.contains(workflow, "assert-base-drift-repair")
   assert string.contains(workflow, "- id: final_validate")
   assert string.contains(
     workflow,

@@ -562,9 +562,15 @@ steps:
     prompt: prompts/execplan-implementation-repair-base-drift.md
     run_in: main
 
-  - id: restore_execplan_artifacts_before_final_verification
+  - id: assert_base_drift_repair
     kind: command
     depends_on: [repair_base_drift]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" assert-base-drift-repair'
+    run_in: main
+
+  - id: restore_execplan_artifacts_before_final_verification
+    kind: command
+    depends_on: [assert_base_drift_repair]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts'
     run_in: main
 

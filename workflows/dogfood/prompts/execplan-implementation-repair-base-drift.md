@@ -43,7 +43,8 @@ Workflow contract:
 - In this prompt, validation succeeded means the `validate_after_refresh` command exited `0`; validation failed means it exited nonzero.
 - When validation reaches the final check, the retained stdout/stderr is the validation command's output; inspect the bounded failure summary first, then the full retained diagnostics only when deciding whether a `rebased_clean` validation failure is mechanically repairable.
 - Never treat a validation failure as repairable base drift unless the refresh status is `rebased_clean` or `conflicts`.
-- If you cannot prove a fix is mechanical, write `tmp/scherzo-implementation-base-drift-failure.md` and stop.
+- If you cannot prove a fix is mechanical, write `tmp/scherzo-implementation-base-drift-failure.md` and stop. The following `assert_base_drift_repair` command step consumes that marker and fails the workflow before final validation.
+- If the chosen state-table branch does not call for a failure marker, remove any stale `tmp/scherzo-implementation-base-drift-failure.md` before finishing so later validation is not poisoned by an obsolete decision.
 
 State table:
 
@@ -135,7 +136,7 @@ Process:
 1. Read the refresh JSON and determine the refresh status.
 2. Use the refresh status and validation exit code to choose exactly one state-table branch above.
 3. If editing is allowed, inspect only the files and nearby context needed for a mechanical base-drift repair.
-4. Write either `tmp/scherzo-implementation-base-drift-repair.md` or `tmp/scherzo-implementation-base-drift-failure.md` as required by the chosen branch.
+4. Write either `tmp/scherzo-implementation-base-drift-repair.md` or `tmp/scherzo-implementation-base-drift-failure.md` as required by the chosen branch; if writing/keeping a failure marker is not required, remove any stale one.
 5. Run targeted checks only if cheap and relevant.
 6. Summarize the outcome.
 
