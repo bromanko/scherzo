@@ -1564,6 +1564,10 @@ pub fn usage_mentions_daemon_only_commands_and_options_test() {
     usage,
     "Recollect workflow contract outputs without rerunning completed steps.",
   )
+  assert string.contains(
+    usage,
+    "Successful acknowledgement returns queued plus an operation_id; poll query operation-status for completion.",
+  )
   assert string.contains(usage, "abort <session-ref> --yes")
   assert string.contains(usage, "ui respond")
   assert string.contains(usage, "run-schedule <job> --now")

@@ -316,7 +316,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         line("recollect-outputs run:<run-id>", ""),
         line(
           "",
-          "Recollect workflow contract outputs without rerunning completed steps.",
+          "Recollect workflow contract outputs without rerunning completed steps. Successful acknowledgement returns queued plus an operation_id; poll query operation-status for completion.",
         ),
       ],
     ),

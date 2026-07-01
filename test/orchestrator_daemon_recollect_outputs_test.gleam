@@ -11,6 +11,7 @@ import scherzo/error
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/startup_recovery
+import scherzo/port
 import scherzo/runtime_bundle
 import scherzo/session/hub
 import scherzo/session/tokens as session_tokens
@@ -42,22 +43,25 @@ fn apply_operator_command_after_startup_recovery(
   daemon.apply_operator_command(daemon_subject, operator_command, 5000)
 }
 
-pub fn recollect_outputs_daemon_applies_without_worker_or_terminal_records_test() {
-  let dir = "test/tmp/daemon-recollect-outputs/applied"
+pub fn recollect_outputs_daemon_queues_before_async_recollection_work_is_released_test() {
+  let dir = "test/tmp/daemon-recollect-outputs/queued"
   let issue = issue()
   let #(workflow_path, root) = write_recollect_workflow(dir)
   let seed = seed_completed_run(workflow_path, root, issue, False)
   let worker_subject = process.new_subject()
+  let log_subject = process.new_subject()
+  let issue_lookup_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
-      tracker_issue_only(issue),
+      tracker_issue_after_barrier(issue, log_subject, issue_lookup_barrier),
       hub_subject,
       worker_subject,
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let before = ledger_kinds(root)
   let before_finished = count_kind(before, "workflow_run_finished")
+  let before_outputs = count_kind(before, "workflow_run_outputs_recorded")
 
   let assert Ok(result) =
     apply_operator_command_after_startup_recovery(
@@ -65,13 +69,54 @@ pub fn recollect_outputs_daemon_applies_without_worker_or_terminal_records_test(
       command.RecollectWorkflowOutputs("run-1"),
     )
 
+  assert command.status_reason(result.status) == None
+  assert command.status_to_string(result.status) == "queued"
+  let assert Some(operation_id) = result.operation_id
+  assert string.starts_with(operation_id, "recollect-outputs:run-1:")
+  assert result.message
+    == Some(
+      "recollect-outputs accepted; poll query operation-status for completion",
+    )
+  assert count_kind(ledger_kinds(root), "control_operation_queued") == 1
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
+    == before_outputs
+
+  assert wait_for_log(log_subject, "async_issue_lookup_started", 100)
+  let assert Ok(running_operation) =
+    wait_for_operation_status(root, operation_id, "running", 20)
+  assert running_operation.operation_kind == "recollect_outputs"
+  assert running_operation.run_id == Some("run-1")
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
+    == before_outputs
+
+  let assert Ok(duplicate_result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RecollectWorkflowOutputs("run-1"),
+      5000,
+    )
+  assert command.status_to_string(duplicate_result.status) == "queued"
+  assert duplicate_result.operation_id == Some(operation_id)
+  assert duplicate_result.message
+    == Some(
+      "recollect-outputs already queued/running; poll query operation-status for completion",
+    )
+  assert count_kind(ledger_kinds(root), "control_operation_queued") == 1
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
+    == before_outputs
+
+  test_async.release_barrier_if_waiting(issue_lookup_barrier)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.message
+    == Some(
+      "recollected workflow outputs for run-1: runs/run-1/recollections/1/outputs.v1.json",
+    )
   let after = ledger_kinds(root)
-  assert command.status_to_string(result.status) == "applied"
-  let assert Some(message) = result.message
-  assert string.contains(message, "recollected workflow outputs for run-1")
-  assert list.length(after) == list.length(before) + 1
-  assert last(after) == Some("workflow_run_outputs_recorded")
+  assert count_kind(after, "workflow_run_outputs_recorded")
+    == before_outputs + 1
   assert count_kind(after, "workflow_run_finished") == before_finished
+  assert count_kind(after, "control_operation_completed") == 1
   test_async.assert_no_extra_message(worker_subject)
   let assert Ok(output_ref) = latest_output_ref(root)
   assert output_ref == "runs/run-1/recollections/1/outputs.v1.json"
@@ -134,7 +179,7 @@ pub fn recollect_outputs_daemon_rejects_parked_issue_without_mutation_test() {
   hub.stop(hub_subject)
 }
 
-pub fn recollect_outputs_daemon_rejects_missing_artifact_without_mutation_test() {
+pub fn recollect_outputs_daemon_records_failed_operation_for_missing_artifact_test() {
   let dir = "test/tmp/daemon-recollect-outputs/rejected"
   let issue = issue()
   let #(workflow_path, root) = write_recollect_workflow(dir)
@@ -149,7 +194,8 @@ pub fn recollect_outputs_daemon_rejects_missing_artifact_without_mutation_test()
       worker_subject,
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
-  let before = ledger_kinds(root)
+  let before_outputs =
+    count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
 
   let assert Ok(result) =
     apply_operator_command_after_startup_recovery(
@@ -157,18 +203,22 @@ pub fn recollect_outputs_daemon_rejects_missing_artifact_without_mutation_test()
       command.RecollectWorkflowOutputs("run-1"),
     )
 
-  let after = ledger_kinds(root)
-  assert command.status_to_string(result.status) == "rejected"
-  assert command.status_reason(result.status)
-    == Some("artifact_recovery_failed")
-  assert after == before
+  assert command.status_to_string(result.status) == "queued"
+  let assert Some(operation_id) = result.operation_id
+  let assert Ok(failed_operation) =
+    wait_for_operation_status(root, operation_id, "failed", 20)
+  assert failed_operation.reason == Some("artifact_recovery_failed")
+  let assert Some(message) = failed_operation.message
+  assert string.contains(message, seed.step_artifact_ref)
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
+    == before_outputs
   test_async.assert_no_extra_message(worker_subject)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
 
-pub fn recollect_outputs_daemon_applies_for_terminal_issue_state_test() {
+pub fn recollect_outputs_daemon_completes_for_terminal_issue_state_test() {
   let dir = "test/tmp/daemon-recollect-outputs/terminal-state"
   let issue =
     tracker_issue.Issue(
@@ -193,8 +243,11 @@ pub fn recollect_outputs_daemon_applies_for_terminal_issue_state_test() {
       command.RecollectWorkflowOutputs("run-1"),
     )
 
-  assert command.status_to_string(result.status) == "applied"
-  let assert Some(message) = result.message
+  assert command.status_to_string(result.status) == "queued"
+  let assert Some(operation_id) = result.operation_id
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  let assert Some(message) = completed_operation.message
   assert string.contains(message, "recollected workflow outputs for run-1")
   test_async.assert_no_extra_message(worker_subject)
 
@@ -202,7 +255,7 @@ pub fn recollect_outputs_daemon_applies_for_terminal_issue_state_test() {
   hub.stop(hub_subject)
 }
 
-pub fn recollect_outputs_daemon_is_idempotent_when_latest_manifest_valid_test() {
+pub fn recollect_outputs_daemon_completes_without_new_outputs_when_latest_manifest_valid_test() {
   let dir = "test/tmp/daemon-recollect-outputs/idempotent"
   let issue = issue()
   let #(workflow_path, root) = write_recollect_workflow(dir)
@@ -216,7 +269,8 @@ pub fn recollect_outputs_daemon_is_idempotent_when_latest_manifest_valid_test() 
       worker_subject,
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
-  let before = ledger_kinds(root)
+  let before_outputs =
+    count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
 
   let assert Ok(result) =
     apply_operator_command_after_startup_recovery(
@@ -224,18 +278,21 @@ pub fn recollect_outputs_daemon_is_idempotent_when_latest_manifest_valid_test() 
       command.RecollectWorkflowOutputs("run-1"),
     )
 
-  let after = ledger_kinds(root)
-  assert command.status_to_string(result.status) == "applied"
-  let assert Some(message) = result.message
+  assert command.status_to_string(result.status) == "queued"
+  let assert Some(operation_id) = result.operation_id
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  let assert Some(message) = completed_operation.message
   assert string.contains(message, "workflow outputs already valid for run-1")
-  assert after == before
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
+    == before_outputs
   test_async.assert_no_extra_message(worker_subject)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
 
-pub fn recollect_outputs_daemon_rejects_current_workflow_unavailable_without_mutation_test() {
+pub fn recollect_outputs_daemon_records_failed_operation_for_workflow_unavailable_test() {
   let dir = "test/tmp/daemon-recollect-outputs/workflow-unavailable"
   let issue = issue()
   let #(workflow_path, root) = write_recollect_workflow(dir)
@@ -250,7 +307,8 @@ pub fn recollect_outputs_daemon_rejects_current_workflow_unavailable_without_mut
       worker_subject,
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
-  let before = ledger_kinds(root)
+  let before_outputs =
+    count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
 
   let assert Ok(result) =
     apply_operator_command_after_startup_recovery(
@@ -258,16 +316,195 @@ pub fn recollect_outputs_daemon_rejects_current_workflow_unavailable_without_mut
       command.RecollectWorkflowOutputs("run-1"),
     )
 
-  let after = ledger_kinds(root)
-  assert command.status_to_string(result.status) == "rejected"
-  assert command.status_reason(result.status) == Some("workflow_unavailable")
-  let assert Some(message) = result.message
+  assert command.status_to_string(result.status) == "queued"
+  let assert Some(operation_id) = result.operation_id
+  let assert Ok(failed_operation) =
+    wait_for_operation_status(root, operation_id, "failed", 20)
+  assert failed_operation.reason == Some("workflow_unavailable")
+  let assert Some(message) = failed_operation.message
   assert string.contains(message, "unknown_workflow_label")
-  assert after == before
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
+    == before_outputs
   test_async.assert_no_extra_message(worker_subject)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
+}
+
+pub fn recollect_outputs_daemon_rejects_missing_run_without_queued_work_test() {
+  let dir = "test/tmp/daemon-recollect-outputs/missing-run"
+  let issue = issue()
+  let #(workflow_path, root) = write_recollect_workflow(dir)
+  let _seed = seed_completed_run(workflow_path, root, issue, False)
+  let worker_subject = process.new_subject()
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      tracker_issue_logs(issue, log_subject, "unexpected_issue_lookup"),
+      hub_subject,
+      worker_subject,
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let before = ledger_kinds(root)
+
+  let assert Ok(result) =
+    apply_operator_command_after_startup_recovery(
+      started.data,
+      command.RecollectWorkflowOutputs("missing-run"),
+    )
+
+  assert command.status_to_string(result.status) == "not_found"
+  assert result.operation_id == None
+  assert ledger_kinds(root) == before
+  assert !wait_for_log(log_subject, "unexpected_issue_lookup", 5)
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn recollect_outputs_daemon_rejects_queue_append_failure_without_async_work_test() {
+  let dir = "test/tmp/daemon-recollect-outputs/queue-append-failed"
+  let issue = issue()
+  let #(workflow_path, root) = write_recollect_workflow(dir)
+  let _seed = seed_completed_run(workflow_path, root, issue, False)
+  let worker_subject = process.new_subject()
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      tracker_issue_logs(issue, log_subject, "unexpected_issue_lookup"),
+      hub_subject,
+      worker_subject,
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 5000)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  chmod_path("a-w", ledger_path.current_path)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RecollectWorkflowOutputs("run-1"),
+      5000,
+    )
+
+  chmod_path("u+w", ledger_path.current_path)
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("ledger_append_failed")
+  assert result.message == Some("failed to append recollect-outputs operation")
+  assert count_kind(ledger_kinds(root), "control_operation_queued") == 0
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded") == 0
+  assert !wait_for_log(log_subject, "unexpected_issue_lookup", 5)
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn recollect_outputs_daemon_records_failed_operation_for_non_active_non_terminal_issue_test() {
+  let dir = "test/tmp/daemon-recollect-outputs/non-active-state"
+  let issue =
+    tracker_issue.Issue(
+      ..issue(),
+      state: issue_state.from_string_unchecked("Backlog"),
+    )
+  let #(workflow_path, root) = write_recollect_workflow(dir)
+  let _seed = seed_completed_run(workflow_path, root, issue, False)
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      tracker_issue_only(issue),
+      hub_subject,
+      worker_subject,
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+
+  let assert Ok(result) =
+    apply_operator_command_after_startup_recovery(
+      started.data,
+      command.RecollectWorkflowOutputs("run-1"),
+    )
+
+  assert command.status_to_string(result.status) == "queued"
+  let assert Some(operation_id) = result.operation_id
+  let assert Ok(failed_operation) =
+    wait_for_operation_status(root, operation_id, "failed", 20)
+  assert failed_operation.reason == Some("issue_state_drift:non_active_state")
+  let assert Some(message) = failed_operation.message
+  assert string.contains(message, "non-active state Backlog")
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded") == 0
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn recollect_outputs_startup_replay_completes_queued_operation_and_skips_completed_on_restart_test() {
+  let dir = "test/tmp/daemon-recollect-outputs/startup-replay"
+  let issue = issue()
+  let #(workflow_path, root) = write_recollect_workflow(dir)
+  let _seed = seed_completed_run(workflow_path, root, issue, False)
+  let operation_id = "recollect-outputs:run-1:startup-replay"
+  append_ledger_records(root, [
+    record.with_id(
+      "queued-recollect-outputs",
+      40,
+      record.ControlOperationQueued(
+        operation_id: operation_id,
+        operation_kind: "recollect_outputs",
+        command_name: "recollect_outputs",
+        target: "run:run-1",
+        run_id: Some("run-1"),
+        issue_id: Some(issue.id),
+        issue_identifier: Some(issue.identifier),
+        requested_step_id: None,
+        publication_id: None,
+      ),
+    ),
+  ])
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      tracker_issue_only(issue),
+      hub_subject,
+      worker_subject,
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 5000)
+
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.operation_kind == "recollect_outputs"
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded") == 1
+  assert count_kind(ledger_kinds(root), "control_operation_completed") == 1
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+
+  let restart_worker_subject = process.new_subject()
+  let restart_log_subject = process.new_subject()
+  let assert Ok(restart_hub_subject) = hub.start(50, fn() { 42 })
+  let restart_deps =
+    in_process_dependencies(
+      tracker_issue_logs(issue, restart_log_subject, "unexpected_replay"),
+      restart_hub_subject,
+      restart_worker_subject,
+    )
+  let assert Ok(restarted) = daemon.start(Some(workflow_path), restart_deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(restarted.data, 5000)
+
+  assert !wait_for_log(restart_log_subject, "unexpected_replay", 5)
+  assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded") == 1
+  assert count_kind(ledger_kinds(root), "control_operation_completed") == 1
+  test_async.assert_no_extra_message(restart_worker_subject)
+
+  assert daemon.shutdown(restarted.data, 1000) == Ok(Nil)
+  hub.stop(restart_hub_subject)
 }
 
 type SeededRun {
@@ -458,6 +695,37 @@ fn tracker_issue_only(candidate: tracker_issue.Issue) -> tracker.Client {
   )
 }
 
+fn tracker_issue_after_barrier(
+  candidate: tracker_issue.Issue,
+  log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+) -> tracker.Client {
+  tracker.Client(
+    fetch_candidate_issues: fn() { Ok([]) },
+    fetch_issues_by_states: fn(_) { Ok([]) },
+    fetch_issue_states_by_ids: fn(_) {
+      process.send(log_subject, "async_issue_lookup_started")
+      test_async.block_until_released(barrier)
+      Ok([candidate])
+    },
+  )
+}
+
+fn tracker_issue_logs(
+  candidate: tracker_issue.Issue,
+  log_subject: process.Subject(String),
+  message: String,
+) -> tracker.Client {
+  tracker.Client(
+    fetch_candidate_issues: fn() { Ok([]) },
+    fetch_issues_by_states: fn(_) { Ok([]) },
+    fetch_issue_states_by_ids: fn(_) {
+      process.send(log_subject, message)
+      Ok([candidate])
+    },
+  )
+}
+
 fn in_process_dependencies(
   tracker_client: tracker.Client,
   hub_subject: process.Subject(hub.Message),
@@ -520,12 +788,81 @@ fn count_kind(kinds: List(String), target: String) -> Int {
   |> list.length
 }
 
-fn last(values: List(a)) -> Option(a) {
-  case values {
-    [] -> None
-    [value] -> Some(value)
-    [_, ..rest] -> last(rest)
+fn wait_for_log(
+  subject: process.Subject(String),
+  expected: String,
+  timeout_ms: Int,
+) -> Bool {
+  case process.receive(subject, within: timeout_ms) {
+    Ok(message) ->
+      case message == expected {
+        True -> True
+        False -> wait_for_log(subject, expected, timeout_ms)
+      }
+    Error(Nil) -> False
   }
+}
+
+fn wait_for_operation_status(
+  root: String,
+  operation_id: String,
+  expected_status: String,
+  attempts: Int,
+) -> Result(projection.ControlOperationStatus, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case
+        projection.control_operation(
+          load_projection_or_panic(root),
+          operation_id,
+        )
+      {
+        Ok(operation) ->
+          case operation.status == expected_status {
+            True -> Ok(operation)
+            False -> {
+              process.sleep(20)
+              wait_for_operation_status(
+                root,
+                operation_id,
+                expected_status,
+                attempts - 1,
+              )
+            }
+          }
+        Error(Nil) -> {
+          process.sleep(20)
+          wait_for_operation_status(
+            root,
+            operation_id,
+            expected_status,
+            attempts - 1,
+          )
+        }
+      }
+  }
+}
+
+fn load_projection_or_panic(root: String) -> projection.Projection {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(projected) = ledger.load_projection(ledger_path)
+  projected
+}
+
+fn append_ledger_records(
+  root: String,
+  records: List(record.LedgerRecord),
+) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) = ledger.append_many(ledger_path, records, True)
+  Nil
+}
+
+fn chmod_path(mode: String, path: String) -> Nil {
+  let assert Ok(chmod) = port.start_argv("chmod", [mode, path], ".", [])
+  let assert Ok(0) = port.await_exit(chmod, 1000)
+  Nil
 }
 
 fn delete_artifact(
