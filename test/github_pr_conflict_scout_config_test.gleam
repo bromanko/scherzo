@@ -158,11 +158,19 @@ pub fn checked_in_workspace_cleanup_schedule_loads_test() {
   assert timeout_ms == Some(300_000)
   assert_contains(run, "SCHERZO_CLEANUP_WORKSPACE_ROOT")
   assert_contains(run, "SCHERZO_WORKSPACE_CLEANUP_ROOT")
+  assert_contains(run, "${SCHERZO_CTL:-}")
+  assert_contains(run, "${SCHERZO_BIN:-}")
   assert_contains(run, "command -v scherzo")
-  assert_contains(run, "direnv exec \"$repo_root\" gleam run --")
-  assert_contains(run, "run_cleanup --root \"$workspace_root\"")
   assert_contains(run, "command -v scherzoctl")
   assert_contains(run, "$repo_root/scripts/scherzoctl")
+  assert_contains(run, "direnv exec \"$repo_root\" gleam run --")
+  assert_contains(run, "direnv exec \"$repo_root\" gleam run -- cleanup")
+  assert_contains(run, "run_cleanup --root \"$workspace_root\"")
+  assert_contains(
+    run,
+    "run_cleanup --root \"$workspace_root\" --provider workspaces --json --yes --limit 100 --max-runtime-ms 240000",
+  )
+  assert_contains(run, "--cursor \"$saved_cursor\"")
   assert_not_contains(run, "gleam run -- ctl")
 
   let assert Ok(job) =

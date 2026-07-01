@@ -3762,7 +3762,7 @@ pub fn materialize_code_change_bundle_no_env_local_store_keeps_stable_refs_test(
   let artifact =
     run_shell_in(
       dir,
-      "unset SCHERZO_RUN_ROOT SCHERZO_REPO_ROOT SCHERZO_RUN_ARTIFACT_DIR; env SCHERZO_RUN_ID=run-local SCHERZO_EXECPLAN_DIFF_PATH=input.diff ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-code-change-bundle --bundle ../../../test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
+      "env -u SCHERZO_RUN_ROOT -u SCHERZO_REPO_ROOT -u SCHERZO_RUN_ARTIFACT_DIR SCHERZO_RUN_ID=run-local SCHERZO_EXECPLAN_DIFF_PATH=input.diff ../../../.scherzo/workflows/scripts/scherzo-execplan materialize-code-change-bundle --bundle ../../../test/fixtures/execplan_v2/exec-plan-bundle.valid.json --output "
         <> test_helpers.shell_quote(output),
     )
 
