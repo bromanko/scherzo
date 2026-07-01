@@ -11,6 +11,10 @@ pub fn workspace_cleanup_workflow_yaml_parses_test() {
   let assert Ok(contents) =
     simplifile.read("workflows/dogfood/workspace-cleanup.yaml")
   let assert Ok(_) = workflow_dag.parse(contents)
+  assert string.contains(contents, "--provider workspaces")
+  assert string.contains(contents, "--limit 100")
+  assert string.contains(contents, "--max-runtime-ms 240000")
+  assert string.contains(contents, "timeout: 5m")
 }
 
 pub fn scheduled_workspace_cleanup_persists_and_reuses_cursor_test() {
@@ -45,6 +49,7 @@ pub fn scheduled_workspace_cleanup_persists_and_reuses_cursor_test() {
   assert string.trim(saved_cursor) == "cursor-1"
   let assert Ok(first_log) = simplifile.read(log_path)
   assert string.contains(first_log, "cleanup --root")
+  assert_bounded_cleanup_args(first_log)
   assert !string.contains(first_log, "--cursor cursor-1")
 
   let assert Ok(Nil) =
@@ -66,6 +71,7 @@ pub fn scheduled_workspace_cleanup_persists_and_reuses_cursor_test() {
   assert second.exit_code == 0
   let assert Ok(False) = simplifile.is_file(cursor_path)
   let assert Ok(second_log) = simplifile.read(log_path)
+  assert_bounded_cleanup_args(second_log)
   assert string.contains(second_log, "--cursor cursor-1")
 }
 
@@ -105,6 +111,7 @@ pub fn scheduled_workspace_cleanup_clears_invalid_cursor_test() {
   assert result.exit_code == 0
   let assert Ok(False) = simplifile.is_file(cursor_path)
   let assert Ok(log) = simplifile.read(log_path)
+  assert_bounded_cleanup_args(log)
   assert string.contains(log, "--cursor bad-cursor")
 }
 
@@ -137,6 +144,7 @@ pub fn scheduled_workspace_cleanup_uses_packaged_top_level_scherzo_test() {
   assert result.exit_code == 0
   let assert Ok(log) = simplifile.read(log_path)
   assert string.contains(log, "cleanup --root")
+  assert_bounded_cleanup_args(log)
 }
 
 pub fn scheduled_workspace_cleanup_keeps_scherzoctl_warning_out_of_json_test() {
@@ -177,6 +185,7 @@ pub fn scheduled_workspace_cleanup_keeps_scherzoctl_warning_out_of_json_test() {
   assert string.trim(saved_cursor) == "cursor-warning"
   let assert Ok(log) = simplifile.read(log_path)
   assert string.contains(log, "cleanup --root")
+  assert_bounded_cleanup_args(log)
 }
 
 fn run_workflow_script(
@@ -265,6 +274,14 @@ fn extract_run_block(contents: String) -> String {
     }
   })
   |> string.join(with: "\n")
+}
+
+fn assert_bounded_cleanup_args(log: String) -> Nil {
+  assert string.contains(log, "--provider workspaces")
+  assert string.contains(log, "--json")
+  assert string.contains(log, "--yes")
+  assert string.contains(log, "--limit 100")
+  assert string.contains(log, "--max-runtime-ms 240000")
 }
 
 fn write_fake_scherzoctl(repo: String) -> String {

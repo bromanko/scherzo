@@ -47,6 +47,13 @@ steps:
         exit 127
       }
 
+      # Run only the delegated-workspace cleanup provider in a bounded page.
+      # The 240s cleanup runtime budget leaves 60s under the 5m command timeout
+      # for startup, cursor persistence, and teardown.
+      # When cleanup reports truncated=true with next_cursor, this workflow saves
+      # that opaque cursor; the next scheduled run passes it back to continue.
+      # If truncation has no cursor, the next run starts another bounded pass.
+      # Completion clears the cursor so later runs start a fresh cleanup pass.
       cleanup_state_dir="$workspace_root/.scherzo-state/cleanup/scheduled"
       cleanup_cursor_path="$cleanup_state_dir/workspace-cleanup.cursor"
       mkdir -p "$cleanup_state_dir"
@@ -59,9 +66,9 @@ steps:
         fi
 
         if test -n "$saved_cursor"; then
-          run_cleanup --root "$workspace_root" --json --yes --limit 100 --max-runtime-ms 240000 --cursor "$saved_cursor"
+          run_cleanup --root "$workspace_root" --provider workspaces --json --yes --limit 100 --max-runtime-ms 240000 --cursor "$saved_cursor"
         else
-          run_cleanup --root "$workspace_root" --json --yes --limit 100 --max-runtime-ms 240000
+          run_cleanup --root "$workspace_root" --provider workspaces --json --yes --limit 100 --max-runtime-ms 240000
         fi
       }
 
