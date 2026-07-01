@@ -9,6 +9,7 @@ import scherzo/control/query/types as query_types
 import scherzo/control/remote/ui_protocol
 import scherzo/control/remote_command_router
 import scherzo/log
+import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/session/event
 import scherzo/work_item_invalidation
 
@@ -553,31 +554,40 @@ fn command_without_apply_result(
   daemon_id: String,
   boot_id: String,
 ) -> Option(command.CommandResult) {
-  case state.settings.command_bridge_enabled {
-    False ->
-      Some(command.not_allowed(
-        operator_command,
-        "command_bridge_disabled",
-        Some("remote command bridge is disabled"),
-      ))
-    True ->
-      case
-        daemon_id == state.settings.daemon_id,
-        boot_id == state.settings.boot_id
-      {
-        False, _ ->
+  case
+    managed_launch_command_denied(
+      state.settings.runtime_metadata,
+      operator_command,
+    )
+  {
+    Some(result) -> Some(result)
+    None ->
+      case state.settings.command_bridge_enabled {
+        False ->
           Some(command.not_allowed(
             operator_command,
-            "daemon_id_mismatch",
-            Some("server command daemonId does not match this daemon"),
+            "command_bridge_disabled",
+            Some("remote command bridge is disabled"),
           ))
-        _, False ->
-          Some(command.not_allowed(
-            operator_command,
-            "boot_id_mismatch",
-            Some("server command bootId does not match this daemon boot"),
-          ))
-        True, True -> None
+        True ->
+          case
+            daemon_id == state.settings.daemon_id,
+            boot_id == state.settings.boot_id
+          {
+            False, _ ->
+              Some(command.not_allowed(
+                operator_command,
+                "daemon_id_mismatch",
+                Some("server command daemonId does not match this daemon"),
+              ))
+            _, False ->
+              Some(command.not_allowed(
+                operator_command,
+                "boot_id_mismatch",
+                Some("server command bootId does not match this daemon boot"),
+              ))
+            True, True -> None
+          }
       }
   }
 }
@@ -648,21 +658,25 @@ fn query_without_execute_error(
   daemon_id: String,
   boot_id: String,
 ) -> Option(query_types.QueryError) {
-  case
-    daemon_id == state.settings.daemon_id,
-    boot_id == state.settings.boot_id
-  {
-    False, _ ->
-      Some(query_types.QueryError(
-        query_types.QueryBackendFailed,
-        "query_request daemonId does not match this daemon",
-      ))
-    _, False ->
-      Some(query_types.QueryError(
-        query_types.QueryBackendFailed,
-        "query_request bootId does not match this daemon boot",
-      ))
-    True, True -> None
+  case managed_launch_query_denied(state.settings.runtime_metadata) {
+    Some(error) -> Some(error)
+    None ->
+      case
+        daemon_id == state.settings.daemon_id,
+        boot_id == state.settings.boot_id
+      {
+        False, _ ->
+          Some(query_types.QueryError(
+            query_types.QueryBackendFailed,
+            "query_request daemonId does not match this daemon",
+          ))
+        _, False ->
+          Some(query_types.QueryError(
+            query_types.QueryBackendFailed,
+            "query_request bootId does not match this daemon boot",
+          ))
+        True, True -> None
+      }
   }
 }
 
@@ -934,6 +948,42 @@ fn send_work_item_invalidation(
   |> send_text_frame(connection, state)
 }
 
+fn managed_launch_command_denied(
+  metadata: ui_protocol.RuntimeMetadata,
+  operator_command: command.OperatorCommand,
+) -> Option(command.CommandResult) {
+  case ui_protocol.runtime_managed_launch_context(metadata) {
+    Some(context) ->
+      case list.contains(context.capabilities, managed_launch_grant.Command) {
+        True -> None
+        False ->
+          Some(command.not_allowed(
+            operator_command,
+            "managed_launch_command_capability_denied",
+            Some("managed launch grant does not allow remote commands"),
+          ))
+      }
+    None -> None
+  }
+}
+
+fn managed_launch_query_denied(
+  metadata: ui_protocol.RuntimeMetadata,
+) -> Option(query_types.QueryError) {
+  case ui_protocol.runtime_managed_launch_context(metadata) {
+    Some(context) ->
+      case list.contains(context.capabilities, managed_launch_grant.Query) {
+        True -> None
+        False ->
+          Some(query_types.QueryError(
+            query_types.UnsupportedQuery,
+            "managed launch grant does not allow remote queries",
+          ))
+      }
+    None -> None
+  }
+}
+
 fn apply_server_hello(
   state: State(connection, timer),
   interval: Option(Int),
@@ -957,6 +1007,7 @@ fn send_hello(
     state.settings.daemon_id,
     state.settings.boot_id,
     ui_protocol.runtime_daemon_label(state.settings.runtime_metadata),
+    ui_protocol.runtime_managed_launch_context(state.settings.runtime_metadata),
     runtime_state,
   )
   |> send_text_frame(connection, state)

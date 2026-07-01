@@ -3,6 +3,7 @@ import gleam/string
 import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/control/remote/ui_protocol
+import scherzo/managed_launch/grant as managed_launch_grant
 
 pub fn ui_protocol_encodes_daemon_messages_test() {
   let runtime_state = test_runtime_state(None)
@@ -19,6 +20,25 @@ pub fn ui_protocol_encodes_daemon_messages_test() {
   assert string.contains(hello, "\"host\":\"test-host\"")
   assert string.contains(hello, "\"version\":\"scherzo test-version\"")
   assert string.contains(hello, "\"agentSlots\":{")
+
+  let managed_hello =
+    ui_protocol.encode_daemon_hello(
+      "daemon_abc",
+      "boot_abc",
+      Some("Managed"),
+      Some(
+        ui_protocol.ManagedLaunchContext(launch_id: "launch-123", capabilities: [
+          managed_launch_grant.State,
+          managed_launch_grant.Query,
+        ]),
+      ),
+      runtime_state,
+    )
+  assert string.contains(managed_hello, "\"launchId\":\"launch-123\"")
+  assert string.contains(
+    managed_hello,
+    "\"capabilities\":[\"state\",\"query\"]",
+  )
 
   let heartbeat =
     ui_protocol.encode_client_message(ui_protocol.Heartbeat(
@@ -53,7 +73,13 @@ pub fn ui_protocol_encodes_daemon_messages_test() {
 pub fn ui_protocol_runtime_state_uses_agent_slot_occupancy_test() {
   let runtime_state =
     ui_protocol.runtime_state_from_agent_slot_occupancy(
-      ui_protocol.RuntimeMetadata("test-host", "scherzo test-version", None, -1),
+      ui_protocol.RuntimeMetadata(
+        "test-host",
+        "scherzo test-version",
+        None,
+        -1,
+        None,
+      ),
       1,
     )
   let heartbeat = ui_protocol.encode_heartbeat(42, None, runtime_state, None)
@@ -66,7 +92,13 @@ pub fn ui_protocol_runtime_state_uses_agent_slot_occupancy_test() {
 pub fn ui_protocol_clamps_negative_agent_slot_occupancy_test() {
   let runtime_state =
     ui_protocol.runtime_state_from_agent_slot_occupancy(
-      ui_protocol.RuntimeMetadata("test-host", "scherzo test-version", None, 4),
+      ui_protocol.RuntimeMetadata(
+        "test-host",
+        "scherzo test-version",
+        None,
+        4,
+        None,
+      ),
       -3,
     )
   let heartbeat = ui_protocol.encode_heartbeat(42, None, runtime_state, None)
@@ -80,7 +112,13 @@ pub fn ui_protocol_marks_runtime_state_unknown_on_slot_occupancy_error_test() {
   let heartbeat =
     ui_protocol.encode_heartbeat_with_runtime(
       42,
-      ui_protocol.RuntimeMetadata("test-host", "scherzo test-version", None, 4),
+      ui_protocol.RuntimeMetadata(
+        "test-host",
+        "scherzo test-version",
+        None,
+        4,
+        None,
+      ),
       Error("slot_occupancy_unavailable"),
     )
   assert string.contains(heartbeat, "\"capacity\":4")

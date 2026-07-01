@@ -33,3 +33,29 @@ Notes:
 - Local `scherzoctl` remains the fallback when the UI server is unavailable.
 - Command/result bridge work is intentionally out of scope here and remains disabled by default.
 - Scope inventory: no `.scherzo/workflows/scripts/*`, workflow schema, provider-live, cache, browser UI, server API, or token-accounting changes were required for this pairing slice.
+
+## Transient UI-managed launch grants
+
+UI-managed launch grants are separate from durable `scherzo connect` enrollment. The UI starts a local daemon with:
+
+```sh
+scherzo --managed-launch-grant-file <grant.json> --managed-launch-status-file <status.json> [path-to-scherzo.yaml]
+```
+
+Both flags are required together and are valid only for daemon mode. The UI must not use them with `--once`, `doctor`, `ctl`, workflow commands, cleanup commands, schedules, artifact commands, workstream commands, state commands, or other direct/offline modes.
+
+Secret-handling rules:
+- The grant file contains the short-lived launch credential and is secret.
+- Do not place the credential in argv beyond the grant-file path, environment variables, project YAML, logs, status files, durable credential stores, or copied diagnostics.
+- The status file is intentionally non-secret. It may contain `launchId`, `phase`, `ok`, `code`, `message`, and `updatedAtMs`, but it must redact the credential from every field.
+- Core reads the grant once, keeps the credential only in memory, and deletes the grant file after reading when possible.
+
+Operator recovery and retry guidance:
+- If startup fails before hello with `instance_lock_held`, another daemon already owns the workspace lock. Inspect or attach to the existing daemon instead of retrying the same launch blindly.
+- Recovery is to revoke the abandoned launch, delete any leftover grant/status files, stop the child process if it is still alive, and retry with a fresh `launchId` and credential.
+- Retry is idempotent only with a new launch grant. Reusing a consumed grant for a different daemon boot must fail.
+- Cleanup is safe to rerun: status writes are atomic replacements, grant deletion is best-effort, and leftover non-secret status files may be removed after the UI has collected failure evidence.
+
+Deferred manual evidence:
+- Browser/UI dogfood for a full UI-managed local launch, including startup-failure display and end-to-end `/api/daemons/ws` behavior, is deferred to the UI/server environment when that repository is available.
+- Core-side automated evidence for redacted startup status, including `instance_lock_held`, is still required before publish and is not deferred.

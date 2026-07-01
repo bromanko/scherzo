@@ -407,6 +407,7 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
         "scherzo test-version",
         None,
         1,
+        None,
       ),
       credential: "dcred_secret_1",
       heartbeat_interval_ms: 1000,
@@ -463,7 +464,14 @@ fn remote_client_dependencies(
     ..dependencies(log_subject),
     start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
     stop_control_server: fn(_) { Nil },
-    start_remote_client: fn(effective: config_types.EffectiveConfig, _, _, _, _) {
+    start_remote_client: fn(
+      effective: config_types.EffectiveConfig,
+      _,
+      _,
+      _,
+      _,
+      _,
+    ) {
       process.send(starts, effective.workspace.root)
       Ok(fake_remote_client_handle(effective.workspace.root))
     },
@@ -1316,7 +1324,7 @@ pub fn daemon_read_model_reports_remote_client_retrying_when_start_fails_test() 
       start_event_hub: fn() { Ok(hub_subject) },
       start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
       stop_control_server: fn(_) { Nil },
-      start_remote_client: fn(_, _, _, _, _) {
+      start_remote_client: fn(_, _, _, _, _, _) {
         Error(daemon.StartupError("dial_failed", "boom"))
       },
     )

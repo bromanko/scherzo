@@ -13,6 +13,9 @@ import scherzo/lifecycle
 import scherzo/linear
 import scherzo/linear_contract
 import scherzo/log
+import scherzo/managed_launch/file as managed_launch_file
+import scherzo/managed_launch/grant as managed_launch_grant
+import scherzo/managed_launch/status as managed_launch_status
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/runtime/reason as orchestrator_reason
@@ -31,6 +34,24 @@ import scherzo/workspace_run
 
 pub type StartupError {
   StartupError(code: String, message: String)
+}
+
+pub type ManagedLaunchFiles {
+  ManagedLaunchFiles(grant_file: String, status_file: String)
+}
+
+pub type DaemonStartOptions {
+  DaemonStartOptions(
+    workflow_path: Option(String),
+    managed_launch: Option(ManagedLaunchFiles),
+  )
+}
+
+type ManagedLaunchRuntime {
+  ManagedLaunchRuntime(
+    files: ManagedLaunchFiles,
+    grant: managed_launch_grant.Grant,
+  )
 }
 
 pub type Dependencies {
@@ -154,7 +175,7 @@ fn daemon_dependencies() -> daemon.RuntimeDependencies {
 }
 
 pub fn start(workflow_path: Option(String)) -> Result(Nil, StartupError) {
-  start_daemon(workflow_path)
+  start_daemon(DaemonStartOptions(workflow_path, None))
 }
 
 pub fn start_once(workflow_path: Option(String)) -> Result(Nil, StartupError) {
@@ -1115,10 +1136,10 @@ fn doctor_result_level(result: doctor.CheckResult) -> String {
 }
 
 pub fn start_daemon(
-  workflow_path: Option(String),
+  start_options: DaemonStartOptions,
 ) -> Result(Nil, StartupError) {
   start_daemon_with_lifecycle(
-    workflow_path,
+    start_options,
     DaemonLifecycleDependencies(
       daemon_dependencies: daemon_dependencies(),
       install_stop_source: signal.install,
@@ -1131,15 +1152,32 @@ pub fn start_daemon(
 }
 
 pub fn start_daemon_with_lifecycle(
-  workflow_path: Option(String),
+  start_options: DaemonStartOptions,
   dependencies: DaemonLifecycleDependencies,
 ) -> Result(Nil, StartupError) {
-  use lock <- try_startup(acquire_lock_for_workflow(workflow_path, True))
+  let DaemonStartOptions(workflow_path: workflow_path, managed_launch: _) =
+    start_options
+  use managed_launch <- try_startup(load_managed_launch_runtime(start_options))
+  use lock <- try_startup(
+    acquire_lock_for_workflow(workflow_path, True)
+    |> write_managed_launch_failure_status(
+      managed_launch,
+      "startup",
+      start_options,
+    ),
+  )
   let stop_subject = process.new_subject()
   case dependencies.install_stop_source(stop_subject) {
     Error(error) -> {
       instance_lock.release(lock)
-      Error(StartupError("signal_handler_failed", signal.error_message(error)))
+      let startup_error =
+        StartupError("signal_handler_failed", signal.error_message(error))
+      write_managed_launch_startup_error(
+        managed_launch,
+        "startup",
+        startup_error,
+      )
+      Error(startup_error)
     }
     Ok(installation) -> {
       dependencies.lifecycle_logger("info", "signal_handler_installed", [
@@ -1147,15 +1185,31 @@ pub fn start_daemon_with_lifecycle(
         #("os_pid", installation.os_pid),
       ])
       case
-        daemon.start(workflow_path, dependencies.daemon_dependencies)
+        daemon.start_with_managed_launch(
+          workflow_path,
+          managed_launch_grant_option(managed_launch),
+          dependencies.daemon_dependencies,
+        )
         |> map_daemon_error
       {
         Error(err) -> {
           installation.cleanup()
           instance_lock.release(lock)
+          write_managed_launch_startup_error(managed_launch, "startup", err)
           Error(err)
         }
         Ok(started) -> {
+          write_managed_launch_status(
+            managed_launch,
+            managed_launch_status.Status(
+              launch_id: managed_launch_launch_id(managed_launch),
+              phase: "startup",
+              ok: True,
+              code: "started",
+              message: "managed launch startup complete",
+              updated_at_ms: wall_clock_ms(),
+            ),
+          )
           let result =
             lifecycle.run_until_stop(
               stop_subject,
@@ -1178,6 +1232,121 @@ pub fn start_daemon_with_lifecycle(
       }
     }
   }
+}
+
+fn load_managed_launch_runtime(
+  start_options: DaemonStartOptions,
+) -> Result(Option(ManagedLaunchRuntime), StartupError) {
+  case start_options.managed_launch {
+    None -> Ok(None)
+    Some(files) ->
+      case managed_launch_file.load_grant(files.grant_file, wall_clock_ms()) {
+        Ok(grant) -> Ok(Some(ManagedLaunchRuntime(files: files, grant: grant)))
+        Error(error) -> {
+          write_managed_launch_status_for_files(
+            files,
+            managed_launch_status.Status(
+              launch_id: None,
+              phase: "grant_validation",
+              ok: False,
+              code: managed_launch_file.error_code(error),
+              message: managed_launch_file.error_message(error),
+              updated_at_ms: wall_clock_ms(),
+            ),
+            [],
+          )
+          Error(StartupError(
+            managed_launch_file.error_code(error),
+            managed_launch_file.error_message(error),
+          ))
+        }
+      }
+  }
+}
+
+fn managed_launch_grant_option(
+  managed_launch: Option(ManagedLaunchRuntime),
+) -> Option(managed_launch_grant.Grant) {
+  case managed_launch {
+    Some(runtime) -> Some(runtime.grant)
+    None -> None
+  }
+}
+
+fn managed_launch_launch_id(
+  managed_launch: Option(ManagedLaunchRuntime),
+) -> Option(String) {
+  case managed_launch {
+    Some(runtime) -> Some(runtime.grant.launch_id)
+    None -> None
+  }
+}
+
+fn managed_launch_secrets(
+  managed_launch: Option(ManagedLaunchRuntime),
+) -> List(String) {
+  case managed_launch {
+    Some(runtime) -> [runtime.grant.credential]
+    None -> []
+  }
+}
+
+fn write_managed_launch_failure_status(
+  result: Result(a, StartupError),
+  managed_launch: Option(ManagedLaunchRuntime),
+  phase: String,
+  _start_options: DaemonStartOptions,
+) -> Result(a, StartupError) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(error) -> {
+      write_managed_launch_startup_error(managed_launch, phase, error)
+      Error(error)
+    }
+  }
+}
+
+fn write_managed_launch_startup_error(
+  managed_launch: Option(ManagedLaunchRuntime),
+  phase: String,
+  error: StartupError,
+) -> Nil {
+  let StartupError(code: code, message: message) = error
+  write_managed_launch_status(
+    managed_launch,
+    managed_launch_status.Status(
+      launch_id: managed_launch_launch_id(managed_launch),
+      phase: phase,
+      ok: False,
+      code: code,
+      message: message,
+      updated_at_ms: wall_clock_ms(),
+    ),
+  )
+}
+
+fn write_managed_launch_status(
+  managed_launch: Option(ManagedLaunchRuntime),
+  status: managed_launch_status.Status,
+) -> Nil {
+  case managed_launch {
+    Some(runtime) ->
+      write_managed_launch_status_for_files(
+        runtime.files,
+        status,
+        managed_launch_secrets(managed_launch),
+      )
+    None -> Nil
+  }
+}
+
+fn write_managed_launch_status_for_files(
+  files: ManagedLaunchFiles,
+  status: managed_launch_status.Status,
+  secrets: List(String),
+) -> Nil {
+  let _ = managed_launch_status.write_atomic(files.status_file, status, secrets)
+  Nil
 }
 
 fn total_state_count(teams: List(linear_contract.RemoteTeam)) -> Int {
