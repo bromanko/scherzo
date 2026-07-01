@@ -76,6 +76,8 @@ Milestone 6 completes docs/helper migration and full repository validation. Revi
 - [x] (2026-07-01 08:00Z) Inspected the current Core surfaces for durable pairing, UI WebSocket client behavior, daemon identity, instance locking, CLI routing, launcher scripts, `ui_server` config, and related tests.
 - [x] (2026-07-01 08:00Z) Authored this concise review document and delegated mechanical implementation detail to the structured implementation pack for LIV-1335.
 - [x] (2026-07-01 08:30Z) Incorporated review feedback by making the managed-launch CLI shape, grant/status schemas, milestone evidence, docs/helper migration boundary, provider-live/cache non-goals, manual dogfood timing, full validation, and linting obligations explicit in the review document and updated implementation pack.
+- [x] (2026-07-01 09:45Z) Implemented the first Core contract slice in `src/scherzo/managed_launch/grant.gleam` and `src/scherzo/managed_launch/status.gleam`, with focused tests in `test/managed_launch_grant_test.gleam` and `test/managed_launch_status_test.gleam` covering the v1 grant/status schema, capability vocabulary, expiry, daemon identity override rejection, and status/log redaction.
+- [ ] Add daemon-mode managed-launch CLI parsing and launcher-route coverage in `src/scherzo/main.gleam` and `test/main_test.gleam`.
 
 ## Surprises & Discoveries
 
@@ -84,6 +86,8 @@ The repository already has a clean split between durable daemon identity and per
 The existing outbound UI client already sends `daemon_hello`, `heartbeat`, `daemon_state`, command results, query responses, and work-item invalidations using a credential passed only in memory to the WebSocket FFI. The main Core gap is therefore credential sourcing and launch metadata, not a new transport.
 
 The current daemon acquires the workspace instance lock before starting the long-running actor, and `instance_lock_held` is already the mapped startup code. Managed startup mainly needs to surface that code through a redacted status file before the UI declares the launched daemon simply offline.
+
+A dedicated grant/status contract module fits the existing Core structure cleanly: grant parsing can reuse `src/scherzo/control/remote/url.gleam` endpoint validation and status redaction can reuse `src/scherzo/log.gleam` without introducing a second redaction mechanism.
 
 ## Decision Log
 
@@ -95,12 +99,13 @@ The current daemon acquires the workspace instance lock before starting the long
 - Decision: Standardize the Core CLI as `--managed-launch-grant-file` plus `--managed-launch-status-file`, supplied together on daemon launches. Rationale: The flag names make the file indirection explicit, keep secrets out of argv, and give `scripts/scherzo-launcher` a deterministic daemon-mode route to test. Date: 2026-07-01.
 - Decision: Treat docs/helper migration as a narrow obligation for managed-launch docs and daemon-route helpers only, while leaving ExecPlan materialization helpers and provider-live/cache behavior unchanged. Rationale: The launch feature needs operator guidance and safe launcher routing, but unrelated workflow/helper/cache changes would expand blast radius. Date: 2026-07-01.
 - Decision: Require automated Core evidence for startup failure, redaction, capability, and full validation before publish, while allowing browser/UI dogfood evidence to be recorded as post-implementation operator evidence when the UI/server repository is unavailable in the implementing workspace. Rationale: Security-sensitive Core behavior must be proven before merging; visual dogfood depends on an external codebase and should not be falsely marked complete. Date: 2026-07-01.
+- Decision: Model the first implementation slice as standalone `managed_launch/grant` and `managed_launch/status` modules before touching daemon startup or remote-client wiring. Rationale: The contract tests can lock schema, expiry, redaction, and daemon-identity boundaries early while keeping later CLI/startup changes additive. Date: 2026-07-01.
 
 ## Outcomes & Retrospective
 
-This plan has not been implemented yet. The expected outcome is a safe UI-owned launch session that can connect a local daemon back to the UI with a short-lived credential, preserve existing durable pairing behavior, and give operators clear redacted failure information when startup fails before hello.
+Milestone 1 has started. The repository now has explicit managed-launch grant and status contract modules plus focused tests that lock the v1 JSON surface, expiry handling, capability vocabulary, daemon-identity ownership boundary, and redacted status/log rendering.
 
-The main intentional gaps are that browser polish, full dogfood flows, and any long-lived enrollment UX remain follow-up work after the Core and UI/server launch-grant contract is implemented and validated.
+The main intentional gaps are that CLI parsing, secure grant-file loading, startup status writes, remote-client wiring, browser polish, full dogfood flows, and any long-lived enrollment UX remain follow-up work after the Core and UI/server launch-grant contract is implemented and validated.
 
 ## Validation and Acceptance
 

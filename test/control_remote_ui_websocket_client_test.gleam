@@ -8,6 +8,7 @@ import scherzo/control/query/types as query_types
 import scherzo/control/remote/ui_protocol
 import scherzo/control/remote/ui_websocket_client
 import scherzo/log
+import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/session/event
 import scherzo/session/tokens as session_tokens
 import scherzo/work_item_invalidation
@@ -83,6 +84,7 @@ fn new_fixture_with_behavior(query_behavior: QueryBehavior) -> Fixture {
         "scherzo test-version",
         None,
         4,
+        None,
       ),
       credential: "dcred_secret_1",
       heartbeat_interval_ms: 1000,
@@ -364,6 +366,7 @@ pub fn ui_websocket_client_sends_daemon_label_metadata_test() {
           "scherzo test-version",
           Some("Project Foo / MacBook"),
           4,
+          None,
         ),
       ),
       deps,
@@ -380,6 +383,36 @@ pub fn ui_websocket_client_sends_daemon_label_metadata_test() {
     test_async.expect_message(outbound),
     "\"daemonLabel\":\"Project Foo / MacBook\"",
   )
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_sends_managed_launch_hello_metadata_test() {
+  let Fixture(settings:, deps:, outbound:, ..) = new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(
+        ..settings,
+        runtime_metadata: ui_protocol.RuntimeMetadata(
+          "test-host",
+          "scherzo test-version",
+          Some("Managed"),
+          4,
+          Some(
+            ui_protocol.ManagedLaunchContext(
+              launch_id: "launch-123",
+              capabilities: [
+                managed_launch_grant.State,
+                managed_launch_grant.Query,
+              ],
+            ),
+          ),
+        ),
+      ),
+      deps,
+    )
+  let hello = test_async.expect_message(outbound)
+  assert string.contains(hello, "\"launchId\":\"launch-123\"")
+  assert string.contains(hello, "\"capabilities\":[\"state\",\"query\"]")
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
@@ -512,6 +545,37 @@ pub fn ui_websocket_client_rejects_malformed_query_request_without_execution_tes
   test_async.assert_no_extra_message_within(fixture.query_requests, 50)
   let log_entry = expect_log_contains(fixture.logs, "ui_websocket_bad_inbound")
   assert !string.contains(log_entry, "dcred_secret_1")
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_query_when_managed_launch_lacks_query_capability_test() {
+  let Fixture(settings:, deps:, outbound:, query_requests:, inbound_path:, ..) =
+    new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(
+        ..settings,
+        runtime_metadata: ui_protocol.RuntimeMetadata(
+          "test-host",
+          "scherzo test-version",
+          None,
+          4,
+          Some(
+            ui_protocol.ManagedLaunchContext(
+              launch_id: "launch-123",
+              capabilities: [managed_launch_grant.State],
+            ),
+          ),
+        ),
+      ),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+  append_inbound_line(inbound_path, status_query_request("query-no-cap"))
+  let response =
+    expect_next_outbound_contains(outbound, "\"queryId\":\"query-no-cap\"")
+  assert string.contains(response, "\"code\":\"unsupported_query\"")
+  test_async.assert_no_extra_message_within(query_requests, 50)
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
@@ -861,6 +925,52 @@ pub fn ui_websocket_client_rejects_malformed_server_command_test() {
   assert string.contains(result, "\"reason\":\"unknown_command\"")
   test_async.assert_no_extra_message_within(apply_requests, 50)
   test_async.assert_no_extra_message_within(outbound, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_server_command_when_managed_launch_lacks_command_capability_test() {
+  let Fixture(settings:, deps:, outbound:, apply_requests:, inbound_path:, ..) =
+    new_fixture()
+  let assert Ok(handle) =
+    ui_websocket_client.start(
+      ui_websocket_client.Settings(
+        ..settings,
+        command_bridge_enabled: True,
+        runtime_metadata: ui_protocol.RuntimeMetadata(
+          "test-host",
+          "scherzo test-version",
+          None,
+          4,
+          Some(
+            ui_protocol.ManagedLaunchContext(
+              launch_id: "launch-123",
+              capabilities: [
+                managed_launch_grant.State,
+                managed_launch_grant.Query,
+              ],
+            ),
+          ),
+        ),
+      ),
+      deps,
+    )
+  expect_initial_outbound(outbound)
+
+  append_inbound_line(
+    inbound_path,
+    server_command_frame("scmd_no_command_cap", "pause"),
+  )
+
+  let result =
+    expect_next_outbound_contains(
+      outbound,
+      "\"serverCommandId\":\"scmd_no_command_cap\"",
+    )
+  assert string.contains(
+    result,
+    "\"reason\":\"managed_launch_command_capability_denied\"",
+  )
+  test_async.assert_no_extra_message_within(apply_requests, 50)
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 

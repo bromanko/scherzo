@@ -87,6 +87,7 @@ pub fn remote_daemon_registration_fake_integration_transcript_test() {
   let assert Ok(remote_handle) =
     daemon_remote_client.start(
       effective,
+      None,
       event_hub,
       [],
       fn(level, event, fields, secrets) {

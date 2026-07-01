@@ -1,5 +1,5 @@
 import gleam/erlang/process
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/instance_lock
 import scherzo/lifecycle
@@ -141,7 +141,10 @@ pub fn start_daemon_releases_lock_when_signal_install_fails_test() {
     )
 
   let assert Error(err) =
-    service.start_daemon_with_lifecycle(Some(workflow_path), deps)
+    service.start_daemon_with_lifecycle(
+      service.DaemonStartOptions(Some(workflow_path), None),
+      deps,
+    )
   assert err.code == "signal_handler_failed"
   assert err.message == "boom"
   let assert Ok(lock) = instance_lock.acquire(root)
@@ -173,7 +176,10 @@ pub fn start_daemon_cleans_signal_and_releases_lock_when_daemon_start_fails_test
     )
 
   let assert Error(_) =
-    service.start_daemon_with_lifecycle(Some(workflow_path), deps)
+    service.start_daemon_with_lifecycle(
+      service.DaemonStartOptions(Some(workflow_path), None),
+      deps,
+    )
   assert process.receive(cleanup_subject, within: 1000) == Ok("cleanup")
   test_async.assert_no_extra_message_within(cleanup_subject, 50)
   let assert Ok(lock) = instance_lock.acquire(root)
@@ -197,7 +203,10 @@ pub fn graceful_service_stop_removes_control_file_and_releases_lock_test() {
   let _pid =
     process.spawn_unlinked(fn() {
       let result =
-        service.start_daemon_with_lifecycle(Some(workflow_path), deps)
+        service.start_daemon_with_lifecycle(
+          service.DaemonStartOptions(Some(workflow_path), None),
+          deps,
+        )
       process.send(result_subject, result)
     })
 
@@ -239,7 +248,10 @@ pub fn daemon_shutdown_timeout_returns_error_and_releases_lock_test() {
   let _pid =
     process.spawn_unlinked(fn() {
       let result =
-        service.start_daemon_with_lifecycle(Some(workflow_path), deps)
+        service.start_daemon_with_lifecycle(
+          service.DaemonStartOptions(Some(workflow_path), None),
+          deps,
+        )
       process.send(result_subject, result)
     })
 

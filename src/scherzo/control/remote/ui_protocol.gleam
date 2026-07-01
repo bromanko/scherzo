@@ -9,6 +9,7 @@ import gleam/string
 import scherzo/control/command
 import scherzo/control/query/codec as query_codec
 import scherzo/control/query/types as query_types
+import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/session/event
 import scherzo/work_item_invalidation
 
@@ -36,12 +37,20 @@ pub type DaemonRuntimeState {
   )
 }
 
+pub type ManagedLaunchContext {
+  ManagedLaunchContext(
+    launch_id: String,
+    capabilities: List(managed_launch_grant.Capability),
+  )
+}
+
 pub type RuntimeMetadata {
   RuntimeMetadata(
     host: String,
     scherzo_version: String,
     daemon_label: Option(String),
     agent_slot_capacity: Int,
+    managed_launch_context: Option(ManagedLaunchContext),
   )
 }
 
@@ -144,6 +153,12 @@ pub fn runtime_daemon_label(metadata: RuntimeMetadata) -> Option(String) {
   metadata.daemon_label
 }
 
+pub fn runtime_managed_launch_context(
+  metadata: RuntimeMetadata,
+) -> Option(ManagedLaunchContext) {
+  metadata.managed_launch_context
+}
+
 pub fn pop_running_query(
   running_queries: List(RunningQuery(timer)),
   worker: process.Pid,
@@ -176,6 +191,7 @@ pub fn encode_daemon_hello_with_runtime(
     daemon_id,
     boot_id,
     metadata.daemon_label,
+    metadata.managed_launch_context,
     runtime_state_from_agent_slot_result(metadata, agent_slot_occupancy_result),
   )
 }
@@ -224,7 +240,7 @@ pub fn encode_daemon_state_with_runtime(
 pub fn encode_client_message(message: ClientMessage) -> String {
   case message {
     DaemonHello(daemon_id, boot_id, daemon_label, state) ->
-      encode_daemon_hello(daemon_id, boot_id, daemon_label, state)
+      encode_daemon_hello(daemon_id, boot_id, daemon_label, None, state)
     Heartbeat(sent_at_ms, daemon_label, state, event) ->
       encode_heartbeat(sent_at_ms, daemon_label, state, event)
     DaemonState(sent_at_ms, dispatch_paused, daemon_label, state, sessions) ->
@@ -253,6 +269,7 @@ pub fn encode_daemon_hello(
   daemon_id: String,
   boot_id: String,
   daemon_label: Option(String),
+  managed_launch_context: Option(ManagedLaunchContext),
   state: DaemonRuntimeState,
 ) -> String {
   [
@@ -261,6 +278,7 @@ pub fn encode_daemon_hello(
     #("bootId", json.string(boot_id)),
     #("state", daemon_runtime_state_to_json(state)),
   ]
+  |> with_optional_managed_launch_context(managed_launch_context)
   |> with_optional_daemon_label(daemon_label)
   |> json.object
   |> json.to_string
@@ -383,6 +401,26 @@ fn with_optional_daemon_label(
 ) -> List(#(String, json.Json)) {
   case daemon_label {
     Some(label) -> [#("daemonLabel", json.string(label)), ..fields]
+    None -> fields
+  }
+}
+
+fn with_optional_managed_launch_context(
+  fields: List(#(String, json.Json)),
+  managed_launch_context: Option(ManagedLaunchContext),
+) -> List(#(String, json.Json)) {
+  case managed_launch_context {
+    Some(ManagedLaunchContext(launch_id, capabilities)) -> [
+      #("launchId", json.string(launch_id)),
+      #(
+        "capabilities",
+        json.array(
+          managed_launch_grant.capabilities_to_strings(capabilities),
+          of: json.string,
+        ),
+      ),
+      ..fields
+    ]
     None -> fields
   }
 }

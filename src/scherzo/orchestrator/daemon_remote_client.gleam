@@ -1,4 +1,5 @@
 import gleam/erlang/process
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -11,6 +12,7 @@ import scherzo/control/remote/ui_websocket_client
 import scherzo/control/remote/url
 import scherzo/daemon_identity
 import scherzo/log
+import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/path
 import scherzo/session/event
 import scherzo/session/hub
@@ -34,12 +36,14 @@ pub type AgentSlotOccupancyError {
 
 pub fn start(
   effective: config_types.EffectiveConfig,
+  managed_launch: Option(managed_launch_grant.Grant),
   event_hub: process.Subject(hub.Message),
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
 ) -> Result(Handle, StartError) {
   start_with_control(
     effective,
+    managed_launch,
     event_hub,
     fn(operator_command, _) {
       Ok(command.not_allowed(
@@ -62,6 +66,7 @@ pub fn start(
 
 pub fn start_with_control(
   effective: config_types.EffectiveConfig,
+  managed_launch: Option(managed_launch_grant.Grant),
   event_hub: process.Subject(hub.Message),
   apply_command: fn(command.OperatorCommand, Int) ->
     Result(command.CommandResult, Nil),
@@ -71,6 +76,67 @@ pub fn start_with_control(
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
 ) -> Result(Handle, StartError) {
+  use identity <- result.try(load_daemon_identity(effective.workspace.root))
+  use settings <- result.try(build_settings(
+    effective,
+    managed_launch,
+    identity,
+    secrets,
+  ))
+  let dependencies =
+    ui_websocket_client.Dependencies(
+      now_ms: wall_clock_ms,
+      connect: connect_endpoint,
+      send_text: socket_send_text,
+      recv_text: socket_recv_text,
+      close: socket_close,
+      send_after: process.send_after,
+      cancel_timer: fn(timer) {
+        let _ = process.cancel_timer(timer)
+        Nil
+      },
+      list_sessions: fn() { list_sessions_for_remote_snapshot(event_hub, 1000) },
+      agent_slot_occupancy: fn(timeout_ms) {
+        case agent_slot_occupancy_from_query(execute_query, timeout_ms) {
+          Ok(occupied_slots) -> Ok(occupied_slots)
+          Error(error) -> Error(agent_slot_occupancy_error_message(error))
+        }
+      },
+      dispatch_paused: fn(timeout_ms) {
+        case dispatch_paused(timeout_ms) {
+          Ok(paused) -> Ok(paused)
+          Error(Nil) -> Error("daemon_dispatch_paused_timeout")
+        }
+      },
+      apply_command: apply_command,
+      execute_query: execute_query,
+      logger: logger,
+    )
+  case ui_websocket_client.start(settings, dependencies) {
+    Ok(handle) -> Ok(Handle(handle))
+    Error(ui_websocket_client.ClientError(code: code, message: message)) ->
+      Error(StartError(code, message))
+  }
+}
+
+fn build_settings(
+  effective: config_types.EffectiveConfig,
+  managed_launch: Option(managed_launch_grant.Grant),
+  identity: daemon_identity.DaemonIdentity,
+  secrets: List(String),
+) -> Result(ui_websocket_client.Settings, StartError) {
+  case managed_launch {
+    Some(grant) ->
+      build_managed_launch_settings(effective, grant, identity, secrets)
+    None -> build_durable_settings(effective, identity, secrets)
+  }
+}
+
+fn build_durable_settings(
+  effective: config_types.EffectiveConfig,
+  identity: daemon_identity.DaemonIdentity,
+  secrets: List(String),
+) -> Result(ui_websocket_client.Settings, StartError) {
   case effective.ui_server {
     config_types.UiServerDisabled(..) ->
       Error(StartError("remote_client_config_disabled", "ui_server is disabled"))
@@ -84,7 +150,6 @@ pub fn start_with_control(
       retry_initial_ms: retry_initial_ms,
       retry_max_ms: retry_max_ms,
     ) -> {
-      use identity <- result.try(load_daemon_identity(effective.workspace.root))
       use validated <- result.try(validated_ui_server_endpoint(endpoint))
       use credential_ref <- result.try(normalized_credential_ref(
         credential_ref_name,
@@ -94,17 +159,18 @@ pub fn start_with_control(
         validated.base_url,
         identity.daemon_id,
       ))
-      let settings =
+      Ok(
         ui_websocket_client.Settings(
           server_url: validated.base_url,
           websocket_url: validated.websocket_url,
           daemon_id: identity.daemon_id,
           boot_id: identity.boot_id,
           runtime_metadata: ui_protocol.RuntimeMetadata(
-            local_hostname(),
-            version.string(),
-            daemon_label,
-            effective.agent.max_concurrent_agents,
+            host: local_hostname(),
+            scherzo_version: version.string(),
+            daemon_label: daemon_label,
+            agent_slot_capacity: effective.agent.max_concurrent_agents,
+            managed_launch_context: None,
           ),
           credential: stored.secret,
           heartbeat_interval_ms: heartbeat_interval_ms,
@@ -116,44 +182,119 @@ pub fn start_with_control(
           query_timeout_ms: effective.control.command_timeout_ms,
           command_bridge_enabled: command_bridge_enabled,
           redaction_secrets: [stored.secret, ..secrets],
-        )
-      let dependencies =
-        ui_websocket_client.Dependencies(
-          now_ms: wall_clock_ms,
-          connect: connect_endpoint,
-          send_text: socket_send_text,
-          recv_text: socket_recv_text,
-          close: socket_close,
-          send_after: process.send_after,
-          cancel_timer: fn(timer) {
-            let _ = process.cancel_timer(timer)
-            Nil
-          },
-          list_sessions: fn() {
-            list_sessions_for_remote_snapshot(event_hub, 1000)
-          },
-          agent_slot_occupancy: fn(timeout_ms) {
-            case agent_slot_occupancy_from_query(execute_query, timeout_ms) {
-              Ok(occupied_slots) -> Ok(occupied_slots)
-              Error(error) -> Error(agent_slot_occupancy_error_message(error))
-            }
-          },
-          dispatch_paused: fn(timeout_ms) {
-            case dispatch_paused(timeout_ms) {
-              Ok(paused) -> Ok(paused)
-              Error(Nil) -> Error("daemon_dispatch_paused_timeout")
-            }
-          },
-          apply_command: apply_command,
-          execute_query: execute_query,
-          logger: logger,
-        )
-      case ui_websocket_client.start(settings, dependencies) {
-        Ok(handle) -> Ok(Handle(handle))
-        Error(ui_websocket_client.ClientError(code: code, message: message)) ->
-          Error(StartError(code, message))
-      }
+        ),
+      )
     }
+  }
+}
+
+fn build_managed_launch_settings(
+  effective: config_types.EffectiveConfig,
+  grant: managed_launch_grant.Grant,
+  identity: daemon_identity.DaemonIdentity,
+  secrets: List(String),
+) -> Result(ui_websocket_client.Settings, StartError) {
+  let #(
+    daemon_label,
+    heartbeat_interval_ms,
+    state_interval_ms,
+    retry_initial_ms,
+    retry_max_ms,
+    command_bridge_enabled,
+  ) = managed_launch_runtime_settings(effective, grant)
+  let capabilities =
+    effective_managed_launch_capabilities(grant, command_bridge_enabled)
+  Ok(
+    ui_websocket_client.Settings(
+      server_url: grant.endpoint.base_url,
+      websocket_url: grant.endpoint.websocket_url,
+      daemon_id: identity.daemon_id,
+      boot_id: identity.boot_id,
+      runtime_metadata: ui_protocol.RuntimeMetadata(
+        host: local_hostname(),
+        scherzo_version: version.string(),
+        daemon_label: daemon_label,
+        agent_slot_capacity: effective.agent.max_concurrent_agents,
+        managed_launch_context: Some(ui_protocol.ManagedLaunchContext(
+          launch_id: grant.launch_id,
+          capabilities: capabilities,
+        )),
+      ),
+      credential: grant.credential,
+      heartbeat_interval_ms: heartbeat_interval_ms,
+      state_interval_ms: state_interval_ms,
+      retry_initial_ms: retry_initial_ms,
+      retry_max_ms: retry_max_ms,
+      connect_timeout_ms: 1000,
+      command_timeout_ms: effective.control.command_timeout_ms,
+      query_timeout_ms: effective.control.command_timeout_ms,
+      command_bridge_enabled: command_bridge_enabled,
+      redaction_secrets: [grant.credential, ..secrets],
+    ),
+  )
+}
+
+fn managed_launch_runtime_settings(
+  effective: config_types.EffectiveConfig,
+  grant: managed_launch_grant.Grant,
+) -> #(Option(String), Int, Int, Int, Int, Bool) {
+  case effective.ui_server {
+    config_types.UiServerEnabled(
+      daemon_label: configured_label,
+      command_bridge_enabled: configured_bridge,
+      heartbeat_interval_ms: heartbeat_interval_ms,
+      state_interval_ms: state_interval_ms,
+      retry_initial_ms: retry_initial_ms,
+      retry_max_ms: retry_max_ms,
+      ..,
+    ) -> #(
+      preferred_daemon_label(grant.daemon_label, configured_label),
+      heartbeat_interval_ms,
+      state_interval_ms,
+      retry_initial_ms,
+      retry_max_ms,
+      configured_bridge
+        && grant.command_bridge_enabled
+        && managed_launch_grant.has_capability(
+        grant,
+        managed_launch_grant.Command,
+      ),
+    )
+    config_types.UiServerDisabled(daemon_label: configured_label, ..) -> #(
+      preferred_daemon_label(grant.daemon_label, configured_label),
+      5000,
+      5000,
+      500,
+      5000,
+      grant.command_bridge_enabled
+        && managed_launch_grant.has_capability(
+        grant,
+        managed_launch_grant.Command,
+      ),
+    )
+  }
+}
+
+fn effective_managed_launch_capabilities(
+  grant: managed_launch_grant.Grant,
+  command_bridge_enabled: Bool,
+) -> List(managed_launch_grant.Capability) {
+  case command_bridge_enabled {
+    True -> grant.capabilities
+    False ->
+      list.filter(grant.capabilities, fn(capability) {
+        capability != managed_launch_grant.Command
+      })
+  }
+}
+
+fn preferred_daemon_label(
+  grant_label: Option(String),
+  configured_label: Option(String),
+) -> Option(String) {
+  case grant_label {
+    Some(_) -> grant_label
+    None -> configured_label
   }
 }
 

@@ -6,6 +6,7 @@ import scherzo/config/types as config_types
 import scherzo/control/query/types as query_types
 import scherzo/control/remote/credential_store
 import scherzo/daemon_identity
+import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/orchestrator/daemon_remote_client
 import scherzo/session/hub
 import support/remote_ui_test_server
@@ -31,7 +32,7 @@ pub fn daemon_remote_client_rejects_disabled_config_test() {
     )
 
   let assert Error(daemon_remote_client.StartError(code, message)) =
-    daemon_remote_client.start(effective, event_hub, [], fn(_, _, _, _) {
+    daemon_remote_client.start(effective, None, event_hub, [], fn(_, _, _, _) {
       Ok(Nil)
     })
   assert code == "remote_client_config_disabled"
@@ -47,7 +48,7 @@ pub fn daemon_remote_client_requires_stored_credential_test() {
     effective_config(root, "https://ui.example.test", "work-laptop")
 
   let assert Error(daemon_remote_client.StartError(code, message)) =
-    daemon_remote_client.start(effective, event_hub, [], fn(_, _, _, _) {
+    daemon_remote_client.start(effective, None, event_hub, [], fn(_, _, _, _) {
       Ok(Nil)
     })
   assert code == "missing_daemon_credential"
@@ -62,7 +63,7 @@ pub fn daemon_remote_client_rejects_invalid_loopback_endpoint_test() {
   let effective = effective_config(root, "http://0.0.0.0:3000", "work-laptop")
 
   let assert Error(daemon_remote_client.StartError(code, _)) =
-    daemon_remote_client.start(effective, event_hub, [], fn(_, _, _, _) {
+    daemon_remote_client.start(effective, None, event_hub, [], fn(_, _, _, _) {
       Ok(Nil)
     })
   assert code == "invalid_loopback_url"
@@ -93,7 +94,7 @@ pub fn daemon_remote_client_uses_websocket_authorization_handshake_test() {
     )
 
   let assert Ok(handle) =
-    daemon_remote_client.start(effective, event_hub, [], fn(_, _, _, _) {
+    daemon_remote_client.start(effective, None, event_hub, [], fn(_, _, _, _) {
       Ok(Nil)
     })
   let transcript =
@@ -109,6 +110,88 @@ pub fn daemon_remote_client_uses_websocket_authorization_handshake_test() {
   assert string.contains(transcript, "\"state\":{")
   assert string.contains(transcript, "\"agentSlots\":{")
   assert string.contains(transcript, "\"event\":{")
+  assert daemon_remote_client.stop(handle, 1000) == Ok(Nil)
+  hub.stop(event_hub)
+  remote_ui_test_server.stop(server)
+}
+
+pub fn daemon_remote_client_supports_managed_launch_without_durable_pairing_test() {
+  let root = "test/tmp/daemon-remote-client-managed-launch"
+  test_helpers.reset_dir(root)
+  let transcript_path = root <> "/transcript.log"
+  let server = remote_ui_test_server.start("launch_secret_1", transcript_path)
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let effective =
+    effective_config_with_ui_server(
+      root,
+      config_types.UiServerDisabled(
+        endpoint: None,
+        credential_ref: None,
+        daemon_label: Some("Configured Label"),
+      ),
+    )
+  let assert Ok(grant) =
+    managed_launch_grant.decode_string(
+      "{\"version\":1,\"launchId\":\"launch-123\",\"endpoint\":\""
+        <> remote_ui_test_server.server_url(server)
+        <> "\",\"credential\":\"launch_secret_1\",\"daemonLabel\":\"Grant Label\",\"capabilities\":[\"state\",\"query\"],\"commandBridgeEnabled\":false,\"expiresAt\":\"2999-01-01T00:00:00Z\"}",
+      0,
+    )
+
+  let assert Ok(handle) =
+    daemon_remote_client.start(
+      effective,
+      Some(grant),
+      event_hub,
+      [],
+      fn(_, _, _, _) { Ok(Nil) },
+    )
+  let transcript =
+    remote_ui_test_server.wait_for_contains(transcript_path, "launch-123", 100)
+  assert string.contains(transcript, "authorization=Bearer launch_secret_1")
+  assert string.contains(transcript, "\"launchId\":\"launch-123\"")
+  assert string.contains(transcript, "\"capabilities\":[\"state\",\"query\"]")
+  assert string.contains(transcript, "\"daemonLabel\":\"Grant Label\"")
+  assert daemon_remote_client.stop(handle, 1000) == Ok(Nil)
+  hub.stop(event_hub)
+  remote_ui_test_server.stop(server)
+}
+
+pub fn daemon_remote_client_omits_command_capability_when_bridge_is_disabled_test() {
+  let root = "test/tmp/daemon-remote-client-managed-launch-command-disabled"
+  test_helpers.reset_dir(root)
+  let transcript_path = root <> "/transcript.log"
+  let server = remote_ui_test_server.start("launch_secret_1", transcript_path)
+  let assert Ok(event_hub) = hub.start(20, fn() { 42 })
+  let effective =
+    effective_config_with_ui_server(
+      root,
+      config_types.UiServerDisabled(
+        endpoint: None,
+        credential_ref: None,
+        daemon_label: Some("Configured Label"),
+      ),
+    )
+  let assert Ok(grant) =
+    managed_launch_grant.decode_string(
+      "{\"version\":1,\"launchId\":\"launch-123\",\"endpoint\":\""
+        <> remote_ui_test_server.server_url(server)
+        <> "\",\"credential\":\"launch_secret_1\",\"daemonLabel\":\"Grant Label\",\"capabilities\":[\"state\",\"query\",\"command\"],\"commandBridgeEnabled\":false,\"expiresAt\":\"2999-01-01T00:00:00Z\"}",
+      0,
+    )
+
+  let assert Ok(handle) =
+    daemon_remote_client.start(
+      effective,
+      Some(grant),
+      event_hub,
+      [],
+      fn(_, _, _, _) { Ok(Nil) },
+    )
+  let transcript =
+    remote_ui_test_server.wait_for_contains(transcript_path, "launch-123", 100)
+  assert string.contains(transcript, "\"capabilities\":[\"state\",\"query\"]")
+  assert !string.contains(transcript, "\"command\"")
   assert daemon_remote_client.stop(handle, 1000) == Ok(Nil)
   hub.stop(event_hub)
   remote_ui_test_server.stop(server)
@@ -204,6 +287,7 @@ pub fn daemon_remote_client_reports_agent_slots_from_metrics_bridge_test() {
   let assert Ok(handle) =
     daemon_remote_client.start_with_control(
       effective,
+      None,
       event_hub,
       fn(_, _) { Error(Nil) },
       fn(_) { Ok(False) },

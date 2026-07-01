@@ -1,8 +1,10 @@
 import gleam/erlang/process
+import gleam/option.{type Option}
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/log
+import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/orchestrator/daemon_remote_client
 import scherzo/session/hub
 import scherzo/work_item_invalidation
@@ -166,6 +168,7 @@ fn run_late_reply_call(
 
 pub fn start_remote_client(
   effective: config_types.EffectiveConfig,
+  managed_launch: Option(managed_launch_grant.Grant),
   event_hub: process.Subject(hub.Message),
   daemon_subject: process.Subject(message),
   secrets: List(String),
@@ -174,6 +177,7 @@ pub fn start_remote_client(
 ) -> Result(Handle, StartError) {
   daemon_remote_client.start_with_control(
     effective,
+    managed_launch,
     event_hub,
     fn(operator_command, timeout_ms) {
       apply_remote_command(

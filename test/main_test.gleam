@@ -4,17 +4,39 @@ import scherzo/command_step
 import scherzo/doctor
 import scherzo/local_workflow_run
 import scherzo/main
+import scherzo/orchestrator/service
 import scherzo/path
 import scherzo/step_artifact
 import simplifile
 import support/test_helpers
 
 pub fn parse_args_default_explicit_and_help_test() {
-  assert main.parse_args([]) == Ok(main.Run(main.Daemon, None))
+  assert main.parse_args([])
+    == Ok(main.Run(main.Daemon, service.DaemonStartOptions(None, None)))
   assert main.parse_args(["scherzo.yaml"])
-    == Ok(main.Run(main.Daemon, Some("scherzo.yaml")))
+    == Ok(main.Run(
+      main.Daemon,
+      service.DaemonStartOptions(Some("scherzo.yaml"), None),
+    ))
   assert main.parse_args(["--once", "scherzo.yaml"])
-    == Ok(main.Run(main.Once, Some("scherzo.yaml")))
+    == Ok(main.Run(
+      main.Once,
+      service.DaemonStartOptions(Some("scherzo.yaml"), None),
+    ))
+  assert main.parse_args([
+      "--managed-launch-grant-file",
+      "grant.json",
+      "--managed-launch-status-file",
+      "status.json",
+      "scherzo.yaml",
+    ])
+    == Ok(main.Run(
+      main.Daemon,
+      service.DaemonStartOptions(
+        Some("scherzo.yaml"),
+        Some(service.ManagedLaunchFiles("grant.json", "status.json")),
+      ),
+    ))
   assert main.parse_args(["--help"]) == Ok(main.Help)
   assert main.parse_args(["--version"]) == Ok(main.Version)
   assert main.parse_args([
@@ -123,6 +145,49 @@ pub fn parse_args_rejects_usage_errors_test() {
   assert main.parse_args(["doctor", "--check"]) == Error(main.UsageError)
   assert main.parse_args(["doctor", "one.yaml", "two.yaml"])
     == Error(main.UsageError)
+  assert main.parse_args(["--managed-launch-grant-file", "grant.json"])
+    == Error(main.UsageError)
+  assert main.parse_args(["--managed-launch-status-file", "status.json"])
+    == Error(main.UsageError)
+  assert main.parse_args([
+      "--managed-launch-grant-file",
+      "grant-a.json",
+      "--managed-launch-grant-file",
+      "grant-b.json",
+    ])
+    == Error(main.UsageError)
+  assert main.parse_args([
+      "--managed-launch-status-file",
+      "status-a.json",
+      "--managed-launch-status-file",
+      "status-b.json",
+    ])
+    == Error(main.UsageError)
+  assert main.parse_args([
+      "--once",
+      "--managed-launch-grant-file",
+      "grant.json",
+      "--managed-launch-status-file",
+      "status.json",
+    ])
+    == Error(main.UsageError)
+  assert main.parse_args([
+      "doctor",
+      "--managed-launch-grant-file",
+      "grant.json",
+      "--managed-launch-status-file",
+      "status.json",
+    ])
+    == Error(main.UsageError)
+  assert main.parse_args([
+      "ctl",
+      "ps",
+      "--managed-launch-grant-file",
+      "grant.json",
+      "--managed-launch-status-file",
+      "status.json",
+    ])
+    == Error(main.UsageError)
   assert main.parse_args(["workflow", "run"]) == Error(main.UsageError)
   assert main.parse_args(["workflow", "run", "workflow.yml", "--bad"])
     == Error(main.UsageError)
@@ -195,6 +260,14 @@ pub fn usage_error_hint_reports_retired_flag_replacements_test() {
 pub fn launcher_route_uses_canonical_cli_parser_test() {
   assert main.launcher_route([]) == main.LauncherDaemon
   assert main.launcher_route([".scherzo/scherzo.yaml"]) == main.LauncherDaemon
+  assert main.launcher_route([
+      "--managed-launch-grant-file",
+      "grant.json",
+      "--managed-launch-status-file",
+      "status.json",
+      ".scherzo/scherzo.yaml",
+    ])
+    == main.LauncherDaemon
   assert main.launcher_route(["--help"]) == main.LauncherDirect
   assert main.launcher_route(["--version"]) == main.LauncherDirect
   assert main.launcher_route(["doctor", "--list-checks"]) == main.LauncherDirect
@@ -241,6 +314,8 @@ pub fn usage_mentions_required_operational_constraints_test() {
   assert string.contains(usage, "agents.runtime.type: pi")
   assert string.contains(usage, "agents.concurrency: 0")
   assert string.contains(usage, "scherzo --version")
+  assert string.contains(usage, "--managed-launch-grant-file <grant.json>")
+  assert string.contains(usage, "--managed-launch-status-file <status.json>")
   assert string.contains(usage, "doctor [options]")
   assert string.contains(usage, "workflow run <workflow.yml>")
   assert !string.contains(

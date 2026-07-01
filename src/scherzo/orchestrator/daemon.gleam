@@ -22,6 +22,7 @@ import scherzo/control/server as control_server
 import scherzo/daemon_identity
 import scherzo/error
 import scherzo/log
+import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/orchestrator/abandoned_claim
 import scherzo/orchestrator/artifact_publication_retry_control
 import scherzo/orchestrator/control_command_handler
@@ -226,6 +227,7 @@ pub type RuntimeDependencies {
     stop_control_server: fn(ControlServerHandle) -> Nil,
     start_remote_client: fn(
       config_types.EffectiveConfig,
+      Option(managed_launch_grant.Grant),
       process.Subject(hub.Message),
       process.Subject(Message),
       List(String),
@@ -282,6 +284,7 @@ type State {
     ledger_projection: projection.Projection,
     remote_client: Option(remote.Handle),
     remote_client_monitor: Option(process.Monitor),
+    managed_launch: Option(managed_launch_grant.Grant),
     operator_paused: Bool,
     pending_operator_command_replies: Dict(
       String,
@@ -343,6 +346,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     },
     start_remote_client: fn(
       effective,
+      managed_launch,
       event_hub,
       daemon_subject,
       secrets,
@@ -350,6 +354,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     ) {
       remote.start_remote_client(
         effective,
+        managed_launch,
         event_hub,
         daemon_subject,
         secrets,
@@ -770,12 +775,16 @@ fn update_read_model_remote_client_status(
 }
 
 fn restart_remote_client_if_enabled(state: State) -> State {
-  case ui_server_enabled(state.workflow.effective.ui_server) {
-    False -> stop_remote_client_and_clear(state, read_model.Disabled)
-    True ->
+  case
+    ui_server_enabled(state.workflow.effective.ui_server),
+    state.managed_launch
+  {
+    False, None -> stop_remote_client_and_clear(state, read_model.Disabled)
+    _, _ ->
       case
         state.dependencies.start_remote_client(
           state.workflow.effective,
+          state.managed_launch,
           state.event_hub,
           state.subject,
           state.workflow.secrets,
@@ -909,6 +918,33 @@ pub fn start(
 
 pub fn start_with_initialiser_timeout(
   workflow_path: Option(String),
+  dependencies: RuntimeDependencies,
+  initialiser_timeout_ms: Int,
+) -> Result(actor.Started(process.Subject(Message)), StartupError) {
+  start_with_managed_launch_and_initialiser_timeout(
+    workflow_path,
+    None,
+    dependencies,
+    initialiser_timeout_ms,
+  )
+}
+
+pub fn start_with_managed_launch(
+  workflow_path: Option(String),
+  managed_launch: Option(managed_launch_grant.Grant),
+  dependencies: RuntimeDependencies,
+) -> Result(actor.Started(process.Subject(Message)), StartupError) {
+  start_with_managed_launch_and_initialiser_timeout(
+    workflow_path,
+    managed_launch,
+    dependencies,
+    60_000,
+  )
+}
+
+fn start_with_managed_launch_and_initialiser_timeout(
+  workflow_path: Option(String),
+  managed_launch: Option(managed_launch_grant.Grant),
   dependencies: RuntimeDependencies,
   initialiser_timeout_ms: Int,
 ) -> Result(actor.Started(process.Subject(Message)), StartupError) {
@@ -1058,6 +1094,7 @@ pub fn start_with_initialiser_timeout(
                           ledger_projection: startup_recovery.projection,
                           remote_client: None,
                           remote_client_monitor: None,
+                          managed_launch: managed_launch,
                           operator_paused: startup_recovery.projection.dispatch_paused,
                           pending_operator_command_replies: dict.new(),
                           completed_operator_command_results: dict.new(),

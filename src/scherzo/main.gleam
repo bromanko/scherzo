@@ -20,7 +20,7 @@ pub type RunMode {
 }
 
 pub type CliResult {
-  Run(RunMode, Option(String))
+  Run(RunMode, service.DaemonStartOptions)
   WorkflowRun(local_workflow_run.Options)
   JsonSchemaSelfCheck(String, String, String)
   TrackerConformance(List(String))
@@ -45,16 +45,20 @@ const launcher_route_only_env = "SCHERZO_LAUNCHER_ROUTE_ONLY"
 
 pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
   case args {
-    [] -> Ok(Run(Daemon, None))
     ["--help"] | ["-h"] -> Ok(Help)
     ["--version"] -> Ok(Version)
-    ["ctl", ..rest] -> Ok(Control(rest))
-    ["cleanup", ..rest] -> Ok(Offline(["cleanup", ..rest]))
-    ["schedules", ..rest] -> Ok(Offline(["schedules", ..rest]))
-    ["artifact", ..rest] -> Ok(Offline(["artifact", ..rest]))
-    ["workstream", ..rest] -> Ok(Offline(["workstream", ..rest]))
-    ["state", ..rest] -> Ok(Offline(["state", ..rest]))
-    ["connect", ..rest] -> Ok(Connect(rest))
+    ["ctl", ..rest] -> reject_managed_launch_flags(rest, Control(rest))
+    ["cleanup", ..rest] ->
+      reject_managed_launch_flags(rest, Offline(["cleanup", ..rest]))
+    ["schedules", ..rest] ->
+      reject_managed_launch_flags(rest, Offline(["schedules", ..rest]))
+    ["artifact", ..rest] ->
+      reject_managed_launch_flags(rest, Offline(["artifact", ..rest]))
+    ["workstream", ..rest] ->
+      reject_managed_launch_flags(rest, Offline(["workstream", ..rest]))
+    ["state", ..rest] ->
+      reject_managed_launch_flags(rest, Offline(["state", ..rest]))
+    ["connect", ..rest] -> reject_managed_launch_flags(rest, Connect(rest))
     ["__tracker-conformance-run", ..rest] -> Ok(TrackerConformance(rest))
     ["__json-schema-self-check", repository_root, schema_path, payload_path] ->
       Ok(JsonSchemaSelfCheck(repository_root, schema_path, payload_path))
@@ -70,14 +74,7 @@ pub fn parse_args(args: List(String)) -> Result(CliResult, CliError) {
       )
     ["doctor", ..rest] ->
       parse_doctor_args(rest, doctor.Options(None, [], False, doctor.Human))
-    ["--once"] -> Ok(Run(Once, None))
-    ["--once", path] -> Ok(Run(Once, Some(path)))
-    [path] ->
-      case string.starts_with(path, "-") {
-        True -> Error(UsageError)
-        False -> Ok(Run(Daemon, Some(path)))
-      }
-    _ -> Error(UsageError)
+    _ -> parse_run_args(args)
   }
 }
 
@@ -141,8 +138,132 @@ fn parse_doctor_args(
   }
 }
 
+type RunArgState {
+  RunArgState(
+    mode: RunMode,
+    workflow_path: Option(String),
+    grant_file: Option(String),
+    status_file: Option(String),
+  )
+}
+
+fn parse_run_args(args: List(String)) -> Result(CliResult, CliError) {
+  parse_run_args_loop(args, RunArgState(Daemon, None, None, None))
+}
+
+fn parse_run_args_loop(
+  args: List(String),
+  state: RunArgState,
+) -> Result(CliResult, CliError) {
+  case args {
+    [] -> finalize_run_args(state)
+    ["--once", ..rest] ->
+      case
+        state.mode == Once
+        || state.workflow_path != None
+        || has_managed_launch_flags(state)
+      {
+        True -> Error(UsageError)
+        False -> parse_run_args_loop(rest, RunArgState(Once, None, None, None))
+      }
+    ["--managed-launch-grant-file", path, ..rest] ->
+      case state.grant_file {
+        Some(_) -> Error(UsageError)
+        None ->
+          parse_run_args_loop(
+            rest,
+            RunArgState(
+              state.mode,
+              state.workflow_path,
+              Some(path),
+              state.status_file,
+            ),
+          )
+      }
+    ["--managed-launch-status-file", path, ..rest] ->
+      case state.status_file {
+        Some(_) -> Error(UsageError)
+        None ->
+          parse_run_args_loop(
+            rest,
+            RunArgState(
+              state.mode,
+              state.workflow_path,
+              state.grant_file,
+              Some(path),
+            ),
+          )
+      }
+    [arg, ..rest] ->
+      case string.starts_with(arg, "-") {
+        True -> Error(UsageError)
+        False ->
+          case state.workflow_path {
+            Some(_) -> Error(UsageError)
+            None ->
+              parse_run_args_loop(
+                rest,
+                RunArgState(
+                  state.mode,
+                  Some(arg),
+                  state.grant_file,
+                  state.status_file,
+                ),
+              )
+          }
+      }
+  }
+}
+
+fn finalize_run_args(state: RunArgState) -> Result(CliResult, CliError) {
+  case state.mode, state.grant_file, state.status_file {
+    Once, Some(_), _ | Once, _, Some(_) -> Error(UsageError)
+    _, Some(grant_file), Some(status_file) ->
+      Ok(Run(
+        state.mode,
+        service.DaemonStartOptions(
+          workflow_path: state.workflow_path,
+          managed_launch: Some(service.ManagedLaunchFiles(
+            grant_file,
+            status_file,
+          )),
+        ),
+      ))
+    _, Some(_), None | _, None, Some(_) -> Error(UsageError)
+    _, None, None ->
+      Ok(Run(
+        state.mode,
+        service.DaemonStartOptions(
+          workflow_path: state.workflow_path,
+          managed_launch: None,
+        ),
+      ))
+  }
+}
+
+fn has_managed_launch_flags(state: RunArgState) -> Bool {
+  state.grant_file != None || state.status_file != None
+}
+
+fn reject_managed_launch_flags(
+  args: List(String),
+  result: CliResult,
+) -> Result(CliResult, CliError) {
+  case contains_managed_launch_flags(args) {
+    True -> Error(UsageError)
+    False -> Ok(result)
+  }
+}
+
+fn contains_managed_launch_flags(args: List(String)) -> Bool {
+  list.any(args, fn(arg) {
+    arg == "--managed-launch-grant-file"
+    || arg == "--managed-launch-status-file"
+  })
+}
+
 pub fn usage() -> String {
-  "Usage: scherzo [mode] [path-to-scherzo.yaml]\n       scherzo --version\n       scherzo doctor [options] [path-to-scherzo.yaml]\n       scherzo workflow run <workflow.yml> [--run-root <dir>] [--run-id <id>] [--native-review-scenario <id>]\n       scherzo ctl <command> [options]\n       scherzo cleanup [options]\n       scherzo schedules <subcommand> [options]\n       scherzo artifact publication <subcommand> [options]\n       scherzo workstream <subcommand> [options]\n       scherzo state <subcommand> [options]\n       scherzo connect --pairing-token <pair_...> --server-url <url> [options]\n\nScherzo polls a tracker and runs pi agents in per-task workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, tracker-contract, tracker-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  workflow run            Run one workflow DAG file locally through Scherzo's workflow runner; by default agent steps use real pi-backed Scherzo agents. Native-review scenarios requested with --native-review-scenario use fixture responses for preflight only.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  ctl                     Inspect or control a running daemon through the local control API.\n  cleanup                 Inspect or apply local owned-workspace cleanup directly from disk-backed state.\n  schedules               Inspect local scheduled-job status, history, logs, and doctor output.\n  artifact publication    Inspect or recover retained artifact publication state from disk.\n  workstream              Inspect or operate on retained workstream state.\n  state                   Inspect or repair retained local ledger state.\n  connect                 Exchange a pairing token for a durable daemon credential.\n  --version               Print source/build identity for logs and bug reports.\n  --help, -h              Show this help.\n\nDaemon control examples:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl run-schedule <job> --now\n  ctl ... --control-file <path>\n\nOffline command examples:\n  cleanup --root <workspace-root> [--json] [--dry-run|--yes]\n  schedules status [job] --root <workspace-root>\n  artifact publication list --run <run-id> --root <workspace-root>\n  workstream list [task]\n  state status --root <workspace-root>\n\nWhen using scripts/scherzoctl, relative --control-file, SCHERZO_CONTROL_FILE, and --root paths are resolved from the caller working directory before the wrapper enters the Scherzo source checkout. JSON ctl responses include non-secret target context (control file path and daemon workspace root).\n\nRequired runtime inputs: LINEAR_API_KEY, a tracker project slug such as tracker.linear.project, agents.runtime.type: pi, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace profiles with drivers that can prepare each step workspace.\n\nSet agents.concurrency: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per tracker project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. The packaged scherzo launcher translates daemon-mode Ctrl-C/SIGINT into SIGTERM for this path. Direct gleam run Ctrl-C may still terminate abruptly because Scherzo's current Erlang signal FFI installs only the SIGTERM handler; kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
+  "Usage: scherzo [mode] [path-to-scherzo.yaml]\n       scherzo --managed-launch-grant-file <grant.json> --managed-launch-status-file <status.json> [path-to-scherzo.yaml]\n       scherzo --version\n       scherzo doctor [options] [path-to-scherzo.yaml]\n       scherzo workflow run <workflow.yml> [--run-root <dir>] [--run-id <id>] [--native-review-scenario <id>]\n       scherzo ctl <command> [options]\n       scherzo cleanup [options]\n       scherzo schedules <subcommand> [options]\n       scherzo artifact publication <subcommand> [options]\n       scherzo workstream <subcommand> [options]\n       scherzo state <subcommand> [options]\n       scherzo connect --pairing-token <pair_...> --server-url <url> [options]\n\nScherzo polls a tracker and runs pi agents in per-task workspaces. With no mode, Scherzo runs daemon mode and keeps polling until the VM process is terminated.\n\nModes:\n  doctor                  Run readiness checks in stable order; default checks are workflow-config, tracker-contract, tracker-smoke, instance-lock, workspace-hooks, pi-probe.\n  doctor --check <name>   Run one named readiness check; repeat --check for a subset.\n  doctor --list-checks    Print available doctor check names and exit without loading config.\n  doctor --logfmt         Emit machine-readable logfmt doctor_check_* events instead of human-readable output.\n  workflow run            Run one workflow DAG file locally through Scherzo's workflow runner; by default agent steps use real pi-backed Scherzo agents. Native-review scenarios requested with --native-review-scenario use fixture responses for preflight only.\n  --once                  Run one deterministic poll/dispatch tick, then exit.\n  ctl                     Inspect or control a running daemon through the local control API.\n  cleanup                 Inspect or apply local owned-workspace cleanup directly from disk-backed state.\n  schedules               Inspect local scheduled-job status, history, logs, and doctor output.\n  artifact publication    Inspect or recover retained artifact publication state from disk.\n  workstream              Inspect or operate on retained workstream state.\n  state                   Inspect or repair retained local ledger state.\n  connect                 Exchange a pairing token for a durable daemon credential.\n  --version               Print source/build identity for logs and bug reports.\n  --help, -h              Show this help.\n\nDaemon control examples:\n  ctl ping\n  ctl ps [--json]\n  ctl session <session-id> [--json]\n  ctl events <session-id> [--json]\n  ctl attach --raw <session-id>\n  ctl run-schedule <job> --now\n  ctl ... --control-file <path>\n\nOffline command examples:\n  cleanup --root <workspace-root> [--json] [--dry-run|--yes]\n  schedules status [job] --root <workspace-root>\n  artifact publication list --run <run-id> --root <workspace-root>\n  workstream list [task]\n  state status --root <workspace-root>\n\nWhen using scripts/scherzoctl, relative --control-file, SCHERZO_CONTROL_FILE, and --root paths are resolved from the caller working directory before the wrapper enters the Scherzo source checkout. JSON ctl responses include non-secret target context (control file path and daemon workspace root).\n\nRequired runtime inputs: LINEAR_API_KEY, a tracker project slug such as tracker.linear.project, agents.runtime.type: pi, a YAML orchestrator config such as .scherzo/scherzo.yaml, YAML workflow DAG files, and workspace profiles with drivers that can prepare each step workspace.\n\nSet agents.concurrency: 0 to pause new dispatch while reconciliation remains active. Run only one Scherzo instance per tracker project and canonical workspace root until durable claiming is implemented. Daemon mode handles SIGTERM gracefully by running daemon.shutdown, removing the control file, and releasing the local instance lock before exit. The packaged scherzo launcher translates daemon-mode Ctrl-C/SIGINT into SIGTERM for this path. Direct gleam run Ctrl-C may still terminate abruptly because Scherzo's current Erlang signal FFI installs only the SIGTERM handler; kill -9 or VM crashes may leave a stale instance lock that must be removed manually after verifying no Scherzo process is active."
 }
 
 pub fn usage_error_hint(args: List(String)) -> Option(String) {
@@ -310,8 +431,8 @@ fn run_from_args(arguments: List(String)) -> Nil {
           halt(1)
         }
       }
-    Ok(Run(mode, path)) ->
-      case start_mode(mode, path) {
+    Ok(Run(mode, start_options)) ->
+      case start_mode(mode, start_options) {
         Ok(Nil) -> finish_successful_run(mode)
         Error(err) -> {
           io.println_error(
@@ -336,19 +457,19 @@ fn run_from_args(arguments: List(String)) -> Nil {
 
 fn start_mode(
   mode: RunMode,
-  path: Option(String),
+  start_options: service.DaemonStartOptions,
 ) -> Result(Nil, service.StartupError) {
   case mode {
-    Daemon -> start_daemon_with_code_snapshot(path)
-    Once -> service.start_once(path)
+    Daemon -> start_daemon_with_code_snapshot(start_options)
+    Once -> service.start_once(start_options.workflow_path)
   }
 }
 
 fn start_daemon_with_code_snapshot(
-  path: Option(String),
+  start_options: service.DaemonStartOptions,
 ) -> Result(Nil, service.StartupError) {
   case code_snapshot.ensure_scherzo_modules_loaded() {
-    Ok(_) -> service.start_daemon(path)
+    Ok(_) -> service.start_daemon(start_options)
     Error(error) ->
       Error(service.StartupError(
         "code_snapshot_failed",
