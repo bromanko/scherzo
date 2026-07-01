@@ -7,6 +7,12 @@ import scherzo/workflow_dag
 import simplifile
 import support/test_helpers
 
+pub fn workspace_cleanup_workflow_yaml_parses_test() {
+  let assert Ok(contents) =
+    simplifile.read("workflows/dogfood/workspace-cleanup.yaml")
+  let assert Ok(_) = workflow_dag.parse(contents)
+}
+
 pub fn scheduled_workspace_cleanup_persists_and_reuses_cursor_test() {
   let repo = "test/tmp/workspace-cleanup-workflow/persist"
   test_helpers.reset_dir(repo)
