@@ -77,6 +77,7 @@ pub type FatalStepFailureInput {
     profile: config_types.WorkspaceHookProfile,
     failed_step_id: String,
     failed_artifact: step_artifact.StepArtifact,
+    failed_step_reason_override: Option(String),
     agent_reason: Option(error.AgentRunnerError),
     checkpoint_error: Option(workflow_checkpoint.CheckpointError),
     interrupt_active_attempts: fn() -> Nil,
@@ -89,7 +90,11 @@ pub fn finish_fatal_step_failure(
   let reason = case input.checkpoint_error {
     Some(error) ->
       "checkpoint_failed:" <> workflow_checkpoint.describe_error(error)
-    None -> step_failed_reason(input.failed_step_id, input.failed_artifact)
+    None ->
+      case input.failed_step_reason_override {
+        Some(reason) -> reason
+        None -> step_failed_reason(input.failed_step_id, input.failed_artifact)
+      }
   }
   let output_suffix = case input.checkpoint_error {
     Some(_) -> ""

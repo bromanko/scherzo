@@ -344,6 +344,33 @@ fn step_finished_outcome(root: String, step_id: String) -> String {
   }
 }
 
+fn step_finished_attempt_indexes(root: String, step_id: String) -> List(Int) {
+  ledger_records(root)
+  |> list.filter_map(fn(ledger_record) {
+    case ledger_record.body {
+      record.StepAttemptFinished(
+        step_id: finished_step_id,
+        attempt_index: attempt_index,
+        ..,
+      ) -> {
+        case finished_step_id == step_id {
+          True -> Ok(attempt_index)
+          False -> Error(Nil)
+        }
+      }
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn step_batch_watchdog_timeout_stderr(detail: String) -> String {
+  "SCHERZO_FAILURE_CODE=step_batch_timeout\n"
+  <> "step batch deadline exceeded after 60000ms\n"
+  <> "timeout_kind: step_batch_watchdog\n"
+  <> detail
+  <> "\n"
+}
+
 fn has_step_interrupted_before_workflow_finished(
   root: String,
   step_id: String,
@@ -1169,6 +1196,337 @@ pub fn command_default_timeout_uses_builtin_default_test() {
 
   assert receive_event(subject) == "prepare:run:main:"
   assert receive_event(subject) == "timeout:60000"
+}
+
+pub fn command_step_batch_timeout_retries_once_and_reuses_upstream_artifacts_test() {
+  let root = "test/tmp/workflow-run/command-step-timeout-retry-success"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  let subject = process.new_subject()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: build\n    kind: command\n    run: build\n    run_in: main\n  - id: verify\n    kind: command\n    depends_on: [build]\n    run: verify\n    run_in: main\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "run:"
+            <> context.step_id
+            <> ":attempt-"
+            <> int.to_string(context.attempt_index),
+        )
+        case context.step_id == "verify" && context.attempt_index == 1 {
+          True ->
+            step_artifact.from_command_result(
+              context.step_id,
+              124,
+              "",
+              step_batch_watchdog_timeout_stderr("transient watchdog timeout"),
+              True,
+              secrets,
+              limits,
+            )
+          False ->
+            step_artifact.from_command_result(
+              context.step_id,
+              0,
+              "ok:"
+                <> context.step_id
+                <> ":attempt-"
+                <> int.to_string(context.attempt_index),
+              "",
+              False,
+              secrets,
+              limits,
+            )
+        }
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let assert Ok(build_artifact) = dict.get(success.artifacts, "build")
+  let assert Ok(verify_artifact) = dict.get(success.artifacts, "verify")
+  assert build_artifact.status == step_artifact.StepSucceeded
+  assert verify_artifact.status == step_artifact.StepSucceeded
+  assert verify_artifact.stdout == "ok:verify:attempt-2"
+  assert receive_event(subject) == "prepare:build:main:"
+  assert receive_event(subject) == "run:build:attempt-1"
+  assert receive_event(subject) == "after:build"
+  assert receive_event(subject) == "prepare:verify:main:"
+  assert receive_event(subject) == "run:verify:attempt-1"
+  assert receive_event(subject) == "after:verify"
+  assert receive_event(subject) == "prepare:verify:main:"
+  assert receive_event(subject) == "run:verify:attempt-2"
+  assert receive_event(subject) == "after:verify"
+  assert workflow_finished_outcome(root) == workflow_outcome.completed
+  assert step_finished_attempt_indexes(root, "build") == [1]
+  assert step_finished_attempt_indexes(root, "verify") == [1, 2]
+  let diagnostics = workflow_diagnostic_reasons(root)
+  assert list.any(diagnostics, fn(reason) {
+    string.contains(
+      reason,
+      "command_step_timeout_retry_scheduled:step=verify:failed_attempt=1:retry_attempt=2:max_attempts=2:failure_code=step_batch_timeout",
+    )
+  })
+}
+
+pub fn command_step_batch_timeout_retry_budget_exhaustion_fails_terminal_test() {
+  let root = "test/tmp/workflow-run/command-step-timeout-retry-exhausted"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  let subject = process.new_subject()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: verify\n    kind: command\n    run: verify\n    run_in: main\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "run:"
+            <> context.step_id
+            <> ":attempt-"
+            <> int.to_string(context.attempt_index),
+        )
+        step_artifact.from_command_result(
+          context.step_id,
+          124,
+          "",
+          step_batch_watchdog_timeout_stderr("watchdog timeout again"),
+          True,
+          secrets,
+          limits,
+        )
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.failed_step_id == Some("verify")
+  let assert Ok(artifact) = dict.get(failure.artifacts, "verify")
+  assert artifact.failure_code == Some("step_batch_timeout")
+  assert workflow_run.failed_command_failure(failure)
+    == Some(#("step_batch_timeout_unrecovered", "verify"))
+  assert string.contains(
+    workflow_run.failure_report(failure),
+    "workflow_step_failed:step_batch_timeout_unrecovered:step=verify",
+  )
+  assert receive_event(subject) == "prepare:verify:main:"
+  assert receive_event(subject) == "run:verify:attempt-1"
+  assert receive_event(subject) == "after:verify"
+  assert receive_event(subject) == "prepare:verify:main:"
+  assert receive_event(subject) == "run:verify:attempt-2"
+  assert receive_event(subject) == "after:verify"
+  assert workflow_finished_outcome(root) == workflow_outcome.failed_fatal
+  assert step_finished_attempt_indexes(root, "verify") == [1, 2]
+  let diagnostics = workflow_diagnostic_reasons(root)
+  assert list.any(diagnostics, fn(reason) {
+    string.contains(reason, "command_step_timeout_retry_scheduled:step=verify")
+  })
+  assert list.any(diagnostics, fn(reason) {
+    string.contains(
+      reason,
+      "command_step_timeout_retry_exhausted:step=verify:failed_attempt=2:max_attempts=2:failure_code=step_batch_timeout",
+    )
+  })
+}
+
+pub fn command_step_timeout_failure_code_without_watchdog_artifact_does_not_retry_test() {
+  let root = "test/tmp/workflow-run/command-step-timeout-code-no-retry"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  let subject = process.new_subject()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: verify\n    kind: command\n    run: verify\n    run_in: main\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "run:"
+            <> context.step_id
+            <> ":attempt-"
+            <> int.to_string(context.attempt_index),
+        )
+        step_artifact.from_command_result(
+          context.step_id,
+          1,
+          "",
+          "SCHERZO_FAILURE_CODE=step_batch_timeout\ncommand-controlled marker\n",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.failed_step_id == Some("verify")
+  assert workflow_run.failed_command_failure(failure)
+    == Some(#("step_batch_timeout", "verify"))
+  assert !string.contains(
+    workflow_run.failure_report(failure),
+    "step_batch_timeout_unrecovered",
+  )
+  assert receive_event(subject) == "prepare:verify:main:"
+  assert receive_event(subject) == "run:verify:attempt-1"
+  assert receive_event(subject) == "after:verify"
+  assert step_finished_attempt_indexes(root, "verify") == [1]
+  let diagnostics = workflow_diagnostic_reasons(root)
+  assert !list.any(diagnostics, fn(reason) {
+    string.contains(reason, "command_step_timeout_retry_scheduled:step=verify")
+  })
+}
+
+pub fn command_step_batch_timeout_with_interrupted_sibling_does_not_retry_test() {
+  let root = "test/tmp/workflow-run/command-step-timeout-interrupted-no-retry"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  let subject = process.new_subject()
+  let slow_barrier = test_async.new_barrier()
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nconcurrency: 2\nsteps:\n  - id: verify\n    kind: command\n    run: verify\n    run_in: main\n  - id: slow\n    kind: command\n    run: slow\n    run_in: review\n  - id: done\n    kind: command\n    run: done\n    run_in: main\n    depends_on: [verify, slow]\n",
+    )
+  let dependencies =
+    workflow_run.Dependencies(
+      ..deps(subject, None),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout_ms,
+        secrets,
+        limits,
+      ) {
+        process.send(
+          subject,
+          "run:"
+            <> context.step_id
+            <> ":attempt-"
+            <> int.to_string(context.attempt_index),
+        )
+        case context.step_id {
+          "slow" -> {
+            test_async.block_until_released(slow_barrier)
+            step_artifact.from_command_result(
+              context.step_id,
+              0,
+              "slow done",
+              "",
+              False,
+              secrets,
+              limits,
+            )
+          }
+          _ -> {
+            step_artifact.from_command_result(
+              context.step_id,
+              124,
+              "",
+              step_batch_watchdog_timeout_stderr("watchdog timeout"),
+              True,
+              secrets,
+              limits,
+            )
+          }
+        }
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+  test_async.release_barrier_if_waiting(slow_barrier)
+
+  assert failure.failed_step_id == Some("verify")
+  assert !string.contains(
+    workflow_run.failure_report(failure),
+    "step_batch_timeout_unrecovered",
+  )
+  assert step_finished_attempt_indexes(root, "verify") == [1]
+  assert has_step_interrupted_before_workflow_finished(
+    root,
+    "slow",
+    "fatal_sibling_finished",
+  )
+  let diagnostics = workflow_diagnostic_reasons(root)
+  assert !list.any(diagnostics, fn(reason) {
+    string.contains(reason, "command_step_timeout_retry_scheduled:step=verify")
+  })
 }
 
 pub fn execute_rejects_missing_workspace_capabilities_before_prepare_test() {

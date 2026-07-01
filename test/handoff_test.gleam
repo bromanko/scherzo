@@ -393,6 +393,34 @@ pub fn workflow_command_failure_handoff_renders_revalidation_action_test() {
   assert !string.contains(failure_comment, "pi_protocol_error")
 }
 
+pub fn workflow_command_failure_handoff_renders_step_batch_timeout_unrecovered_action_test() {
+  let failure =
+    worker_failure(
+      error.WorkflowCommandFailed(
+        code: "step_batch_timeout_unrecovered",
+        step_id: "verify",
+        detail: "workflow_command_failed:step_batch_timeout\nworkflow_step_failed:step_batch_timeout_unrecovered:step=verify\ncommand step failed: step=verify failure_code=step_batch_timeout exit_code=124 timed_out=true",
+      ),
+      Some(".scherzo/workspaces/implementation/ABC-1/run-1"),
+    )
+
+  let failure_comment =
+    capture_failure_comment(failure, "run-step-timeout-unrecovered")
+
+  assert string.contains(
+    failure_comment,
+    "| Error | `step_batch_timeout_unrecovered` |",
+  )
+  assert string.contains(failure_comment, "| Step | `verify` |")
+  assert string.contains(
+    failure_comment,
+    "retried the command-step batch timeout within its step retry budget",
+  )
+  assert string.contains(failure_comment, "timeout was not recovered")
+  assert !string.contains(failure_comment, "agent_pi_failed")
+  assert !string.contains(failure_comment, "pi_protocol_error")
+}
+
 pub fn workflow_command_failure_handoff_renders_plan_completion_recovery_action_test() {
   let relative_workspace =
     "test/tmp/handoff-plan-completion/.scherzo/workspaces/implementation/ABC-1/run-1"

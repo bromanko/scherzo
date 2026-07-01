@@ -2671,6 +2671,7 @@ pub fn artifact_publication_retry_queues_operation_before_publication_driver_wor
       blocking_publication_retry_runner(log_subject, publish_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -2745,6 +2746,7 @@ pub fn artifact_publication_retry_reuses_existing_operation_for_duplicate_target
       blocking_publication_retry_runner(log_subject, publish_barrier),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(first) =
     daemon.apply_operator_command(
@@ -2818,6 +2820,7 @@ pub fn artifact_publication_retry_rejects_invalid_targets_without_queued_work_te
       }),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(missing_run) =
     daemon.apply_operator_command(
@@ -2891,6 +2894,7 @@ pub fn artifact_publication_retry_rejects_when_operation_intent_append_fails_tes
       }),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   chmod_path("a-w", ledger_path.current_path)
 
@@ -2949,6 +2953,7 @@ pub fn artifact_publication_retry_async_failure_records_failed_operation_test() 
       failing_publication_retry_runner(),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -3030,6 +3035,7 @@ pub fn artifact_publication_retry_startup_replay_replays_queued_and_skips_comple
       publication_retry_runner(),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(completed_operation) =
     wait_for_operation_status(root, operation_id, "completed", 20)
@@ -3063,6 +3069,8 @@ pub fn artifact_publication_retry_startup_replay_replays_queued_and_skips_comple
       }),
     )
   let assert Ok(skip_started) = daemon.start(Some(workflow_path), skip_deps)
+  let assert Ok(Nil) =
+    daemon.await_startup_recovery_ready(skip_started.data, 1000)
   assert !wait_for_log(skip_log_subject, "unexpected_completed_replay", 20)
   assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
 
