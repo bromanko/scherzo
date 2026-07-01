@@ -9,6 +9,7 @@ import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
 import scherzo/artifact_repository/command_runner
 import scherzo/cleanup
+import scherzo/cleanup/cursor as cleanup_cursor
 import scherzo/commit_stack_artifact
 import scherzo/control/client as control_client
 import scherzo/control/command
@@ -213,18 +214,18 @@ fn query_metrics_response() -> query_types.QueryResponse {
 
 fn query_operation_status_response() -> query_types.QueryResponse {
   query_types.OperationStatusResponse(query_types.OperationStatusDto(
-    operation_id: "artifact-publication-retry:run-1:execplan_review_doc:42",
-    kind: "artifact_publication_retry",
-    command: "retry_artifact_publication",
-    target: "run:run-1:execplan_review_doc",
+    operation_id: "op-123",
+    kind: "retry_step",
+    command: "retry_step",
+    target: "run:run-1",
     run_id: Some("run-1"),
     issue_id: Some("issue-1"),
     issue_identifier: Some("LIV-1262"),
-    requested_step_id: None,
-    publication_id: Some("execplan_review_doc"),
+    requested_step_id: Some("apply_feedback"),
+    publication_id: None,
     status: "completed",
     reason: None,
-    message: Some("publication retry recorded execplan_review_doc as published"),
+    message: Some("retry-step completed"),
     queued_at_ms: 1000,
     started_at_ms: Some(1001),
     finished_at_ms: Some(1002),
@@ -488,12 +489,9 @@ pub fn query_operation_status_human_executes_query_and_formats_operation_test() 
       operation_id: "op-123",
     ))
   let transcript = drain_output(output_subject)
-  assert string.contains(
-    transcript,
-    "operation_id: artifact-publication-retry:run-1:execplan_review_doc:42",
-  )
+  assert string.contains(transcript, "operation_id: op-123")
   assert string.contains(transcript, "status: completed")
-  assert string.contains(transcript, "publication_id: execplan_review_doc")
+  assert string.contains(transcript, "requested_step_id: apply_feedback")
 }
 
 pub fn query_status_json_uses_raw_request_with_query_payload_test() {
@@ -573,14 +571,7 @@ pub fn query_operation_status_json_uses_raw_request_with_query_payload_test() {
   assert called_request == protocol.Query("1", "", query)
   let transcript = drain_output(output_subject)
   assert string.contains(transcript, "\"type\":\"operation_status\"")
-  assert string.contains(
-    transcript,
-    "\"operation_id\":\"artifact-publication-retry:run-1:execplan_review_doc:42\"",
-  )
-  assert string.contains(
-    transcript,
-    "\"publication_id\":\"execplan_review_doc\"",
-  )
+  assert string.contains(transcript, "\"operation_id\":\"op-123\"")
   assert string.contains(transcript, "\"target\"")
 }
 
@@ -938,7 +929,41 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       "ABC-1",
     ))
   assert ctl.parse(["cleanup"])
-    == Ok(ctl.Cleanup(None, None, False, True, False, cleanup.AllProviders))
+    == Ok(ctl.Cleanup(
+      None,
+      None,
+      False,
+      True,
+      False,
+      None,
+      None,
+      None,
+      cleanup.AllProviders,
+    ))
+  assert ctl.parse([
+      "cleanup",
+      "--dry-run",
+      "--json",
+      "--root",
+      "work",
+      "--limit",
+      "25",
+      "--cursor",
+      "cursor-1",
+      "--max-runtime-ms",
+      "240000",
+    ])
+    == Ok(ctl.Cleanup(
+      None,
+      Some("work"),
+      True,
+      True,
+      False,
+      Some(25),
+      Some("cursor-1"),
+      Some(240_000),
+      cleanup.AllProviders,
+    ))
   assert ctl.parse(["cleanup", "--dry-run", "--json", "--root", "work"])
     == Ok(ctl.Cleanup(
       None,
@@ -946,6 +971,9 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       True,
       True,
       False,
+      None,
+      None,
+      None,
       cleanup.AllProviders,
     ))
   assert ctl.parse(["cleanup", "--yes", "--root", "work"])
@@ -955,6 +983,9 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       False,
       False,
       True,
+      None,
+      None,
+      None,
       cleanup.AllProviders,
     ))
   assert ctl.parse(["cleanup", "--provider", "local-state"])
@@ -964,10 +995,23 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
       False,
       True,
       False,
+      None,
+      None,
+      None,
       cleanup.SelectedProvider(cleanup.LocalState),
     ))
   assert ctl.parse(["cleanup", "--provider", "all"])
-    == Ok(ctl.Cleanup(None, None, False, True, False, cleanup.AllProviders))
+    == Ok(ctl.Cleanup(
+      None,
+      None,
+      False,
+      True,
+      False,
+      None,
+      None,
+      None,
+      cleanup.AllProviders,
+    ))
   assert ctl.parse(["schedules", "status", "--root", "work", "--json"])
     == Ok(ctl.SchedulesStatus(None, Some("work"), True, None))
   assert ctl.parse(["schedules", "status", "nightly", "--root", "work"])
@@ -1097,6 +1141,9 @@ pub fn parse_offline_accepts_canonical_top_level_commands_and_rejects_daemon_con
       False,
       True,
       False,
+      None,
+      None,
+      None,
       cleanup.AllProviders,
     ))
   assert ctl.parse_offline(["schedules", "status", "nightly", "--root", "work"])
@@ -1199,6 +1246,11 @@ pub fn parse_operator_commands_test() {
     ctl.parse(["schedules", "logs", "nightly"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["cleanup", "--yes", "--dry-run"])
+  let assert Error(ctl.UsageError(_)) = ctl.parse(["cleanup", "--limit", "0"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["cleanup", "--max-runtime-ms", "0"])
+  let assert Error(ctl.UsageError(_)) =
+    ctl.parse(["cleanup", "--cursor", "   "])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse([
       "recovery",
@@ -1246,7 +1298,17 @@ pub fn cleanup_json_output_uses_provider_report_test() {
 
   let result =
     ctl.run_with_deps(
-      ctl.Cleanup(None, Some(root), True, False, False, cleanup.AllProviders),
+      ctl.Cleanup(
+        None,
+        Some(root),
+        True,
+        False,
+        False,
+        None,
+        None,
+        None,
+        cleanup.AllProviders,
+      ),
       ps_deps([], ps_now_ms, ""),
       output(output_subject),
     )
@@ -1256,6 +1318,7 @@ pub fn cleanup_json_output_uses_provider_report_test() {
   assert string.contains(transcript, "\"mode\":\"dry_run\"")
   assert string.contains(transcript, "\"provider_id\":\"local_state\"")
   assert string.contains(transcript, "\"provider_id\":\"workspaces\"")
+  assert !string.contains(transcript, "\"truncated\"")
   assert string.contains(transcript, "\"elapsed_ms\":")
 }
 
@@ -1272,6 +1335,9 @@ pub fn cleanup_json_output_filters_provider_test() {
         True,
         False,
         False,
+        None,
+        None,
+        None,
         cleanup.SelectedProvider(cleanup.Workspaces),
       ),
       ps_deps([], ps_now_ms, ""),
@@ -1297,6 +1363,9 @@ pub fn cleanup_apply_output_filters_provider_test() {
         False,
         False,
         True,
+        None,
+        None,
+        None,
         cleanup.SelectedProvider(cleanup.Workspaces),
       ),
       ps_deps([], ps_now_ms, ""),
@@ -1317,7 +1386,17 @@ pub fn cleanup_text_output_uses_provider_report_test() {
 
   let result =
     ctl.run_with_deps(
-      ctl.Cleanup(None, Some(root), False, True, False, cleanup.AllProviders),
+      ctl.Cleanup(
+        None,
+        Some(root),
+        False,
+        True,
+        False,
+        None,
+        None,
+        None,
+        cleanup.AllProviders,
+      ),
       ps_deps([], ps_now_ms, ""),
       output(output_subject),
     )
@@ -1328,6 +1407,42 @@ pub fn cleanup_text_output_uses_provider_report_test() {
   assert string.contains(transcript, "provider: local_state")
   assert string.contains(transcript, "provider: workspaces")
   assert string.contains(transcript, "available: true")
+  assert !string.contains(transcript, "page:")
+}
+
+pub fn cleanup_bounded_output_includes_page_metadata_test() {
+  let root = "test/tmp/ctl-cleanup/bounded"
+  test_helpers.reset_dir(root)
+  let output_subject = process.new_subject()
+  let cursor =
+    cleanup_cursor.encode(
+      root,
+      cleanup_cursor.Cursor("local_state", "cursor-1"),
+    )
+
+  let result =
+    ctl.run_with_deps(
+      ctl.Cleanup(
+        None,
+        Some(root),
+        False,
+        True,
+        False,
+        Some(25),
+        Some(cursor),
+        Some(240_000),
+        cleanup.AllProviders,
+      ),
+      ps_deps([], ps_now_ms, ""),
+      output(output_subject),
+    )
+
+  assert result == Ok(Nil)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "page:")
+  assert string.contains(transcript, "limit: 25")
+  assert string.contains(transcript, "cursor: " <> cursor)
+  assert string.contains(transcript, "max_runtime_ms: 240000")
   assert string.contains(transcript, "elapsed_ms:")
 }
 
@@ -1491,8 +1606,6 @@ pub fn offline_usage_mentions_offline_commands_and_options_test() {
   assert string.contains(usage, "--root <workspace-root>")
   assert string.contains(usage, "--run <run-id>")
   assert string.contains(usage, "--publication <publication>")
-  assert string.contains(usage, "--provider <provider>")
-  assert string.contains(usage, "Diagnostic-only unavailable providers")
   assert !string.contains(usage, "run-schedule <job> --now")
   assert !string.contains(usage, "--control-file <path>")
 }

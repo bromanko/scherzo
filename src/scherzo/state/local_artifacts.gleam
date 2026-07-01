@@ -401,6 +401,31 @@ pub fn apply_cleanup(workspace_root: String, now_ms: Int) -> CleanupResult {
   }
 }
 
+pub fn apply_decision(
+  workspace_root: String,
+  decision: LocalArtifactDecision,
+  now_ms: Int,
+) -> #(Option(LocalArtifactDecision), List(String)) {
+  case apply_safety_warnings(workspace_root, [decision]) {
+    [first, ..rest] -> #(None, [first, ..rest])
+    [] ->
+      case delete_decisions(workspace_root, [decision], now_ms, [], []) {
+        #(deleted, warnings) ->
+          case list.reverse(deleted) {
+            [applied, ..] -> #(Some(applied), list.reverse(warnings))
+            [] -> #(None, list.reverse(warnings))
+          }
+      }
+  }
+}
+
+pub fn apply_safety_warnings(
+  workspace_root: String,
+  decisions: List(LocalArtifactDecision),
+) -> List(String) {
+  root_safety_errors(workspace_root, decisions)
+}
+
 fn root_safety_errors(
   workspace_root: String,
   decisions: List(LocalArtifactDecision),

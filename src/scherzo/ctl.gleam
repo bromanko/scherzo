@@ -100,6 +100,9 @@ pub type Command {
     json: Bool,
     dry_run: Bool,
     yes: Bool,
+    limit: Option(Int),
+    cursor: Option(String),
+    max_runtime_ms: Option(Int),
     provider_selection: cleanup.CleanupProviderSelection,
   )
   SchedulesStatus(
@@ -867,30 +870,55 @@ fn build_cleanup_command(
   parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
 ) -> Result(Command, Error) {
   use provider_selection <- try_ctl(parsed_cleanup_provider(parsed))
-  case
-    command_spec.has_flag(parsed, "--yes"),
-    command_spec.has_flag(parsed, "--dry-run")
-  {
-    True, True ->
-      Error(UsageError("cleanup --yes cannot be combined with --dry-run"))
-    True, False ->
-      Ok(Cleanup(
-        control_file_option(parsed),
-        root_option_value(parsed),
-        json_output(parsed),
-        False,
-        True,
-        provider_selection,
-      ))
-    False, _ ->
-      Ok(Cleanup(
-        control_file_option(parsed),
-        root_option_value(parsed),
-        json_output(parsed),
-        True,
-        False,
-        provider_selection,
-      ))
+  let limit =
+    option_int_value(parsed, "--limit", "--limit requires a positive integer")
+  let max_runtime_ms =
+    option_int_value(
+      parsed,
+      "--max-runtime-ms",
+      "--max-runtime-ms requires a positive integer",
+    )
+  let cursor =
+    nonempty_option_string_value(
+      parsed,
+      "--cursor",
+      "--cursor requires a non-empty value",
+    )
+  case limit, max_runtime_ms, cursor {
+    Error(err), _, _ | _, Error(err), _ | _, _, Error(err) ->
+      Error(UsageError(err))
+    Ok(limit), Ok(max_runtime_ms), Ok(cursor) ->
+      case
+        command_spec.has_flag(parsed, "--yes"),
+        command_spec.has_flag(parsed, "--dry-run")
+      {
+        True, True ->
+          Error(UsageError("cleanup --yes cannot be combined with --dry-run"))
+        True, False ->
+          Ok(Cleanup(
+            control_file_option(parsed),
+            root_option_value(parsed),
+            json_output(parsed),
+            False,
+            True,
+            limit,
+            cursor,
+            max_runtime_ms,
+            provider_selection,
+          ))
+        False, _ ->
+          Ok(Cleanup(
+            control_file_option(parsed),
+            root_option_value(parsed),
+            json_output(parsed),
+            True,
+            False,
+            limit,
+            cursor,
+            max_runtime_ms,
+            provider_selection,
+          ))
+      }
   }
 }
 
@@ -1415,13 +1443,26 @@ pub fn run_with_deps_and_env(
           }
       }
     }
-    Cleanup(control_path, root, json, dry_run, yes, provider_selection) ->
+    Cleanup(
+      control_path,
+      root,
+      json,
+      dry_run,
+      yes,
+      limit,
+      cursor,
+      max_runtime_ms,
+      provider_selection,
+    ) ->
       run_cleanup(
         control_path,
         root,
         json,
         dry_run,
         yes,
+        limit,
+        cursor,
+        max_runtime_ms,
         provider_selection,
         output,
         env,
@@ -1565,6 +1606,9 @@ fn run_cleanup(
   json_output: Bool,
   dry_run: Bool,
   yes: Bool,
+  limit: Option(Int),
+  cursor: Option(String),
+  max_runtime_ms: Option(Int),
   provider_selection: cleanup.CleanupProviderSelection,
   output: Output,
   env: fn(String) -> Option(String),
@@ -1575,16 +1619,39 @@ fn run_cleanup(
     env,
   ))
   let now_ms = local_artifacts.now_ms()
-  let result = case dry_run || !yes {
-    True -> cleanup.inventory_for(workspace_root, now_ms, provider_selection)
-    False -> cleanup.apply_for(workspace_root, now_ms, provider_selection)
+  let mode = case dry_run || !yes {
+    True -> cleanup.DryRun
+    False -> cleanup.Apply
   }
-  case json_output {
-    True ->
-      output.line(result |> cleanup.cleanup_report_to_json |> json.to_string)
-    False -> print_cleanup_result(result, output)
+  case
+    cleanup.run_request_for(
+      cleanup.CleanupRequest(
+        mode,
+        workspace_root,
+        now_ms,
+        limit,
+        cursor,
+        max_runtime_ms,
+      ),
+      provider_selection,
+    )
+    |> result.map_error(fn(err) {
+      let cleanup.CleanupError(code, message) = err
+      Failed("cleanup_" <> code, message)
+    })
+  {
+    Ok(result) -> {
+      case json_output {
+        True ->
+          output.line(
+            result |> cleanup.cleanup_report_to_json |> json.to_string,
+          )
+        False -> print_cleanup_result(result, output)
+      }
+      Ok(Nil)
+    }
+    Error(err) -> Error(err)
   }
-  Ok(Nil)
 }
 
 fn cleanup_workspace_root(
@@ -1629,6 +1696,26 @@ fn print_cleanup_result(result: cleanup.CleanupReport, output: Output) -> Nil {
       list.each(warnings, fn(warning) { output.line("  " <> warning) })
     }
   }
+  case result.limit, result.cursor, result.max_runtime_ms {
+    None, None, None -> Nil
+    _, _, _ -> {
+      output.line("page:")
+      output.line("  truncated: " <> bool_to_text(result.truncated))
+      output.line(
+        "  next_cursor: " <> option_string_or_null(result.next_cursor),
+      )
+      output.line("  cursor: " <> option_string_or_null(result.cursor))
+      output.line("  limit: " <> option_int_or_null(result.limit))
+      output.line(
+        "  max_runtime_ms: " <> option_int_or_null(result.max_runtime_ms),
+      )
+      output.line("  scanned: " <> option_int_or_null(result.scanned))
+      output.line("  applied: " <> option_int_or_null(result.applied))
+      output.line(
+        "  truncated_reason: " <> option_string_or_null(result.truncated_reason),
+      )
+    }
+  }
 }
 
 fn print_cleanup_items(
@@ -1651,6 +1738,50 @@ fn print_cleanup_items(
         output.line("      intended_action: " <> item.intended_action)
         output.line("      reason: " <> item.reason)
       })
+  }
+}
+
+fn option_int_value(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+  name: String,
+  error_message: String,
+) -> Result(Option(Int), String) {
+  case command_spec.option_value(parsed, name) {
+    Some(value) ->
+      case int.parse(value) {
+        Ok(parsed_value) if parsed_value > 0 -> Ok(Some(parsed_value))
+        Ok(_) | Error(_) -> Error(error_message)
+      }
+    None -> Ok(None)
+  }
+}
+
+fn nonempty_option_string_value(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+  name: String,
+  error_message: String,
+) -> Result(Option(String), String) {
+  case command_spec.option_value(parsed, name) {
+    Some(value) ->
+      case string.trim(value) {
+        "" -> Error(error_message)
+        trimmed -> Ok(Some(trimmed))
+      }
+    None -> Ok(None)
+  }
+}
+
+fn option_string_or_null(value: Option(String)) -> String {
+  case value {
+    Some(value) -> value
+    None -> "null"
+  }
+}
+
+fn option_int_or_null(value: Option(Int)) -> String {
+  case value {
+    Some(value) -> int.to_string(value)
+    None -> "null"
   }
 }
 

@@ -1,10 +1,12 @@
 import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order.{Gt}
 import gleam/result
 import gleam/string
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_runtime
+import scherzo/cleanup/retention_marker
 import scherzo/control/file
 import scherzo/error
 import scherzo/hash
@@ -36,6 +38,36 @@ pub type WorkspaceItem {
     ownership_evidence: List(String),
     safety_checks: List(String),
     warnings: List(String),
+    retention_until_ms: Option(Int),
+  )
+}
+
+pub type WorkspaceCleanupPage {
+  WorkspaceCleanupPage(
+    available: Bool,
+    roots: List(String),
+    items: List(WorkspaceItem),
+    warnings: List(String),
+    scanned: Int,
+    applied: Int,
+    budget_exhausted: Bool,
+    truncated: Bool,
+    next_key: Option(String),
+    truncated_reason: Option(String),
+  )
+}
+
+type CleanupPageState {
+  CleanupPageState(
+    items: List(WorkspaceItem),
+    scanned: Int,
+    applied: Int,
+    budget_exhausted: Bool,
+    truncated: Bool,
+    next_key: Option(String),
+    truncated_reason: Option(String),
+    last_key: Option(String),
+    cleanup_bundle: Option(Result(runtime_bundle.RuntimeBundle, String)),
   )
 }
 
@@ -52,6 +84,8 @@ type LedgerContext {
   LedgerContext(
     active_roots: dict.Dict(String, Bool),
     publication_protections: dict.Dict(String, List(PublicationProtection)),
+    run_statuses: dict.Dict(String, projection.WorkflowRunStatus),
+    parked_issue_ids: dict.Dict(String, Bool),
     signature: LedgerSignature,
   )
 }
@@ -90,7 +124,10 @@ type PublicationProtection {
   )
 }
 
-pub fn inventory(workspace_root: String) -> WorkspaceProviderResult {
+pub fn inventory(
+  workspace_root: String,
+  now_ms: Int,
+) -> WorkspaceProviderResult {
   let root = path.absolute_or_original(workspace_root)
   let roots = [root]
   let run_roots = discover_run_roots(root)
@@ -106,13 +143,13 @@ pub fn inventory(workspace_root: String) -> WorkspaceProviderResult {
       WorkspaceProviderResult(
         available: True,
         roots: roots,
-        items: list.map(run_roots, inventory_item(root, context, _)),
+        items: list.map(run_roots, inventory_item(root, now_ms, context, _)),
         warnings: [],
       )
   }
 }
 
-pub fn apply(workspace_root: String) -> WorkspaceProviderResult {
+pub fn apply(workspace_root: String, now_ms: Int) -> WorkspaceProviderResult {
   let root = path.absolute_or_original(workspace_root)
   let roots = [root]
   let run_roots = discover_run_roots(root)
@@ -125,14 +162,15 @@ pub fn apply(workspace_root: String) -> WorkspaceProviderResult {
         warnings: [reason],
       )
     Ok(context) -> {
-      let dry_items = list.map(run_roots, inventory_item(root, context, _))
+      let dry_items =
+        list.map(run_roots, inventory_item(root, now_ms, context, _))
       let apply_context =
         ApplyContext(
           workspace_root: root,
           ledger_context: context,
           cleanup_bundle: cleanup_bundle_for_apply(root, dry_items),
         )
-      let applied = list.map(dry_items, apply_item(apply_context, _))
+      let applied = list.map(dry_items, apply_context_item(apply_context, _))
       WorkspaceProviderResult(
         available: True,
         roots: roots,
@@ -140,6 +178,330 @@ pub fn apply(workspace_root: String) -> WorkspaceProviderResult {
         warnings: [],
       )
     }
+  }
+}
+
+pub fn cleanup_page(
+  workspace_root: String,
+  now_ms: Int,
+  after_key: Option(String),
+  limit: Option(Int),
+  started_ms: Int,
+  max_runtime_ms: Option(Int),
+  clock: fn() -> Int,
+  apply: Bool,
+) -> WorkspaceCleanupPage {
+  let root = path.absolute_or_original(workspace_root)
+  let roots = [root]
+  let initial = CleanupPageState([], 0, 0, False, False, None, None, None, None)
+  case ledger_context(root) {
+    Error(reason) ->
+      cleanup_page_with_classifier(
+        workspace_root,
+        now_ms,
+        root,
+        roots,
+        after_key,
+        limit,
+        started_ms,
+        max_runtime_ms,
+        clock,
+        apply,
+        initial,
+        unavailable_item(root, reason, _),
+        None,
+        False,
+        [reason],
+      )
+    Ok(context) ->
+      cleanup_page_with_classifier(
+        workspace_root,
+        now_ms,
+        root,
+        roots,
+        after_key,
+        limit,
+        started_ms,
+        max_runtime_ms,
+        clock,
+        apply,
+        initial,
+        inventory_item(root, now_ms, context, _),
+        case apply {
+          True -> Some(ApplyContext(root, context, None))
+          False -> None
+        },
+        True,
+        [],
+      )
+  }
+}
+
+fn cleanup_page_with_classifier(
+  workspace_root: String,
+  now_ms: Int,
+  root: String,
+  roots: List(String),
+  after_key: Option(String),
+  limit: Option(Int),
+  started_ms: Int,
+  max_runtime_ms: Option(Int),
+  clock: fn() -> Int,
+  apply: Bool,
+  initial: CleanupPageState,
+  classify_run_root: fn(String) -> WorkspaceItem,
+  apply_context: Option(ApplyContext),
+  available: Bool,
+  warnings: List(String),
+) -> WorkspaceCleanupPage {
+  let #(_, state) =
+    cleanup_page_loop(
+      workspace_root,
+      now_ms,
+      root,
+      root,
+      path.realpath(root) |> result.unwrap(root),
+      dict.new(),
+      after_key,
+      limit,
+      started_ms,
+      max_runtime_ms,
+      clock,
+      apply,
+      classify_run_root,
+      apply_context,
+      initial,
+    )
+  WorkspaceCleanupPage(
+    available: available,
+    roots: roots,
+    items: list.reverse(state.items),
+    warnings: warnings,
+    scanned: state.scanned,
+    applied: state.applied,
+    budget_exhausted: state.budget_exhausted,
+    truncated: state.truncated,
+    next_key: state.next_key,
+    truncated_reason: state.truncated_reason,
+  )
+}
+
+fn cleanup_page_loop(
+  workspace_root: String,
+  now_ms: Int,
+  root: String,
+  current: String,
+  root_real: String,
+  visited: dict.Dict(String, Bool),
+  after_key: Option(String),
+  limit: Option(Int),
+  started_ms: Int,
+  max_runtime_ms: Option(Int),
+  clock: fn() -> Int,
+  apply: Bool,
+  classify_run_root: fn(String) -> WorkspaceItem,
+  apply_context: Option(ApplyContext),
+  state: CleanupPageState,
+) -> #(dict.Dict(String, Bool), CleanupPageState) {
+  case state.truncated {
+    True -> #(visited, state)
+    False -> {
+      let current_real = path.realpath(current) |> result.unwrap(current)
+      case dict.get(visited, current_real) {
+        Ok(True) -> #(visited, state)
+        _ -> {
+          let visited = dict.insert(visited, current_real, True)
+          case current != root && looks_like_run_root(current) {
+            True -> #(
+              visited,
+              process_run_root(
+                workspace_root,
+                now_ms,
+                current,
+                after_key,
+                limit,
+                started_ms,
+                max_runtime_ms,
+                clock,
+                apply,
+                classify_run_root,
+                apply_context,
+                state,
+              ),
+            )
+            False ->
+              case simplifile.read_directory(current) {
+                Ok(entries) ->
+                  entries
+                  |> list.sort(by: string.compare)
+                  |> list.fold(#(visited, state), fn(acc, entry) {
+                    let #(visited, next_state) = acc
+                    case next_state.truncated {
+                      True -> #(visited, next_state)
+                      False -> {
+                        let child = path.join(current, entry)
+                        case
+                          ignored_directory_name(entry),
+                          safe_discovery_directory(root_real, child)
+                        {
+                          True, _ | _, False -> #(visited, next_state)
+                          False, True ->
+                            cleanup_page_loop(
+                              workspace_root,
+                              now_ms,
+                              root,
+                              child,
+                              root_real,
+                              visited,
+                              after_key,
+                              limit,
+                              started_ms,
+                              max_runtime_ms,
+                              clock,
+                              apply,
+                              classify_run_root,
+                              apply_context,
+                              next_state,
+                            )
+                        }
+                      }
+                    }
+                  })
+                Error(_) -> #(visited, state)
+              }
+          }
+        }
+      }
+    }
+  }
+}
+
+fn process_run_root(
+  _workspace_root: String,
+  _now_ms: Int,
+  run_root: String,
+  after_key: Option(String),
+  limit: Option(Int),
+  started_ms: Int,
+  max_runtime_ms: Option(Int),
+  clock: fn() -> Int,
+  apply: Bool,
+  classify_run_root: fn(String) -> WorkspaceItem,
+  apply_context: Option(ApplyContext),
+  state: CleanupPageState,
+) -> CleanupPageState {
+  case skip_run_root_for_cursor(run_root, after_key) {
+    True -> state
+    False ->
+      case
+        cleanup_page_should_truncate(
+          limit,
+          state.scanned,
+          state.budget_exhausted,
+          max_runtime_ms,
+          started_ms,
+          clock,
+        )
+      {
+        Some(reason) ->
+          CleanupPageState(
+            ..state,
+            truncated: True,
+            next_key: state.last_key,
+            truncated_reason: Some(reason),
+          )
+        None -> {
+          let item = classify_run_root(run_root)
+          let #(item, state) = case apply && item.status == "would_delete" {
+            True -> apply_page_item(apply_context, item, state)
+            False -> #(item, state)
+          }
+          let budget_exhausted =
+            cleanup_runtime_budget_hit(max_runtime_ms, started_ms, clock())
+          CleanupPageState(
+            items: [item, ..state.items],
+            scanned: state.scanned + 1,
+            applied: case apply {
+              True -> state.applied + 1
+              False -> 0
+            },
+            budget_exhausted: budget_exhausted,
+            truncated: False,
+            next_key: state.next_key,
+            truncated_reason: state.truncated_reason,
+            last_key: Some(run_root),
+            cleanup_bundle: state.cleanup_bundle,
+          )
+        }
+      }
+  }
+}
+
+fn apply_page_item(
+  apply_context: Option(ApplyContext),
+  item: WorkspaceItem,
+  state: CleanupPageState,
+) -> #(WorkspaceItem, CleanupPageState) {
+  case apply_context {
+    Some(context) -> {
+      let cleanup_bundle = case state.cleanup_bundle {
+        Some(cached) -> Some(cached)
+        None -> cleanup_bundle_for_apply(context.workspace_root, [item])
+      }
+      let context = ApplyContext(..context, cleanup_bundle: cleanup_bundle)
+      let state = CleanupPageState(..state, cleanup_bundle: cleanup_bundle)
+      #(apply_context_item(context, item), state)
+    }
+    None -> #(item, state)
+  }
+}
+
+fn skip_run_root_for_cursor(
+  run_root: String,
+  after_key: Option(String),
+) -> Bool {
+  case after_key {
+    Some(last_key) -> string.compare(run_root, last_key) != Gt
+    None -> False
+  }
+}
+
+fn cleanup_page_should_truncate(
+  limit: Option(Int),
+  scanned: Int,
+  budget_exhausted: Bool,
+  max_runtime_ms: Option(Int),
+  started_ms: Int,
+  clock: fn() -> Int,
+) -> Option(String) {
+  case hit_limit(limit, scanned) {
+    True -> Some("limit")
+    False ->
+      case
+        budget_exhausted
+        || cleanup_runtime_budget_hit(max_runtime_ms, started_ms, clock())
+      {
+        True -> Some("runtime_budget")
+        False -> None
+      }
+  }
+}
+
+fn cleanup_runtime_budget_hit(
+  max_runtime_ms: Option(Int),
+  started_ms: Int,
+  now_ms: Int,
+) -> Bool {
+  case max_runtime_ms {
+    Some(value) -> value > 0 && now_ms - started_ms >= value
+    None -> False
+  }
+}
+
+fn hit_limit(limit: Option(Int), scanned: Int) -> Bool {
+  case limit {
+    Some(value) -> value >= 0 && scanned >= value
+    None -> False
   }
 }
 
@@ -161,15 +523,22 @@ fn unavailable_item(
       ..safety_checks(workspace_root, run_root)
     ],
     warnings: [reason],
+    retention_until_ms: None,
   )
 }
 
 fn inventory_item(
   workspace_root: String,
+  now_ms: Int,
   ledger_context: LedgerContext,
   run_root: String,
 ) -> WorkspaceItem {
-  let base = fn(status: String, reason: String, extra: List(String)) {
+  let base = fn(
+    status: String,
+    reason: String,
+    extra: List(String),
+    retention_until_ms: Option(Int),
+  ) {
     WorkspaceItem(
       item_id: run_root,
       run_root: run_root,
@@ -179,6 +548,7 @@ fn inventory_item(
       ownership_evidence: ownership_evidence(run_root, extra),
       safety_checks: safety_checks(workspace_root, run_root),
       warnings: [],
+      retention_until_ms: retention_until_ms,
     )
   }
   case run_root == workspace_root || !path.contains(workspace_root, run_root) {
@@ -187,6 +557,7 @@ fn inventory_item(
         "retained",
         "workspace run root is outside the configured workspace root",
         [],
+        None,
       )
     False ->
       case dict.get(ledger_context.active_roots, run_root) {
@@ -195,6 +566,7 @@ fn inventory_item(
             "retained",
             "workspace run is active and protected from cleanup",
             ["active run root recorded in Scherzo ledger"],
+            None,
           )
         Ok(False) | Error(Nil) ->
           case dict.get(ledger_context.publication_protections, run_root) {
@@ -207,21 +579,129 @@ fn inventory_item(
                   run_root,
                 ),
                 publication_protection_evidence(protection),
+                None,
               )
             Ok([]) | Error(Nil) ->
-              case
-                simplifile.is_file(workspace_run.cleanup_retention_marker(
-                  run_root,
-                ))
-              {
-                Ok(True) ->
-                  base("retained", "workspace retention marker is present", [
-                    "retention marker .scherzo-keep-workspace is present",
-                  ])
-                _ ->
-                  classify_manifest_backed_run(workspace_root, run_root, base)
-              }
+              classify_with_retention_marker(
+                workspace_root,
+                now_ms,
+                ledger_context,
+                run_root,
+                base,
+              )
           }
+      }
+  }
+}
+
+fn classify_with_retention_marker(
+  workspace_root: String,
+  now_ms: Int,
+  ledger_context: LedgerContext,
+  run_root: String,
+  base: fn(String, String, List(String), Option(Int)) -> WorkspaceItem,
+) -> WorkspaceItem {
+  let marker_path = workspace_run.cleanup_retention_marker(run_root)
+  case simplifile.read(marker_path) {
+    Ok(contents) ->
+      case retention_marker.parse(contents) {
+        retention_marker.LegacyManualHold ->
+          base(
+            "retained",
+            "legacy workspace retention marker is present; retaining until an operator removes or migrates it",
+            ["retention marker .scherzo-keep-workspace is a legacy/manual hold"],
+            None,
+          )
+        retention_marker.Malformed(reason) ->
+          base(
+            "retained",
+            "workspace retention marker is malformed; retaining fail-closed: "
+              <> reason,
+            [
+              "retention marker .scherzo-keep-workspace could not be parsed safely",
+            ],
+            None,
+          )
+        retention_marker.SchemaMarker(
+          review_state,
+          created_at_ms,
+          source_kind,
+          source_ref,
+        ) ->
+          classify_schema_marker(
+            workspace_root,
+            now_ms,
+            ledger_context,
+            run_root,
+            review_state,
+            created_at_ms,
+            source_kind,
+            source_ref,
+            base,
+          )
+      }
+    Error(_) ->
+      case
+        hard_hold_reason(
+          ledger_context,
+          run_root,
+          run_id_from_manifest_or_path(run_root),
+        )
+      {
+        Some(reason) -> base("retained", reason, [], None)
+        None -> classify_manifest_backed_run(workspace_root, run_root, base)
+      }
+  }
+}
+
+fn classify_schema_marker(
+  workspace_root: String,
+  now_ms: Int,
+  ledger_context: LedgerContext,
+  run_root: String,
+  review_state: retention_marker.ReviewState,
+  created_at_ms: Int,
+  source_kind: String,
+  source_ref: String,
+  base: fn(String, String, List(String), Option(Int)) -> WorkspaceItem,
+) -> WorkspaceItem {
+  let evidence = [
+    "retention marker schema is scherzo.retained-workspace.v1",
+    "review_state=" <> retention_marker.review_state_to_string(review_state),
+    "source_kind=" <> source_kind,
+    "source=" <> source_ref,
+  ]
+  let run_id = run_id_from_manifest_or_path(run_root)
+  case review_state {
+    retention_marker.ManualHold ->
+      base(
+        "retained",
+        "workspace retention marker review state is manual_hold",
+        evidence,
+        None,
+      )
+    retention_marker.SafeToDelete | retention_marker.Abandoned ->
+      case hard_hold_reason(ledger_context, run_root, run_id) {
+        Some(reason) -> base("retained", reason, evidence, None)
+        None -> classify_manifest_backed_run(workspace_root, run_root, base)
+      }
+    retention_marker.PublicationGuard ->
+      case hard_hold_reason(ledger_context, run_root, run_id) {
+        Some(reason) -> base("retained", reason, evidence, None)
+        None -> {
+          let retention_until =
+            created_at_ms + retention_marker.stale_publication_guard_ms
+          case now_ms >= retention_until {
+            True -> classify_manifest_backed_run(workspace_root, run_root, base)
+            False ->
+              base(
+                "retained",
+                "workspace retention marker publication_guard has not aged out yet",
+                evidence,
+                Some(retention_until),
+              )
+          }
+        }
       }
   }
 }
@@ -229,7 +709,7 @@ fn inventory_item(
 fn classify_manifest_backed_run(
   _workspace_root: String,
   run_root: String,
-  base: fn(String, String, List(String)) -> WorkspaceItem,
+  base: fn(String, String, List(String), Option(Int)) -> WorkspaceItem,
 ) -> WorkspaceItem {
   case manifest_context(run_root) {
     Error("managed workspace manifest missing") ->
@@ -237,8 +717,9 @@ fn classify_manifest_backed_run(
         "retained",
         "managed workspace manifest is missing; unmanifested directories are never deleted",
         [],
+        None,
       )
-    Error(reason) -> base("retained", reason, [])
+    Error(reason) -> base("retained", reason, [], None)
     Ok(context) ->
       case
         workspace_manifest.cleanup_entries(
@@ -253,20 +734,23 @@ fn classify_manifest_backed_run(
             "would_delete",
             "workspace cleanup is delegated through workspace_run.cleanup_run",
             manifest_evidence(run_root, context),
+            None,
           )
         Error(error.WorkspaceIo(reason)) ->
-          base("retained", reason, manifest_evidence(run_root, context))
+          base("retained", reason, manifest_evidence(run_root, context), None)
         Error(error.WorkspaceOutsideRoot(reason)) ->
           base(
             "retained",
             "workspace manifest path escapes configured root: " <> reason,
             manifest_evidence(run_root, context),
+            None,
           )
         Error(other) ->
           base(
             "retained",
             workspace_error_message(other),
             manifest_evidence(run_root, context),
+            None,
           )
       }
   }
@@ -282,7 +766,32 @@ fn cleanup_bundle_for_apply(
   }
 }
 
-fn apply_item(
+pub fn apply_item(
+  workspace_root: String,
+  _now_ms: Int,
+  item: WorkspaceItem,
+) -> WorkspaceItem {
+  case item.status {
+    "would_delete" -> {
+      let root = path.absolute_or_original(workspace_root)
+      case ledger_context(root) {
+        Error(reason) -> unavailable_apply_item(item, reason)
+        Ok(context) -> {
+          let apply_context =
+            ApplyContext(
+              workspace_root: root,
+              ledger_context: context,
+              cleanup_bundle: cleanup_bundle_for_apply(root, [item]),
+            )
+          apply_eligible_item(apply_context, item)
+        }
+      }
+    }
+    _ -> item
+  }
+}
+
+fn apply_context_item(
   apply_context: ApplyContext,
   item: WorkspaceItem,
 ) -> WorkspaceItem {
@@ -317,15 +826,21 @@ fn apply_eligible_item(
             ),
           )
         Ok([]) | Error(Nil) ->
-          case
-            cached_ledger_context_freshness(
-              apply_context.workspace_root,
-              context.signature,
-            )
-          {
-            LedgerUnavailable(reason) -> unavailable_apply_item(item, reason)
-            LedgerChanged -> retained_after_ledger_changed(item)
-            LedgerFresh -> delegate_cleanup_item(apply_context, item)
+          case hard_hold_reason(context, item.run_root, item.run_id) {
+            Some(reason) ->
+              WorkspaceItem(..item, status: "retained", reason: reason)
+            None ->
+              case
+                cached_ledger_context_freshness(
+                  apply_context.workspace_root,
+                  context.signature,
+                )
+              {
+                LedgerUnavailable(reason) ->
+                  unavailable_apply_item(item, reason)
+                LedgerChanged -> retained_after_ledger_changed(item)
+                LedgerFresh -> delegate_cleanup_item(apply_context, item)
+              }
           }
       }
   }
@@ -646,6 +1161,12 @@ fn ledger_context(workspace_root: String) -> Result(LedgerContext, String) {
                       workspace_root,
                       replayed.projection,
                     ),
+                    run_statuses: workflow_run_statuses(replayed.projection),
+                    parked_issue_ids: replayed.projection.parked_issues
+                      |> dict.keys
+                      |> list.fold(dict.new(), fn(ids, issue_id) {
+                        dict.insert(ids, issue_id, True)
+                      }),
                     signature: signature_after,
                   ))
               }
@@ -719,6 +1240,52 @@ fn active_run_roots_from_projection(
       _, _ -> active
     }
   })
+}
+
+fn workflow_run_statuses(
+  projected: projection.Projection,
+) -> dict.Dict(String, projection.WorkflowRunStatus) {
+  projected.workflow_runs
+  |> dict.to_list
+  |> list.fold(dict.new(), fn(found, entry) {
+    let #(_, status) = entry
+    dict.insert(
+      found,
+      path.absolute_or_original(workflow_run_root(status)),
+      status,
+    )
+  })
+}
+
+fn hard_hold_reason(
+  context: LedgerContext,
+  run_root: String,
+  _run_id: String,
+) -> Option(String) {
+  case dict.get(context.run_statuses, run_root) {
+    Ok(projection.WorkflowRunInterrupted(issue_id: issue_id, ..)) ->
+      case dict.get(context.parked_issue_ids, issue_id) {
+        Ok(True) ->
+          Some(
+            "issue for retained workspace run is parked and must be released before cleanup",
+          )
+        _ ->
+          Some(
+            "workspace run was interrupted and still requires operator review",
+          )
+      }
+    Ok(projection.WorkflowRunActive(issue_id: issue_id, ..))
+    | Ok(projection.WorkflowRunFinished(issue_id: issue_id, ..))
+    | Ok(projection.WorkflowRunSuperseded(issue_id: issue_id, ..)) ->
+      case dict.get(context.parked_issue_ids, issue_id) {
+        Ok(True) ->
+          Some(
+            "issue for retained workspace run is parked and must be released before cleanup",
+          )
+        _ -> None
+      }
+    Error(Nil) -> None
+  }
 }
 
 fn publication_protections(

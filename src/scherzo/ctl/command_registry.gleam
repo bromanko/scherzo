@@ -432,7 +432,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     command_spec.CommandSpec(
       handler: CleanupKey,
       path: ["cleanup"],
-      usage: "cleanup [--provider <provider>]",
+      usage: "cleanup [--provider <provider>] [--yes] [--limit <n>] [--cursor <cursor>] [--max-runtime-ms <ms>]",
       summary: "Dry-run owned cleanup inventory.",
       positionals: [],
       options: [
@@ -442,6 +442,9 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         json_option(),
         dry_run_option(),
         yes_option(),
+        limit_option(),
+        cursor_option(),
+        cleanup_max_runtime_option(),
       ],
       help_lines: [
         line(
@@ -451,6 +454,10 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         line(
           "cleanup --yes",
           "Apply eligible owned cleanup after safety checks.",
+        ),
+        line(
+          "cleanup --limit 100 --max-runtime-ms 240000",
+          "Request a bounded cleanup page and report resume metadata.",
         ),
       ],
     ),
@@ -629,7 +636,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       handler: ArtifactPublicationRetryKey,
       path: ["artifact", "publication", "retry"],
       usage: "artifact publication retry --run <run-id> [--publication <publication-id>] [--root <workspace-root>]",
-      summary: "Retry failed publication; daemon retries return a queued operation id for status polling.",
+      summary: "Retry failed publication; same-repo commit_stack retries use the retained workflow workspace driver.",
       positionals: [],
       options: [
         control_file_option(),
@@ -645,11 +652,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         ),
         line(
           "",
-          "Retry failed publication. Without --root, the daemon returns status queued with an operation_id; poll query operation-status <operation-id> for completion.",
-        ),
-        line(
-          "",
-          "With --root, retry runs synchronously against retained local state. Same-repo commit_stack retries use the retained workflow workspace driver.",
+          "Retry failed publication; same-repo commit_stack retries use the retained workflow workspace driver.",
         ),
       ],
     ),
@@ -994,18 +997,22 @@ fn ctl_workstream_summary() -> String {
 }
 
 fn control_file_option() -> command_spec.OptionSpec {
-  command_spec.passthrough_value_option(
+  command_spec.value_option(
     "--control-file",
     "<path>",
     "Use an explicit control.json path; relative paths resolve from the caller working directory.",
+    False,
+    command_spec.passthrough_value,
   )
 }
 
 fn root_option() -> command_spec.OptionSpec {
-  command_spec.passthrough_value_option(
+  command_spec.value_option(
     "--root",
     "<workspace-root>",
     "Workspace root for cleanup or offline state commands; relative paths resolve from the caller working directory.",
+    False,
+    command_spec.passthrough_value,
   )
 }
 
@@ -1014,6 +1021,22 @@ fn provider_option() -> command_spec.OptionSpec {
     "--provider",
     "<provider>",
     "Cleanup provider: all, local-state, workspaces. Diagnostic-only unavailable providers: artifact-store, task-store, provider-live, remote-provider-cache, browser.",
+  )
+}
+
+fn cleanup_max_runtime_option() -> command_spec.OptionSpec {
+  command_spec.value_option(
+    "--max-runtime-ms",
+    "<ms>",
+    "Maximum cleanup runtime budget in milliseconds.",
+    False,
+    fn(value) {
+      case int.parse(value) {
+        Ok(limit) if limit > 0 -> Ok(value)
+        Ok(_) | Error(_) ->
+          Error("--max-runtime-ms requires a positive integer")
+      }
+    },
   )
 }
 
@@ -1081,18 +1104,22 @@ fn last_option() -> command_spec.OptionSpec {
 }
 
 fn run_option() -> command_spec.OptionSpec {
-  command_spec.passthrough_value_option(
+  command_spec.value_option(
     "--run",
     "<run-id>",
     "Workflow run id for artifact publication inspection.",
+    False,
+    command_spec.passthrough_value,
   )
 }
 
 fn publication_option() -> command_spec.OptionSpec {
-  command_spec.passthrough_value_option(
+  command_spec.value_option(
     "--publication",
     "<publication>",
     "Publication id for artifact publication show/retry/abandon.",
+    False,
+    command_spec.passthrough_value,
   )
 }
 
@@ -1110,7 +1137,7 @@ fn limit_option() -> command_spec.OptionSpec {
   command_spec.value_option(
     "--limit",
     "<n>",
-    "Maximum task list items (daemon clamps to 100).",
+    "Maximum items to return or process.",
     False,
     validate_limit,
   )
@@ -1120,7 +1147,7 @@ fn cursor_option() -> command_spec.OptionSpec {
   command_spec.value_option(
     "--cursor",
     "<cursor>",
-    "Opaque cursor returned by task list.",
+    "Opaque cursor returned by a previous paged command.",
     False,
     validate_cursor,
   )
@@ -1135,18 +1162,22 @@ fn dry_run_option() -> command_spec.OptionSpec {
 }
 
 fn reason_option() -> command_spec.OptionSpec {
-  command_spec.passthrough_value_option(
+  command_spec.value_option(
     "--reason",
     "<text>",
     "Reason for parking a task.",
+    False,
+    command_spec.passthrough_value,
   )
 }
 
 fn step_option() -> command_spec.OptionSpec {
-  command_spec.passthrough_value_option(
+  command_spec.value_option(
     "--step",
     "<step-id>",
     "Select a failed or interrupted workflow step for retry-step.",
+    False,
+    command_spec.passthrough_value,
   )
 }
 
@@ -1155,10 +1186,12 @@ fn cancel_option() -> command_spec.OptionSpec {
 }
 
 fn value_option() -> command_spec.OptionSpec {
-  command_spec.passthrough_value_option(
+  command_spec.value_option(
     "--value",
     "<text>",
     "Value for a UI request response.",
+    False,
+    command_spec.passthrough_value,
   )
 }
 
