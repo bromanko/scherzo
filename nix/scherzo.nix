@@ -154,6 +154,7 @@ stdenvNoCC.mkDerivation {
     patchShebangs "$out/libexec/${pname}/scherzo-workspace-jj"
     makeWrapper "$out/lib/${pname}/entrypoint.sh" "$out/libexec/${pname}/scherzo-direct" \
       --add-flags run \
+      --set-default SCHERZO_BIN "$out/bin/scherzo" \
       --set-default SCHERZO_SOURCE_REVISION "${sourceRevision}" \
       --set-default SCHERZO_SOURCE_DATE "${sourceDate}" \
       --set-default SCHERZO_SOURCE_DIRTY "${sourceDirty}" \
@@ -163,6 +164,7 @@ stdenvNoCC.mkDerivation {
     makeWrapper "$out/libexec/${pname}/scherzo-launcher" "$out/bin/scherzo" \
       --set SCHERZO_DIRECT_BIN "$out/libexec/${pname}/scherzo-direct" \
       --set SCHERZO_START_RUNNER "$out/libexec/${pname}/scherzo-start-runner" \
+      --set-default SCHERZO_BIN "$out/bin/scherzo" \
       --set-default SCHERZO_LAUNCHER_NAME "scherzo" \
       --prefix PATH : ${startRunnerPath}
     makeWrapper "$out/libexec/${pname}/scherzo-direct" "$out/bin/scherzoctl" \
@@ -197,6 +199,12 @@ stdenvNoCC.mkDerivation {
 
         PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" doctor --list-checks > scherzo-doctor-checks
         grep -q "^workflow-config$" scherzo-doctor-checks
+
+        cleanup_root="$TMPDIR/install-check-cleanup-root"
+        mkdir -p "$cleanup_root"
+        PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" \
+          "$out/bin/scherzo" cleanup --root "$cleanup_root" --json --dry-run > scherzo-cleanup-json
+        grep -q '"mode":"dry_run"' scherzo-cleanup-json
 
         PATH=/path-that-does-not-exist HOME="$TMPDIR/install-check-home" "$out/bin/scherzo" ctl --help > scherzo-ctl-help
         grep -q "Usage: scherzo ctl" scherzo-ctl-help

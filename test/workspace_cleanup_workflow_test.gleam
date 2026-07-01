@@ -2,6 +2,8 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/artifact_repository/command_runner
+import scherzo/path
+import scherzo/workflow_dag
 import simplifile
 import support/test_helpers
 
@@ -100,6 +102,77 @@ pub fn scheduled_workspace_cleanup_clears_invalid_cursor_test() {
   assert string.contains(log, "--cursor bad-cursor")
 }
 
+pub fn scheduled_workspace_cleanup_uses_packaged_top_level_scherzo_test() {
+  let repo = "test/tmp/workspace-cleanup-workflow/packaged-bin"
+  test_helpers.reset_dir(repo)
+  let workflow_script = write_workflow_script(repo)
+  let fake_scherzo = repo <> "/fake-scherzo.sh"
+  write_fake_cleanup_command(fake_scherzo)
+  let output_path = repo <> "/cleanup-output.json"
+  let log_path = repo <> "/cleanup-invocations.log"
+  let assert Ok(Nil) =
+    simplifile.write(
+      output_path,
+      "{\"truncated\":false,\"next_cursor\":null}\n",
+    )
+
+  let result =
+    run_workflow_script_with_tool_env(
+      repo,
+      workflow_script,
+      output_path,
+      log_path,
+      None,
+      None,
+      None,
+      [#("SCHERZO_BIN", fake_scherzo)],
+    )
+
+  assert result.exit_code == 0
+  let assert Ok(log) = simplifile.read(log_path)
+  assert string.contains(log, "cleanup --root")
+}
+
+pub fn scheduled_workspace_cleanup_keeps_scherzoctl_warning_out_of_json_test() {
+  let repo = "test/tmp/workspace-cleanup-workflow/path-scherzoctl"
+  test_helpers.reset_dir(repo)
+  let workflow_script = write_workflow_script(repo)
+  let fake_bin = repo <> "/bin"
+  let assert Ok(Nil) = simplifile.create_directory_all(fake_bin)
+  write_fake_cleanup_command(fake_bin <> "/scherzoctl")
+  let cursor_path =
+    repo
+    <> "/workspaces/.scherzo-state/cleanup/scheduled/workspace-cleanup.cursor"
+  let output_path = repo <> "/cleanup-output.json"
+  let log_path = repo <> "/cleanup-invocations.log"
+  let warning = "Deprecated: scherzo ctl cleanup will be removed"
+  let assert Ok(Nil) =
+    simplifile.write(
+      output_path,
+      "{\"truncated\":true,\"next_cursor\":\"cursor-warning\"}\n",
+    )
+
+  let result =
+    run_workflow_script_with_tool_env(
+      repo,
+      workflow_script,
+      output_path,
+      log_path,
+      None,
+      None,
+      None,
+      [#("PATH", env_path(fake_bin)), #("FAKE_WARNING_TEXT", warning)],
+    )
+
+  assert result.exit_code == 0
+  assert string.contains(result.diagnostics, warning)
+  assert !string.contains(result.stdout, warning)
+  let assert Ok(saved_cursor) = simplifile.read(cursor_path)
+  assert string.trim(saved_cursor) == "cursor-warning"
+  let assert Ok(log) = simplifile.read(log_path)
+  assert string.contains(log, "cleanup --root")
+}
+
 fn run_workflow_script(
   repo: String,
   workflow_script: String,
@@ -110,29 +183,51 @@ fn run_workflow_script(
   error_code: Option(String),
   workspace_root: Option(String),
 ) -> command_runner.CommandOutput {
+  run_workflow_script_with_tool_env(
+    repo,
+    workflow_script,
+    output_path,
+    log_path,
+    error_text,
+    error_code,
+    workspace_root,
+    [#("SCHERZO_CTL", fake_ctl)],
+  )
+}
+
+fn run_workflow_script_with_tool_env(
+  repo: String,
+  workflow_script: String,
+  output_path: String,
+  log_path: String,
+  error_text: Option(String),
+  error_code: Option(String),
+  workspace_root: Option(String),
+  tool_env: List(#(String, String)),
+) -> command_runner.CommandOutput {
   let runner = command_runner.production_with_env(fn(_) { None })
   let command_runner.Runner(run: run) = runner
+  let base_env = [
+    #("SCHERZO_CONFIG_DIR", repo <> "/.scherzo"),
+    #("SCHERZO_REPO_ROOT", repo),
+    #("FAKE_OUTPUT_PATH", output_path),
+    #("FAKE_INVOCATIONS_LOG", log_path),
+    #("FAKE_ERROR_TEXT", case error_text {
+      Some(value) -> value
+      None -> ""
+    }),
+    #("FAKE_ERROR_CODE", case error_code {
+      Some(value) -> value
+      None -> "1"
+    }),
+    #("SCHERZO_CLEANUP_WORKSPACE_ROOT", case workspace_root {
+      Some(value) -> value
+      None -> repo <> "/workspaces"
+    }),
+  ]
   let spec =
     command_runner.sh("bash", [workflow_script], ".")
-    |> command_runner.with_env([
-      #("SCHERZO_CONFIG_DIR", repo <> "/.scherzo"),
-      #("SCHERZO_CTL", fake_ctl),
-      #("SCHERZO_REPO_ROOT", repo),
-      #("FAKE_OUTPUT_PATH", output_path),
-      #("FAKE_INVOCATIONS_LOG", log_path),
-      #("FAKE_ERROR_TEXT", case error_text {
-        Some(value) -> value
-        None -> ""
-      }),
-      #("FAKE_ERROR_CODE", case error_code {
-        Some(value) -> value
-        None -> "1"
-      }),
-      #("SCHERZO_CLEANUP_WORKSPACE_ROOT", case workspace_root {
-        Some(value) -> value
-        None -> repo <> "/workspaces"
-      }),
-    ])
+    |> command_runner.with_env(list.append(base_env, tool_env))
     |> command_runner.with_timeout_ms(5000)
   let assert Ok(output) = run(spec)
   output
@@ -168,11 +263,22 @@ fn extract_run_block(contents: String) -> String {
 
 fn write_fake_scherzoctl(repo: String) -> String {
   let path = repo <> "/fake-scherzoctl.sh"
+  write_fake_cleanup_command(path)
+  path
+}
+
+fn write_fake_cleanup_command(path: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       path,
-      "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$FAKE_INVOCATIONS_LOG\"\nif [ -n \"${FAKE_ERROR_TEXT:-}\" ]; then\n  printf '%s\\n' \"$FAKE_ERROR_TEXT\" >&2\n  exit \"${FAKE_ERROR_CODE:-1}\"\nfi\ncat \"$FAKE_OUTPUT_PATH\"\n",
+      "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$FAKE_INVOCATIONS_LOG\"\nif [ -n \"${FAKE_ERROR_TEXT:-}\" ]; then\n  printf '%s\\n' \"$FAKE_ERROR_TEXT\" >&2\n  exit \"${FAKE_ERROR_CODE:-1}\"\nfi\nif [ -n \"${FAKE_WARNING_TEXT:-}\" ]; then\n  printf '%s\\n' \"$FAKE_WARNING_TEXT\" >&2\nfi\ncat \"$FAKE_OUTPUT_PATH\"\n",
     )
   test_helpers.chmod_executable(path)
-  path
+}
+
+fn env_path(bin: String) -> String {
+  case path.env("PATH") {
+    Some(value) -> bin <> ":" <> value
+    None -> bin
+  }
 }
