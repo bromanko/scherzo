@@ -38,6 +38,7 @@ import scherzo/orchestrator/outbox_effects
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/query_runtime
 import scherzo/orchestrator/read_model
+import scherzo/orchestrator/recollect_outputs_control
 import scherzo/orchestrator/remote_command_runtime as remote
 import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/schedule_core
@@ -85,7 +86,6 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_completion_policy.{type LinearStateRef}
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
-import scherzo/workflow_output_recollection
 import scherzo/workflow_repair
 import scherzo/workflow_run
 import scherzo/workspace
@@ -1307,7 +1307,7 @@ fn replay_incomplete_control_operations(
   subject: process.Subject(Message),
   state: State,
 ) -> Nil {
-  ["retry_step", "artifact_publication_retry"]
+  ["retry_step", "artifact_publication_retry", "recollect_outputs"]
   |> list.each(fn(operation_kind) {
     projection.replayable_control_operation_ids(
       state.ledger_projection,
@@ -2971,41 +2971,52 @@ fn retry_workflow_step_for_operator(
                   requested_step_id: step_id,
                   publication_id: None,
                 )
-              let #(state, appended) =
-                append_ledger_bodies(
-                  state,
-                  [queued_body],
-                  "retry_step_queue_append_failed",
-                )
-              case appended {
-                False -> #(
-                  state,
-                  command.rejected(
-                    operator_command,
-                    "ledger_append_failed",
-                    Some("failed to append retry-step operation"),
-                  ),
-                )
-                True -> {
-                  process.send(
-                    state.subject,
-                    RunQueuedControlOperation(operation_id),
-                  )
-                  #(
-                    state,
-                    command.queued_operation(
-                      operator_command,
-                      operation_id,
-                      Some(
-                        "retry-step accepted; poll query operation-status for completion",
-                      ),
-                    ),
-                  )
-                }
-              }
+              queue_control_operation(
+                state,
+                operator_command,
+                operation_id,
+                queued_body,
+                "retry_step_queue_append_failed",
+                "failed to append retry-step operation",
+                "retry-step accepted; poll query operation-status for completion",
+              )
             }
           }
       }
+  }
+}
+
+fn queue_control_operation(
+  state: State,
+  operator_command: command.OperatorCommand,
+  operation_id: String,
+  queued_body: record.RecordBody,
+  append_event: String,
+  append_failure_message: String,
+  queued_message: String,
+) -> #(State, command.CommandResult) {
+  let #(state, appended) =
+    append_ledger_bodies(state, [queued_body], append_event)
+  case appended {
+    False -> #(
+      state,
+      command.rejected(
+        operator_command,
+        "ledger_append_failed",
+        Some(append_failure_message),
+      ),
+    )
+    True -> {
+      process.send(state.subject, RunQueuedControlOperation(operation_id))
+      #(
+        state,
+        command.queued_operation(
+          operator_command,
+          operation_id,
+          Some(queued_message),
+        ),
+      )
+    }
   }
 }
 
@@ -3020,101 +3031,66 @@ fn recollect_workflow_outputs_for_operator(
       command.rejected(operator_command, "ledger_read_failed", Some(reason)),
     )
     Ok(projection_state) ->
-      case projection.workflow_run_provenance(projection_state, run_id) {
-        Error(Nil) -> #(
+      case
+        recollect_outputs_control.queue_decision(
+          projection_state,
+          operator_command,
+          run_id,
+          state.dependencies.now_ms(),
+        )
+      {
+        Error(error) -> #(
           state,
-          command.rejected(
+          recollect_outputs_control.queue_error_result(operator_command, error),
+        )
+        Ok(decision) ->
+          queue_recollect_outputs_operation(
+            state,
             operator_command,
-            "run_not_found",
-            Some("run not found"),
+            run_id,
+            decision,
+          )
+      }
+  }
+}
+
+fn queue_recollect_outputs_operation(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  decision: recollect_outputs_control.QueueDecision,
+) -> #(State, command.CommandResult) {
+  case
+    recollect_outputs_control.parked_preflight_for_run(
+      state.runtime,
+      operator_command,
+      run_id,
+      decision.issue_id,
+    )
+  {
+    Error(result) -> #(state, result)
+    Ok(Nil) ->
+      case decision.body {
+        None -> #(
+          state,
+          command.queued_operation(
+            operator_command,
+            decision.operation_id,
+            Some(
+              "recollect-outputs already queued/running; poll query operation-status for completion",
+            ),
           ),
         )
-        Ok(provenance) ->
-          case
-            recollect_outputs_issue_preflight_for_run(
-              state,
-              operator_command,
-              run_id,
-              provenance.issue_id,
-            )
-          {
-            Error(result) -> #(state, result)
-            Ok(issue) -> {
-              let observation =
-                startup_recovery.current_workflow_observation(
-                  state.workflow.bundle,
-                  issue,
-                )
-              case
-                workflow_checkpoint.next_output_recollection_index(
-                  state.workflow.effective.workspace.root,
-                  run_id,
-                )
-              {
-                Error(error) -> #(
-                  state,
-                  command.rejected(
-                    operator_command,
-                    "ledger_read_failed",
-                    Some(workflow_checkpoint.describe_error(error)),
-                  ),
-                )
-                Ok(recollection_index) ->
-                  case
-                    workflow_output_recollection.execute(
-                      projection_state,
-                      run_id,
-                      observation,
-                      workflow_checkpoint.ledger_writer(
-                        state.workflow.effective.workspace.root,
-                        state.dependencies.now_ms,
-                      ),
-                      workflow_checkpoint.recollection_ledger_writer(
-                        state.workflow.effective.workspace.root,
-                        state.dependencies.now_ms,
-                        recollection_index,
-                      ),
-                      artifact_store.new(
-                        state.workflow.effective.workspace.root,
-                      ),
-                    )
-                  {
-                    Error(error) -> #(
-                      state,
-                      command.rejected(
-                        operator_command,
-                        workflow_output_recollection.describe_error(error),
-                        workflow_output_recollection.error_message(error),
-                      ),
-                    )
-                    Ok(workflow_output_recollection.AlreadyValid(recorded)) -> #(
-                      state,
-                      command.applied(
-                        operator_command,
-                        Some(
-                          "workflow outputs already valid for "
-                          <> run_id
-                          <> ": "
-                          <> recorded.ref,
-                        ),
-                      ),
-                    )
-                    Ok(workflow_output_recollection.Recollected(recorded, _)) -> #(
-                      state,
-                      command.applied(
-                        operator_command,
-                        Some(
-                          "recollected workflow outputs for "
-                          <> run_id
-                          <> ": "
-                          <> recorded.ref,
-                        ),
-                      ),
-                    )
-                  }
-              }
-            }
-          }
+        Some(queued_body) ->
+          queue_control_operation(
+            state,
+            operator_command,
+            decision.operation_id,
+            queued_body,
+            "recollect_outputs_queue_append_failed",
+            "failed to append recollect-outputs operation",
+            "recollect-outputs accepted; poll query operation-status for completion",
+          )
       }
   }
 }
@@ -3125,29 +3101,21 @@ fn recollect_outputs_issue_preflight_for_run(
   run_id: String,
   issue_id: String,
 ) -> Result(tracker_issue.Issue, command.CommandResult) {
-  case
-    dict.get(
-      state.runtime.parked,
-      orchestrator_state.linear_issue_id_identity(issue_id),
-    )
-  {
-    Ok(parked) ->
-      Error(command.rejected(
+  use Nil <- result.try(recollect_outputs_control.parked_preflight_for_run(
+    state.runtime,
+    operator_command,
+    run_id,
+    issue_id,
+  ))
+  case fetch_issue_by_id(state, issue_id) {
+    Error(status) -> Error(command.result_for(operator_command, status, None))
+    Ok(issue) ->
+      recollect_outputs_control.validate_issue_state(
+        state.workflow.effective,
         operator_command,
-        "issue_parked",
-        Some(
-          "issue is parked for "
-          <> orchestrator_reason.park_to_string(parked.reason)
-          <> "; unpark before recollect-outputs for run "
-          <> run_id,
-        ),
-      ))
-    Error(Nil) ->
-      case fetch_issue_by_id(state, issue_id) {
-        Error(status) ->
-          Error(command.result_for(operator_command, status, None))
-        Ok(issue) -> Ok(issue)
-      }
+        run_id,
+        issue,
+      )
   }
 }
 
@@ -3246,20 +3214,17 @@ fn start_queued_control_operation(
   operation: projection.ControlOperationStatus,
 ) -> State {
   case
-    artifact_publication_retry_control.running_conflict(
+    recollect_outputs_control.control_operation_running_conflict(
       state.ledger_projection,
       operation,
     )
   {
-    Ok(existing) ->
+    Ok(conflict) ->
       append_control_operation_failure(
         state,
         operation.operation_id,
-        "artifact_publication_retry_already_running",
-        Some(
-          "artifact publication retry already queued/running as "
-          <> existing.operation_id,
-        ),
+        conflict.reason,
+        conflict.message,
       )
     Error(Nil) -> {
       let state =
@@ -3374,6 +3339,7 @@ fn execute_queued_control_operation(
 ) -> QueuedControlOperationResult {
   case operation.operation_kind {
     "retry_step" -> execute_retry_step_operation(state, operation)
+    "recollect_outputs" -> execute_recollect_outputs_operation(state, operation)
     "artifact_publication_retry" -> {
       let root = state.workflow.effective.workspace.root
       case
@@ -3500,11 +3466,73 @@ fn continue_retry_step_operation(
   }
 }
 
+fn execute_recollect_outputs_operation(
+  state: State,
+  operation: projection.ControlOperationStatus,
+) -> QueuedControlOperationResult {
+  let run_id = option.unwrap(operation.run_id, "")
+  case option.unwrap(operation.issue_id, "") {
+    "" ->
+      QueuedControlOperationFailed(
+        "operation_missing_issue_id",
+        Some("recollect-outputs operation is missing issue metadata"),
+      )
+    issue_id -> {
+      let operator_command = command.RecollectWorkflowOutputs(run_id)
+      case
+        recollect_outputs_issue_preflight_for_run(
+          state,
+          operator_command,
+          run_id,
+          issue_id,
+        )
+      {
+        Error(result) -> queued_control_operation_failure_result(result)
+        Ok(issue) ->
+          execute_recollect_outputs_with_issue(state, operation, issue)
+      }
+    }
+  }
+}
+
+fn execute_recollect_outputs_with_issue(
+  state: State,
+  operation: projection.ControlOperationStatus,
+  issue: tracker_issue.Issue,
+) -> QueuedControlOperationResult {
+  case replay_projection_for_operator(state) {
+    Error(reason) ->
+      QueuedControlOperationFailed("ledger_read_failed", Some(reason))
+    Ok(projection_state) -> {
+      let root = state.workflow.effective.workspace.root
+      case
+        recollect_outputs_control.execute_operation(
+          root,
+          operation,
+          state.workflow.bundle,
+          state.dependencies.now_ms,
+          issue,
+          projection_state,
+        )
+      {
+        recollect_outputs_control.ExecutionCompleted(bodies) ->
+          QueuedControlOperationCompleted(bodies)
+        recollect_outputs_control.ExecutionFailed(reason, message) ->
+          QueuedControlOperationFailed(reason, message)
+      }
+    }
+  }
+}
+
 fn queued_control_operation_failure_result(
   result: command.CommandResult,
 ) -> QueuedControlOperationResult {
   QueuedControlOperationFailed(
-    option.unwrap(command.status_reason(result.status), "rejected"),
+    case result.status {
+      command.Rejected(reason) | command.NotAllowed(reason) -> reason
+      command.NotFound -> "not_found"
+      command.Applied | command.Queued -> "rejected"
+    },
     result.message,
   )
 }
