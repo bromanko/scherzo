@@ -149,7 +149,7 @@ task_updates:
     max_chars: 8000
 ```
 
-There is no replacement for `linear_commands` or `remote_commands`. Use local/operator controls through `scherzoctl`, for example `scherzoctl retry`, `scherzoctl park`, `scherzoctl prompt`, and `scherzoctl abort`.
+There is no replacement for `linear_commands` or `remote_commands`. Use local/operator controls through `scherzoctl`, for example `scherzoctl task retry`, `scherzoctl park`, `scherzoctl prompt`, and `scherzoctl abort`.
 
 ## Before and after: workflow YAML
 

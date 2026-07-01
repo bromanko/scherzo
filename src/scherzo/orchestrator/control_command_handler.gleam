@@ -73,7 +73,8 @@ pub fn apply(
         context,
         context.reload_workflow(context.state, operator_command),
       )
-    command.RetryIssue(issue_ref) ->
+    command.RetryIssue(issue_ref)
+    | command.RetryIssueStartFresh(issue_ref, _) ->
       log_transition(
         context,
         context.retry_issue(context.state, operator_command, issue_ref),
@@ -94,6 +95,16 @@ pub fn apply(
           operator_command,
           "recollect_outputs_requires_daemon_shell",
           Some("recollect-outputs must be handled by the daemon shell path"),
+        )
+      log_context_result(context, context.state, result, [])
+      #(context.state, result)
+    }
+    command.RunFinalize(..) -> {
+      let result =
+        command.rejected(
+          operator_command,
+          "run_finalize_requires_daemon_shell",
+          Some("run finalize must be handled by the daemon shell path"),
         )
       log_context_result(context, context.state, result, [])
       #(context.state, result)

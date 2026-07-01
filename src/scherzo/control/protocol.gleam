@@ -33,6 +33,12 @@ pub type Request {
   Resume(id: String, token: String)
   ReloadWorkflow(id: String, token: String)
   RetryIssue(id: String, token: String, issue_ref: command.IssueRef)
+  RetryIssueStartFresh(
+    id: String,
+    token: String,
+    issue_ref: command.IssueRef,
+    reason: String,
+  )
   RetryWorkflowStep(
     id: String,
     token: String,
@@ -40,6 +46,17 @@ pub type Request {
     step_id: Option(String),
   )
   RecollectWorkflowOutputs(id: String, token: String, run_id: String)
+  RunFinalize(
+    id: String,
+    token: String,
+    run_id: String,
+    validate: Bool,
+    outputs: command.RunFinalizeOutputs,
+    publish: Bool,
+    update_tracker: Bool,
+    dry_run: Bool,
+    reason: String,
+  )
   RetryArtifactPublication(
     id: String,
     token: String,
@@ -112,6 +129,10 @@ type RequestFields {
     value: Option(String),
     job_id: Option(String),
     dry_run: Option(Bool),
+    validate: Option(Bool),
+    outputs: Option(String),
+    publish: Option(Bool),
+    update_tracker: Option(Bool),
     action_id: Option(String),
     action_instance_id: Option(String),
     target_kind: Option(String),
@@ -135,8 +156,10 @@ pub fn request_id(request: Request) -> String {
     Resume(id, _) -> id
     ReloadWorkflow(id, _) -> id
     RetryIssue(id, _, _) -> id
+    RetryIssueStartFresh(id, _, _, _) -> id
     RetryWorkflowStep(id, _, _, _) -> id
     RecollectWorkflowOutputs(id, _, _) -> id
+    RunFinalize(id, _, _, _, _, _, _, _, _) -> id
     RetryArtifactPublication(id, _, _, _) -> id
     ParkIssue(id, _, _, _) -> id
     UnparkIssue(id, _, _) -> id
@@ -162,8 +185,10 @@ pub fn request_token(request: Request) -> String {
     Resume(_, token) -> token
     ReloadWorkflow(_, token) -> token
     RetryIssue(_, token, _) -> token
+    RetryIssueStartFresh(_, token, _, _) -> token
     RetryWorkflowStep(_, token, _, _) -> token
     RecollectWorkflowOutputs(_, token, _) -> token
+    RunFinalize(_, token, _, _, _, _, _, _, _) -> token
     RetryArtifactPublication(_, token, _, _) -> token
     ParkIssue(_, token, _, _) -> token
     UnparkIssue(_, token, _) -> token
@@ -224,6 +249,12 @@ pub fn request_to_json(request: Request) -> json.Json {
         base_request_entries(id, token, "retry"),
       )
       |> json.object
+    RetryIssueStartFresh(id, token, issue_ref, reason) ->
+      list.append(
+        [#("reason", json.string(reason)), ..issue_ref_entries(issue_ref)],
+        base_request_entries(id, token, "retry_start_fresh"),
+      )
+      |> json.object
     RetryWorkflowStep(id, token, target, step_id) ->
       list.append(
         retry_workflow_step_entries(target, step_id),
@@ -234,6 +265,28 @@ pub fn request_to_json(request: Request) -> json.Json {
       [
         #("run_id", json.string(run_id)),
         ..base_request_entries(id, token, "recollect_outputs")
+      ]
+      |> json.object
+    RunFinalize(
+      id,
+      token,
+      run_id,
+      validate,
+      outputs,
+      publish,
+      update_tracker,
+      dry_run,
+      reason,
+    ) ->
+      [
+        #("run_id", json.string(run_id)),
+        #("validate", json.bool(validate)),
+        #("outputs", json.string(run_finalize_outputs_to_string(outputs))),
+        #("publish", json.bool(publish)),
+        #("update_tracker", json.bool(update_tracker)),
+        #("dry_run", json.bool(dry_run)),
+        #("reason", json.string(reason)),
+        ..base_request_entries(id, token, "run_finalize")
       ]
       |> json.object
     RetryArtifactPublication(id, token, run_id, publication_id) ->
@@ -468,6 +521,12 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
         Ok(issue_ref) -> Ok(RetryIssue(fields.id, fields.token, issue_ref))
         Error(err) -> Error(err)
       }
+    "retry_start_fresh" ->
+      case required_issue_ref(fields), required_reason(fields) {
+        Ok(issue_ref), Ok(reason) ->
+          Ok(RetryIssueStartFresh(fields.id, fields.token, issue_ref, reason))
+        Error(err), _ | _, Error(err) -> Error(err)
+      }
     "retry_step" ->
       case
         required_retry_workflow_step_target(fields),
@@ -482,6 +541,41 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
         Ok(run_id) ->
           Ok(RecollectWorkflowOutputs(fields.id, fields.token, run_id))
         Error(err) -> Error(err)
+      }
+    "run_finalize" ->
+      case
+        required_run_id(fields),
+        required_true_flag(fields, fields.validate, "validate"),
+        required_run_finalize_outputs(fields),
+        required_true_flag(fields, fields.publish, "publish"),
+        required_true_flag(fields, fields.update_tracker, "update_tracker"),
+        required_reason(fields)
+      {
+        Ok(run_id),
+          Ok(validate),
+          Ok(outputs),
+          Ok(publish),
+          Ok(update_tracker),
+          Ok(reason)
+        ->
+          Ok(RunFinalize(
+            fields.id,
+            fields.token,
+            run_id,
+            validate,
+            outputs,
+            publish,
+            update_tracker,
+            request_dry_run(fields),
+            reason,
+          ))
+        Error(err), _, _, _, _, _
+        | _, Error(err), _, _, _, _
+        | _, _, Error(err), _, _, _
+        | _, _, _, Error(err), _, _
+        | _, _, _, _, Error(err), _
+        | _, _, _, _, _, Error(err)
+        -> Error(err)
       }
     "retry_artifact_publication" ->
       case required_run_id(fields), optional_publication_id(fields) {
@@ -681,6 +775,35 @@ fn optional_publication_id(
       }
     }
     None -> Ok(None)
+  }
+}
+
+fn required_true_flag(
+  fields: RequestFields,
+  value: Option(Bool),
+  name: String,
+) -> Result(Bool, RequestError) {
+  case value {
+    Some(True) -> Ok(True)
+    Some(False) | None -> invalid(fields.id, name <> " must be true")
+  }
+}
+
+fn required_run_finalize_outputs(
+  fields: RequestFields,
+) -> Result(command.RunFinalizeOutputs, RequestError) {
+  case fields.outputs {
+    Some("auto") -> Ok(command.RunFinalizeOutputsAuto)
+    Some(_) -> invalid(fields.id, "outputs must be auto")
+    None -> invalid(fields.id, "missing outputs")
+  }
+}
+
+fn run_finalize_outputs_to_string(
+  outputs: command.RunFinalizeOutputs,
+) -> String {
+  case outputs {
+    command.RunFinalizeOutputsAuto -> "auto"
   }
 }
 
@@ -955,6 +1078,26 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.bool),
   )
+  use validate <- decode.optional_field(
+    "validate",
+    None,
+    decode.optional(decode.bool),
+  )
+  use outputs <- decode.optional_field(
+    "outputs",
+    None,
+    decode.optional(decode.string),
+  )
+  use publish <- decode.optional_field(
+    "publish",
+    None,
+    decode.optional(decode.bool),
+  )
+  use update_tracker <- decode.optional_field(
+    "update_tracker",
+    None,
+    decode.optional(decode.bool),
+  )
   use action_id <- decode.optional_field(
     "action_id",
     None,
@@ -1017,6 +1160,10 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     value: value,
     job_id: job_id,
     dry_run: dry_run,
+    validate: validate,
+    outputs: outputs,
+    publish: publish,
+    update_tracker: update_tracker,
     action_id: action_id,
     action_instance_id: action_instance_id,
     target_kind: target_kind,
@@ -1146,10 +1293,32 @@ pub fn command_request(
     command.ResumeDispatch -> Resume(id, token)
     command.ReloadWorkflow -> ReloadWorkflow(id, token)
     command.RetryIssue(issue_ref) -> RetryIssue(id, token, issue_ref)
+    command.RetryIssueStartFresh(issue_ref, reason) ->
+      RetryIssueStartFresh(id, token, issue_ref, reason)
     command.RetryWorkflowStep(target, step_id) ->
       RetryWorkflowStep(id, token, target, step_id)
     command.RecollectWorkflowOutputs(run_id) ->
       RecollectWorkflowOutputs(id, token, run_id)
+    command.RunFinalize(
+      run_id: run_id,
+      validate: validate,
+      outputs: outputs,
+      publish: publish,
+      update_tracker: update_tracker,
+      dry_run: dry_run,
+      reason: reason,
+    ) ->
+      RunFinalize(
+        id,
+        token,
+        run_id,
+        validate,
+        outputs,
+        publish,
+        update_tracker,
+        dry_run,
+        reason,
+      )
     command.RetryArtifactPublication(run_id, publication_id) ->
       RetryArtifactPublication(id, token, run_id, publication_id)
     command.ParkIssue(issue_ref, reason) ->
@@ -1185,10 +1354,32 @@ pub fn request_operator_command(
     Resume(_, _) -> Some(command.ResumeDispatch)
     ReloadWorkflow(_, _) -> Some(command.ReloadWorkflow)
     RetryIssue(_, _, issue_ref) -> Some(command.RetryIssue(issue_ref))
+    RetryIssueStartFresh(_, _, issue_ref, reason) ->
+      Some(command.RetryIssueStartFresh(issue_ref, reason))
     RetryWorkflowStep(_, _, target, step_id) ->
       Some(command.RetryWorkflowStep(target, step_id))
     RecollectWorkflowOutputs(_, _, run_id) ->
       Some(command.RecollectWorkflowOutputs(run_id))
+    RunFinalize(
+      _,
+      _,
+      run_id,
+      validate,
+      outputs,
+      publish,
+      update_tracker,
+      dry_run,
+      reason,
+    ) ->
+      Some(command.RunFinalize(
+        run_id: run_id,
+        validate: validate,
+        outputs: outputs,
+        publish: publish,
+        update_tracker: update_tracker,
+        dry_run: dry_run,
+        reason: reason,
+      ))
     RetryArtifactPublication(_, _, run_id, publication_id) ->
       Some(command.RetryArtifactPublication(run_id, publication_id))
     ParkIssue(_, _, issue_ref, reason) ->

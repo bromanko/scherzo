@@ -15,6 +15,7 @@ import scherzo/control/query/types as query_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/hash
+import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/dispatch_recovery
 import scherzo/orchestrator/startup_recovery
@@ -3112,6 +3113,21 @@ fn tracker_issue_only(candidate: tracker_issue.Issue) -> tracker.Client {
   )
 }
 
+fn run_finalize_command(
+  run_id: String,
+  dry_run dry_run: Bool,
+) -> command.OperatorCommand {
+  command.RunFinalize(
+    run_id: run_id,
+    validate: True,
+    outputs: command.RunFinalizeOutputsAuto,
+    publish: True,
+    update_tracker: True,
+    dry_run: dry_run,
+    reason: "operator salvage",
+  )
+}
+
 type IssueSequenceMessage {
   IssueSequenceSet(issue: tracker_issue.Issue, reply: process.Subject(Nil))
   IssueSequenceNext(reply: process.Subject(tracker_issue.Issue))
@@ -3205,6 +3221,693 @@ fn in_process_dependencies(
       Error(command_runner.command_error("unexpected_publication_retry"))
     }),
   )
+}
+
+pub fn run_finalize_dry_run_reports_plan_without_queueing_test() {
+  let dir = "test/tmp/daemon-run-finalize-dry-run"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        process.send(worker_subject, "unexpected_worker")
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RunFinalize(
+        run_id: "run-1",
+        validate: True,
+        outputs: command.RunFinalizeOutputsAuto,
+        publish: True,
+        update_tracker: True,
+        dry_run: True,
+        reason: "operator salvage",
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "applied"
+  let assert Some(message) = result.message
+  assert string.contains(message, "would validate retained evidence")
+  assert count_kind(root, "control_operation_queued") == 0
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_dry_run_rejects_parked_issue_test() {
+  let dir = "test/tmp/daemon-run-finalize-parked-issue"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append(
+      ledger_path,
+      record.with_id(
+        "issue-parked",
+        1010,
+        record.IssueParkedV2(
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          reason: "manual_hold",
+          release_policy: "explicit_unpark_only",
+          issue_fingerprint: core.issue_fingerprint(issue),
+          observed_updated_at_ms: 1010,
+        ),
+      ),
+      True,
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      run_finalize_command("run-1", dry_run: True),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("issue_parked")
+  assert count_kind(root, "control_operation_queued") == 0
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_dry_run_rejects_non_active_issue_state_test() {
+  let dir = "test/tmp/daemon-run-finalize-non-active-issue"
+  let current_issue = issue("issue-1", "LIV-1336", "Backlog")
+  let seeded_issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    seeded_issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(current_issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(current_issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      run_finalize_command("run-1", dry_run: True),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status)
+    == Some("issue_state_drift:non_active_state")
+  assert count_kind(root, "control_operation_queued") == 0
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_dry_run_rejects_superseded_run_test() {
+  let dir = "test/tmp/daemon-run-finalize-superseded"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append(
+      ledger_path,
+      record.with_id(
+        "workflow-superseded-run-1",
+        1030,
+        record.WorkflowRunSuperseded(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          issue_id: issue.id,
+          superseded_by_run_id: "run-2",
+          reason: "newer_run_started",
+        ),
+      ),
+      True,
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      run_finalize_command("run-1", dry_run: True),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("run_superseded")
+  assert count_kind(root, "control_operation_queued") == 0
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_queues_operation_updates_tracker_and_is_idempotent_test() {
+  let dir = "test/tmp/daemon-run-finalize-queued"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let worker_subject = process.new_subject()
+  let publish_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        process.send(worker_subject, "unexpected_worker")
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      blocking_publication_retry_runner(log_subject, publish_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let operator_command =
+    command.RunFinalize(
+      run_id: "run-1",
+      validate: True,
+      outputs: command.RunFinalizeOutputsAuto,
+      publish: True,
+      update_tracker: True,
+      dry_run: False,
+      reason: "operator salvage",
+    )
+  let assert Ok(first) =
+    daemon.apply_operator_command(started.data, operator_command, 1000)
+  assert command.status_to_string(first.status) == "queued"
+  let assert Some(operation_id) = first.operation_id
+  assert string.starts_with(operation_id, "run-finalize:run-1:")
+  assert wait_for_log(log_subject, "publication_driver_started", 100)
+
+  let assert Ok(second) =
+    daemon.apply_operator_command(started.data, operator_command, 1000)
+  assert command.status_to_string(second.status) == "queued"
+  assert second.operation_id == Some(operation_id)
+  assert second.message
+    == Some(
+      "run finalize already queued/running; poll query operation-status for completion",
+    )
+  assert count_kind(root, "control_operation_queued") == 1
+
+  test_async.release_barrier(publish_barrier)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.message
+    == Some("run finalize completed without starting a worker")
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
+  assert count_kind(root, "workflow_run_finished") == 1
+  assert wait_for_log(log_subject, "state_transition:Done", 100)
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_rejects_queue_append_failure_without_async_work_test() {
+  let dir = "test/tmp/daemon-run-finalize-queue-append-failed"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  chmod_path("a-w", ledger_path.current_path)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      run_finalize_command("run-1", dry_run: False),
+      1000,
+    )
+
+  chmod_path("u+w", ledger_path.current_path)
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("ledger_append_failed")
+  assert result.message == Some("failed to append run finalize operation")
+  assert count_kind(root, "control_operation_queued") == 0
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_dry_run_rejects_issue_drift_test() {
+  let dir = "test/tmp/daemon-run-finalize-issue-drift"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let changed_issue = tracker_issue.Issue(..issue, title: "Changed title")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(changed_issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(changed_issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RunFinalize(
+        run_id: "run-1",
+        validate: True,
+        outputs: command.RunFinalizeOutputsAuto,
+        publish: True,
+        update_tracker: True,
+        dry_run: True,
+        reason: "operator salvage",
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("issue_drift")
+  assert count_kind(root, "control_operation_queued") == 0
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_dry_run_rejects_output_recovery_failure_test() {
+  let dir = "test/tmp/daemon-run-finalize-output-recovery-failure"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: False,
+  )
+  let assert Ok(Nil) = simplifile.delete(root <> "/runs/run-1/workspaces/main")
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RunFinalize(
+        run_id: "run-1",
+        validate: True,
+        outputs: command.RunFinalizeOutputsAuto,
+        publish: True,
+        update_tracker: True,
+        dry_run: True,
+        reason: "operator salvage",
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  let assert Some(reason) = command.status_reason(result.status)
+  assert reason == "run_not_complete" || reason == "workspace_recovery_failed"
+  assert count_kind(root, "control_operation_queued") == 0
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_async_publication_failure_records_failed_operation_test() {
+  let dir = "test/tmp/daemon-run-finalize-publication-failure"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      failing_publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RunFinalize(
+        run_id: "run-1",
+        validate: True,
+        outputs: command.RunFinalizeOutputsAuto,
+        publish: True,
+        update_tracker: True,
+        dry_run: False,
+        reason: "operator salvage",
+      ),
+      1000,
+    )
+  let assert Some(operation_id) = result.operation_id
+  let assert Ok(failed_operation) =
+    wait_for_operation_status(root, operation_id, "failed", 20)
+  assert failed_operation.reason == Some("publication_retry_attempt_failed")
+  assert count_kind(root, "workflow_run_finished") == 0
+  assert !wait_for_log(log_subject, "state_transition:Done", 5)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_async_tracker_update_failure_records_failed_operation_test() {
+  let dir = "test/tmp/daemon-run-finalize-tracker-update-failure"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_failing_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RunFinalize(
+        run_id: "run-1",
+        validate: True,
+        outputs: command.RunFinalizeOutputsAuto,
+        publish: True,
+        update_tracker: True,
+        dry_run: False,
+        reason: "operator salvage",
+      ),
+      1000,
+    )
+  let assert Some(operation_id) = result.operation_id
+  let assert Ok(failed_operation) =
+    wait_for_operation_status(root, operation_id, "failed", 20)
+  assert failed_operation.reason == Some("tracker_update_failed")
+  assert wait_for_log(log_subject, "state_transition_failed:Done", 100)
+  assert count_kind(root, "workflow_run_finished") == 0
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_startup_replay_replays_queued_operation_test() {
+  let dir = "test/tmp/daemon-run-finalize-startup-replay"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_interrupted_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let operation_id = "run-finalize:run-1:queued-replay"
+  append_ledger_records(root, [
+    record.with_id(
+      "queued-op",
+      40,
+      record.ControlOperationQueued(
+        operation_id: operation_id,
+        operation_kind: "run_finalize",
+        command_name: "run_finalize",
+        target: "run:run-1",
+        run_id: Some("run-1"),
+        issue_id: Some(issue.id),
+        issue_identifier: Some(issue.identifier),
+        requested_step_id: None,
+        publication_id: None,
+      ),
+    ),
+  ])
+  let log_subject = process.new_subject()
+  let publish_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      blocking_publication_retry_runner(log_subject, publish_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  assert wait_for_log(log_subject, "publication_driver_started", 100)
+  test_async.release_barrier(publish_barrier)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.message
+    == Some("run finalize completed without starting a worker")
+  assert count_kind(root, "workflow_run_finished") == 1
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
 }
 
 fn in_process_dependencies_with_adapter(
@@ -3731,6 +4434,72 @@ fn seed_finished_publication_run_without_attempts(
   Nil
 }
 
+fn seed_interrupted_publication_retry_run(
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  at_ms: Int,
+  include_output_manifest include_output_manifest: Bool,
+) -> Nil {
+  write_seed_artifact(
+    root,
+    run_output_ref(run_id),
+    commit_stack_payload(run_id),
+  )
+  write_seed_artifact(root, run_bundle_ref(run_id), "bundle")
+  write_publication_retained_workspace_manifest(root, run_id)
+  let output_records = case include_output_manifest {
+    True -> [seeded_output_manifest_record(root, run_id)]
+    False -> []
+  }
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      list.append(
+        [
+          record.with_id(
+            "workflow-started-" <> run_id,
+            at_ms,
+            record.WorkflowRunStarted(
+              run_id: run_id,
+              workflow_id: "execplan",
+              workflow_fingerprint: workflow_fingerprint_for_publication_root(
+                root,
+              ),
+              issue_id: issue.id,
+              issue_identifier: issue.identifier,
+              issue_fingerprint: tracker_issue.content_fingerprint(issue),
+              observed_updated_at_ms: at_ms - 1,
+              run_root: root <> "/runs/" <> run_id,
+            ),
+          ),
+          ..output_records
+        ],
+        [
+          record.with_id(
+            "workflow-interrupted-" <> run_id,
+            at_ms + 10,
+            record.WorkflowRunInterrupted(
+              run_id: run_id,
+              workflow_id: "execplan",
+              issue_id: issue.id,
+              reason: "operator_stop",
+            ),
+          ),
+          interrupted_publication_failed_attempt_record(
+            root,
+            issue,
+            run_id,
+            at_ms + 20,
+          ),
+        ],
+      ),
+      True,
+    )
+  Nil
+}
+
 fn seed_failed_publication_retry_run(
   root: String,
   issue: tracker_issue.Issue,
@@ -3745,7 +4514,7 @@ fn seed_failed_publication_retry_run(
   )
   write_seed_artifact(root, run_bundle_ref(run_id), "bundle")
   write_publication_retained_workspace_manifest(root, run_id)
-  let output_manifest = seeded_output_manifest(run_id)
+  let output_manifest = seeded_output_manifest(root, run_id)
   let config_path = publication_config_path(root)
   let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
   let assert Ok(#(_, workflow)) =
@@ -3867,6 +4636,98 @@ fn seed_failed_publication_retry_run(
   Nil
 }
 
+fn workflow_fingerprint_for_publication_root(root: String) -> String {
+  let config_path = publication_config_path(root)
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "execplan")
+  let assert Ok(fingerprint) =
+    workflow_fingerprint_module.fingerprint_for_execution(
+      workflow,
+      bundle.orchestrator,
+    )
+  fingerprint
+}
+
+fn interrupted_publication_failed_attempt_record(
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  at_ms: Int,
+) -> record.LedgerRecord {
+  let output_manifest = seeded_output_manifest(root, run_id)
+  let config_path = publication_config_path(root)
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "execplan")
+  let assert Ok(body_templates) =
+    artifact_publication_recording.load_body_templates(
+      workflow_dag.publication_routes(workflow),
+      bundle.orchestrator.artifact_repositories,
+      bundle.orchestrator.config_dir,
+      runtime_bundle.workflow_bundle_dir(bundle, workflow_dag.id(workflow)),
+    )
+  let assert [route] = workflow_dag.publication_routes(workflow)
+  let assert Ok(planned) =
+    artifact_publication_planner.plan_publication(
+      output_manifest,
+      bundle.orchestrator.artifact_repositories,
+      route,
+      artifact_store.new(root),
+      artifact_publication_planner.PublicationWork(
+        kind: artifact_publication_planner.TaskWork,
+        id: issue.id,
+        identifier: issue.identifier,
+        slug: issue.identifier,
+        title: None,
+        url: None,
+      ),
+      run_id,
+      body_templates,
+    )
+  let failed_ref =
+    "runs/" <> run_id <> "/publications/execplan_review_doc/failed-1.json"
+  let failed_manifest =
+    artifact_publication_manifest.failed_from_planned_manifest(
+      planned,
+      "failed-1",
+      at_ms,
+      True,
+      Some(planned.branch),
+      None,
+      None,
+      [],
+      [],
+      artifact_publication_manifest.PublicationErrorInfo(
+        code: "git_push_failed",
+        message: "previous push failed",
+      ),
+    )
+  let #(failed_sha, failed_bytes) =
+    write_publication_manifest(root, failed_ref, failed_manifest)
+  record.with_id(
+    "publication-failed-" <> run_id,
+    at_ms,
+    record.PublicationAttemptRecorded(
+      run_id: run_id,
+      workflow_id: "execplan",
+      publication_id: "execplan_review_doc",
+      series_id: planned.series_id,
+      attempt_id: "failed-1",
+      status: "failed",
+      required: True,
+      retryable: True,
+      retry_execution_available: True,
+      version_id: None,
+      manifest_ref: Some(failed_ref),
+      manifest_sha256: Some(failed_sha),
+      manifest_bytes: Some(failed_bytes),
+      error_code: Some("git_push_failed"),
+      error_message: Some("previous push failed"),
+    ),
+  )
+}
+
 fn seed_non_retryable_failed_publication_attempt(
   root: String,
   run_id: String,
@@ -3963,7 +4824,7 @@ fn seed_recovered_published_publication_run(
   )
   write_seed_artifact(root, run_bundle_ref(run_id), "bundle")
   write_publication_retained_workspace_manifest(root, run_id)
-  let output_manifest = seeded_output_manifest(run_id)
+  let output_manifest = seeded_output_manifest(root, run_id)
   let config_path = publication_config_path(root)
   let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
   let assert Ok(#(_, workflow)) =
@@ -4163,6 +5024,7 @@ fn commit_stack_driver_success_json(issue_identifier: String) -> String {
 }
 
 fn seeded_output_manifest(
+  root: String,
   run_id: String,
 ) -> workflow_contract_manifest.ContractOutputManifest {
   let body = commit_stack_payload(run_id)
@@ -4175,7 +5037,7 @@ fn seeded_output_manifest(
   workflow_contract_manifest.ContractOutputManifest(
     run_id: run_id,
     workflow_id: "execplan",
-    workflow_fingerprint: "wf-1",
+    workflow_fingerprint: workflow_fingerprint_for_publication_root(root),
     outputs: [
       workflow_contract_manifest.NamedManifestValue(
         name: "commit_stack",
@@ -4230,7 +5092,7 @@ fn seeded_output_manifest_record(
   run_id: String,
 ) -> record.LedgerRecord {
   let payload =
-    seeded_output_manifest(run_id)
+    seeded_output_manifest(root, run_id)
     |> workflow_contract_manifest.output_manifest_to_string
   let ref = "runs/" <> run_id <> "/contract/outputs.json"
   write_seed_artifact(root, ref, payload)

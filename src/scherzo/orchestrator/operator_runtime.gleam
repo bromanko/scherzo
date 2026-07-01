@@ -42,6 +42,17 @@ pub opaque type ShellHandlers(state) {
       command.OperatorCommand,
       String,
     ) -> #(state, command.CommandResult, List(transition_types.Message)),
+    run_finalize_for_operator: fn(
+      state,
+      command.OperatorCommand,
+      String,
+      Bool,
+      command.RunFinalizeOutputs,
+      Bool,
+      Bool,
+      Bool,
+      String,
+    ) -> #(state, command.CommandResult, List(transition_types.Message)),
     retry_artifact_publication_for_operator: fn(
       state,
       command.OperatorCommand,
@@ -91,6 +102,17 @@ pub fn shell_handlers(
     command.OperatorCommand,
     String,
   ) -> #(state, command.CommandResult, List(transition_types.Message)),
+  run_finalize_for_operator run_finalize_for_operator: fn(
+    state,
+    command.OperatorCommand,
+    String,
+    Bool,
+    command.RunFinalizeOutputs,
+    Bool,
+    Bool,
+    Bool,
+    String,
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   retry_artifact_publication_for_operator retry_artifact_publication_for_operator: fn(
     state,
     command.OperatorCommand,
@@ -129,6 +151,7 @@ pub fn shell_handlers(
     reload_workflow_for_operator: reload_workflow_for_operator,
     retry_workflow_step_for_operator: retry_workflow_step_for_operator,
     recollect_workflow_outputs_for_operator: recollect_workflow_outputs_for_operator,
+    run_finalize_for_operator: run_finalize_for_operator,
     retry_artifact_publication_for_operator: retry_artifact_publication_for_operator,
     schedule_run_now_for_operator: schedule_run_now_for_operator,
     abort_session_for_operator_sync: abort_session_for_operator_sync,
@@ -142,7 +165,9 @@ pub fn operator_issue_resolution(
   operator_command: command.OperatorCommand,
 ) -> transition_types.OperatorIssueResolution {
   case operator_command {
-    command.RetryIssue(issue_ref) | command.ParkIssue(issue_ref, _) ->
+    command.RetryIssue(issue_ref)
+    | command.RetryIssueStartFresh(issue_ref, _)
+    | command.ParkIssue(issue_ref, _) ->
       case lookup.issue_for_ref(issue_ref) {
         Ok(issue) -> transition_types.OperatorIssueResolved(issue)
         Error(command.NotFound) -> transition_types.OperatorIssueNotFound
@@ -158,6 +183,7 @@ pub fn operator_issue_resolution(
     | command.ReloadWorkflow
     | command.RetryWorkflowStep(_, _)
     | command.RecollectWorkflowOutputs(_)
+    | command.RunFinalize(..)
     | command.RetryArtifactPublication(_, _)
     | command.UnparkIssue(_)
     | command.AbortSession(_)
@@ -190,8 +216,10 @@ pub fn parked_issue_resolution(
     | command.ResumeDispatch
     | command.ReloadWorkflow
     | command.RetryIssue(_)
+    | command.RetryIssueStartFresh(_, _)
     | command.RetryWorkflowStep(_, _)
     | command.RecollectWorkflowOutputs(_)
+    | command.RunFinalize(..)
     | command.RetryArtifactPublication(_, _)
     | command.ParkIssue(_, _)
     | command.AbortSession(_)
@@ -225,6 +253,26 @@ pub fn apply_shell_operator_command(
         state,
         operator_command,
         run_id,
+      )
+    command.RunFinalize(
+      run_id: run_id,
+      validate: validate,
+      outputs: outputs,
+      publish: publish,
+      update_tracker: update_tracker,
+      dry_run: dry_run,
+      reason: reason,
+    ) ->
+      handlers.run_finalize_for_operator(
+        state,
+        operator_command,
+        run_id,
+        validate,
+        outputs,
+        publish,
+        update_tracker,
+        dry_run,
+        reason,
       )
     command.RetryArtifactPublication(run_id, publication_id) ->
       handlers.retry_artifact_publication_for_operator(
@@ -285,6 +333,7 @@ pub fn apply_shell_operator_command(
     command.PauseDispatch
     | command.ResumeDispatch
     | command.RetryIssue(_)
+    | command.RetryIssueStartFresh(_, _)
     | command.ParkIssue(_, _)
     | command.UnparkIssue(_)
     | command.WorkItemAction(_) -> #(

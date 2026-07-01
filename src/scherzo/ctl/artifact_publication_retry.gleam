@@ -94,6 +94,24 @@ pub fn retry_attempts_with_bundle_runner(
   runner: command_runner.Runner,
 ) -> Result(List(projection.PublicationAttempt), #(String, String)) {
   use projected <- result.try(schedule_state.load_projection(root, pair_error))
+  retry_attempts_with_projection_and_bundle_runner(
+    root,
+    projected,
+    run_id,
+    publication_id,
+    bundle,
+    runner,
+  )
+}
+
+pub fn retry_attempts_with_projection_and_bundle_runner(
+  root: String,
+  projected: projection.Projection,
+  run_id: String,
+  publication_id: Option(String),
+  bundle: runtime_bundle.RuntimeBundle,
+  runner: command_runner.Runner,
+) -> Result(List(projection.PublicationAttempt), #(String, String)) {
   let checkpoint = workflow_checkpoint.ledger_writer(root, monotonic_ms)
   retry_selected_publications(
     projected,

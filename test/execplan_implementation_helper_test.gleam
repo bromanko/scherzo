@@ -1157,11 +1157,11 @@ pub fn plan_completion_recovery_exhausts_after_final_repair_test() {
   )
   assert string.contains(
     recovery_json,
-    "\"retry_command\": \"scherzoctl retry LIV-128\"",
+    "\"retry_command\": \"scherzoctl task retry LIV-128\"",
   )
   assert !string.contains(recovery_json, "LIV-127")
-  assert string.contains(recovery_md, "scherzoctl retry LIV-128")
-  assert !string.contains(recovery_md, "scherzoctl retry LIV-127")
+  assert string.contains(recovery_md, "scherzoctl task retry LIV-128")
+  assert !string.contains(recovery_md, "scherzoctl task retry LIV-127")
 }
 
 pub fn plan_completion_recovery_exhausts_at_final_gate_test() {

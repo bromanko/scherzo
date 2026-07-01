@@ -75,11 +75,18 @@ pub fn running_conflict(
       projected.control_operations
       |> dict.values
       |> list.find(fn(existing) {
-        existing.operation_kind == "artifact_publication_retry"
-        && existing.operation_id != operation.operation_id
+        existing.operation_id != operation.operation_id
         && existing.status == "running"
         && existing.run_id == Some(run_id)
-        && targets_overlap(existing.publication_id, operation.publication_id)
+        && operation_conflicts(existing, operation.publication_id)
+      })
+    "run_finalize", Some(run_id) ->
+      projected.control_operations
+      |> dict.values
+      |> list.find(fn(existing) {
+        existing.operation_kind == "artifact_publication_retry"
+        && existing.status == "running"
+        && existing.run_id == Some(run_id)
       })
     _, _ -> Error(Nil)
   }
@@ -93,6 +100,23 @@ pub fn retry_all_attempts(
 ) -> Result(List(projection.PublicationAttempt), #(String, String)) {
   artifact_publication_retry.retry_attempts_with_bundle_runner(
     root,
+    run_id,
+    None,
+    bundle,
+    runner,
+  )
+}
+
+pub fn retry_all_attempts_with_projection(
+  root: String,
+  projected: projection.Projection,
+  run_id: String,
+  bundle: runtime_bundle.RuntimeBundle,
+  runner: command_runner.Runner,
+) -> Result(List(projection.PublicationAttempt), #(String, String)) {
+  artifact_publication_retry.retry_attempts_with_projection_and_bundle_runner(
+    root,
+    projected,
     run_id,
     None,
     bundle,
@@ -154,10 +178,9 @@ fn active_operation_for_target(
   projected.control_operations
   |> dict.values
   |> list.find(fn(existing) {
-    existing.operation_kind == "artifact_publication_retry"
-    && existing.run_id == Some(run_id)
+    existing.run_id == Some(run_id)
     && is_incomplete(existing.status)
-    && targets_overlap(existing.publication_id, publication_id)
+    && operation_conflicts(existing, publication_id)
   })
 }
 
@@ -170,6 +193,18 @@ fn same_target(existing: Option(String), requested: Option(String)) -> Bool {
     None, None -> True
     Some(existing), Some(requested) -> existing == requested
     _, _ -> False
+  }
+}
+
+fn operation_conflicts(
+  existing: projection.ControlOperationStatus,
+  requested: Option(String),
+) -> Bool {
+  case existing.operation_kind {
+    "artifact_publication_retry" ->
+      targets_overlap(existing.publication_id, requested)
+    "run_finalize" -> True
+    _ -> False
   }
 }
 

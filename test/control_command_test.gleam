@@ -15,6 +15,10 @@ pub fn command_names_and_targets_are_stable_test() {
   assert command.command_name(command.RetryIssue(issue_ref)) == "retry"
   assert command.command_target(command.RetryIssue(issue_ref))
     == Some("ABC-123")
+  assert command.command_name(command.RetryIssueStartFresh(issue_ref, "drift"))
+    == "retry_start_fresh"
+  assert command.command_target(command.RetryIssueStartFresh(issue_ref, "drift"))
+    == Some("ABC-123")
   assert command.command_name(command.RetryWorkflowStep(
       command.RetryWorkflowStepRunId("run-1"),
       Some("step-1"),
@@ -28,6 +32,26 @@ pub fn command_names_and_targets_are_stable_test() {
   assert command.command_name(command.RecollectWorkflowOutputs("run-1"))
     == "recollect_outputs"
   assert command.command_target(command.RecollectWorkflowOutputs("run-1"))
+    == Some("run:run-1")
+  assert command.command_name(command.RunFinalize(
+      run_id: "run-1",
+      validate: True,
+      outputs: command.RunFinalizeOutputsAuto,
+      publish: True,
+      update_tracker: True,
+      dry_run: True,
+      reason: "operator salvage",
+    ))
+    == "run_finalize"
+  assert command.command_target(command.RunFinalize(
+      run_id: "run-1",
+      validate: True,
+      outputs: command.RunFinalizeOutputsAuto,
+      publish: True,
+      update_tracker: True,
+      dry_run: True,
+      reason: "operator salvage",
+    ))
     == Some("run:run-1")
   assert command.command_name(command.RetryArtifactPublication(
       "run-1",
@@ -93,6 +117,10 @@ pub fn operator_command_codec_roundtrips_all_variants_test() {
   assert_command_roundtrip(
     command.RetryIssue(command.IssueIdentifier("ABC-123")),
   )
+  assert_command_roundtrip(command.RetryIssueStartFresh(
+    command.IssueIdentifier("ABC-123"),
+    "workflow drift",
+  ))
   assert_command_roundtrip(command.RetryWorkflowStep(
     command.RetryWorkflowStepAutoTarget("ABC-123"),
     None,
@@ -110,6 +138,15 @@ pub fn operator_command_codec_roundtrips_all_variants_test() {
     Some("step-2"),
   ))
   assert_command_roundtrip(command.RecollectWorkflowOutputs("run-1"))
+  assert_command_roundtrip(command.RunFinalize(
+    run_id: "run-1",
+    validate: True,
+    outputs: command.RunFinalizeOutputsAuto,
+    publish: True,
+    update_tracker: True,
+    dry_run: False,
+    reason: "operator salvage",
+  ))
   assert_command_roundtrip(command.RetryArtifactPublication("run-1", None))
   assert_command_roundtrip(command.RetryArtifactPublication(
     "run-1",
@@ -175,6 +212,10 @@ pub fn invalid_operator_command_payloads_return_stable_errors_test() {
     "{\"type\":\"retry\",\"issue_identifier\":\"   \"}",
     "invalid_command",
   )
+  assert_invalid_command(
+    "{\"type\":\"retry_start_fresh\",\"issue_identifier\":\"ABC-1\",\"reason\":\"   \"}",
+    "invalid_command",
+  )
   assert_invalid_command("{\"type\":\"retry_step\"}", "invalid_command")
   assert_invalid_command(
     "{\"type\":\"retry_step\",\"target\":\"ABC-1\",\"run_id\":\"run-1\"}",
@@ -190,6 +231,10 @@ pub fn invalid_operator_command_payloads_return_stable_errors_test() {
   )
   assert_invalid_command(
     "{\"type\":\"recollect_outputs\",\"run_id\":\"   \"}",
+    "invalid_command",
+  )
+  assert_invalid_command(
+    "{\"type\":\"run_finalize\",\"run_id\":\"run-1\",\"validate\":true,\"outputs\":\"bogus\",\"publish\":true,\"update_tracker\":true,\"reason\":\"ok\"}",
     "invalid_command",
   )
   assert_invalid_command(
