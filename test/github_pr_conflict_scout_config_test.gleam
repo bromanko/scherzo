@@ -160,9 +160,9 @@ pub fn checked_in_workspace_cleanup_schedule_loads_test() {
   assert_contains(run, "SCHERZO_WORKSPACE_CLEANUP_ROOT")
   assert_contains(run, "command -v scherzo")
   assert_contains(run, "direnv exec \"$repo_root\" gleam run --")
-  assert_contains(run, "scherzo cleanup --root")
-  assert_not_contains(run, "command -v scherzoctl")
-  assert_not_contains(run, "$repo_root/scripts/scherzoctl")
+  assert_contains(run, "run_cleanup --root \"$workspace_root\"")
+  assert_contains(run, "command -v scherzoctl")
+  assert_contains(run, "$repo_root/scripts/scherzoctl")
   assert_not_contains(run, "gleam run -- ctl")
 
   let assert Ok(job) =

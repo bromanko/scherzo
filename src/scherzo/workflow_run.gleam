@@ -29,6 +29,7 @@ import scherzo/workflow_contract_manifest as contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_identity
 import scherzo/workflow_outcome
+import scherzo/workflow_run/command_step_timeout_retry
 import scherzo/workflow_run/contract_io
 import scherzo/workflow_run/contract_io_error as contract_error
 import scherzo/workflow_run/recovery_execution
@@ -1387,7 +1388,11 @@ pub fn failed_command_failure(
   case failed_command_artifact(failure) {
     Some(artifact) ->
       case artifact.failure_code {
-        Some(code) -> Some(#(code, artifact.step_id))
+        Some(code) ->
+          Some(#(
+            command_step_timeout_retry.report_failure_code(failure.reason, code),
+            artifact.step_id,
+          ))
         None -> None
       }
     None -> None
@@ -2662,91 +2667,207 @@ fn finish_fatal_batch_result(
             profile,
             checkpoint_error: Some(error),
           )
-        Ok(_) ->
-          case drained {
-            True ->
+        Ok(_) -> {
+          let batch_safe_to_retry = drained || list.length(starts) <= 1
+          case
+            command_step_batch_timeout_retry_attempt(
+              step,
+              workspace,
+              result_artifact,
+              batch_safe_to_retry,
+              interrupted_step_ids,
+            )
+          {
+            Some(retry_attempt_index) ->
               case
-                recovery_execution.effective_for_failure(
-                  dag,
-                  step,
+                record_command_step_timeout_retry_scheduled(
+                  dependencies,
+                  run_id,
+                  workflow_dag.id(dag),
+                  issue.id,
+                  step.id,
                   workspace.attempt_index,
+                  retry_attempt_index,
                 )
               {
-                Some(config) ->
+                Error(error) ->
+                  terminal_fatal_batch_failure(
+                    starts,
+                    interrupted_step_ids,
+                    result,
+                    issue,
+                    dag,
+                    run_id,
+                    workflow_fingerprint,
+                    contract_outputs_recorded,
+                    recovery_evidence,
+                    orchestrator,
+                    dependencies,
+                    failure_artifacts,
+                    prepared_workspaces,
+                    run_root,
+                    sibling_tokens.total + result_tokens.total,
+                    sibling_turns + result_turns,
+                    cleanup_allowed,
+                    profile,
+                    checkpoint_error: Some(error),
+                  )
+                Ok(Nil) -> {
+                  let scheduler_state =
+                    workflow_scheduler.mark_pending(
+                      sibling_scheduler_state,
+                      step.id,
+                    )
+                  let tokens = add_tokens(sibling_tokens, result_tokens)
+                  let final_issue =
+                    latest_final_issue(sibling_final_issue, result_final_issue)
+                  loop(
+                    issue,
+                    dag,
+                    orchestrator,
+                    tracker_client,
+                    secrets,
+                    run_id,
+                    workflow_fingerprint,
+                    contract_outputs_recorded,
+                    recovery_evidence,
+                    recovered_execution,
+                    dependencies,
+                    scheduler_state,
+                    dict.delete(failure_artifacts, step.id),
+                    prepared_workspaces,
+                    run_root,
+                    attempt_indexes,
+                    tokens,
+                    final_issue,
+                    sibling_turns + result_turns,
+                    cleanup_allowed,
+                    pi_session_continuations,
+                    profile,
+                  )
+                }
+              }
+            None -> {
+              let Nil =
+                record_command_step_timeout_retry_exhausted_if_needed(
+                  dependencies,
+                  run_id,
+                  workflow_dag.id(dag),
+                  issue.id,
+                  step,
+                  workspace,
+                  result_artifact,
+                )
+              case drained {
+                True ->
                   case
-                    execute_step_recovery(
-                      step,
-                      workspace,
-                      result_artifact,
-                      config,
-                      issue,
+                    recovery_execution.effective_for_failure(
                       dag,
-                      orchestrator,
-                      tracker_client,
-                      secrets,
-                      dependencies,
-                      profile,
+                      step,
+                      workspace.attempt_index,
                     )
                   {
-                    recovery_execution.RecoveryRecheckRequested(
-                      recovery_tokens,
-                      recovery_final_issue,
-                      recovery_turns,
-                    ) -> {
-                      let scheduler_state =
-                        workflow_scheduler.mark_pending(
-                          sibling_scheduler_state,
-                          step.id,
+                    Some(config) ->
+                      case
+                        execute_step_recovery(
+                          step,
+                          workspace,
+                          result_artifact,
+                          config,
+                          issue,
+                          dag,
+                          orchestrator,
+                          tracker_client,
+                          secrets,
+                          dependencies,
+                          profile,
                         )
-                      let tokens =
-                        add_tokens(
-                          add_tokens(sibling_tokens, result_tokens),
+                      {
+                        recovery_execution.RecoveryRecheckRequested(
                           recovery_tokens,
-                        )
-                      let final_issue =
-                        latest_final_issue(
-                          latest_final_issue(
-                            sibling_final_issue,
-                            result_final_issue,
-                          ),
                           recovery_final_issue,
-                        )
-                      loop(
-                        issue,
-                        dag,
-                        orchestrator,
-                        tracker_client,
-                        secrets,
-                        run_id,
-                        workflow_fingerprint,
-                        contract_outputs_recorded,
-                        workflow_outcome.StepRecoveryRecheckRequested,
-                        recovered_execution,
-                        dependencies,
-                        scheduler_state,
-                        dict.delete(failure_artifacts, step.id),
-                        prepared_workspaces,
-                        run_root,
-                        attempt_indexes,
-                        tokens,
-                        final_issue,
-                        sibling_turns + result_turns + recovery_turns,
-                        cleanup_allowed,
-                        pi_session_continuations,
-                        profile,
-                      )
-                    }
-                    recovery_execution.RecoveryStop(
-                      recovery_tokens,
-                      _,
-                      recovery_turns,
-                      stop_recovery_evidence,
-                    ) -> {
-                      let recovery_evidence =
-                        recovery_execution.combine_evidence(
-                          recovery_evidence,
+                          recovery_turns,
+                        ) -> {
+                          let scheduler_state =
+                            workflow_scheduler.mark_pending(
+                              sibling_scheduler_state,
+                              step.id,
+                            )
+                          let tokens =
+                            add_tokens(
+                              add_tokens(sibling_tokens, result_tokens),
+                              recovery_tokens,
+                            )
+                          let final_issue =
+                            latest_final_issue(
+                              latest_final_issue(
+                                sibling_final_issue,
+                                result_final_issue,
+                              ),
+                              recovery_final_issue,
+                            )
+                          loop(
+                            issue,
+                            dag,
+                            orchestrator,
+                            tracker_client,
+                            secrets,
+                            run_id,
+                            workflow_fingerprint,
+                            contract_outputs_recorded,
+                            workflow_outcome.StepRecoveryRecheckRequested,
+                            recovered_execution,
+                            dependencies,
+                            scheduler_state,
+                            dict.delete(failure_artifacts, step.id),
+                            prepared_workspaces,
+                            run_root,
+                            attempt_indexes,
+                            tokens,
+                            final_issue,
+                            sibling_turns + result_turns + recovery_turns,
+                            cleanup_allowed,
+                            pi_session_continuations,
+                            profile,
+                          )
+                        }
+                        recovery_execution.RecoveryStop(
+                          recovery_tokens,
+                          _,
+                          recovery_turns,
                           stop_recovery_evidence,
-                        )
+                        ) -> {
+                          let recovery_evidence =
+                            recovery_execution.combine_evidence(
+                              recovery_evidence,
+                              stop_recovery_evidence,
+                            )
+                          terminal_fatal_batch_failure(
+                            starts,
+                            interrupted_step_ids,
+                            result,
+                            issue,
+                            dag,
+                            run_id,
+                            workflow_fingerprint,
+                            contract_outputs_recorded,
+                            recovery_evidence,
+                            orchestrator,
+                            dependencies,
+                            failure_artifacts,
+                            prepared_workspaces,
+                            run_root,
+                            sibling_tokens.total
+                              + result_tokens.total
+                              + recovery_tokens.total,
+                            sibling_turns + result_turns + recovery_turns,
+                            cleanup_allowed,
+                            profile,
+                            checkpoint_error: None,
+                          )
+                        }
+                      }
+                    None ->
                       terminal_fatal_batch_failure(
                         starts,
                         interrupted_step_ids,
@@ -2762,17 +2883,14 @@ fn finish_fatal_batch_result(
                         failure_artifacts,
                         prepared_workspaces,
                         run_root,
-                        sibling_tokens.total
-                          + result_tokens.total
-                          + recovery_tokens.total,
-                        sibling_turns + result_turns + recovery_turns,
+                        sibling_tokens.total + result_tokens.total,
+                        sibling_turns + result_turns,
                         cleanup_allowed,
                         profile,
                         checkpoint_error: None,
                       )
-                    }
                   }
-                None ->
+                False ->
                   terminal_fatal_batch_failure(
                     starts,
                     interrupted_step_ids,
@@ -2795,31 +2913,91 @@ fn finish_fatal_batch_result(
                     checkpoint_error: None,
                   )
               }
-            False ->
-              terminal_fatal_batch_failure(
-                starts,
-                interrupted_step_ids,
-                result,
-                issue,
-                dag,
-                run_id,
-                workflow_fingerprint,
-                contract_outputs_recorded,
-                recovery_evidence,
-                orchestrator,
-                dependencies,
-                failure_artifacts,
-                prepared_workspaces,
-                run_root,
-                sibling_tokens.total + result_tokens.total,
-                sibling_turns + result_turns,
-                cleanup_allowed,
-                profile,
-                checkpoint_error: None,
-              )
+            }
           }
+        }
       }
     }
+  }
+}
+
+fn command_step_batch_timeout_retry_attempt(
+  step: workflow_dag.WorkflowStep,
+  workspace: workspace_run.PreparedStepWorkspace,
+  artifact: step_artifact.StepArtifact,
+  batch_safe_to_retry: Bool,
+  interrupted_step_ids: List(String),
+) -> Option(Int) {
+  command_step_timeout_retry.next_retry_attempt(
+    is_command_step: is_command_step(step),
+    artifact: artifact,
+    batch_safe_to_retry: batch_safe_to_retry,
+    interrupted_step_ids: interrupted_step_ids,
+    attempt_index: workspace.attempt_index,
+  )
+}
+
+fn record_command_step_timeout_retry_scheduled(
+  dependencies: Dependencies,
+  run_id: String,
+  workflow_id: String,
+  issue_id: String,
+  step_id: String,
+  failed_attempt_index: Int,
+  retry_attempt_index: Int,
+) -> Result(Nil, workflow_checkpoint.CheckpointError) {
+  dependencies.checkpoint.workflow_diagnostic(
+    workflow_checkpoint.WorkflowDiagnostic(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      issue_id: issue_id,
+      reason: command_step_timeout_retry.retry_scheduled_diagnostic_reason(
+        step_id,
+        failed_attempt_index,
+        retry_attempt_index,
+      ),
+    ),
+  )
+}
+
+fn record_command_step_timeout_retry_exhausted_if_needed(
+  dependencies: Dependencies,
+  run_id: String,
+  workflow_id: String,
+  issue_id: String,
+  step: workflow_dag.WorkflowStep,
+  workspace: workspace_run.PreparedStepWorkspace,
+  artifact: step_artifact.StepArtifact,
+) -> Nil {
+  case
+    command_step_timeout_retry.retry_exhausted(
+      is_command_step: is_command_step(step),
+      artifact: artifact,
+      attempt_index: workspace.attempt_index,
+    )
+  {
+    True ->
+      ignore_secondary_checkpoint_result(
+        dependencies.checkpoint.workflow_diagnostic(
+          workflow_checkpoint.WorkflowDiagnostic(
+            run_id: run_id,
+            workflow_id: workflow_id,
+            issue_id: issue_id,
+            reason: command_step_timeout_retry.retry_exhausted_diagnostic_reason(
+              step.id,
+              workspace.attempt_index,
+            ),
+          ),
+        ),
+      )
+    False -> Nil
+  }
+}
+
+fn is_command_step(step: workflow_dag.WorkflowStep) -> Bool {
+  case step.kind {
+    workflow_dag.CommandStep(..) -> True
+    workflow_dag.AgentStep(..) -> False
   }
 }
 
@@ -2865,6 +3043,11 @@ fn terminal_fatal_batch_failure(
       profile: profile,
       failed_step_id: result_step_id,
       failed_artifact: result_artifact,
+      failed_step_reason_override: command_step_timeout_terminal_reason(
+        starts,
+        result_step_id,
+        result_artifact,
+      ),
       agent_reason: step_execution.agent_reason_for_artifact(result_artifact),
       checkpoint_error: checkpoint_error,
       interrupt_active_attempts: fn() {
@@ -2879,6 +3062,43 @@ fn terminal_fatal_batch_failure(
     ),
   )
   |> terminal_result_to_workflow_result
+}
+
+fn command_step_timeout_terminal_reason(
+  starts: List(PreparedStart),
+  step_id: String,
+  artifact: step_artifact.StepArtifact,
+) -> Option(String) {
+  case prepared_start_for_step(starts, step_id) {
+    Some(#(step, workspace)) ->
+      case
+        command_step_timeout_retry.retry_exhausted(
+          is_command_step: is_command_step(step),
+          artifact: artifact,
+          attempt_index: workspace.attempt_index,
+        )
+      {
+        True -> Some(command_step_timeout_retry.terminal_reason(step_id))
+        False -> None
+      }
+    None -> None
+  }
+}
+
+fn prepared_start_for_step(
+  starts: List(PreparedStart),
+  step_id: String,
+) -> Option(#(workflow_dag.WorkflowStep, workspace_run.PreparedStepWorkspace)) {
+  case starts {
+    [] -> None
+    [start, ..rest] -> {
+      let step = step_worker_pool.prepared_start_step(start)
+      case step.id == step_id {
+        True -> Some(#(step, step_worker_pool.prepared_start_workspace(start)))
+        False -> prepared_start_for_step(rest, step_id)
+      }
+    }
+  }
 }
 
 fn finalize_step_attempt(
