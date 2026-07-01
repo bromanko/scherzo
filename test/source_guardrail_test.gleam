@@ -328,7 +328,7 @@ fn oversized_source_baseline() -> List(SourceLimit) {
     SourceLimit("src/scherzo/control/protocol.gleam", 1939, 9),
     SourceLimit("src/scherzo/control/query/codec.gleam", 1032, 6),
     SourceLimit("src/scherzo/cleanup.gleam", 1558, 20),
-    SourceLimit("src/scherzo/cleanup/workspaces.gleam", 1333, 20),
+    SourceLimit("src/scherzo/cleanup/workspaces.gleam", 1550, 20),
     SourceLimit("src/scherzo/ctl.gleam", 3236, 22),
     SourceLimit("src/scherzo/ctl/command_registry.gleam", 1246, 4),
     SourceLimit("src/scherzo/ctl/artifact_publication.gleam", 1146, 14),

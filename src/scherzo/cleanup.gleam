@@ -1080,20 +1080,50 @@ fn provider_inputs_to_apply_reports(
 ) -> List(CleanupProviderReport) {
   inputs
   |> list.map(fn(input) {
-    let started_ms = local_artifacts.now_ms()
-    let items =
-      input.items |> list.map(apply_page_item(workspace_root, now_ms, _))
-    CleanupProviderReport(
-      provider_id: input.provider_id,
-      available: input.available,
-      elapsed_ms: input.elapsed_ms
-        + elapsed_ms(started_ms, local_artifacts.now_ms()),
-      roots: input.roots,
-      transcript_root_status: input.transcript_root_status,
-      items: items,
-      warnings: input.warnings,
-    )
+    case input.provider_id {
+      "workspaces" -> apply_workspace_provider(workspace_root, now_ms, input)
+      _ -> apply_provider_input(workspace_root, now_ms, input)
+    }
   })
+}
+
+fn apply_provider_input(
+  workspace_root: String,
+  now_ms: Int,
+  input: ProviderInput,
+) -> CleanupProviderReport {
+  let started_ms = local_artifacts.now_ms()
+  let items =
+    input.items |> list.map(apply_page_item(workspace_root, now_ms, _))
+  CleanupProviderReport(
+    provider_id: input.provider_id,
+    available: input.available,
+    elapsed_ms: input.elapsed_ms
+      + elapsed_ms(started_ms, local_artifacts.now_ms()),
+    roots: input.roots,
+    transcript_root_status: input.transcript_root_status,
+    items: items,
+    warnings: input.warnings,
+  )
+}
+
+fn apply_workspace_provider(
+  workspace_root: String,
+  now_ms: Int,
+  input: ProviderInput,
+) -> CleanupProviderReport {
+  let started_ms = local_artifacts.now_ms()
+  let result = workspaces.apply(workspace_root, now_ms)
+  CleanupProviderReport(
+    provider_id: input.provider_id,
+    available: result.available,
+    elapsed_ms: input.elapsed_ms
+      + elapsed_ms(started_ms, local_artifacts.now_ms()),
+    roots: result.roots,
+    transcript_root_status: input.transcript_root_status,
+    items: workspace_items_page(result) |> list.map(page_item_to_report),
+    warnings: result.warnings,
+  )
 }
 
 fn local_state_items(result: local_artifacts.CleanupResult) -> List(PageItem) {
