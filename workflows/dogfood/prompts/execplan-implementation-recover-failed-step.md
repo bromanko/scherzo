@@ -21,7 +21,7 @@ Safe recovery examples:
 
 Return `gave_up` instead of `recheck` when:
 - the failed step is publish, handoff, code-change-bundle materialization after publish, or any step that may already have produced remote side effects;
-- a plan-completion recovery finalizer reports `plan_completion_recovery_exhausted` or instructs the operator to retry the full workflow with `scherzoctl task retry`; do not create an extra edit pass beyond the workflow's explicit plan-completion repair budget;
+- a plan-completion recovery finalizer reports `plan_completion_recovery_exhausted` or instructs the operator to retry the full workflow with `scherzoctl retry`; do not create an extra edit pass beyond the workflow's explicit plan-completion repair budget;
 - Linear credentials, retained run artifacts, required ExecPlan handoff inputs, required review artifacts, or issue context are missing;
 - the ExecPlan and implementation pack disagree on intent, scope, acceptance, safety, or provenance beyond the documented handoff/source issue split;
 - the failure requires a product decision, broad redesign, dependency upgrade, or ambiguous scope choice;
