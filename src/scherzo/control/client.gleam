@@ -9,6 +9,8 @@ import scherzo/control/file
 import scherzo/control/protocol
 import scherzo/control/query/codec as query_codec
 import scherzo/control/query/types as query_types
+import scherzo/control/timeout_policy
+import scherzo/ctl/timeout_settings
 import scherzo/session/event
 import scherzo/turn_telemetry
 
@@ -20,6 +22,9 @@ pub type StreamAction {
 pub type ControlTransportError {
   NonLoopbackHostRejected(host: String)
   Timeout
+  ConnectTimeout
+  SendTimeout
+  ReceiveTimeout
   Closed
   LineTooLong(max_bytes: Int)
   SendFailed(reason: String)
@@ -39,8 +44,6 @@ pub type ControlTarget {
 }
 
 type Socket
-
-const request_transport_timeout_ms = 5000
 
 pub fn operator_command_response_timeout_ms(
   control_file: file.ControlFile,
@@ -69,18 +72,94 @@ pub fn discover_target(
 pub fn target_response_line(line: String, target: ControlTarget) -> String {
   case protocol.decode_response(line) {
     Ok(response) ->
-      protocol.response_to_json_with_fields(response, [
-        #("target", target_to_json(target)),
-      ])
-      |> json.to_string
-    Error(decode_error) -> {
-      let _target_annotation_decode_error = decode_error
-      line
-    }
+      case query_timeout_response_line(response, target) {
+        Some(line) -> line
+        None ->
+          protocol.response_to_json_with_fields(response, [
+            #("target", target_to_json(target)),
+          ])
+          |> json.to_string
+      }
+    Error(decode_error) ->
+      case string.starts_with(string.trim(line), "{") {
+        True -> line
+        False -> bad_response_line(target, decode_error)
+      }
   }
 }
 
-fn target_to_json(target: ControlTarget) -> json.Json {
+fn query_timeout_response_line(
+  response: protocol.Response,
+  target: ControlTarget,
+) -> Option(String) {
+  case response.ok, response.data {
+    True, Some(data) ->
+      case query_codec.decode_response(json.to_string(data)) {
+        Error(query_types.QueryError(
+          code: query_types.QueryTimeout,
+          message: message,
+        )) ->
+          Some(
+            json.object([
+              #("version", json.int(protocol.version)),
+              #("id", json.string(response.id)),
+              #("ok", json.bool(False)),
+              #("target", target_to_json(target)),
+              #(
+                "error",
+                timeout_policy.error_json(timeout_policy.TimeoutError(
+                  phase: timeout_policy.DaemonActorQuery,
+                  timeout_ms: timeout_settings.current_timeout_ms(),
+                  accepted: timeout_policy.AcceptedFalse,
+                  retryable: True,
+                  message: message,
+                  suggested_next_command: None,
+                )),
+              ),
+            ])
+            |> json.to_string,
+          )
+        _ -> None
+      }
+    _, _ -> None
+  }
+}
+
+fn bad_response_line(
+  target: ControlTarget,
+  error: protocol.ErrorBody,
+) -> String {
+  let protocol.ErrorBody(code: code, message: message) = error
+  json.object([
+    #("version", json.int(protocol.version)),
+    #("id", json.string("1")),
+    #("ok", json.bool(False)),
+    #("target", target_to_json(target)),
+    #(
+      "error",
+      json.object([
+        #("code", json.string("bad_response")),
+        #(
+          "phase",
+          json.string(timeout_policy.phase_string(
+            timeout_policy.RequestRoundTrip,
+          )),
+        ),
+        #("timeout_ms", json.int(timeout_settings.current_timeout_ms())),
+        #("accepted", json.string("unknown")),
+        #("retryable", json.bool(False)),
+        #(
+          "message",
+          json.string("Daemon returned an invalid control response: " <> code),
+        ),
+        #("detail", json.string(message)),
+      ]),
+    ),
+  ])
+  |> json.to_string
+}
+
+pub fn target_to_json(target: ControlTarget) -> json.Json {
   json.object([
     #("control_file_path", json.string(target.control_path)),
     #("workspace_root", json.string(target.control_file.workspace_root)),
@@ -119,7 +198,7 @@ fn raw_request_with_response_timeout(
     send_line(
       socket,
       protocol.request_to_string(request),
-      request_transport_timeout_ms,
+      timeout_settings.current_timeout_ms(),
     )
   {
     Error(error) -> Error(ConnectionFailed(error))
@@ -245,7 +324,7 @@ pub fn stream_events(
     send_line(
       socket,
       protocol.request_to_string(request),
-      request_transport_timeout_ms,
+      timeout_settings.current_timeout_ms(),
     )
   {
     Error(error) -> {
@@ -253,7 +332,7 @@ pub fn stream_events(
       Error(ConnectionFailed(error))
     }
     Ok(Nil) ->
-      case recv_line(socket, request_transport_timeout_ms) {
+      case recv_line(socket, timeout_settings.current_timeout_ms()) {
         Error(error) -> {
           ffi_close_socket(socket)
           Error(ConnectionFailed(error))
@@ -282,7 +361,7 @@ fn stream_loop(
   on_event: fn(event.SessionEvent) -> StreamAction,
 ) -> Result(Nil, ControlError) {
   case recv_line(socket, 1000) {
-    Error(Timeout) -> stream_loop(socket, on_event)
+    Error(Timeout) | Error(ReceiveTimeout) -> stream_loop(socket, on_event)
     Error(Closed) -> {
       ffi_close_socket(socket)
       Ok(Nil)
@@ -317,7 +396,7 @@ fn request_response_timeout_ms(
     Some(_), _ -> operator_command_response_timeout_ms(control_file)
     None, protocol.Query(_, _, _) ->
       operator_command_response_timeout_ms(control_file)
-    None, _ -> request_transport_timeout_ms
+    None, _ -> timeout_settings.current_timeout_ms()
   }
 }
 
@@ -325,7 +404,7 @@ fn connect(control_file: file.ControlFile) -> Result(Socket, ControlError) {
   ffi_connect(
     control_file.host,
     control_file.port,
-    request_transport_timeout_ms,
+    timeout_settings.current_timeout_ms(),
   )
   |> result.map_error(fn(error) {
     ConnectionFailed(raw_connect_error(control_file.host, error))
@@ -458,6 +537,175 @@ pub fn error_message(error: ControlError) -> String {
   }
 }
 
+pub fn timeout_error(
+  error: ControlError,
+  command: String,
+) -> Option(timeout_policy.TimeoutError) {
+  timeout_error_for_context(error, command, False, None)
+}
+
+pub fn timeout_error_for_request(
+  error: ControlError,
+  request: protocol.Request,
+) -> Option(timeout_policy.TimeoutError) {
+  timeout_error_for_context(
+    error,
+    request_cli_name(request),
+    is_mutating_request(request),
+    safe_read_command_for_request(request),
+  )
+}
+
+fn timeout_error_for_context(
+  error: ControlError,
+  command: String,
+  is_mutating: Bool,
+  safe_read_command: Option(String),
+) -> Option(timeout_policy.TimeoutError) {
+  case error {
+    ConnectionFailed(Timeout)
+    | ConnectionFailed(ConnectTimeout)
+    | ConnectionFailed(ConnectFailed(_)) ->
+      Some(timeout_policy.TimeoutError(
+        phase: timeout_policy.DaemonConnect,
+        timeout_ms: timeout_settings.current_timeout_ms(),
+        accepted: timeout_policy.AcceptedFalse,
+        retryable: True,
+        message: "Could not connect to the Scherzo daemon within the configured control budget.",
+        suggested_next_command: Some(retry_command(command)),
+      ))
+    ConnectionFailed(SendTimeout)
+    | ConnectionFailed(ReceiveTimeout)
+    | ConnectionFailed(Closed)
+    | ConnectionFailed(ReceiveFailed(_)) ->
+      Some(after_send_timeout_error(command, is_mutating, safe_read_command))
+    RequestFailed("query_timeout", message) ->
+      Some(timeout_policy.TimeoutError(
+        phase: timeout_policy.DaemonActorQuery,
+        timeout_ms: timeout_settings.current_timeout_ms(),
+        accepted: timeout_policy.AcceptedFalse,
+        retryable: True,
+        message: message,
+        suggested_next_command: Some(retry_command(command)),
+      ))
+    _ -> None
+  }
+}
+
+fn after_send_timeout_error(
+  command: String,
+  is_mutating: Bool,
+  safe_read_command: Option(String),
+) -> timeout_policy.TimeoutError {
+  case is_mutating {
+    True ->
+      timeout_policy.TimeoutError(
+        phase: timeout_policy.OperationAdmission,
+        timeout_ms: timeout_settings.current_timeout_ms(),
+        accepted: timeout_policy.AcceptedUnknown,
+        retryable: False,
+        message: "Timed out waiting for the daemon to admit the mutating request; acceptance is unknown.",
+        suggested_next_command: Some(safe_read_or_default(safe_read_command)),
+      )
+    False ->
+      timeout_policy.TimeoutError(
+        phase: timeout_policy.RequestRoundTrip,
+        timeout_ms: timeout_settings.current_timeout_ms(),
+        accepted: timeout_policy.AcceptedFalse,
+        retryable: True,
+        message: "Timed out waiting for the daemon response after sending the read request.",
+        suggested_next_command: Some(retry_command(command)),
+      )
+  }
+}
+
+fn retry_command(command: String) -> String {
+  "scripts/scherzoctl " <> command <> " --json --timeout 10s"
+}
+
+fn safe_read_or_default(command: Option(String)) -> String {
+  case command {
+    Some(command) -> command
+    None -> "scripts/scherzoctl ps --json --timeout 10s"
+  }
+}
+
+fn is_mutating_request(request: protocol.Request) -> Bool {
+  case protocol.request_operator_command(request) {
+    Some(_) -> True
+    None -> False
+  }
+}
+
+fn request_cli_name(request: protocol.Request) -> String {
+  case request {
+    protocol.Ping(_, _) -> "ping"
+    protocol.ListSessions(_, _) -> "ps"
+    protocol.GetSession(_, _, session_id) -> "session " <> session_id
+    protocol.GetEvents(_, _, session_id, _, _) -> "events " <> session_id
+    protocol.Query(_, _, query_types.Status) -> "query status"
+    protocol.Query(_, _, query_types.Metrics) -> "query metrics"
+    protocol.Query(_, _, query_types.OperationStatus(query)) ->
+      "query operation-status " <> query.operation_id
+    protocol.Query(_, _, _) -> "query status"
+    _ ->
+      case protocol.request_operator_command(request) {
+        Some(operator_command) -> operator_command_cli_name(operator_command)
+        None -> "ping"
+      }
+  }
+}
+
+fn operator_command_cli_name(
+  operator_command: command.OperatorCommand,
+) -> String {
+  let name = command.command_name(operator_command) |> string.replace("_", "-")
+  case command.command_target(operator_command) {
+    Some(target) -> name <> " " <> target
+    None -> name
+  }
+}
+
+fn safe_read_command_for_request(request: protocol.Request) -> Option(String) {
+  case protocol.request_operator_command(request) {
+    Some(operator_command) -> safe_read_command_for_operator(operator_command)
+    None -> None
+  }
+}
+
+fn safe_read_command_for_operator(
+  operator_command: command.OperatorCommand,
+) -> Option(String) {
+  case operator_command {
+    command.AbortSession(session_id)
+    | command.StopAfterCurrentTurn(session_id)
+    | command.PromptSession(session_id, _)
+    | command.RespondUi(session_id, _, _) ->
+      Some(
+        "scripts/scherzoctl events " <> session_id <> " --json --timeout 10s",
+      )
+    command.RetryIssue(issue_ref)
+    | command.RetryIssueStartFresh(issue_ref, _)
+    | command.ParkIssue(issue_ref, _)
+    | command.UnparkIssue(issue_ref) ->
+      Some(
+        "scripts/scherzoctl task show "
+        <> command.issue_ref_to_string(issue_ref)
+        <> " --json --timeout 10s",
+      )
+    command.RetryWorkflowStep(_, _)
+    | command.RecollectWorkflowOutputs(_)
+    | command.RunFinalize(_, _, _, _, _, _, _)
+    | command.RetryArtifactPublication(_, _)
+    | command.CleanupOrphanSteps(_, _)
+    | command.RunScheduleNow(_)
+    | command.WorkItemAction(_) ->
+      Some("scripts/scherzoctl ps --json --timeout 10s")
+    command.PauseDispatch | command.ResumeDispatch | command.ReloadWorkflow ->
+      Some("scripts/scherzoctl query status --json --timeout 10s")
+  }
+}
+
 pub fn compact_event_line(stored_event: event.SessionEvent) -> String {
   case event.payload_kind(stored_event.payload) {
     event.Turn -> compact_turn_event_line(stored_event)
@@ -566,7 +814,13 @@ fn raw_transport_error(
 ) -> ControlTransportError {
   case error {
     "non_loopback_host_rejected" -> NonLoopbackHostRejected("")
-    "timeout" -> Timeout
+    "timeout" ->
+      case function {
+        "connect" -> ConnectTimeout
+        "send_line" -> SendTimeout
+        "recv_line" -> ReceiveTimeout
+        _ -> Timeout
+      }
     "closed" -> Closed
     "line_too_long" -> LineTooLong(8_388_608)
     _ ->
@@ -582,7 +836,7 @@ fn raw_transport_error(
 fn transport_error_message(error: ControlTransportError) -> String {
   case error {
     NonLoopbackHostRejected(host) -> "non-loopback host rejected: " <> host
-    Timeout -> "timeout"
+    Timeout | ConnectTimeout | SendTimeout | ReceiveTimeout -> "timeout"
     Closed -> "closed"
     LineTooLong(max_bytes) ->
       "line too long (max " <> int.to_string(max_bytes) <> " bytes)"

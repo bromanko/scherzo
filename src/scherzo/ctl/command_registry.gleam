@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/ctl/command_spec
 import scherzo/ctl/outbox_command_spec
 import scherzo/ctl/task_output
+import scherzo/ctl/timeout_settings
 import scherzo/terminal/style
 
 pub type HandlerKey {
@@ -79,7 +80,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "ping",
       summary: "Check that the daemon control API is reachable.",
       positionals: [],
-      options: [control_file_option(), json_option()],
+      options: [control_file_option(), json_option(), timeout_option()],
       help_lines: [
         line("ping", "Check that the daemon control API is reachable."),
       ],
@@ -90,7 +91,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "ps",
       summary: "List sessions (LAST EVENT is daemon-relative age; long session names are shortened).",
       positionals: [],
-      options: [control_file_option(), json_option()],
+      options: [control_file_option(), json_option(), timeout_option()],
       help_lines: [
         line(
           "ps",
@@ -104,7 +105,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "query status",
       summary: "Run the additive read-query status/introspection surface.",
       positionals: [],
-      options: [control_file_option(), json_option()],
+      options: [control_file_option(), json_option(), timeout_option()],
       help_lines: [
         line(
           "query status",
@@ -118,7 +119,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "query metrics",
       summary: "Show daemon operational health and runtime counters.",
       positionals: [],
-      options: [control_file_option(), json_option()],
+      options: [control_file_option(), json_option(), timeout_option()],
       help_lines: [
         line(
           "query metrics",
@@ -132,7 +133,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "query operation-status <operation-id>",
       summary: "Show one durable queued control operation status.",
       positionals: [command_spec.Required("operation_id")],
-      options: [control_file_option(), json_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+      ],
       help_lines: [
         line(
           "query operation-status <operation-id>",
@@ -183,6 +189,8 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       options: [
         control_file_option(),
         json_option(),
+        timeout_option(),
+        wait_option(),
         start_fresh_option(),
         reason_option(),
       ],
@@ -206,7 +214,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "session <session-ref>",
       summary: "Show one session summary.",
       positionals: [command_spec.Required("session_ref")],
-      options: [control_file_option(), json_option()],
+      options: [control_file_option(), json_option(), timeout_option()],
       help_lines: [line("session <session-ref>", "Show one session summary.")],
     ),
     command_spec.CommandSpec(
@@ -277,7 +285,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "pause",
       summary: "Pause new dispatch.",
       positionals: [],
-      options: [control_file_option(), json_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+      ],
       help_lines: [line("pause", "Pause new dispatch.")],
     ),
     command_spec.CommandSpec(
@@ -286,7 +299,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "resume",
       summary: "Resume new dispatch.",
       positionals: [],
-      options: [control_file_option(), json_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+      ],
       help_lines: [line("resume", "Resume new dispatch.")],
     ),
     command_spec.CommandSpec(
@@ -295,7 +313,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "reload",
       summary: "Reload the workflow now.",
       positionals: [],
-      options: [control_file_option(), json_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+      ],
       help_lines: [line("reload", "Reload the workflow now.")],
     ),
     command_spec.CommandSpec(
@@ -307,6 +330,8 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       options: [
         control_file_option(),
         json_option(),
+        timeout_option(),
+        wait_option(),
         start_fresh_option(),
         reason_option(),
       ],
@@ -323,7 +348,13 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "run retry-step <run-id> --step <step-id>",
       summary: "Retry one failed or interrupted workflow step without redispatching the whole task.",
       positionals: [command_spec.Required("run_id")],
-      options: [control_file_option(), json_option(), step_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+        step_option(),
+      ],
       help_lines: [
         line("run retry-step <run-id> --step <step-id>", ""),
         line(
@@ -342,7 +373,13 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "retry-step <target> [--step <step-id>]",
       summary: "Retry a failed or interrupted workflow step without redispatching the whole task.",
       positionals: [command_spec.Required("target")],
-      options: [control_file_option(), json_option(), step_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+        step_option(),
+      ],
       help_lines: [
         line("retry-step <target> [--step <step-id>]", ""),
         line(
@@ -361,7 +398,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "run recollect-outputs <run-id>",
       summary: "Recollect workflow contract outputs without rerunning completed steps.",
       positionals: [command_spec.Required("run_id")],
-      options: [control_file_option(), json_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+      ],
       help_lines: [
         line("run recollect-outputs <run-id>", ""),
         line(
@@ -376,7 +418,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "recollect-outputs run:<run-id>",
       summary: "Recollect workflow contract outputs without rerunning completed steps.",
       positionals: [command_spec.Required("run_ref")],
-      options: [control_file_option(), json_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+      ],
       help_lines: [
         line("recollect-outputs run:<run-id>", ""),
         line(
@@ -394,6 +441,8 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       options: [
         control_file_option(),
         json_option(),
+        timeout_option(),
+        wait_option(),
         validate_option(),
         outputs_option(),
         publish_option(),
@@ -418,6 +467,8 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       options: [
         control_file_option(),
         json_option(),
+        timeout_option(),
+        wait_option(),
         dry_run_option(),
         yes_option(),
       ],
@@ -438,6 +489,8 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       options: [
         control_file_option(),
         json_option(),
+        timeout_option(),
+        wait_option(),
         reason_option(),
         yes_option(),
       ],
@@ -452,7 +505,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "unpark <task>",
       summary: "Unpark a task.",
       positionals: [command_spec.Required("task")],
-      options: [control_file_option(), json_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+      ],
       help_lines: [line("unpark <task>", "Unpark a task.")],
     ),
     command_spec.CommandSpec(
@@ -461,7 +519,13 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "abort <session-ref> --yes",
       summary: "Abort a running session.",
       positionals: [command_spec.Required("session_ref")],
-      options: [control_file_option(), json_option(), yes_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+        yes_option(),
+      ],
       help_lines: [
         line("abort <session-ref> --yes", "Abort a running session."),
       ],
@@ -472,7 +536,13 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "stop-after-turn <session-ref> --yes",
       summary: "Stop after the current turn.",
       positionals: [command_spec.Required("session_ref")],
-      options: [control_file_option(), json_option(), yes_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+        yes_option(),
+      ],
       help_lines: [
         line("stop-after-turn <session-ref> --yes", ""),
         line("", "Stop after the current turn."),
@@ -487,7 +557,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         command_spec.Required("session_ref"),
         command_spec.Required("text"),
       ],
-      options: [control_file_option(), json_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+      ],
       help_lines: [
         line(
           "prompt <session-ref> <text>",
@@ -507,6 +582,8 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       options: [
         control_file_option(),
         json_option(),
+        timeout_option(),
+        wait_option(),
         cancel_option(),
         value_option(),
       ],
@@ -627,7 +704,13 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "schedules run <job> --now",
       summary: "Start a scheduled job immediately.",
       positionals: [command_spec.Required("job")],
-      options: [control_file_option(), json_option(), now_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+        now_option(),
+      ],
       help_lines: [
         line("schedules run <job> --now", "Start a scheduled job immediately."),
       ],
@@ -703,7 +786,13 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       usage: "publication retry <run-id> [--publication <publication-id>]",
       summary: "Retry failed publication through the daemon queue using already-materialized outputs.",
       positionals: [command_spec.Required("run_id")],
-      options: [control_file_option(), json_option(), publication_option()],
+      options: [
+        control_file_option(),
+        json_option(),
+        timeout_option(),
+        wait_option(),
+        publication_option(),
+      ],
       help_lines: [
         line(
           "publication retry <run-id> [--publication <publication-id>]",
@@ -1070,6 +1159,8 @@ fn control_option_specs_in_help_order() -> List(command_spec.OptionSpec) {
     no_follow_option(),
     since_cursor_option(),
     verbose_option(),
+    timeout_option(),
+    wait_option(),
     now_option(),
     state_option(),
     outbox_command_spec.status_option(),
@@ -1217,6 +1308,23 @@ fn verbose_option() -> command_spec.OptionSpec {
   command_spec.flag_option(
     "--verbose",
     "Include pi lifecycle and raw diagnostics in pretty attach/events output.",
+  )
+}
+
+fn timeout_option() -> command_spec.OptionSpec {
+  command_spec.value_option(
+    "--timeout",
+    "<duration>",
+    "Primary control timeout; accepts values like 500ms, 5s, and 2m.",
+    False,
+    timeout_settings.timeout_option_validator,
+  )
+}
+
+fn wait_option() -> command_spec.OptionSpec {
+  command_spec.flag_option(
+    "--wait",
+    "Wait for an accepted operation or operation-status query to finish.",
   )
 }
 

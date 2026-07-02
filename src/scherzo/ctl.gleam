@@ -1,4 +1,5 @@
 import gleam/dynamic
+import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
@@ -11,7 +12,9 @@ import scherzo/control/client
 import scherzo/control/command as control_command
 import scherzo/control/file
 import scherzo/control/protocol
+import scherzo/control/query/codec as query_codec
 import scherzo/control/query/types as query_types
+import scherzo/control/timeout_policy
 import scherzo/ctl/artifact_publication as ctl_artifact_publication
 import scherzo/ctl/artifact_publication_abandon as ctl_artifact_publication_abandon
 import scherzo/ctl/artifact_publication_retry as ctl_artifact_publication_retry
@@ -22,6 +25,7 @@ import scherzo/ctl/renderers as ctl_renderers
 import scherzo/ctl/schedules as ctl_schedules
 import scherzo/ctl/state_handlers as ctl_state_handlers
 import scherzo/ctl/task_output
+import scherzo/ctl/timeout_settings
 import scherzo/ctl/workstream as ctl_workstream
 import scherzo/instance_lock
 import scherzo/session/event
@@ -251,11 +255,21 @@ pub fn run_control_args_with_deps_and_env(
   env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
   use command <- try_ctl(parse(args))
+  use settings <- try_ctl(
+    timeout_settings.resolve(args, env)
+    |> result.map_error(fn(error) {
+      case error {
+        timeout_settings.InvalidDuration(message) -> UsageError(message)
+      }
+    }),
+  )
   case command_registry.deprecated_alias_hint(args) {
     Some(message) -> error_line(message)
     None -> Nil
   }
-  run_with_deps_and_env(command, deps, output, env)
+  with_timeout_settings(settings, fn() {
+    run_with_deps_and_env_internal(command, deps, output, env)
+  })
 }
 
 pub fn run_offline_args_with_deps_and_env(
@@ -1310,17 +1324,39 @@ pub fn run_with_deps_and_env(
   output: Output,
   env: fn(String) -> Option(String),
 ) -> Result(Nil, Error) {
+  let settings = case timeout_settings.resolve([], env) {
+    Ok(settings) -> settings
+    Error(_) -> timeout_settings.default_settings()
+  }
+  with_timeout_settings(settings, fn() {
+    run_with_deps_and_env_internal(command, deps, output, env)
+  })
+}
+
+fn run_with_deps_and_env_internal(
+  command: Command,
+  deps: ControlClient,
+  output: Output,
+  env: fn(String) -> Option(String),
+) -> Result(Nil, Error) {
   case command {
     Help -> {
       output.line(usage())
       Ok(Nil)
     }
     Ping(control_path, json) -> {
-      use target <- try_ctl(load_control_target(control_path, env))
-      let control_file = target.control_file
       case json {
-        True -> print_raw_request(target, protocol.Ping("1", ""), deps, output)
-        False ->
+        True ->
+          run_json_request(
+            control_path,
+            env,
+            deps,
+            output,
+            protocol.Ping("1", ""),
+          )
+        False -> {
+          use target <- try_ctl(load_control_target(control_path, env))
+          let control_file = target.control_file
           case client.ping(control_file) {
             Ok(Nil) -> {
               output.line("ok")
@@ -1328,20 +1364,22 @@ pub fn run_with_deps_and_env(
             }
             Error(err) -> Error(client_error(err))
           }
+        }
       }
     }
     Ps(control_path, json) -> {
-      use target <- try_ctl(load_control_target(control_path, env))
-      let control_file = target.control_file
       case json {
         True ->
-          print_raw_request(
-            target,
-            protocol.ListSessions("1", ""),
+          run_json_request(
+            control_path,
+            env,
             deps,
             output,
+            protocol.ListSessions("1", ""),
           )
-        False ->
+        False -> {
+          use target <- try_ctl(load_control_target(control_path, env))
+          let control_file = target.control_file
           case deps.list_sessions(control_file) {
             Ok(snapshot) -> {
               ctl_renderers.print_sessions_table(
@@ -1353,20 +1391,22 @@ pub fn run_with_deps_and_env(
             }
             Error(err) -> Error(client_error(err))
           }
+        }
       }
     }
     Query(control_path, json, query) -> {
-      use target <- try_ctl(load_control_target(control_path, env))
-      let control_file = target.control_file
       case json {
         True ->
-          print_raw_request(
-            target,
-            protocol.query_request("1", "", query),
+          run_json_request(
+            control_path,
+            env,
             deps,
             output,
+            protocol.query_request("1", "", query),
           )
-        False ->
+        False -> {
+          use target <- try_ctl(load_control_target(control_path, env))
+          let control_file = target.control_file
           case deps.query(control_file, query) {
             Ok(query_types.StatusResponse(status)) -> {
               ctl_renderers.print_query_status(status, line: output.line)
@@ -1377,8 +1417,22 @@ pub fn run_with_deps_and_env(
               Ok(Nil)
             }
             Ok(query_types.OperationStatusResponse(operation)) -> {
-              ctl_renderers.print_operation_status(operation, line: output.line)
-              Ok(Nil)
+              case timeout_settings.current_wait() {
+                True ->
+                  wait_for_operation_status(
+                    control_file,
+                    deps,
+                    operation,
+                    output.line,
+                  )
+                False -> {
+                  ctl_renderers.print_operation_status(
+                    operation,
+                    line: output.line,
+                  )
+                  Ok(Nil)
+                }
+              }
             }
             Ok(query_types.TaskListResponse(tasks)) -> {
               task_output.print_list(tasks, output.line)
@@ -1406,6 +1460,7 @@ pub fn run_with_deps_and_env(
             }
             Error(err) -> Error(client_error(err))
           }
+        }
       }
     }
     TaskList(control_path, json, states, limit, cursor) -> {
@@ -1490,11 +1545,12 @@ pub fn run_with_deps_and_env(
       ))
       case json {
         True ->
-          print_raw_request(
-            target,
-            protocol.GetSession("1", "", session_id),
+          run_json_request(
+            control_path,
+            env,
             deps,
             output,
+            protocol.GetSession("1", "", session_id),
           )
         False ->
           case deps.get_session(control_file, session_id) {
@@ -1549,18 +1605,22 @@ pub fn run_with_deps_and_env(
       ))
       case json {
         True ->
-          print_raw_request(
-            target,
-            protocol.command_request("1", "", resolved_command),
+          run_json_request(
+            control_path,
+            env,
             deps,
             output,
+            protocol.command_request("1", "", resolved_command),
           )
         False ->
           case deps.apply_command(control_file, resolved_command) {
-            Ok(result) -> {
-              ctl_renderers.print_command_result(result, line: output.line)
-              Ok(Nil)
-            }
+            Ok(result) ->
+              handle_command_result_wait(
+                control_file,
+                deps,
+                result,
+                output.line,
+              )
             Error(err) -> Error(client_error(err))
           }
       }
@@ -1571,18 +1631,22 @@ pub fn run_with_deps_and_env(
         control_command.RetryIssueStartFresh(issue_ref, reason)
       case json {
         True ->
-          print_raw_request(
-            target,
-            protocol.command_request("1", "", operator_command),
+          run_json_request(
+            control_path,
+            env,
             deps,
             output,
+            protocol.command_request("1", "", operator_command),
           )
         False ->
           case deps.apply_command(target.control_file, operator_command) {
-            Ok(result) -> {
-              ctl_renderers.print_command_result(result, line: output.line)
-              Ok(Nil)
-            }
+            Ok(result) ->
+              handle_command_result_wait(
+                target.control_file,
+                deps,
+                result,
+                output.line,
+              )
             Error(err) -> Error(client_error(err))
           }
       }
@@ -1601,18 +1665,22 @@ pub fn run_with_deps_and_env(
         )
       case json {
         True ->
-          print_raw_request(
-            target,
-            protocol.command_request("1", "", operator_command),
+          run_json_request(
+            control_path,
+            env,
             deps,
             output,
+            protocol.command_request("1", "", operator_command),
           )
         False ->
           case deps.apply_command(target.control_file, operator_command) {
-            Ok(result) -> {
-              ctl_renderers.print_command_result(result, line: output.line)
-              Ok(Nil)
-            }
+            Ok(result) ->
+              handle_command_result_wait(
+                target.control_file,
+                deps,
+                result,
+                output.line,
+              )
             Error(err) -> Error(client_error(err))
           }
       }
@@ -1762,6 +1830,135 @@ pub fn run_with_deps_and_env(
         line: output.line,
       )
       |> result.map_error(pair_error_to_failed)
+  }
+}
+
+fn with_timeout_settings(
+  settings: timeout_settings.Settings,
+  run: fn() -> Result(Nil, Error),
+) -> Result(Nil, Error) {
+  timeout_settings.put_current(settings)
+  let result = run()
+  timeout_settings.clear_current()
+  result
+}
+
+fn handle_command_result_wait(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  result: control_command.CommandResult,
+  line: fn(String) -> Nil,
+) -> Result(Nil, Error) {
+  ctl_renderers.print_command_result(result, line: line)
+  case timeout_settings.current_wait(), result.operation_id {
+    True, Some(operation_id) ->
+      wait_for_operation_id(control_file, deps, operation_id, line)
+    _, _ -> Ok(Nil)
+  }
+}
+
+fn run_json_request(
+  control_path: Option(String),
+  env: fn(String) -> Option(String),
+  deps: ControlClient,
+  output: Output,
+  request: protocol.Request,
+) -> Result(Nil, Error) {
+  case client.discover_target(control_path, env) {
+    Ok(target) -> print_raw_request(target, request, deps, output)
+    Error(err) -> {
+      output.line(json_error_response(
+        None,
+        file_error(err),
+        Some(file_discovery_timeout_error(err, request_cli_name(request))),
+      ))
+      Ok(Nil)
+    }
+  }
+}
+
+fn wait_for_operation_status(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  operation: query_types.OperationStatusDto,
+  line: fn(String) -> Nil,
+) -> Result(Nil, Error) {
+  ctl_renderers.print_operation_status(operation, line: line)
+  case operation.status {
+    "completed" | "failed" | "rejected" | "not_found" | "not_allowed" -> Ok(Nil)
+    _ -> wait_for_operation_id(control_file, deps, operation.operation_id, line)
+  }
+}
+
+fn wait_for_operation_id(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  operation_id: String,
+  line: fn(String) -> Nil,
+) -> Result(Nil, Error) {
+  wait_for_operation_id_loop(
+    control_file,
+    deps,
+    operation_id,
+    timeout_settings.current_wait_timeout_ms(),
+    line,
+  )
+}
+
+fn wait_for_operation_id_loop(
+  control_file: file.ControlFile,
+  deps: ControlClient,
+  operation_id: String,
+  remaining_ms: Int,
+  line: fn(String) -> Nil,
+) -> Result(Nil, Error) {
+  case
+    deps.query(
+      control_file,
+      query_types.OperationStatus(query_types.OperationStatusQuery(
+        operation_id: operation_id,
+      )),
+    )
+  {
+    Ok(query_types.OperationStatusResponse(operation)) ->
+      case operation.status {
+        "completed" | "failed" | "rejected" | "not_found" | "not_allowed" -> {
+          ctl_renderers.print_operation_status(operation, line: line)
+          Ok(Nil)
+        }
+        _ ->
+          case remaining_ms <= 0 {
+            True -> {
+              let timeout_error =
+                timeout_policy.TimeoutError(
+                  phase: timeout_policy.OperationWait,
+                  timeout_ms: timeout_settings.current_wait_timeout_ms(),
+                  accepted: timeout_policy.AcceptedTrue,
+                  retryable: True,
+                  message: "Timed out waiting for the accepted operation to finish.",
+                  suggested_next_command: Some(operation_status_wait_command(
+                    operation_id,
+                  )),
+                )
+              timeout_policy.error_lines(timeout_error)
+              |> list.each(line)
+              Ok(Nil)
+            }
+            False -> {
+              process.sleep(100)
+              wait_for_operation_id_loop(
+                control_file,
+                deps,
+                operation_id,
+                remaining_ms - 100,
+                line,
+              )
+            }
+          }
+      }
+    Ok(_) ->
+      Error(Failed("unexpected_query_response", "unexpected query response"))
+    Error(error) -> Error(client_error(error))
   }
 }
 
@@ -2601,12 +2798,267 @@ fn print_raw_request(
   output: Output,
 ) -> Result(Nil, Error) {
   case deps.raw_request(target.control_file, request) {
-    Ok(line) -> {
+    Ok(line) ->
+      print_wait_aware_json_response(target, request, line, deps, output)
+    Error(err) -> {
+      output.line(json_error_response(
+        Some(target),
+        client_error(err),
+        client.timeout_error_for_request(err, request),
+      ))
+      Ok(Nil)
+    }
+  }
+}
+
+fn print_wait_aware_json_response(
+  target: client.ControlTarget,
+  request: protocol.Request,
+  line: String,
+  deps: ControlClient,
+  output: Output,
+) -> Result(Nil, Error) {
+  case timeout_settings.current_wait() {
+    False -> {
       output.line(client.target_response_line(line, target))
       Ok(Nil)
     }
-    Error(err) -> Error(client_error(err))
+    True ->
+      case waitable_operation_id_from_response(request, line) {
+        Some(operation_id) ->
+          print_wait_operation_json(target, deps, operation_id, output)
+        None -> {
+          output.line(client.target_response_line(line, target))
+          Ok(Nil)
+        }
+      }
   }
+}
+
+fn waitable_operation_id_from_response(
+  request: protocol.Request,
+  line: String,
+) -> Option(String) {
+  case protocol.request_operator_command(request) {
+    Some(_) ->
+      case protocol.decode_command_result_response(line) {
+        Ok(result) -> result.operation_id
+        Error(_) -> None
+      }
+    None ->
+      case request {
+        protocol.Query(_, _, query_types.OperationStatus(_)) ->
+          case protocol.decode_response(line) {
+            Ok(response) ->
+              case response.data {
+                Some(data) ->
+                  case query_codec.decode_response(json.to_string(data)) {
+                    Ok(query_types.OperationStatusResponse(operation)) ->
+                      case operation.status {
+                        "completed"
+                        | "failed"
+                        | "rejected"
+                        | "not_found"
+                        | "not_allowed" -> None
+                        _ -> Some(operation.operation_id)
+                      }
+                    _ -> None
+                  }
+                None -> None
+              }
+            Error(_) -> None
+          }
+        _ -> None
+      }
+  }
+}
+
+fn print_wait_operation_json(
+  target: client.ControlTarget,
+  deps: ControlClient,
+  operation_id: String,
+  output: Output,
+) -> Result(Nil, Error) {
+  wait_for_operation_id_json_loop(
+    target,
+    deps,
+    operation_id,
+    timeout_settings.current_wait_timeout_ms(),
+    None,
+    output,
+  )
+}
+
+fn wait_for_operation_id_json_loop(
+  target: client.ControlTarget,
+  deps: ControlClient,
+  operation_id: String,
+  remaining_ms: Int,
+  last_seen: Option(query_types.OperationStatusDto),
+  output: Output,
+) -> Result(Nil, Error) {
+  case
+    deps.query(
+      target.control_file,
+      query_types.OperationStatus(query_types.OperationStatusQuery(
+        operation_id: operation_id,
+      )),
+    )
+  {
+    Ok(query_types.OperationStatusResponse(operation)) ->
+      case operation.status {
+        "completed" | "failed" | "rejected" | "not_found" | "not_allowed" -> {
+          output.line(json_success_response(
+            target,
+            protocol.query_data(
+              Ok(query_types.OperationStatusResponse(operation)),
+            ),
+          ))
+          Ok(Nil)
+        }
+        _ ->
+          case remaining_ms <= 0 {
+            True -> {
+              output.line(json_success_response(
+                target,
+                operation_wait_data(operation),
+              ))
+              Ok(Nil)
+            }
+            False -> {
+              process.sleep(100)
+              wait_for_operation_id_json_loop(
+                target,
+                deps,
+                operation_id,
+                remaining_ms - 100,
+                Some(operation),
+                output,
+              )
+            }
+          }
+      }
+    Ok(_) ->
+      Error(Failed("unexpected_query_response", "unexpected query response"))
+    Error(error) ->
+      case last_seen {
+        Some(operation) if remaining_ms <= 0 -> {
+          output.line(json_success_response(
+            target,
+            operation_wait_data(operation),
+          ))
+          Ok(Nil)
+        }
+        _ -> Error(client_error(error))
+      }
+  }
+}
+
+fn operation_wait_data(operation: query_types.OperationStatusDto) -> json.Json {
+  let base = [
+    #("operation_id", json.string(operation.operation_id)),
+    #("status", json.string(operation.status)),
+    #("accepted", json.bool(True)),
+    #(
+      "wait",
+      json.object([
+        #("timed_out", json.bool(True)),
+        #("phase", json.string("operation_wait")),
+        #("timeout_ms", json.int(timeout_settings.current_wait_timeout_ms())),
+      ]),
+    ),
+    #(
+      "suggested_next_command",
+      json.string(operation_status_wait_command(operation.operation_id)),
+    ),
+  ]
+  let with_message = case operation.message {
+    Some(message) -> [#("message", json.string(message)), ..base]
+    None -> base
+  }
+  with_message |> list.reverse |> json.object
+}
+
+fn operation_status_wait_command(operation_id: String) -> String {
+  "scripts/scherzoctl query operation-status "
+  <> operation_id
+  <> " --json --wait --timeout "
+  <> int.to_string(timeout_settings.current_wait_timeout_ms())
+  <> "ms"
+}
+
+fn request_cli_name(request: protocol.Request) -> String {
+  case request {
+    protocol.Ping(_, _) -> "ping"
+    protocol.ListSessions(_, _) -> "ps"
+    protocol.GetSession(_, _, session_id) -> "session " <> session_id
+    protocol.GetEvents(_, _, session_id, _, _) -> "events " <> session_id
+    protocol.Query(_, _, query_types.Status) -> "query status"
+    protocol.Query(_, _, query_types.Metrics) -> "query metrics"
+    protocol.Query(_, _, query_types.OperationStatus(query)) ->
+      "query operation-status " <> query.operation_id
+    protocol.Query(_, _, _) -> "query status"
+    _ ->
+      case protocol.request_operator_command(request) {
+        Some(operator_command) -> operator_command_cli_name(operator_command)
+        None -> "ping"
+      }
+  }
+}
+
+fn operator_command_cli_name(
+  operator_command: control_command.OperatorCommand,
+) -> String {
+  let name =
+    string.replace(control_command.command_name(operator_command), "_", "-")
+  case control_command.command_target(operator_command) {
+    Some(target) -> name <> " " <> target
+    None -> name
+  }
+}
+
+fn json_success_response(
+  target: client.ControlTarget,
+  data: json.Json,
+) -> String {
+  json.object([
+    #("version", json.int(protocol.version)),
+    #("id", json.string("1")),
+    #("ok", json.bool(True)),
+    #("target", client.target_to_json(target)),
+    #("data", data),
+  ])
+  |> json.to_string
+}
+
+fn json_error_response(
+  target: Option(client.ControlTarget),
+  error: Error,
+  timeout: Option(timeout_policy.TimeoutError),
+) -> String {
+  let error_json = case timeout {
+    Some(timeout_error) -> timeout_policy.error_json(timeout_error)
+    None ->
+      json.object([
+        #("code", json.string(error_code(error))),
+        #("message", json.string(error_message(error))),
+      ])
+  }
+  let target_entries = case target {
+    Some(value) -> [#("target", client.target_to_json(value))]
+    None -> []
+  }
+  json.object(
+    [
+      #("version", json.int(protocol.version)),
+      #("id", json.string("1")),
+      #("ok", json.bool(False)),
+      #("error", error_json),
+      ..target_entries
+    ]
+    |> list.reverse,
+  )
+  |> json.to_string
 }
 
 fn render_state_key(session_id: String) -> String {
@@ -2694,7 +3146,30 @@ fn map_client_error(
 }
 
 fn client_error(error: client.ControlError) -> Error {
-  Failed(client.error_code(error), client.error_message(error))
+  case client.timeout_error(error, "ping") {
+    Some(timeout_error) ->
+      Failed(
+        "timeout",
+        string.join(timeout_policy.error_lines(timeout_error), with: "\n"),
+      )
+    None -> Failed(client.error_code(error), client.error_message(error))
+  }
+}
+
+fn file_discovery_timeout_error(
+  _error: file.ControlFileError,
+  command: String,
+) -> timeout_policy.TimeoutError {
+  timeout_policy.TimeoutError(
+    phase: timeout_policy.ControlFileDiscovery,
+    timeout_ms: timeout_settings.current_timeout_ms(),
+    accepted: timeout_policy.AcceptedFalse,
+    retryable: True,
+    message: "Control file could not be found, read, or validated before contacting the daemon.",
+    suggested_next_command: Some(
+      "scripts/scherzoctl " <> command <> " --json --timeout 10s",
+    ),
+  )
 }
 
 fn file_error(error: file.ControlFileError) -> Error {

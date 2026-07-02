@@ -171,7 +171,7 @@ pub fn workflow_query_runtime_maps_snapshot_timeout_test() {
   let assert Error(types.QueryError(code: code, message: message)) =
     query_service.query(handle, types.WorkflowList)
   assert code == types.QueryTimeout
-  assert message == "workflow query timed out"
+  assert message == "daemon actor query timed out while loading workflow state"
 
   assert query_service.stop(handle, 1000) == Ok(Nil)
 }
@@ -243,7 +243,7 @@ pub fn operation_status_query_uses_standard_snapshot_timeout_test() {
   assert message == "operation not found: missing"
 
   let assert Ok(timeout_ms) = process.receive(timeout_subject, within: 1000)
-  assert timeout_ms == 1000
+  assert timeout_ms == state.effective.control.command_timeout_ms
   assert query_service.stop(handle, 1000) == Ok(Nil)
 }
 
@@ -281,7 +281,8 @@ pub fn operation_status_query_maps_not_found_and_timeout_test() {
       types.OperationStatus(types.OperationStatusQuery(operation_id: "op-123")),
     )
   assert timeout_code == types.QueryTimeout
-  assert timeout_message == "operation-status query timed out"
+  assert timeout_message
+    == "daemon actor query timed out while loading operation status"
   assert query_service.stop(timeout_handle, 1000) == Ok(Nil)
 }
 

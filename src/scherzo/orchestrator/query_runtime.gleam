@@ -11,8 +11,6 @@ import scherzo/orchestrator/workflow_reloader
 import scherzo/state/projection
 import scherzo/tracker/adapter
 
-const state_snapshot_timeout_ms = 1000
-
 pub fn start(
   effective: config_types.EffectiveConfig,
   identity: daemon_identity.DaemonIdentity,
@@ -62,7 +60,7 @@ pub fn start(
             query: outbox_query,
           )
         query_types.OperationStatus(operation_query) ->
-          case get_projection_snapshot(state_snapshot_timeout_ms) {
+          case get_projection_snapshot(effective.control.command_timeout_ms) {
             Ok(snapshot) ->
               case
                 projection.control_operation(
@@ -101,16 +99,18 @@ pub fn start(
             Error(Nil) ->
               Error(query_types.QueryError(
                 query_types.QueryTimeout,
-                "operation-status query timed out",
+                "daemon actor query timed out while loading operation status",
               ))
           }
         query_types.WorkflowList ->
           execute_workflow_query(
+            timeout_ms: effective.control.command_timeout_ms,
             get_snapshot: get_workflow_snapshot,
             run: query_workflow.execute_list,
           )
         query_types.WorkflowDetail(workflow_query) ->
           execute_workflow_query(
+            timeout_ms: effective.control.command_timeout_ms,
             get_snapshot: get_workflow_snapshot,
             run: fn(snapshot) {
               query_workflow.execute_detail(snapshot, workflow_query)
@@ -122,16 +122,17 @@ pub fn start(
 }
 
 fn execute_workflow_query(
+  timeout_ms timeout_ms: Int,
   get_snapshot get_snapshot: fn(Int) -> Result(workflow_reloader.State, Nil),
   run run: fn(workflow_reloader.State) ->
     Result(query_types.QueryResponse, query_types.QueryError),
 ) -> Result(query_types.QueryResponse, query_types.QueryError) {
-  case get_snapshot(state_snapshot_timeout_ms) {
+  case get_snapshot(timeout_ms) {
     Ok(snapshot) -> run(snapshot)
     Error(Nil) ->
       Error(query_types.QueryError(
         query_types.QueryTimeout,
-        "workflow query timed out",
+        "daemon actor query timed out while loading workflow state",
       ))
   }
 }
