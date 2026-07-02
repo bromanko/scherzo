@@ -94,10 +94,29 @@ pub fn mutating_command_requests_roundtrip_to_operator_commands_test() {
     command.RetryIssue(command.IssueIdentifier("ABC-123")),
   )
   assert_command_roundtrip(
+    "4a",
+    command.RetryIssueStartFresh(
+      command.IssueIdentifier("ABC-123"),
+      "workflow drift",
+    ),
+  )
+  assert_command_roundtrip(
     "4b",
     command.RetryWorkflowStep(
       command.RetryWorkflowStepAutoTarget("ABC-123"),
       Some("build"),
+    ),
+  )
+  assert_command_roundtrip(
+    "4c",
+    command.RunFinalize(
+      run_id: "run-1",
+      validate: True,
+      outputs: command.RunFinalizeOutputsAuto,
+      publish: True,
+      update_tracker: True,
+      dry_run: True,
+      reason: "operator salvage",
     ),
   )
   assert_command_roundtrip(
@@ -214,6 +233,9 @@ pub fn invalid_mutating_commands_return_invalid_request_test() {
     "{\"version\":1,\"type\":\"retry\",\"id\":\"3\",\"token\":\"secret\",\"issue_identifier\":\"   \"}",
   )
   assert_invalid_request(
+    "{\"version\":1,\"type\":\"retry_start_fresh\",\"id\":\"3a\",\"token\":\"secret\",\"issue_identifier\":\"ABC-1\",\"reason\":\"   \"}",
+  )
+  assert_invalid_request(
     "{\"version\":1,\"type\":\"retry_step\",\"id\":\"3b\",\"token\":\"secret\"}",
   )
   assert_invalid_request(
@@ -221,6 +243,9 @@ pub fn invalid_mutating_commands_return_invalid_request_test() {
   )
   assert_invalid_request(
     "{\"version\":1,\"type\":\"retry_step\",\"id\":\"3d\",\"token\":\"secret\",\"target\":\"ABC-1\",\"step_id\":\"   \"}",
+  )
+  assert_invalid_request(
+    "{\"version\":1,\"type\":\"run_finalize\",\"id\":\"3e\",\"token\":\"secret\",\"run_id\":\"run-1\",\"validate\":true,\"outputs\":\"bogus\",\"publish\":true,\"update_tracker\":true,\"reason\":\"operator salvage\"}",
   )
   assert_invalid_request(
     "{\"version\":1,\"type\":\"park\",\"id\":\"4\",\"token\":\"secret\",\"issue_id\":\"issue-1\"}",

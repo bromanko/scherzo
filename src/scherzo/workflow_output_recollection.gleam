@@ -54,39 +54,21 @@ pub fn execute(
   use current <- result.try(require_current_workflow(current))
   use run <- result.try(selected_run(projection_state, run_id))
   use Nil <- result.try(validate_drift(run, current))
-  let latest_statuses =
-    latest_statuses_by_step(projection.step_attempts_for_run(
-      projection_state,
-      run_id,
-    ))
-  use Nil <- result.try(require_all_steps_completed(
-    current.dag,
-    latest_statuses,
-  ))
-  case projection.workflow_output_manifest(projection_state, run_id) {
-    Some(recorded) -> {
-      let written = manifest_ref_to_written(recorded)
-      case
-        latest_manifest_is_valid(
-          current.dag,
-          run_id,
-          current.workflow_fingerprint,
-          written,
-          checkpoint,
-        )
-      {
-        True -> Ok(AlreadyValid(written))
-        False ->
-          recover_and_record_outputs(
-            current,
-            run_id,
-            latest_statuses,
-            store,
-            recollection_checkpoint,
-          )
+  case
+    select_output_plan(projection_state, run_id, current, checkpoint, store)
+  {
+    Ok(AdoptOutputs) ->
+      case projection.workflow_output_manifest(projection_state, run_id) {
+        Some(recorded) -> Ok(AlreadyValid(manifest_ref_to_written(recorded)))
+        None ->
+          Error(RecollectionError(
+            "workflow_output_recollection_failed",
+            Some(
+              "workflow output recollection could not find the retained manifest",
+            ),
+          ))
       }
-    }
-    None ->
+    Ok(RecollectOutputs(latest_statuses)) ->
       recover_and_record_outputs(
         current,
         run_id,
@@ -94,6 +76,26 @@ pub fn execute(
         store,
         recollection_checkpoint,
       )
+    Error(error) -> Error(error)
+  }
+}
+
+pub fn plan_output_action(
+  projection_state: projection.Projection,
+  run_id: String,
+  current: recovery.CurrentWorkflowObservation,
+  checkpoint: workflow_checkpoint.Writer,
+  store: artifact_store.Store,
+) -> Result(String, RecollectionError) {
+  use current <- result.try(require_current_workflow(current))
+  use run <- result.try(selected_run(projection_state, run_id))
+  use Nil <- result.try(validate_drift(run, current))
+  case
+    select_output_plan(projection_state, run_id, current, checkpoint, store)
+  {
+    Ok(AdoptOutputs) -> Ok("adopt_outputs")
+    Ok(RecollectOutputs(_)) -> Ok("recollect_outputs")
+    Error(error) -> Error(error)
   }
 }
 
@@ -118,6 +120,99 @@ fn recover_and_record_outputs(
     current,
     run_id,
     recollection_checkpoint,
+    source_steps.artifacts,
+    prepared_workspaces,
+  )
+}
+
+fn select_output_plan(
+  projection_state: projection.Projection,
+  run_id: String,
+  current: CurrentWorkflow,
+  checkpoint: workflow_checkpoint.Writer,
+  store: artifact_store.Store,
+) -> Result(OutputPlan, RecollectionError) {
+  case projection.workflow_output_manifest(projection_state, run_id) {
+    Some(recorded) -> {
+      let written = manifest_ref_to_written(recorded)
+      case
+        latest_manifest_is_valid(
+          current.dag,
+          run_id,
+          current.workflow_fingerprint,
+          written,
+          checkpoint,
+        )
+      {
+        True -> Ok(AdoptOutputs)
+        False ->
+          select_recollection_plan(
+            projection_state,
+            run_id,
+            current,
+            checkpoint,
+            store,
+          )
+      }
+    }
+    None ->
+      select_recollection_plan(
+        projection_state,
+        run_id,
+        current,
+        checkpoint,
+        store,
+      )
+  }
+}
+
+fn select_recollection_plan(
+  projection_state: projection.Projection,
+  run_id: String,
+  current: CurrentWorkflow,
+  checkpoint: workflow_checkpoint.Writer,
+  store: artifact_store.Store,
+) -> Result(OutputPlan, RecollectionError) {
+  let latest_statuses =
+    latest_statuses_by_step(projection.step_attempts_for_run(
+      projection_state,
+      run_id,
+    ))
+  use Nil <- result.try(require_all_steps_completed(
+    current.dag,
+    latest_statuses,
+  ))
+  use Nil <- result.try(validate_recollection_outputs(
+    current,
+    run_id,
+    latest_statuses,
+    checkpoint,
+    store,
+  ))
+  Ok(RecollectOutputs(latest_statuses))
+}
+
+fn validate_recollection_outputs(
+  current: CurrentWorkflow,
+  run_id: String,
+  latest_statuses: Dict(String, projection.StepAttemptStatus),
+  checkpoint: workflow_checkpoint.Writer,
+  store: artifact_store.Store,
+) -> Result(Nil, RecollectionError) {
+  let required_sources = required_sources(current.dag)
+  use source_steps <- result.try(recover_source_steps(
+    required_sources,
+    latest_statuses,
+    store,
+  ))
+  use prepared_workspaces <- result.try(recover_prepared_workspaces(
+    current.dag,
+    source_steps,
+  ))
+  validate_outputs_recordable(
+    current,
+    run_id,
+    checkpoint,
     source_steps.artifacts,
     prepared_workspaces,
   )
@@ -150,6 +245,11 @@ type SourceRecovery {
     artifacts: Dict(String, step_artifact.StepArtifact),
     statuses: Dict(String, projection.StepAttemptStatus),
   )
+}
+
+type OutputPlan {
+  AdoptOutputs
+  RecollectOutputs(Dict(String, projection.StepAttemptStatus))
 }
 
 type OutputSourceRequirement {

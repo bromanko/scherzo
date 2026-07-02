@@ -102,6 +102,9 @@ fn handlers(
         [],
       )
     },
+    run_finalize_for_operator: fn(state, _, _, _, _, _, _, _, _) {
+      #(state, command.applied(command.ReloadWorkflow, None), [])
+    },
     retry_artifact_publication_for_operator: fn(state, _, _, _) {
       #(state, command.applied(command.ReloadWorkflow, None), [])
     },

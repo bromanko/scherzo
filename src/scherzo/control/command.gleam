@@ -35,13 +35,27 @@ pub type WorkItemActionRequest {
   )
 }
 
+pub type RunFinalizeOutputs {
+  RunFinalizeOutputsAuto
+}
+
 pub type OperatorCommand {
   PauseDispatch
   ResumeDispatch
   ReloadWorkflow
   RetryIssue(IssueRef)
+  RetryIssueStartFresh(IssueRef, reason: String)
   RetryWorkflowStep(target: RetryWorkflowStepTarget, step_id: Option(String))
   RecollectWorkflowOutputs(run_id: String)
+  RunFinalize(
+    run_id: String,
+    validate: Bool,
+    outputs: RunFinalizeOutputs,
+    publish: Bool,
+    update_tracker: Bool,
+    dry_run: Bool,
+    reason: String,
+  )
   RetryArtifactPublication(run_id: String, publication_id: Option(String))
   ParkIssue(IssueRef, reason: String)
   UnparkIssue(IssueRef)
@@ -93,6 +107,10 @@ type CommandFields {
     value: Option(String),
     job_id: Option(String),
     dry_run: Option(Bool),
+    validate: Option(Bool),
+    outputs: Option(String),
+    publish: Option(Bool),
+    update_tracker: Option(Bool),
     action_id: Option(String),
     action_instance_id: Option(String),
     target_kind: Option(String),
@@ -121,8 +139,10 @@ pub fn command_name(command: OperatorCommand) -> String {
     ResumeDispatch -> "resume"
     ReloadWorkflow -> "reload"
     RetryIssue(_) -> "retry"
+    RetryIssueStartFresh(_, _) -> "retry_start_fresh"
     RetryWorkflowStep(_, _) -> "retry_step"
     RecollectWorkflowOutputs(_) -> "recollect_outputs"
+    RunFinalize(..) -> "run_finalize"
     RetryArtifactPublication(_, _) -> "retry_artifact_publication"
     ParkIssue(_, _) -> "park"
     UnparkIssue(_) -> "unpark"
@@ -139,11 +159,14 @@ pub fn command_name(command: OperatorCommand) -> String {
 pub fn command_target(command: OperatorCommand) -> Option(String) {
   case command {
     PauseDispatch | ResumeDispatch | ReloadWorkflow -> None
-    RetryIssue(issue_ref) | ParkIssue(issue_ref, _) | UnparkIssue(issue_ref) ->
-      Some(issue_ref_to_string(issue_ref))
+    RetryIssue(issue_ref)
+    | RetryIssueStartFresh(issue_ref, _)
+    | ParkIssue(issue_ref, _)
+    | UnparkIssue(issue_ref) -> Some(issue_ref_to_string(issue_ref))
     RetryWorkflowStep(target, _) ->
       Some(retry_workflow_step_target_to_string(target))
     RecollectWorkflowOutputs(run_id) -> Some("run:" <> run_id)
+    RunFinalize(run_id: run_id, ..) -> Some("run:" <> run_id)
     RetryArtifactPublication(run_id, publication_id) ->
       Some(retry_artifact_publication_target_to_string(run_id, publication_id))
     AbortSession(session_id)
@@ -225,6 +248,12 @@ pub fn operator_command_to_json(
     RetryIssue(issue_ref) ->
       list.append(issue_ref_entries(issue_ref), base_command_entries("retry"))
       |> json.object
+    RetryIssueStartFresh(issue_ref, reason) ->
+      list.append(
+        [#("reason", json.string(reason)), ..issue_ref_entries(issue_ref)],
+        base_command_entries("retry_start_fresh"),
+      )
+      |> json.object
     RetryWorkflowStep(target, step_id) ->
       list.append(
         retry_workflow_step_entries(target, step_id),
@@ -235,6 +264,26 @@ pub fn operator_command_to_json(
       [
         #("run_id", json.string(run_id)),
         ..base_command_entries("recollect_outputs")
+      ]
+      |> json.object
+    RunFinalize(
+      run_id,
+      validate,
+      outputs,
+      publish,
+      update_tracker,
+      dry_run,
+      reason,
+    ) ->
+      [
+        #("run_id", json.string(run_id)),
+        #("validate", json.bool(validate)),
+        #("outputs", json.string(run_finalize_outputs_to_string(outputs))),
+        #("publish", json.bool(publish)),
+        #("update_tracker", json.bool(update_tracker)),
+        #("dry_run", json.bool(dry_run)),
+        #("reason", json.string(reason)),
+        ..base_command_entries("run_finalize")
       ]
       |> json.object
     RetryArtifactPublication(run_id, publication_id) ->
@@ -565,6 +614,26 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
     None,
     decode.optional(decode.bool),
   )
+  use validate <- decode.optional_field(
+    "validate",
+    None,
+    decode.optional(decode.bool),
+  )
+  use outputs <- decode.optional_field(
+    "outputs",
+    None,
+    decode.optional(decode.string),
+  )
+  use publish <- decode.optional_field(
+    "publish",
+    None,
+    decode.optional(decode.bool),
+  )
+  use update_tracker <- decode.optional_field(
+    "update_tracker",
+    None,
+    decode.optional(decode.bool),
+  )
   use action_id <- decode.optional_field(
     "action_id",
     None,
@@ -621,6 +690,10 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
     value: value,
     job_id: job_id,
     dry_run: dry_run,
+    validate: validate,
+    outputs: outputs,
+    publish: publish,
+    update_tracker: update_tracker,
     action_id: action_id,
     action_instance_id: action_instance_id,
     target_kind: target_kind,
@@ -643,6 +716,11 @@ fn operator_command_from_fields(
         "resume" -> Ok(ResumeDispatch)
         "reload" -> Ok(ReloadWorkflow)
         "retry" -> required_issue_ref(fields) |> result.map(RetryIssue)
+        "retry_start_fresh" -> {
+          use issue_ref <- result.try(required_issue_ref(fields))
+          use reason <- result.try(required_reason(fields))
+          Ok(RetryIssueStartFresh(issue_ref, reason))
+        }
         "retry_step" -> {
           use target <- result.try(required_retry_workflow_step_target(fields))
           use step_id <- result.try(optional_step_id(fields))
@@ -650,6 +728,32 @@ fn operator_command_from_fields(
         }
         "recollect_outputs" ->
           required_run_id(fields) |> result.map(RecollectWorkflowOutputs)
+        "run_finalize" -> {
+          use run_id <- result.try(required_run_id(fields))
+          use validate <- result.try(required_true_flag(
+            fields.validate,
+            "validate",
+          ))
+          use outputs <- result.try(required_run_finalize_outputs(fields))
+          use publish <- result.try(required_true_flag(
+            fields.publish,
+            "publish",
+          ))
+          use update_tracker <- result.try(required_true_flag(
+            fields.update_tracker,
+            "update_tracker",
+          ))
+          use reason <- result.try(required_reason(fields))
+          Ok(RunFinalize(
+            run_id: run_id,
+            validate: validate,
+            outputs: outputs,
+            publish: publish,
+            update_tracker: update_tracker,
+            dry_run: command_dry_run(fields),
+            reason: reason,
+          ))
+        }
         "retry_artifact_publication" -> {
           use run_id <- result.try(required_run_id(fields))
           use publication_id <- result.try(optional_publication_id(fields))
@@ -751,6 +855,32 @@ fn optional_publication_id(
       trimmed_non_empty(publication_id, "publication_id must not be empty")
       |> result.map(Some)
     None -> Ok(None)
+  }
+}
+
+fn required_true_flag(
+  value: Option(Bool),
+  name: String,
+) -> Result(Bool, CodecError) {
+  case value {
+    Some(True) -> Ok(True)
+    Some(False) | None -> invalid_command(name <> " must be true")
+  }
+}
+
+fn required_run_finalize_outputs(
+  fields: CommandFields,
+) -> Result(RunFinalizeOutputs, CodecError) {
+  case fields.outputs {
+    Some("auto") -> Ok(RunFinalizeOutputsAuto)
+    Some(_) -> invalid_command("outputs must be auto")
+    None -> invalid_command("missing outputs")
+  }
+}
+
+fn run_finalize_outputs_to_string(outputs: RunFinalizeOutputs) -> String {
+  case outputs {
+    RunFinalizeOutputsAuto -> "auto"
   }
 }
 

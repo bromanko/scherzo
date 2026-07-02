@@ -94,6 +94,19 @@ pub type Command {
     json: Bool,
     command: control_command.OperatorCommand,
   )
+  TaskRetryStartFresh(
+    control_file: Option(String),
+    json: Bool,
+    issue_ref: control_command.IssueRef,
+    reason: String,
+  )
+  RunFinalize(
+    control_file: Option(String),
+    json: Bool,
+    run_id: String,
+    reason: String,
+    dry_run: Bool,
+  )
   Cleanup(
     control_file: Option(String),
     root: Option(String),
@@ -421,30 +434,11 @@ fn build_command(
       Ok(operator_command(parsed, control_command.ResumeDispatch))
     command_registry.ReloadKey ->
       Ok(operator_command(parsed, control_command.ReloadWorkflow))
-    command_registry.RetryKey ->
-      Ok(operator_command(
-        parsed,
-        control_command.RetryIssue(
-          issue_ref(first_positional(parsed, parsed.usage)),
-        ),
-      ))
-    command_registry.RetryStepKey ->
-      Ok(operator_command(
-        parsed,
-        control_command.RetryWorkflowStep(
-          retry_workflow_step_target(first_positional(parsed, parsed.usage)),
-          command_spec.option_value(parsed, "--step"),
-        ),
-      ))
-    command_registry.RecollectOutputsKey -> {
-      use run_id <- try_ctl(
-        recollect_outputs_run_id(first_positional(parsed, parsed.usage)),
-      )
-      Ok(operator_command(
-        parsed,
-        control_command.RecollectWorkflowOutputs(run_id),
-      ))
-    }
+    command_registry.RetryKey -> build_retry_command(parsed)
+    command_registry.RetryStepKey -> build_retry_step_command(parsed)
+    command_registry.RecollectOutputsKey ->
+      build_recollect_outputs_command(parsed)
+    command_registry.RunFinalizeKey -> build_run_finalize_command(parsed)
     command_registry.RecoveryCleanupOrphanStepsKey ->
       build_recovery_cleanup_command(parsed)
     command_registry.ParkKey -> build_park_command(parsed)
@@ -522,6 +516,14 @@ fn build_command(
         publication_id,
       ))
     }
+    command_registry.PublicationRetryKey ->
+      Ok(operator_command(
+        parsed,
+        control_command.RetryArtifactPublication(
+          first_positional(parsed, parsed.usage),
+          command_spec.option_value(parsed, "--publication"),
+        ),
+      ))
     command_registry.ArtifactPublicationRetryKey -> {
       use run_id <- try_ctl(required_run_id_from_parsed(parsed))
       Ok(ArtifactPublicationRetry(
@@ -760,6 +762,126 @@ fn operator_command(
   command: control_command.OperatorCommand,
 ) -> Command {
   Operator(control_file_option(parsed), json_output(parsed), command)
+}
+
+fn build_retry_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  let issue = issue_ref(first_positional(parsed, parsed.usage))
+  case
+    command_spec.has_flag(parsed, "--start-fresh"),
+    command_spec.option_value(parsed, "--reason")
+  {
+    True, Some(reason) ->
+      Ok(TaskRetryStartFresh(
+        control_file_option(parsed),
+        json_output(parsed),
+        issue,
+        reason,
+      ))
+    True, None ->
+      Error(UsageError("task retry --start-fresh requires --reason <text>"))
+    False, Some(_) ->
+      Error(UsageError("task retry --reason <text> requires --start-fresh"))
+    False, None ->
+      Ok(operator_command(parsed, control_command.RetryIssue(issue)))
+  }
+}
+
+fn build_retry_step_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case parsed.path {
+    ["run", "retry-step"] ->
+      case command_spec.option_value(parsed, "--step") {
+        Some(step_id) ->
+          Ok(operator_command(
+            parsed,
+            control_command.RetryWorkflowStep(
+              control_command.RetryWorkflowStepRunId(first_positional(
+                parsed,
+                parsed.usage,
+              )),
+              Some(step_id),
+            ),
+          ))
+        None -> Error(UsageError("run retry-step requires --step <step-id>"))
+      }
+    _ ->
+      Ok(operator_command(
+        parsed,
+        control_command.RetryWorkflowStep(
+          retry_workflow_step_target(first_positional(parsed, parsed.usage)),
+          command_spec.option_value(parsed, "--step"),
+        ),
+      ))
+  }
+}
+
+fn build_recollect_outputs_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  case parsed.path {
+    ["run", "recollect-outputs"] ->
+      Ok(operator_command(
+        parsed,
+        control_command.RecollectWorkflowOutputs(first_positional(
+          parsed,
+          parsed.usage,
+        )),
+      ))
+    _ -> {
+      use run_id <- try_ctl(
+        recollect_outputs_run_id(first_positional(parsed, parsed.usage)),
+      )
+      Ok(operator_command(
+        parsed,
+        control_command.RecollectWorkflowOutputs(run_id),
+      ))
+    }
+  }
+}
+
+fn build_run_finalize_command(
+  parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
+) -> Result(Command, Error) {
+  let dry_run = command_spec.has_flag(parsed, "--dry-run")
+  let yes = command_spec.has_flag(parsed, "--yes")
+  case dry_run, yes {
+    True, True ->
+      Error(UsageError(
+        "run finalize requires exactly one of --dry-run or --yes",
+      ))
+    False, False ->
+      Error(UsageError("run finalize requires --dry-run or --yes"))
+    _, _ ->
+      case
+        command_spec.has_flag(parsed, "--validate"),
+        command_spec.option_value(parsed, "--outputs"),
+        command_spec.has_flag(parsed, "--publish"),
+        command_spec.has_flag(parsed, "--update-tracker"),
+        command_spec.option_value(parsed, "--reason")
+      {
+        False, _, _, _, _ ->
+          Error(UsageError("run finalize requires --validate"))
+        _, None, _, _, _ ->
+          Error(UsageError("run finalize requires --outputs auto"))
+        _, _, False, _, _ ->
+          Error(UsageError("run finalize requires --publish"))
+        _, _, _, False, _ ->
+          Error(UsageError("run finalize requires --update-tracker"))
+        _, _, _, _, None ->
+          Error(UsageError("run finalize requires --reason <text>"))
+        True, Some(_), True, True, Some(reason) ->
+          Ok(RunFinalize(
+            control_file_option(parsed),
+            json_output(parsed),
+            first_positional(parsed, parsed.usage),
+            reason,
+            dry_run,
+          ))
+      }
+  }
 }
 
 fn build_recovery_cleanup_command(
@@ -1435,6 +1557,58 @@ pub fn run_with_deps_and_env(
           )
         False ->
           case deps.apply_command(control_file, resolved_command) {
+            Ok(result) -> {
+              ctl_renderers.print_command_result(result, line: output.line)
+              Ok(Nil)
+            }
+            Error(err) -> Error(client_error(err))
+          }
+      }
+    }
+    TaskRetryStartFresh(control_path, json, issue_ref, reason) -> {
+      use target <- try_ctl(load_control_target(control_path, env))
+      let operator_command =
+        control_command.RetryIssueStartFresh(issue_ref, reason)
+      case json {
+        True ->
+          print_raw_request(
+            target,
+            protocol.command_request("1", "", operator_command),
+            deps,
+            output,
+          )
+        False ->
+          case deps.apply_command(target.control_file, operator_command) {
+            Ok(result) -> {
+              ctl_renderers.print_command_result(result, line: output.line)
+              Ok(Nil)
+            }
+            Error(err) -> Error(client_error(err))
+          }
+      }
+    }
+    RunFinalize(control_path, json, run_id, reason, dry_run) -> {
+      use target <- try_ctl(load_control_target(control_path, env))
+      let operator_command =
+        control_command.RunFinalize(
+          run_id: run_id,
+          validate: True,
+          outputs: control_command.RunFinalizeOutputsAuto,
+          publish: True,
+          update_tracker: True,
+          dry_run: dry_run,
+          reason: reason,
+        )
+      case json {
+        True ->
+          print_raw_request(
+            target,
+            protocol.command_request("1", "", operator_command),
+            deps,
+            output,
+          )
+        False ->
+          case deps.apply_command(target.control_file, operator_command) {
             Ok(result) -> {
               ctl_renderers.print_command_result(result, line: output.line)
               Ok(Nil)

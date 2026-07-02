@@ -354,10 +354,34 @@ fn authenticate(
       protocol.ReloadWorkflow(id, control_file.token)
     protocol.RetryIssue(id, _, issue_ref) ->
       protocol.RetryIssue(id, control_file.token, issue_ref)
+    protocol.RetryIssueStartFresh(id, _, issue_ref, reason) ->
+      protocol.RetryIssueStartFresh(id, control_file.token, issue_ref, reason)
     protocol.RetryWorkflowStep(id, _, target, step_id) ->
       protocol.RetryWorkflowStep(id, control_file.token, target, step_id)
     protocol.RecollectWorkflowOutputs(id, _, run_id) ->
       protocol.RecollectWorkflowOutputs(id, control_file.token, run_id)
+    protocol.RunFinalize(
+      id,
+      _,
+      run_id,
+      validate,
+      outputs,
+      publish,
+      update_tracker,
+      dry_run,
+      reason,
+    ) ->
+      protocol.RunFinalize(
+        id,
+        control_file.token,
+        run_id,
+        validate,
+        outputs,
+        publish,
+        update_tracker,
+        dry_run,
+        reason,
+      )
     protocol.RetryArtifactPublication(id, _, run_id, publication_id) ->
       protocol.RetryArtifactPublication(
         id,

@@ -1625,6 +1625,15 @@ fn request_examples() -> List(RequestExample) {
       ),
     ),
     RequestExample(
+      "RetryIssueStartFresh",
+      protocol.RetryIssueStartFresh(
+        "req-retry-start-fresh",
+        "secret",
+        command.IssueIdentifier("LIV-94"),
+        "workflow drift",
+      ),
+    ),
+    RequestExample(
       "RetryWorkflowStep",
       protocol.RetryWorkflowStep(
         "req-retry-step",
@@ -1639,6 +1648,20 @@ fn request_examples() -> List(RequestExample) {
         "req-recollect-outputs",
         "secret",
         "run-1",
+      ),
+    ),
+    RequestExample(
+      "RunFinalize",
+      protocol.RunFinalize(
+        "req-run-finalize",
+        "secret",
+        "run-1",
+        True,
+        command.RunFinalizeOutputsAuto,
+        True,
+        True,
+        True,
+        "operator salvage",
       ),
     ),
     RequestExample(

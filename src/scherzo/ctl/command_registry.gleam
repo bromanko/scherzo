@@ -25,6 +25,7 @@ pub type HandlerKey {
   RetryKey
   RetryStepKey
   RecollectOutputsKey
+  RunFinalizeKey
   RecoveryCleanupOrphanStepsKey
   ParkKey
   UnparkKey
@@ -41,6 +42,7 @@ pub type HandlerKey {
   WorkstreamKey
   ArtifactPublicationListKey
   ArtifactPublicationShowKey
+  PublicationRetryKey
   ArtifactPublicationRetryKey
   ArtifactPublicationAbandonKey
   StateStatusKey
@@ -172,6 +174,25 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         ),
       ],
     ),
+    command_spec.CommandSpec(
+      handler: RetryKey,
+      path: ["task", "retry"],
+      usage: "task retry <task|id:<id>> [--start-fresh --reason <text>]",
+      summary: "Retry a tracker task now, or start a fresh run when explicitly requested.",
+      positionals: [command_spec.Required("task_ref")],
+      options: [
+        control_file_option(),
+        json_option(),
+        start_fresh_option(),
+        reason_option(),
+      ],
+      help_lines: [
+        line(
+          "task retry <task|id:<id>> [--start-fresh --reason <text>]",
+          "Retry a tracker task now, or start a fresh run when explicitly requested.",
+        ),
+      ],
+    ),
     outbox_command_spec.command(
       OutboxKey,
       control_file_option(),
@@ -280,11 +301,40 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     command_spec.CommandSpec(
       handler: RetryKey,
       path: ["retry"],
-      usage: "retry <task>",
+      usage: "retry <task|id:<id>> [--start-fresh --reason <text>]",
       summary: "Retry a task now.",
-      positionals: [command_spec.Required("task")],
-      options: [control_file_option(), json_option()],
-      help_lines: [line("retry <task>", "Retry a task now.")],
+      positionals: [command_spec.Required("task_ref")],
+      options: [
+        control_file_option(),
+        json_option(),
+        start_fresh_option(),
+        reason_option(),
+      ],
+      help_lines: [
+        line(
+          "retry <task|id:<id>> [--start-fresh --reason <text>]",
+          "Retry a task now.",
+        ),
+      ],
+    ),
+    command_spec.CommandSpec(
+      handler: RetryStepKey,
+      path: ["run", "retry-step"],
+      usage: "run retry-step <run-id> --step <step-id>",
+      summary: "Retry one failed or interrupted workflow step without redispatching the whole task.",
+      positionals: [command_spec.Required("run_id")],
+      options: [control_file_option(), json_option(), step_option()],
+      help_lines: [
+        line("run retry-step <run-id> --step <step-id>", ""),
+        line(
+          "",
+          "Queue durable retry-step work without redispatching the whole task.",
+        ),
+        line(
+          "",
+          "Successful acknowledgement returns queued plus an operation_id; poll query operation-status for completion.",
+        ),
+      ],
     ),
     command_spec.CommandSpec(
       handler: RetryStepKey,
@@ -307,6 +357,21 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     ),
     command_spec.CommandSpec(
       handler: RecollectOutputsKey,
+      path: ["run", "recollect-outputs"],
+      usage: "run recollect-outputs <run-id>",
+      summary: "Recollect workflow contract outputs without rerunning completed steps.",
+      positionals: [command_spec.Required("run_id")],
+      options: [control_file_option(), json_option()],
+      help_lines: [
+        line("run recollect-outputs <run-id>", ""),
+        line(
+          "",
+          "Recollect workflow contract outputs without rerunning completed steps. Successful acknowledgement returns queued plus an operation_id; poll query operation-status for completion.",
+        ),
+      ],
+    ),
+    command_spec.CommandSpec(
+      handler: RecollectOutputsKey,
       path: ["recollect-outputs"],
       usage: "recollect-outputs run:<run-id>",
       summary: "Recollect workflow contract outputs without rerunning completed steps.",
@@ -317,6 +382,30 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         line(
           "",
           "Recollect workflow contract outputs without rerunning completed steps. Successful acknowledgement returns queued plus an operation_id; poll query operation-status for completion.",
+        ),
+      ],
+    ),
+    command_spec.CommandSpec(
+      handler: RunFinalizeKey,
+      path: ["run", "finalize"],
+      usage: "run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason <text> (--dry-run|--yes)",
+      summary: "Plan or perform manual run finalization without starting a new workflow.",
+      positionals: [command_spec.Required("run_id")],
+      options: [
+        control_file_option(),
+        json_option(),
+        validate_option(),
+        outputs_option(),
+        publish_option(),
+        update_tracker_option(),
+        reason_option(),
+        dry_run_option(),
+        yes_option(),
+      ],
+      help_lines: [
+        line(
+          "run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason <text> (--dry-run|--yes)",
+          "Plan or perform manual run finalization without starting a new workflow.",
         ),
       ],
     ),
@@ -609,6 +698,20 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       ],
     ),
     command_spec.CommandSpec(
+      handler: PublicationRetryKey,
+      path: ["publication", "retry"],
+      usage: "publication retry <run-id> [--publication <publication-id>]",
+      summary: "Retry failed publication through the daemon queue using already-materialized outputs.",
+      positionals: [command_spec.Required("run_id")],
+      options: [control_file_option(), json_option(), publication_option()],
+      help_lines: [
+        line(
+          "publication retry <run-id> [--publication <publication-id>]",
+          "Retry failed publication through the daemon queue using already-materialized outputs.",
+        ),
+      ],
+    ),
+    command_spec.CommandSpec(
       handler: ArtifactPublicationShowKey,
       path: ["artifact", "publication", "show"],
       usage: "artifact publication show --run <run-id> --publication <publication-id> [--root <workspace-root>]",
@@ -840,6 +943,14 @@ fn is_canonical_control_command(
     False ->
       case handler, path {
         SchedulesRunKey, ["run-schedule"] -> True
+        RetryKey, ["task", "retry"] -> True
+        RetryKey, _ -> False
+        RetryStepKey, ["run", "retry-step"] -> True
+        RetryStepKey, _ -> False
+        RecollectOutputsKey, ["run", "recollect-outputs"] -> True
+        RecollectOutputsKey, _ -> False
+        RunFinalizeKey, ["run", "finalize"] -> True
+        PublicationRetryKey, ["publication", "retry"] -> True
         SchedulesRunKey, _ -> False
         _, _ -> True
       }
@@ -867,6 +978,9 @@ fn is_deprecated_control_alias(
     False ->
       case handler, path {
         SchedulesRunKey, ["schedules", "run"] -> True
+        RetryKey, ["retry"] -> True
+        RetryStepKey, ["retry-step"] -> True
+        RecollectOutputsKey, ["recollect-outputs"] -> True
         _, _ -> False
       }
   }
@@ -918,6 +1032,9 @@ fn is_deprecated_control_alias_spec(
     False ->
       case handler, path {
         SchedulesRunKey, ["schedules", "run"] -> True
+        RetryKey, ["retry"] -> True
+        RetryStepKey, ["retry-step"] -> True
+        RecollectOutputsKey, ["recollect-outputs"] -> True
         _, _ -> False
       }
   }
@@ -930,6 +1047,12 @@ fn deprecated_alias_tail(
   case parsed.handler, parsed.path {
     SchedulesRunKey, ["schedules", "run"] ->
       " will be removed after one release; use scherzo ctl run-schedule <job> --now."
+    RetryKey, ["retry"] ->
+      " will be removed after one release; use scherzo ctl task retry <task|id:<id>> [--start-fresh --reason <text>]."
+    RetryStepKey, ["retry-step"] ->
+      " will be removed after one release; use scherzo ctl run retry-step <run-id> --step <step-id>."
+    RecollectOutputsKey, ["recollect-outputs"] ->
+      " will be removed after one release; use scherzo ctl run recollect-outputs <run-id>."
     _, _ ->
       " will be removed after one release; use scherzo "
       <> string.join(args, with: " ")
@@ -956,7 +1079,12 @@ fn control_option_specs_in_help_order() -> List(command_spec.OptionSpec) {
     yes_option(),
     dry_run_option(),
     reason_option(),
+    start_fresh_option(),
     step_option(),
+    validate_option(),
+    outputs_option(),
+    publish_option(),
+    update_tracker_option(),
     cancel_option(),
     value_option(),
     help_option(),
@@ -1165,9 +1293,16 @@ fn reason_option() -> command_spec.OptionSpec {
   command_spec.value_option(
     "--reason",
     "<text>",
-    "Reason for parking a task.",
+    "Reason for park, start-fresh retry, or manual finalization.",
     False,
     command_spec.passthrough_value,
+  )
+}
+
+fn start_fresh_option() -> command_spec.OptionSpec {
+  command_spec.flag_option(
+    "--start-fresh",
+    "Start a fresh run from the current task payload and workflow definition.",
   )
 }
 
@@ -1178,6 +1313,42 @@ fn step_option() -> command_spec.OptionSpec {
     "Select a failed or interrupted workflow step for retry-step.",
     False,
     command_spec.passthrough_value,
+  )
+}
+
+fn validate_option() -> command_spec.OptionSpec {
+  command_spec.flag_option(
+    "--validate",
+    "Required for run finalize to adopt validation evidence before mutation.",
+  )
+}
+
+fn outputs_option() -> command_spec.OptionSpec {
+  command_spec.value_option(
+    "--outputs",
+    "auto",
+    "Required for run finalize; only auto is supported.",
+    False,
+    fn(value) {
+      case value {
+        "auto" -> Ok(value)
+        _ -> Error("--outputs must be auto")
+      }
+    },
+  )
+}
+
+fn publish_option() -> command_spec.OptionSpec {
+  command_spec.flag_option(
+    "--publish",
+    "Required for run finalize to retry publication after outputs are ready.",
+  )
+}
+
+fn update_tracker_option() -> command_spec.OptionSpec {
+  command_spec.flag_option(
+    "--update-tracker",
+    "Required for run finalize to update the tracker after publication succeeds.",
   )
 }
 

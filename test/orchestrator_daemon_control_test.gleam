@@ -1563,6 +1563,149 @@ pub fn retry_command_rejects_paused_and_dispatches_eligible_issue_test() {
   hub.stop(hub_subject)
 }
 
+pub fn task_retry_start_fresh_retries_drift_parked_issue_test() {
+  let issue = issue("retry-fresh-issue", "ABC-FRESH", "Todo")
+  let tracker_client = tracker_with(issue)
+  let dir = "test/tmp/daemon-control-retry-start-fresh"
+  let #(workflow_path, root) = write_workflow_with_limits(dir, 1, 3)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append(
+      ledger_path,
+      record.with_id(
+        "issue-parked",
+        10,
+        record.IssueParkedV2(
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+          reason: "workflow_definition_drift:implementation",
+          release_policy: "explicit_unpark_only",
+          issue_fingerprint: core.issue_fingerprint(issue),
+          observed_updated_at_ms: 10,
+        ),
+      ),
+      True,
+    )
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      disabled_handoff(),
+      hub_subject,
+      long_running_agent(log_subject, worker_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let assert Ok(start_fresh) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryIssueStartFresh(command.IssueId(issue.id), "workflow drift"),
+      1000,
+    )
+  assert command.status_to_string(start_fresh.status) == "applied"
+  let assert Some(message) = start_fresh.message
+  assert string.contains(message, "starts a fresh run")
+  assert wait_for_log(log_subject, "dispatch_started", 100)
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert !dict.has_key(
+    snapshot.parked,
+    orchestrator_state.issue_identity(issue),
+  )
+
+  test_async.release_barrier(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn task_retry_start_fresh_does_not_emit_fake_unpark_history_test() {
+  let issue = issue("retry-fresh-unparked", "ABC-FRESH-UNPARKED", "Todo")
+  let #(workflow_path, root) =
+    write_workflow_with_limits(
+      "test/tmp/daemon-control-retry-start-fresh-unparked",
+      1,
+      3,
+    )
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_with(issue),
+      disabled_handoff(),
+      hub_subject,
+      long_running_agent(log_subject, worker_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryIssueStartFresh(command.IssueId(issue.id), "workflow drift"),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "applied"
+  assert wait_for_log(log_subject, "dispatch_started", 100)
+  let bodies = ledger_bodies(root)
+  assert !list.any(bodies, fn(body) {
+    case body {
+      record.IssueUnparked(issue_id, _, _) -> issue_id == issue.id
+      _ -> False
+    }
+  })
+
+  test_async.release_barrier(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn task_retry_start_fresh_rejects_manual_park_test() {
+  let issue = issue("retry-fresh-manual-park", "ABC-FRESH-MANUAL", "Todo")
+  let dir = "test/tmp/daemon-control-retry-start-fresh-manual-park"
+  let #(workflow_path, _root) = write_workflow_with_limits(dir, 1, 3)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_with(issue),
+      disabled_handoff(),
+      hub_subject,
+      long_running_agent(log_subject, worker_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+  let assert Ok(parked) =
+    daemon.apply_operator_command(
+      started.data,
+      command.ParkIssue(command.IssueId(issue.id), "manual_hold"),
+      1000,
+    )
+  assert command.status_to_string(parked.status) == "applied"
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryIssueStartFresh(command.IssueId(issue.id), "workflow drift"),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("start_fresh_not_allowed")
+  assert !wait_for_log(log_subject, "dispatch_started", 20)
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn retry_command_acknowledges_before_accepted_side_effects_finish_test() {
   let candidate = issue("retry-async-issue", "ABC-ASYNC-RETRY", "Todo")
   let tracker_client = tracker_with(candidate)

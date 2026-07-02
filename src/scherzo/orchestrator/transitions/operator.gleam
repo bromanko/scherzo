@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import scherzo/control/command
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
@@ -10,6 +11,7 @@ import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/claims
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
+import scherzo/session/event
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 import scherzo/state/record
@@ -66,8 +68,18 @@ pub fn handle_submitted(
     }
     command.RetryIssue(_) ->
       handle_retry(state, request, context, issue_resolution, callbacks)
+    command.RetryIssueStartFresh(_, reason) ->
+      handle_retry_start_fresh(
+        state,
+        request,
+        context,
+        issue_resolution,
+        reason,
+        callbacks,
+      )
     command.RetryWorkflowStep(_, _)
     | command.RecollectWorkflowOutputs(_)
+    | command.RunFinalize(..)
     | command.RetryArtifactPublication(_, _) -> shell_command(state, request)
     command.ParkIssue(_, reason) ->
       handle_park(state, request, context, issue_resolution, reason, callbacks)
@@ -336,6 +348,326 @@ fn retry_issue(
           }
       }
     }
+  }
+}
+
+fn handle_retry_start_fresh(
+  state: transition_types.State,
+  request: effects_types.OperatorCommandRequest,
+  context: transition_types.DispatchContext,
+  issue_resolution: transition_types.OperatorIssueResolution,
+  reason: String,
+  callbacks: Callbacks,
+) -> transition_types.Outcome {
+  let Callbacks(issue_is_running_claimed_or_pending: active, ..) = callbacks
+  case issue_resolution_to_result(request.operator_command, issue_resolution) {
+    Error(result) -> finish(state, request, result)
+    Ok(issue) ->
+      case active(state, context, issue.id) {
+        True ->
+          finish(
+            state,
+            request,
+            command.rejected(
+              request.operator_command,
+              "issue_already_active",
+              Some("issue is running, claimed, or pending claim"),
+            ),
+          )
+        False ->
+          case context.operator_paused {
+            True ->
+              finish(
+                state,
+                request,
+                command.rejected(
+                  request.operator_command,
+                  "dispatch_paused",
+                  Some("dispatch is paused"),
+                ),
+              )
+            False ->
+              retry_issue_start_fresh(
+                state,
+                request,
+                context,
+                issue,
+                reason,
+                callbacks,
+              )
+          }
+      }
+  }
+}
+
+fn retry_issue_start_fresh(
+  state: transition_types.State,
+  request: effects_types.OperatorCommandRequest,
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+  reason: String,
+  callbacks: Callbacks,
+) -> transition_types.Outcome {
+  let Callbacks(
+    can_reserve_dispatch_slot: can_reserve,
+    dispatch_candidates: dispatch,
+    ..,
+  ) = callbacks
+  case context.dispatch_enabled {
+    False ->
+      finish(
+        state,
+        request,
+        command.rejected(
+          request.operator_command,
+          "dispatch_disabled",
+          Some("dispatch is not currently enabled"),
+        ),
+      )
+    True ->
+      case start_fresh_block_reason(state.runtime, context, issue) {
+        Error(block_reason) ->
+          finish(
+            state,
+            request,
+            command.rejected(
+              request.operator_command,
+              block_reason,
+              Some(start_fresh_rejection_message(block_reason)),
+            ),
+          )
+        Ok(Nil) ->
+          case
+            core.retry_candidate_precondition_failure(
+              state.runtime,
+              context.effective,
+              issue.id,
+              issue,
+            )
+          {
+            Some("retry_issue_parked") | None ->
+              case core.workflow_policy_satisfied(context.effective, issue) {
+                False ->
+                  finish(
+                    state,
+                    request,
+                    command.rejected(
+                      request.operator_command,
+                      "retry_workflow_policy_invalid",
+                      Some("retry rejected: workflow policy is not satisfied"),
+                    ),
+                  )
+                True ->
+                  case can_reserve(state, context, issue) {
+                    False ->
+                      finish(
+                        state,
+                        request,
+                        command.rejected(
+                          request.operator_command,
+                          "retry_no_dispatch_slots",
+                          Some(
+                            "retry deferred: no dispatch slots are available",
+                          ),
+                        ),
+                      )
+                    True -> {
+                      let state = reset_issue_for_operator_retry(state, issue)
+                      let claim_context =
+                        context_without_retried_recovery(context, issue.id)
+                      let claim =
+                        claims.begin_for_issue(
+                          state,
+                          issue,
+                          [],
+                          claim_context,
+                          claims.Callbacks(dispatch_candidates: dispatch),
+                        )
+                      transition_types.Outcome(
+                        state: claim.state,
+                        effects: list.append(
+                          start_fresh_retry_effects(
+                            state.runtime,
+                            issue,
+                            context,
+                          ),
+                          list.append(claim.effects, [
+                            effects_types.FinishOperatorCommand(
+                              request,
+                              command.applied(
+                                request.operator_command,
+                                Some(
+                                  "retry accepted; starts a fresh run; reason: "
+                                  <> reason,
+                                ),
+                              ),
+                            ),
+                          ]),
+                        ),
+                      )
+                    }
+                  }
+              }
+            Some(other) ->
+              finish(
+                state,
+                request,
+                command.rejected(
+                  request.operator_command,
+                  other,
+                  Some(retry_rejection_message(other)),
+                ),
+              )
+          }
+      }
+  }
+}
+
+fn start_fresh_block_reason(
+  runtime: orchestrator_state.RuntimeState,
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+) -> Result(Nil, String) {
+  case
+    dict.get(
+      runtime.parked,
+      orchestrator_state.linear_issue_id_identity(issue.id),
+    )
+  {
+    Ok(orchestrator_state.ParkedEntry(reason: reason, ..)) ->
+      case
+        qualifying_start_fresh_reason(orchestrator_reason.park_to_string(reason))
+      {
+        True -> Ok(Nil)
+        False -> Error("start_fresh_not_allowed")
+      }
+    Error(Nil) ->
+      case parked_reason_from_projection(context.workspace_root, issue.id) {
+        Some(reason) ->
+          case qualifying_start_fresh_reason(reason) {
+            True -> Ok(Nil)
+            False -> Error("start_fresh_not_allowed")
+          }
+        None ->
+          case dict.get(context.recovery_by_issue, issue.id) {
+            Ok(recovery) ->
+              case recovery_allows_start_fresh(recovery) {
+                True -> Ok(Nil)
+                False -> Error("start_fresh_not_allowed")
+              }
+            Error(Nil) -> Ok(Nil)
+          }
+      }
+  }
+}
+
+fn parked_reason_from_projection(
+  workspace_root: String,
+  issue_id: String,
+) -> Option(String) {
+  case ledger.path_for_workspace_root(workspace_root) {
+    Ok(ledger_path) ->
+      case ledger.load_projection(ledger_path) {
+        Ok(projected) ->
+          case dict.get(projected.parked_issues, issue_id) {
+            Ok(parked) -> Some(parked.reason)
+            Error(Nil) -> None
+          }
+        Error(_) -> None
+      }
+    Error(_) -> None
+  }
+}
+
+fn recovery_allows_start_fresh(recovery: event.RecoveryInfo) -> Bool {
+  case recovery.park_reason {
+    Some(reason) -> qualifying_start_fresh_reason(reason)
+    None ->
+      case recovery.drift_kind {
+        Some(_) -> True
+        None ->
+          case recovery.status {
+            event.Blocked
+            | event.Parked
+            | event.DriftDetected
+            | event.OldStateResetRequired -> True
+            _ -> False
+          }
+      }
+  }
+}
+
+fn qualifying_start_fresh_reason(reason: String) -> Bool {
+  string.starts_with(reason, "workflow_definition_drift")
+  || string.starts_with(reason, "issue_content_drift")
+  || string.starts_with(reason, "issue_state_drift")
+  || string.starts_with(reason, "dispatch_recovery")
+}
+
+fn start_fresh_rejection_message(reason: String) -> String {
+  case reason {
+    "start_fresh_not_allowed" ->
+      "start-fresh retry only clears retained drift or recovery-blocked state"
+    _ -> "retry rejected: " <> reason
+  }
+}
+
+fn start_fresh_retry_effects(
+  runtime: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
+  context: transition_types.DispatchContext,
+) -> List(effects_types.Effect) {
+  let unpark_effects = case
+    start_fresh_has_recovery_state(runtime, context, issue)
+  {
+    True -> [
+      effects_types.AppendLedger(effects_types.LedgerAppend(
+        correlation_id: "operator_retry_start_fresh_unpark:" <> issue.id,
+        batch: ledger_batch.issue_unparked(
+          issue.id,
+          issue.identifier,
+          "start_fresh",
+          context.now_ms,
+        ),
+        failure_event: "ledger_append_failed",
+        policy: effects_types.ContinueRegardless,
+      )),
+    ]
+    False -> []
+  }
+  list.append(unpark_effects, [
+    effects_types.AppendLedger(effects_types.LedgerAppend(
+      correlation_id: "operator_retry_start_fresh_counter_reset:" <> issue.id,
+      batch: ledger_batch.operator_retry_counter_reset(
+        issue.id,
+        issue.identifier,
+        context.now_ms,
+      ),
+      failure_event: "ledger_append_failed",
+      policy: effects_types.ContinueRegardless,
+    )),
+    effects_types.CancelRetryTimer(issue.id, 0, "operator_retry_start_fresh"),
+    effects_types.ClearRecovery(issue.id),
+  ])
+}
+
+fn start_fresh_has_recovery_state(
+  runtime: orchestrator_state.RuntimeState,
+  context: transition_types.DispatchContext,
+  issue: tracker_issue.Issue,
+) -> Bool {
+  case
+    dict.get(
+      runtime.parked,
+      orchestrator_state.linear_issue_id_identity(issue.id),
+    )
+  {
+    Ok(_) -> True
+    Error(Nil) ->
+      case parked_reason_from_projection(context.workspace_root, issue.id) {
+        Some(_) -> True
+        None -> dict.has_key(context.recovery_by_issue, issue.id)
+      }
   }
 }
 

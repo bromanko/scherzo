@@ -1166,11 +1166,46 @@ pub fn parse_operator_commands_test() {
     == Ok(ctl.Operator(None, False, command.ResumeDispatch))
   assert ctl.parse(["reload"])
     == Ok(ctl.Operator(None, False, command.ReloadWorkflow))
+  assert ctl.parse(["task", "retry", "ABC-123"])
+    == Ok(ctl.Operator(
+      None,
+      False,
+      command.RetryIssue(command.IssueIdentifier("ABC-123")),
+    ))
+  assert ctl.parse(["task", "retry", "id:issue-123"])
+    == Ok(ctl.Operator(
+      None,
+      False,
+      command.RetryIssue(command.IssueId("issue-123")),
+    ))
+  assert ctl.parse([
+      "task",
+      "retry",
+      "ABC-123",
+      "--start-fresh",
+      "--reason",
+      "workflow drift",
+    ])
+    == Ok(ctl.TaskRetryStartFresh(
+      None,
+      False,
+      command.IssueIdentifier("ABC-123"),
+      "workflow drift",
+    ))
   assert ctl.parse(["retry", "ABC-123"])
     == Ok(ctl.Operator(
       None,
       False,
       command.RetryIssue(command.IssueIdentifier("ABC-123")),
+    ))
+  assert ctl.parse(["run", "retry-step", "run-1", "--step", "build"])
+    == Ok(ctl.Operator(
+      None,
+      False,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("build"),
+      ),
     ))
   assert ctl.parse(["retry-step", "ABC-123", "--step", "build"])
     == Ok(ctl.Operator(
@@ -1187,10 +1222,53 @@ pub fn parse_operator_commands_test() {
       False,
       command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
     ))
+  assert ctl.parse(["run", "recollect-outputs", "run-1"])
+    == Ok(ctl.Operator(None, False, command.RecollectWorkflowOutputs("run-1")))
   assert ctl.parse(["recollect-outputs", "run:run-1"])
     == Ok(ctl.Operator(None, False, command.RecollectWorkflowOutputs("run-1")))
   assert ctl.parse(["recollect-outputs", "run:run-1", "--json"])
     == Ok(ctl.Operator(None, True, command.RecollectWorkflowOutputs("run-1")))
+  assert ctl.parse([
+      "run",
+      "finalize",
+      "run-1",
+      "--validate",
+      "--outputs",
+      "auto",
+      "--publish",
+      "--update-tracker",
+      "--reason",
+      "operator salvage",
+      "--dry-run",
+    ])
+    == Ok(ctl.RunFinalize(None, False, "run-1", "operator salvage", True))
+  assert ctl.parse([
+      "run",
+      "finalize",
+      "run-1",
+      "--validate",
+      "--outputs",
+      "auto",
+      "--publish",
+      "--update-tracker",
+      "--reason",
+      "operator salvage",
+      "--yes",
+      "--json",
+    ])
+    == Ok(ctl.RunFinalize(None, True, "run-1", "operator salvage", False))
+  assert ctl.parse([
+      "publication",
+      "retry",
+      "run-1",
+      "--publication",
+      "review_doc",
+    ])
+    == Ok(ctl.Operator(
+      None,
+      False,
+      command.RetryArtifactPublication("run-1", Some("review_doc")),
+    ))
   assert ctl.parse(["recovery", "cleanup-orphan-steps", "run:run-1"])
     == Ok(ctl.Operator(None, False, command.CleanupOrphanSteps("run-1", True)))
   assert ctl.parse([
@@ -1289,6 +1367,24 @@ pub fn deprecated_ctl_offline_alias_prints_hint_and_top_level_offline_does_not_t
     )
     == Ok(Nil)
   assert drain_output(offline_stderr) == ""
+}
+
+pub fn deprecated_recovery_aliases_print_resource_first_hints_test() {
+  assert command_registry.deprecated_alias_hint(["retry", "ABC-123"])
+    == Some(
+      "Deprecated: scherzo ctl retry ABC-123 will be removed after one release; use scherzo ctl task retry <task|id:<id>> [--start-fresh --reason <text>].",
+    )
+  assert command_registry.deprecated_alias_hint(["retry-step", "run:run-1"])
+    == Some(
+      "Deprecated: scherzo ctl retry-step run:run-1 will be removed after one release; use scherzo ctl run retry-step <run-id> --step <step-id>.",
+    )
+  assert command_registry.deprecated_alias_hint([
+      "recollect-outputs",
+      "run:run-1",
+    ])
+    == Some(
+      "Deprecated: scherzo ctl recollect-outputs run:run-1 will be removed after one release; use scherzo ctl run recollect-outputs <run-id>.",
+    )
 }
 
 pub fn cleanup_json_output_uses_provider_report_test() {
@@ -1463,6 +1559,45 @@ pub fn parse_rejects_usage_errors_test() {
     == Error(ctl.UsageError("recollect-outputs requires run:<run-id>"))
   assert ctl.parse(["recollect-outputs", "ABC-123"])
     == Error(ctl.UsageError("recollect-outputs requires run:<run-id>"))
+  assert ctl.parse(["task", "retry", "ABC-123", "--start-fresh"])
+    == Error(ctl.UsageError("task retry --start-fresh requires --reason <text>"))
+  assert ctl.parse(["task", "retry", "ABC-123", "--reason", "manual"])
+    == Error(ctl.UsageError("task retry --reason <text> requires --start-fresh"))
+  assert ctl.parse(["run", "retry-step", "run-1"])
+    == Error(ctl.UsageError("run retry-step requires --step <step-id>"))
+  assert ctl.parse(["run", "finalize", "run-1"])
+    == Error(ctl.UsageError("run finalize requires --dry-run or --yes"))
+  assert ctl.parse([
+      "run",
+      "finalize",
+      "run-1",
+      "--validate",
+      "--outputs",
+      "auto",
+      "--publish",
+      "--update-tracker",
+      "--reason",
+      "manual",
+      "--dry-run",
+      "--yes",
+    ])
+    == Error(ctl.UsageError(
+      "run finalize requires exactly one of --dry-run or --yes",
+    ))
+  assert ctl.parse(["run", "finalize", "run-1", "--dry-run"])
+    == Error(ctl.UsageError("run finalize requires --validate"))
+  assert ctl.parse([
+      "run",
+      "finalize",
+      "run-1",
+      "--validate",
+      "--publish",
+      "--update-tracker",
+      "--reason",
+      "manual",
+      "--dry-run",
+    ])
+    == Error(ctl.UsageError("run finalize requires --outputs auto"))
   let assert Error(ctl.UsageError(_)) = ctl.parse(["ps", "--control-file"])
   let assert Error(ctl.UsageError(_)) =
     ctl.parse(["task", "list", "--state", "linear-todo"])
@@ -1509,6 +1644,34 @@ pub fn parse_rejects_irrelevant_command_options_test() {
     ))
   assert ctl.parse(["schedules", "logs", "nightly", "--now"])
     == Error(ctl.UsageError("unsupported option for schedules logs: --now"))
+  assert ctl.parse(["task", "retry", "ABC-123", "--root", "work"])
+    == Error(ctl.UsageError("unsupported option for task retry: --root"))
+  assert ctl.parse([
+      "run",
+      "retry-step",
+      "run-1",
+      "--step",
+      "build",
+      "--root",
+      "work",
+    ])
+    == Error(ctl.UsageError("unsupported option for run retry-step: --root"))
+  assert ctl.parse(["run", "recollect-outputs", "run-1", "--root", "work"])
+    == Error(ctl.UsageError(
+      "unsupported option for run recollect-outputs: --root",
+    ))
+  assert ctl.parse(["run", "finalize", "run-1", "--root", "work"])
+    == Error(ctl.UsageError("unsupported option for run finalize: --root"))
+  assert ctl.parse([
+      "publication",
+      "retry",
+      "run-1",
+      "--publication",
+      "review_doc",
+      "--root",
+      "work",
+    ])
+    == Error(ctl.UsageError("unsupported option for publication retry: --root"))
   assert ctl.parse([
       "artifact",
       "publication",
@@ -1554,12 +1717,24 @@ pub fn usage_mentions_daemon_only_commands_and_options_test() {
   assert string.contains(usage, "attach --raw <session-ref>")
   assert !string.contains(usage, "attach --raw --json <session-ref>")
   assert string.contains(usage, "pause")
-  assert string.contains(usage, "retry-step <target>")
+  assert string.contains(
+    usage,
+    "task retry <task|id:<id>> [--start-fresh --reason <text>]",
+  )
+  assert string.contains(usage, "run retry-step <run-id> --step <step-id>")
   assert string.contains(
     usage,
     "Queue durable retry-step work without redispatching the whole task.",
   )
-  assert string.contains(usage, "recollect-outputs run:<run-id>")
+  assert string.contains(usage, "run recollect-outputs <run-id>")
+  assert string.contains(
+    usage,
+    "run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason <text> (--dry-run|--yes)",
+  )
+  assert string.contains(
+    usage,
+    "publication retry <run-id> [--publication <publication-id>]",
+  )
   assert string.contains(
     usage,
     "Recollect workflow contract outputs without rerunning completed steps.",
@@ -1583,6 +1758,13 @@ pub fn usage_mentions_daemon_only_commands_and_options_test() {
   assert string.contains(usage, "--cursor <cursor>")
   assert string.contains(usage, "--dry-run")
   assert string.contains(usage, "--step <step-id>")
+  assert string.contains(usage, "--start-fresh")
+  assert string.contains(usage, "--validate")
+  assert string.contains(usage, "--outputs auto")
+  assert string.contains(usage, "--publish")
+  assert string.contains(usage, "--update-tracker")
+  assert !string.contains(usage, "retry-step <target>")
+  assert !string.contains(usage, "recollect-outputs run:<run-id>")
   assert !string.contains(usage, "cleanup --yes")
   assert !string.contains(usage, "schedules status")
   assert !string.contains(usage, "artifact publication list --run <run-id>")

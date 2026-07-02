@@ -2344,8 +2344,8 @@ def checkpoint_plan_completion_verdict_command(args: list[str]) -> None:
 def plan_completion_retry_command(metadata: dict[str, Any]) -> str:
     issue_identifier = implementation_issue_identifier(metadata)
     if issue_identifier:
-        return f"scherzoctl retry {issue_identifier}"
-    return "scherzoctl retry <issue>"
+        return f"scherzoctl task retry {issue_identifier}"
+    return "scherzoctl task retry <issue>"
 
 
 def plan_completion_recovery_summary_markdown(payload: dict[str, Any]) -> str:
