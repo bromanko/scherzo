@@ -1,19 +1,28 @@
 # Scherzo operator command reference
 
-Use this reference from the `scherzo-operator` skill when you need exact command shapes. Run commands from the repository root. Prefer `scripts/scherzoctl` because it enters the repository toolchain for you, and prefer `--json` for daemon inspection/control.
+Use this reference from the `scherzo-operator` skill when you need exact command shapes. Run commands from the repository root. Prefer `scripts/scherzoctl` for live daemon inspection/control because it enters the repository toolchain for you, and prefer `--json` for bounded machine-readable output.
+
+## CLI split: daemon control vs offline retained state
+
+There are two operator surfaces:
+
+1. **Live daemon control**: `scripts/scherzoctl <command> [options]`. These commands talk to the running daemon through a control file and generally return a daemon protocol JSON envelope with `ok`, `target`, and `data` when `--json` is supplied.
+2. **Offline retained-state maintenance**: top-level Scherzo offline commands. In this development checkout, run them as `direnv exec . gleam run -- <offline-command> ...`; packaged releases may expose the same surface as `scherzo <offline-command> ...`. These commands inspect or mutate disk-backed state directly and are not daemon protocol envelopes.
+
+Do not teach deprecated daemon-wrapper aliases for offline maintenance. For example, `scripts/scherzoctl cleanup --json --dry-run` currently warns and should be replaced with `direnv exec . gleam run -- cleanup --json --dry-run` or packaged `scherzo cleanup --json --dry-run`.
 
 ## Control file selection
 
-Command-first ordering is required: put the Scherzo subcommand immediately after `scripts/scherzoctl`, then options such as `--json`, `--control-file <path>`, or `--root <workspace-root>`.
+Command-first ordering is required: put the Scherzo subcommand immediately after `scripts/scherzoctl`, then options such as `--json` or `--control-file <path>`.
 
 If the user provides a control file, put `--control-file <path>` after the Scherzo subcommand:
 
 ```sh
 scripts/scherzoctl ps --json --control-file .scherzo/workspaces/.scherzo-state/control.json
-# Inspect the non-secret target fields in JSON output: target.control_file_path and target.workspace_root.
+# Inspect non-secret target fields in JSON output: target.control_file_path and target.workspace_root.
 ```
 
-Relative `--control-file` paths are resolved from the directory where `scripts/scherzoctl` was invoked, even when `scripts` is a symlink into the Scherzo source checkout. If no explicit path is provided, `scherzoctl` honors `SCHERZO_CONTROL_FILE`, then falls back to the repository default in that caller directory when it exists:
+Relative `--control-file` paths resolve from the directory where `scripts/scherzoctl` was invoked, even though the wrapper enters the Scherzo source checkout. If no explicit path is provided, `scherzoctl` honors `SCHERZO_CONTROL_FILE`, then falls back to the repository default in the caller directory when it exists:
 
 ```sh
 export SCHERZO_CONTROL_FILE=.scherzo/workspaces/.scherzo-state/control.json
@@ -28,20 +37,29 @@ direnv exec . gleam run -- ctl ps --json
 
 Do not search outside the repository for control files. Do not print or paste the raw control file because it contains a `token`.
 
-## Read-only inspection
+## Read-only live-daemon inspection
 
 Use these commands before considering any operator action:
 
 ```sh
 scripts/scherzoctl ping --json
 scripts/scherzoctl ps --json
+scripts/scherzoctl query status --json
+scripts/scherzoctl query metrics --json
+scripts/scherzoctl task list --state ready --json --limit 20
+scripts/scherzoctl task show <task|id:<id>> --json
+scripts/scherzoctl outbox --json --limit 20
+scripts/scherzoctl outbox --status retryable --json --limit 20
+scripts/scherzoctl outbox <outbox-id> --json
 scripts/scherzoctl session <session-id> --json
 scripts/scherzoctl events <session-id> --json
 scripts/scherzoctl events <session-id> --json --since-cursor <n>
 scripts/scherzoctl attach --json --no-follow <session-id>
 ```
 
-`ping`, `ps`, `session`, and `events` are bounded commands. `events <session-id> --json` returns one JSON event page and is the normal choice for summaries. `attach --json` prints one JSON stream object per event and follows by default, so use `--no-follow` for bounded replay unless the user explicitly asks for live watching.
+`ping`, `ps`, `query`, `task`, `outbox`, `session`, and `events` are bounded commands. `events <session-id> --json` returns one JSON event page and is the normal choice for summaries. `attach` follows by default, so use `--no-follow` for bounded replay unless the user explicitly asks for live watching.
+
+`task list --state` uses canonical tracker states. For Linear-backed trackers, use states such as `backlog`, `ready`, `active`, `done`, `canceled`, `duplicate`, or `unknown`; avoid Linear UI labels such as `Todo` or `In Progress` unless the CLI help explicitly supports them.
 
 ## Session target selection
 
@@ -53,54 +71,104 @@ Before sending `prompt`, `stop-after-turn`, `abort`, or `ui respond`, disambigua
 - `abort` on a top-level issue session stops the whole workflow run and its step sessions. `abort` on a step session sends the abort to that step command subject when available.
 - Command steps do not run pi, but they still get `workflow-step-...` sessions and failure events.
 
-## Step-level workflow retry
+## Resource-first recovery commands
 
-Prefer `retry-step` over whole-task `retry` when a workflow failed or was interrupted after completing useful upstream steps. It preserves completed upstream attempts and retries the selected failed/interrupted step plus downstream descendants.
+Recovery commands are now resource-first. The first command word after `scherzoctl` should say which durable resource is being changed.
 
-Select targets from inspected session/events/artifacts:
+Canonical forms:
 
-- `retry-step ABC-123` selects the latest repairable failed/interrupted run for an issue identifier.
-- `retry-step id:<issue-id>` targets by Linear issue id.
-- `retry-step run:<run-id>` targets a specific retained workflow run and is the safest choice when multiple failed runs may match.
-- Add `--step <step-id>` if multiple failed/interrupted step boundaries exist, or when the user names a specific step.
+```sh
+# Whole task retry, preserving normal guarded retry semantics.
+scripts/scherzoctl task retry <task|id:<id>> --json
 
-`retry-step` may be rejected if no failed/interrupted run or step is repairable, the issue already has an active/pending workflow, the issue is parked, workflow or issue fingerprint drift is detected, the selected step is not failed/interrupted, or upstream artifacts/workspace recovery fail. Report that reason; only fall back to full `retry` when step repair is unavailable, unsafe, rejected in a way a full retry can address, or explicitly requested.
+# Fresh run from current task payload and current workflow definition; use for intentional drift recovery.
+scripts/scherzoctl task retry <task|id:<id>> --start-fresh --reason "workflow drift" --json
 
-## Operator controls
+# Retained-run step repair. Use a bare run id; do not prefix with run:.
+scripts/scherzoctl run retry-step <run-id> --step <step-id> --json
 
-Use exact issue ids, run ids, step ids, session ids, and request ids from JSON inspection. Commands with `--yes` are destructive confirmations at the CLI layer.
+# Reconstruct workflow contract outputs without rerunning completed steps.
+scripts/scherzoctl run recollect-outputs <run-id> --json
+
+# Plan or perform manual retained-run finalization. Always dry-run first.
+scripts/scherzoctl run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason "manual recovery" --dry-run --json
+scripts/scherzoctl run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason "manual recovery" --yes --json
+
+# Replay failed publication through the daemon queue using already-materialized outputs.
+scripts/scherzoctl publication retry <run-id> --json
+scripts/scherzoctl publication retry <run-id> --publication <publication-id> --json
+
+# Clean orphaned YAML child steps for a retained run; dry-run by default.
+scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --dry-run --json
+scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --yes --json
+```
+
+Do not use legacy top-level `retry`, `retry-step`, or `recollect-outputs` spellings as normal examples. If they still exist, treat them as hidden/deprecated compatibility aliases and prefer the resource-first replacement.
+
+### Choosing a recovery path
+
+Prefer retained-run recovery over whole-task restart when completed upstream work or retained artifacts are useful:
+
+1. Inspect `ps`, `session`, `events`, retained artifacts, and any previous queued operation status.
+2. Identify the failed or interrupted `run_id` and `step_id`.
+3. Use `run retry-step <run-id> --step <step-id>` when one failed/interrupted step and descendants need repair.
+4. Use `run recollect-outputs <run-id>` when the run work is complete but contract outputs need reconstruction.
+5. Use `publication retry <run-id>` when outputs exist and publication failed.
+6. Use `run finalize ... --dry-run`, then `--yes`, only for explicit manual finalization after reviewing the dry-run plan.
+7. Use `task retry <task>` for a whole-task retry when retained-run recovery is unavailable, rejected, unsafe, or explicitly requested.
+8. Add `--start-fresh --reason <text>` only when the operator intentionally wants a new run from current issue/workflow state, such as workflow/issue drift recovery. Fresh retry messages should say that Scherzo starts a fresh run.
+
+`run retry-step` can be rejected if the run/step is not repairable, the issue already has an active/pending workflow, the issue is parked, drift makes in-place repair unsafe, the selected step is not failed/interrupted, or upstream artifacts/workspace recovery fail. Report that reason; do not automatically jump to fresh retry unless the user asked for it or the reason clearly calls for drift recovery.
+
+Queued recovery commands return `status: queued` and an `operation_id` when accepted. Poll before declaring completion:
+
+```sh
+scripts/scherzoctl query operation-status <operation-id> --json
+```
+
+`query operation-status` can time out under daemon load because it reads a live projection. A timeout means the status query did not complete; it does not by itself prove the queued recovery failed. Re-check later and corroborate with `ps`, `session`, and `events`.
+
+## Other operator controls
+
+Use exact task ids, run ids, step ids, session ids, and request ids from JSON inspection. Commands with `--yes` are destructive confirmations at the CLI layer.
 
 ```sh
 scripts/scherzoctl pause --json
 scripts/scherzoctl resume --json
 scripts/scherzoctl reload --json
-scripts/scherzoctl retry-step ABC-123 --json
-scripts/scherzoctl retry-step run:<run-id> --step <step-id> --json
-scripts/scherzoctl retry ABC-123 --json
-scripts/scherzoctl park ABC-123 --reason "manual cleanup" --yes --json
-scripts/scherzoctl unpark ABC-123 --json
+scripts/scherzoctl park <task> --reason "manual cleanup" --yes --json
+scripts/scherzoctl unpark <task> --json
 scripts/scherzoctl abort <session-id> --yes --json
 scripts/scherzoctl stop-after-turn <session-id> --yes --json
 scripts/scherzoctl prompt <session-id> "summarize progress" --json
 scripts/scherzoctl ui respond <session-id> <request-id> --cancel --json
 scripts/scherzoctl ui respond <session-id> <request-id> --value "approved" --json
+scripts/scherzoctl run-schedule <job> --now --json
 ```
 
-A successful whole-task `retry` response acknowledges acceptance of the retry intent after synchronous safety checks. Later claim, Linear reporting, workspace setup, worker start, or run failures are reported through normal ledger/session/failure evidence; inspect `ps`, `session`, and `events` when a retry was accepted but does not later run successfully.
+A successful `task retry` response acknowledges acceptance after synchronous safety checks. Later claim, Linear reporting, workspace setup, worker start, or run failures are reported through normal ledger/session/failure evidence; inspect `ps`, `session`, and `events` when a retry was accepted but does not later run successfully.
 
 ## JSON response handling
 
 For daemon inspection/control commands, `--json` returns one protocol JSON document with a non-secret `target` object. Check `target.control_file_path` and `target.workspace_root` before trusting or mutating a daemon. `ok: true` means the control server accepted and decoded the request. `ok: false` means the request failed before a command result could be applied, such as authentication failure, timeout, malformed request, or protocol error; report `error.code` and `error.message` without exposing secrets.
 
-Daemon controls return command data with one of these statuses:
+Daemon controls return command data with statuses such as:
 
 - `applied`: the daemon applied the action immediately.
-- `queued`: the daemon accepted the action and queued it for a worker or session.
+- `queued`: the daemon accepted the action and queued it for a worker/session/recovery operation. Capture `operation_id` when present.
 - `rejected`: the daemon understood the request but refused it; report the reason.
-- `not_found`: the target issue, session, or UI request was not found.
+- `not_found`: the target task, run, session, operation, or UI request was not found.
 - `not_allowed`: the target exists but the requested action is not allowed in its current state; report the reason.
 
-When reporting results, summarize the status and user-relevant message. Do not print control tokens, `LINEAR_API_KEY`, `SCHERZO_AGENT_LINEAR_API_KEY`, or large raw event payloads unless the user explicitly asks for a raw excerpt.
+When shaping JSON with `jq` or Python, first inspect the top-level shape instead of assuming arrays or `.sessions` directly:
+
+```sh
+scripts/scherzoctl ps --json > tmp/ps.json
+jq 'keys' tmp/ps.json
+jq '.data | keys' tmp/ps.json
+```
+
+Do not pipe `attach --json` into parsers expecting one JSON document; attach JSON is a stream of event envelopes. Do not print control tokens, `LINEAR_API_KEY`, `SCHERZO_AGENT_LINEAR_API_KEY`, or large raw event payloads unless the user explicitly asks for a raw excerpt.
 
 ## Retained workflow runs and command-step diagnostics
 
@@ -122,26 +190,43 @@ For direct artifact inspection, read only the fields you need and redact before 
 jq '.artifact | {step_id,status,exit_code,failure_code,diagnostic_path,stdout_truncated,stderr_truncated}' .scherzo/workspaces/.scherzo-state/artifacts/runs/<run-id>/<step-component>/attempt-1.json
 ```
 
-## Local cleanup and offline state maintenance
+## Offline cleanup, publication, and state maintenance
 
-Start read-only. Relative `--root` paths are resolved from the directory where `scripts/scherzoctl` was invoked:
+Start read-only. Relative `--root` paths resolve from the caller working directory.
+
+Development checkout examples:
 
 ```sh
-scripts/scherzoctl cleanup --json --dry-run
-scripts/scherzoctl cleanup --root .scherzo/workspaces --json --dry-run
-scripts/scherzoctl state status --root .scherzo/workspaces --json
+direnv exec . gleam run -- cleanup --root .scherzo/workspaces --json --dry-run
+direnv exec . gleam run -- cleanup --root .scherzo/workspaces --json --dry-run --limit 100 --max-runtime-ms 240000
+direnv exec . gleam run -- state status --root .scherzo/workspaces --json
+direnv exec . gleam run -- artifact publication list --run <run-id> --root .scherzo/workspaces --json
+direnv exec . gleam run -- artifact publication show --run <run-id> --publication <publication-id> --root .scherzo/workspaces --json
 ```
 
-`cleanup --dry-run` reports `would_delete`, `retained`, `warnings`, `roots`, and `transcript_root_status` and deletes nothing. `state status` is read-only and reports `current`, `unsupported`, `corrupt`, `missing`, or `archived`. Cleanup/state JSON is local maintenance output, not a daemon protocol envelope with `ok`.
+Packaged CLI equivalents, when `scherzo` is available on `PATH`:
+
+```sh
+scherzo cleanup --root .scherzo/workspaces --json --dry-run
+scherzo state status --root .scherzo/workspaces --json
+scherzo artifact publication list --run <run-id> --root .scherzo/workspaces --json
+```
+
+`cleanup --dry-run` reports provider summaries, `would_delete`, `deleted`, `retained`, `warnings`, roots, and resume metadata for bounded cleanup. It deletes nothing. `state status` is read-only and reports retained local state schema status. Cleanup/state JSON is local maintenance output, not a daemon protocol envelope with `ok`.
 
 Run local cleanup or offline state mutations with explicit `--yes` so the CLI receives an intentional destructive-operation acknowledgement:
 
 ```sh
-scripts/scherzoctl cleanup --json --yes
-scripts/scherzoctl state archive-old --root .scherzo/workspaces --yes --json
-scripts/scherzoctl state discard-old --root .scherzo/workspaces --yes --json
-scripts/scherzoctl state reinitialize --root .scherzo/workspaces --yes --json
+direnv exec . gleam run -- cleanup --root .scherzo/workspaces --json --yes
+direnv exec . gleam run -- state archive-old --root .scherzo/workspaces --yes --json
+direnv exec . gleam run -- state discard-old --root .scherzo/workspaces --yes --json
+direnv exec . gleam run -- state reinitialize --root .scherzo/workspaces --yes --json
+direnv exec . gleam run -- state compact --root .scherzo/workspaces --dry-run --json
+direnv exec . gleam run -- state compact --root .scherzo/workspaces --yes --json
+direnv exec . gleam run -- artifact publication retry --run <run-id> --publication <publication-id> --root .scherzo/workspaces --json
 ```
+
+Use daemon-backed `scripts/scherzoctl publication retry <run-id> ...` when a daemon is running and the publication should be replayed through the daemon queue. Use offline `artifact publication retry --root ...` only for daemon-stopped retained-state recovery or break-glass maintenance.
 
 For dangling jj workflow workspaces, prefer letting Scherzo publish/cleanup run the configured remove hook. If manual cleanup is chosen, run the remove hook before deleting a run root so jj workspace records are forgotten first:
 
