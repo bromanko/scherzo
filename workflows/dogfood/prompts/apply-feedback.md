@@ -12,9 +12,6 @@ Implementation summary:
 Change analysis output:
 {{ steps.analyze_changes.stdout }}
 
-Native review cutover contract output:
-{{ steps.assert_native_review_cutover.stdout }}
-
 Native review preparation output:
 {{ steps.prepare_review.stdout }}
 

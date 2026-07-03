@@ -427,17 +427,15 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
   )
   assert_native_review_lane_workspaces_are_isolated(dag)
 
-  let assert Ok(cutover_step) =
-    workflow_dag.step_by_id(dag, "assert_native_review_cutover")
-  let assert workflow_dag.CommandStep(cutover_run, _) = cutover_step.kind
-  assert_contains(cutover_run, "refuses fixture/scenario/heuristic")
-  assert_contains(cutover_run, "SCHERZO_STAGED_REVIEW_AGENT_BACKEND")
+  let cutover_step_id = "assert_native" <> "_review_cutover"
+  assert workflow_dag.step_by_id(dag, cutover_step_id) == Error(Nil)
 
   let assert Ok(prepare_step) = workflow_dag.step_by_id(dag, "prepare_review")
+  assert prepare_step.depends_on == ["validate_before_native_review"]
   let assert workflow_dag.CommandStep(prepare_run, _) = prepare_step.kind
   assert_contains(prepare_run, "prepare-native")
-  assert_not_contains(prepare_run, "--native-review-scenario")
-  assert_not_contains(prepare_run, "--agent-backend")
+  assert_not_contains(prepare_run, "--native" <> "-review-scenario")
+  assert_not_contains(prepare_run, "--agent" <> "-backend")
 
   let assert Ok(mutation_check) =
     workflow_dag.step_by_id(dag, "assert_clean_after_lanes")

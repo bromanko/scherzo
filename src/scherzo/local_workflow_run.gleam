@@ -5,7 +5,6 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import scherzo/agent/types as agent_types
 import scherzo/artifact_publication_config
 import scherzo/command_step
 import scherzo/config
@@ -13,9 +12,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
 import scherzo/path
-import scherzo/result_artifact
 import scherzo/runtime_bundle
-import scherzo/session/tokens as session_tokens
 import scherzo/step_artifact
 import scherzo/tracker
 import scherzo/tracker/issue as tracker_issue
@@ -30,12 +27,7 @@ import scherzo/workspace_run
 import simplifile
 
 pub type Options {
-  Options(
-    workflow_path: String,
-    run_root: String,
-    run_id: String,
-    native_review_scenario: Option(String),
-  )
+  Options(workflow_path: String, run_root: String, run_id: String)
 }
 
 pub type RunError {
@@ -171,7 +163,7 @@ fn local_orchestrator(run_root: String) -> config_types.OrchestratorConfig {
 
 fn local_dependencies(
   options: Options,
-  issue: tracker_issue.Issue,
+  _issue: tracker_issue.Issue,
 ) -> workflow_run.Dependencies {
   let default_dependencies = workflow_run.default_dependencies()
   workflow_run.Dependencies(
@@ -226,7 +218,7 @@ fn local_dependencies(
         command,
         context.workspace_path,
         timeout_ms,
-        local_step_env(context, options.native_review_scenario),
+        local_step_env(context),
         secrets,
         limits,
       )
@@ -242,26 +234,17 @@ fn local_dependencies(
       command_ready,
       record_pi_session,
     ) {
-      case options.native_review_scenario {
-        Some(_) ->
-          native_fixture_agent_step(
-            options.native_review_scenario,
-            issue,
-            context,
-          )
-        None ->
-          default_dependencies.agent_step(
-            step_issue,
-            context,
-            prompt_mode,
-            attempt_context,
-            effective,
-            tracker_client,
-            emit_update,
-            command_ready,
-            record_pi_session,
-          )
-      }
+      default_dependencies.agent_step(
+        step_issue,
+        context,
+        prompt_mode,
+        attempt_context,
+        effective,
+        tracker_client,
+        emit_update,
+        command_ready,
+        record_pi_session,
+      )
     },
     checkpoint: workflow_checkpoint.ledger_writer(options.run_root, fn() { 123 }),
   )
@@ -312,7 +295,6 @@ fn prepare_local_step(
 
 fn local_step_env(
   context: workflow_run.StepContext,
-  scenario: Option(String),
 ) -> List(#(String, String)) {
   let base = [
     #("SCHERZO_REPO_ROOT", path.absolute(".") |> result.unwrap(".")),
@@ -345,390 +327,7 @@ fn local_step_env(
     #("SCHERZO_WORKSPACE_NAME", context.workspace_name),
     #("SCHERZO_WORKSPACE_PATH", context.workspace_path),
   ]
-  let base = case scenario {
-    Some(value) -> [#("SCHERZO_NATIVE_REVIEW_SCENARIO", value), ..base]
-    None -> base
-  }
   list.append(base, context.extra_pi_env)
-}
-
-fn native_fixture_agent_step(
-  scenario: Option(String),
-  issue: tracker_issue.Issue,
-  context: workflow_run.StepContext,
-) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  let scenario_id = option.unwrap(scenario, "default")
-  case should_fail_agent_step(scenario_id, context.step_id) {
-    True ->
-      Error(agent_types.WorkerFailure(
-        reason: error.PiFailed(error.PiProtocolError(
-          "native fixture agent failed before producing structured output",
-        )),
-        workspace_path: Some(context.workspace_path),
-        tokens: session_tokens.zero_token_totals(),
-        final_issue: Some(issue),
-      ))
-    False -> {
-      Ok(agent_types.WorkerSuccess(
-        final_issue: Some(issue),
-        final_classification: agent_types.FinalTerminal,
-        workspace_path: context.workspace_path,
-        tokens: session_tokens.zero_token_totals(),
-        turns: 1,
-        result: fixture_result(scenario_id, context),
-      ))
-    }
-  }
-}
-
-fn should_fail_agent_step(scenario_id: String, step_id: String) -> Bool {
-  scenario_id == "lane-failure" && step_id == "lane_correctness"
-}
-
-fn fixture_result(
-  scenario_id: String,
-  context: workflow_run.StepContext,
-) -> result_artifact.ResultArtifact {
-  let draft_json =
-    review_lane_draft_json_with_artifact_type(
-      lane_id_for_step(context.step_id),
-      scenario_id,
-      context.run_root,
-      artifact_type_for_step(context.step_id),
-    )
-  case should_emit_missing_tool_call(scenario_id, context.step_id) {
-    True ->
-      result_artifact.from_final_response(
-        Some(draft_json),
-        False,
-        "native_review_fixture_agent_final_response_only",
-      )
-    False -> {
-      let arguments_json = case
-        should_emit_malformed_json(scenario_id, context.step_id)
-      {
-        True -> "{ this is not valid JSON from the native fixture agent\n"
-        False -> draft_json
-      }
-      result_artifact.from_final_response_with_tool_calls(
-        None,
-        False,
-        "native_review_fixture_agent_tool_call",
-        [
-          result_artifact.ToolCallSubmission(
-            name: "submit_structured_output",
-            arguments_json: Some(arguments_json),
-            status: Some("success"),
-            sibling_count: 1,
-            receipt_json: Some(
-              "{\"artifact_type\":\"scherzo_structured_output_tool_receipt\",\"tool_name\":\"submit_structured_output\",\"remote_mutations\":\"none\"}",
-            ),
-          ),
-        ],
-      )
-    }
-  }
-}
-
-fn should_emit_missing_tool_call(
-  _scenario_id: String,
-  step_id: String,
-) -> Bool {
-  step_id == "failed_lane"
-}
-
-fn should_emit_malformed_json(scenario_id: String, step_id: String) -> Bool {
-  scenario_id == "malformed-agent-output" && step_id == "lane_correctness"
-}
-
-fn artifact_type_for_step(step_id: String) -> String {
-  case step_id {
-    "malformed_lane" -> "not_review_lane_draft"
-    _ -> "review_lane_draft"
-  }
-}
-
-fn lane_id_for_step(step_id: String) -> String {
-  case step_id {
-    "lane_correctness" | "valid_lane" | "malformed_lane" | "failed_lane" ->
-      "correctness"
-    "lane_test_quality" -> "test-quality"
-    "lane_idioms_maintainability" -> "idioms-maintainability"
-    "lane_security_performance" -> "security-performance"
-    _ -> "correctness"
-  }
-}
-
-fn review_lane_draft_json_with_artifact_type(
-  lane_id: String,
-  scenario_id: String,
-  run_root: String,
-  artifact_type: String,
-) -> String {
-  let #(findings, notes, requests) = draft_parts(lane_id, scenario_id)
-  json.object([
-    #(
-      "$schema",
-      json.string(".scherzo/workflows/schemas/review-artifacts.v1.schema.json"),
-    ),
-    #("schema_version", json.int(1)),
-    #("artifact_type", json.string(artifact_type)),
-    #("generated_at_utc", json.string("2026-05-09T00:00:00Z")),
-    #(
-      "producer",
-      json.object([
-        #("name", json.string("native-scherzo-agent-fixture")),
-        #("version", json.string("1")),
-        #("mode", json.string("native")),
-      ]),
-    ),
-    #("lane", lane_json(lane_id)),
-    #("input_refs", json.array(input_refs(run_root), of: identity_json)),
-    #("draft_findings", json.array(findings, of: identity_json)),
-    #("review_notes", json.array(notes, of: identity_json)),
-    #("evidence_requests", json.array(requests, of: identity_json)),
-    #(
-      "self_check",
-      json.object([
-        #("inspected_diff", json.bool(True)),
-        #("used_repository_relative_paths", json.bool(True)),
-      ]),
-    ),
-    #("remote_mutations", json.string("none")),
-  ])
-  |> json.to_string
-}
-
-fn identity_json(value: json.Json) -> json.Json {
-  value
-}
-
-fn input_refs(_run_root: String) -> List(json.Json) {
-  let prepare_dir = "artifacts/review/prepare_review"
-  [
-    artifact_ref_json(
-      "review_brief",
-      path.join(prepare_dir, "review-brief.v1.json"),
-    ),
-    artifact_ref_json("diff", path.join(prepare_dir, "diff.patch")),
-    artifact_ref_json(
-      "source_metadata",
-      path.join(prepare_dir, "source-metadata.v1.json"),
-    ),
-    artifact_ref_json(
-      "changed_files",
-      path.join(prepare_dir, "changed-files.v1.json"),
-    ),
-    artifact_ref_json(
-      "validation_status",
-      path.join(prepare_dir, "validation-status.v1.json"),
-    ),
-    artifact_ref_json(
-      "context_manifest",
-      path.join(prepare_dir, "context-manifest.v1.json"),
-    ),
-  ]
-}
-
-fn artifact_ref_json(artifact_type: String, ref_path: String) -> json.Json {
-  json.object([
-    #("artifact_type", json.string(artifact_type)),
-    #("path", json.string(ref_path)),
-  ])
-}
-
-fn lane_json(lane_id: String) -> json.Json {
-  case lane_id {
-    "test-quality" ->
-      json.object([
-        #("id", json.string("test-quality")),
-        #("name", json.string("Test-quality reviewer")),
-        #("category", json.string("testing")),
-        #("version", json.string("1")),
-      ])
-    "idioms-maintainability" ->
-      json.object([
-        #("id", json.string("idioms-maintainability")),
-        #("name", json.string("Idioms / maintainability reviewer")),
-        #("category", json.string("maintainability")),
-        #("version", json.string("1")),
-      ])
-    "security-performance" ->
-      json.object([
-        #("id", json.string("security-performance")),
-        #("name", json.string("Security / performance risk reviewer")),
-        #("category", json.string("security-performance")),
-        #("version", json.string("1")),
-      ])
-    _ ->
-      json.object([
-        #("id", json.string("correctness")),
-        #("name", json.string("Correctness reviewer")),
-        #("category", json.string("correctness")),
-        #("version", json.string("1")),
-      ])
-  }
-}
-
-fn draft_parts(
-  lane_id: String,
-  scenario_id: String,
-) -> #(List(json.Json), List(json.Json), List(json.Json)) {
-  case scenario_id, lane_id {
-    "inverted-auth-control-condition", "correctness" -> #(
-      [inverted_auth_finding()],
-      [],
-      [inverted_auth_request()],
-    )
-    "static-suspicion", "correctness" -> #([static_suspicion_finding()], [], [
-      static_suspicion_request(),
-    ])
-    "pr-80", "idioms-maintainability" -> #([], [pr80_review_note()], [])
-    _, _ -> #([], [], [])
-  }
-}
-
-fn inverted_auth_finding() -> json.Json {
-  finding_json(
-    id: "F1",
-    title: "User role can delete a project after the control-condition change.",
-    claim: "The changed authorization branch returns Ok for User instead of Error.",
-    category: "correctness",
-    severity: "high",
-    proposed_blocking: True,
-    location_path: "src/liv_152_fixture/project_authorization.gleam",
-    request_id: "E1",
-    suggested_fix: "Restore the User branch to Error(\"forbidden\") and keep the reproduction fixture passing.",
-  )
-}
-
-fn static_suspicion_finding() -> json.Json {
-  finding_json(
-    id: "F1",
-    title: "Paused workflow branch appears to dispatch without executable proof.",
-    claim: "The changed branch returns True while paused, but the fixture does not include a reproduction.",
-    category: "correctness",
-    severity: "high",
-    proposed_blocking: True,
-    location_path: "src/liv_152_fixture/workflow_gate.gleam",
-    request_id: "E1",
-    suggested_fix: "Add an executable reproduction before treating this as a blocker.",
-  )
-}
-
-fn finding_json(
-  id id: String,
-  title title: String,
-  claim claim: String,
-  category category: String,
-  severity severity: String,
-  proposed_blocking proposed_blocking: Bool,
-  location_path location_path: String,
-  request_id request_id: String,
-  suggested_fix suggested_fix: String,
-) -> json.Json {
-  json.object([
-    #("draft_finding_id", json.string(id)),
-    #("title", json.string(title)),
-    #("claim", json.string(claim)),
-    #("category", json.string(category)),
-    #("severity", json.string(severity)),
-    #("proposed_blocking", json.bool(proposed_blocking)),
-    #(
-      "locations",
-      json.array(
-        [
-          json.object([
-            #("path", json.string(location_path)),
-            #("start_line", json.int(1)),
-          ]),
-        ],
-        of: identity_json,
-      ),
-    ),
-    #("evidence_request_ids", json.array([request_id], of: json.string)),
-    #("suggested_fix", json.string(suggested_fix)),
-  ])
-}
-
-fn inverted_auth_request() -> json.Json {
-  request_json(
-    id: "E1",
-    finding_id: "F1",
-    evidence_key: "fixture_reproduction",
-    claim: "The changed control condition allows unauthorized project deletion.",
-    expected: "REPRODUCED: unauthorized User received Ok(\"deleted\")",
-    target: json.object([
-      #("fixture_id", json.string("inverted-auth-control-condition")),
-    ]),
-  )
-}
-
-fn static_suspicion_request() -> json.Json {
-  request_json(
-    id: "E1",
-    finding_id: "F1",
-    evidence_key: "gleam_test",
-    claim: "Paused workflows dispatch without approval.",
-    expected: "targeted paused-workflow reproduction fails before fix",
-    target: json.object([]),
-  )
-}
-
-fn request_json(
-  id id: String,
-  finding_id finding_id: String,
-  evidence_key evidence_key: String,
-  claim claim: String,
-  expected expected: String,
-  target target: json.Json,
-) -> json.Json {
-  json.object([
-    #("request_id", json.string(id)),
-    #("draft_finding_id", json.string(finding_id)),
-    #("evidence_key", json.string(evidence_key)),
-    #("claim", json.string(claim)),
-    #("expected_observation", json.string(expected)),
-    #("target", target),
-  ])
-}
-
-fn pr80_review_note() -> json.Json {
-  json.object([
-    #("id", json.string("N1")),
-    #("kind", json.string("review_note")),
-    #("category", json.string("maintainability")),
-    #("severity", json.string("info")),
-    #(
-      "locations",
-      json.array(
-        [
-          json.object([
-            #("path", json.string(".scherzo/workflows/scripts/scherzo-review")),
-          ]),
-        ],
-        of: identity_json,
-      ),
-    ),
-    #(
-      "summary",
-      json.string(
-        "Native review retained a PR #80-inspired context note without turning examples into blockers.",
-      ),
-    ),
-    #(
-      "details",
-      json.string(
-        "The fixture exercises staged review precision on documentation, workflow examples, helper scripts, source, and tests.",
-      ),
-    ),
-    #(
-      "suggested_action",
-      json.string(
-        "Inspect the final review artifact if this precision regresses.",
-      ),
-    ),
-  ])
 }
 
 fn write_summary(
@@ -751,14 +350,6 @@ fn write_summary(
       #("workflow_id", json.string(workflow_dag.id(dag))),
       #("run_id", json.string(options.run_id)),
       #("run_root", json.string(options.run_root)),
-      #(
-        "native_review_scenario",
-        option_string_json(options.native_review_scenario),
-      ),
-      #(
-        "agent_lane_mode",
-        json.string(agent_lane_mode(options.native_review_scenario)),
-      ),
       #("status", json.string(status)),
       #("failure_reason", option_string_json(reason)),
       #("remote_mutations", json.string("none")),
@@ -782,6 +373,10 @@ fn write_summary(
       message: simplifile.describe_error(err),
     )
   })
+}
+
+fn identity_json(value: json.Json) -> json.Json {
+  value
 }
 
 fn step_summaries(
@@ -910,13 +505,6 @@ fn structured_output_retry_diagnostic_json(
     #("failure_code", option_string_json(diagnostic.failure_code)),
     #("message", json.string(diagnostic.message)),
   ])
-}
-
-fn agent_lane_mode(scenario: Option(String)) -> String {
-  case scenario {
-    Some(_) -> "native_fixture"
-    None -> "real_agent"
-  }
 }
 
 fn option_string_json(value: Option(String)) -> json.Json {
