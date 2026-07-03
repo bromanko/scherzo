@@ -23,12 +23,14 @@ Create exactly one concise human-reviewable ExecPlan review document at the prep
 
 Do not write the canonical bundle yourself. Submit the mechanical implementation detail through the structured output tool `submit_implementation_pack_submission` using the provider schema `.scherzo/workflows/schemas/provider/implementation-pack-submission.v2.schema.json`; Scherzo will validate the captured submission against the canonical implementation-pack schema after tool capture. Use the task metadata above for the schema's `source_issue` compatibility field. Put concrete steps, tests, interfaces, dependencies, and artifact notes in `sections`, not in the review doc.
 
-Completion-preflight requirements before submitting:
-- Make `Validation and Acceptance` verifiable: each required acceptance outcome needs concrete evidence such as commands, tests, observable artifacts/output, explicit pre-publish manual evidence, or explicit post-implementation manual evidence to collect after handoff.
-- Keep `Milestones` concrete and outcome-oriented; avoid vague milestones such as "finish the work" or "address remaining items as needed".
-- Do not leave unchecked implementation or validation obligations in `Progress`; planned work belongs in `Milestones` and completed living-document updates belong in `Progress`.
-- Ensure every required behavior named by the review doc is represented in the implementation pack's `concrete_steps` and/or `testing_and_falsifiability`.
-- If acceptance requires negative/error-path coverage, idempotency, duplicate-conflict checks, manual/browser/dogfood evidence, docs/helper migration, provider-live/cache behavior, full validation, or linting, include matching pack steps and evidence requirements. For manual/browser/dogfood evidence, explicitly state whether it must complete before publish or is deferred to a human/operator after the implementation workflow.
+Structural checks before submitting:
+- Keep every required level-2 section present and non-empty, using a sentinel sentence such as `None.` or `No open questions.` only when there is intentionally no substantive content.
+- Keep mechanical implementation sections (`Concrete Steps`, `Testing and Falsifiability`, `Interfaces and Dependencies`, `Artifacts and Notes`) out of the review doc; put that detail in the structured implementation-pack submission.
+- Keep the review document at the prepared repository-relative Markdown target and avoid generated HTML or absolute local paths.
+
+Agent handoff consistency before submitting:
+- Read the review doc and implementation-pack submission together. Use agent comprehension, not keyword matching, to ensure required acceptance, milestone, rollout/safety, and validation obligations in the review doc are carried by `sections.concrete_steps` or `sections.testing_and_falsifiability`.
+- When acceptance requires negative/error-path coverage, idempotency or duplicate-conflict checks, manual/browser/dogfood evidence, docs/helper migration, provider-live/cache behavior, full validation, or linting, carry the corresponding implementation or evidence obligation into the pack. For manual/browser/dogfood evidence, explicitly state whether it must complete before publish or is deferred to a human/operator after the implementation workflow.
 
 After your submission, Scherzo materializes the ExecPlan bundle and creates or reuses the follow-up implementation task containing `Bundle ref:` and `Bundle sha256:` lines; do not invent those values in the review document.
 

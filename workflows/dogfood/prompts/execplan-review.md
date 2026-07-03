@@ -4,7 +4,8 @@ Before reviewing, read the repo-local ExecPlan review guidance at `.scherzo/work
 
 Focus only on human-reviewable intent: problem framing, scope, risks, rollout, milestones, living-document sections, and acceptance. The implementation pack is retained as a structured artifact and does not need to appear in the checked-in Markdown. Do not edit files in this step.
 
-Completion-preflight review checklist:
+ExecPlan review checklist:
+- Use agent comprehension, not keyword cue matching, when checking whether the review doc's acceptance, milestone, rollout/safety, and validation obligations can be carried through the retained implementation pack and later completion verifier.
 - Flag unverifiable acceptance criteria: acceptance must name commands, tests, artifacts/output, observable behavior, explicit pre-publish manual evidence, or explicit post-implementation manual evidence.
 - Flag missing test evidence requirements, especially negative/error paths, idempotency, duplicate conflicts, cache/TTL behavior, docs/helper migrations, lint/full validation, and manual/browser/dogfood checks. For manual/browser/dogfood checks, require the plan and pack to say whether the check is pre-publish blocking or deferred to a human/operator after implementation.
 - Flag ambiguous milestones that do not say what observable behavior, files, artifacts, or validation will prove completion.

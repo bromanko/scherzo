@@ -240,7 +240,7 @@ The recovery summary names the failure phase, blocking findings, retention statu
 
 Missing, malformed, or stale plan-completion verdict failures are not repairable through this path; they remain terminal verifier or workflow-state failures. Same-run resume from exhausted plan-completion recovery is intentionally out of scope for this MVP.
 
-For the earlier ExecPlan checks that catch common completion omissions before implementation starts, see `docs/runbooks/execplan-completion-preflight.md`.
+For the earlier ExecPlan structural checks that run before implementation starts, see `docs/runbooks/execplan-completion-preflight.md`.
 
 ## Sensitive-data handling
 

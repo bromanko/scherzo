@@ -1,29 +1,24 @@
 # ExecPlan completion preflight
 
-Scherzo now moves common late `gate-plan-completion` failures into the `workflow:execplan` drafting/review path where the omission is visible before implementation starts.
+Scherzo keeps the `workflow:execplan` preflight cheap and structural. The helper validates that the review document can be safely retained and published, but it does not interpret prose or compare Markdown cues against implementation-pack steps.
 
-## Earlier blocking checks
+## Blocking helper checks
 
-The ExecPlan helper blocks high-confidence plan defects before materializing an implementation pack:
+`validate-review-doc` fails closed for structural defects:
 
-- unverifiable `Validation and Acceptance` sections that do not name commands, tests, observable artifacts/output, explicit manual evidence, or explicitly deferred post-implementation manual evidence;
-- ambiguous milestones such as "finish the work" or "address remaining items as needed";
-- unchecked implementation or validation obligations left in `Progress` instead of represented as planned milestones/acceptance evidence;
-- acceptance cues for negative/error-path tests, idempotency/duplicate conflicts, manual/browser/dogfood checks, full validation/linting, docs/helper migrations, or provider-live/cache behavior that are not mirrored in implementation-pack steps or testing notes, including whether manual/browser/dogfood checks are pre-publish requirements or deferred post-implementation operator checks.
+- no level-1 title;
+- missing required level-2 review-doc sections;
+- required sections with no meaningful content, unless they contain an explicit sentinel such as `None.` or `No open questions.`;
+- mechanical implementation sections in the human review doc (`Concrete Steps`, `Testing and Falsifiability`, `Interfaces and Dependencies`, or `Artifacts and Notes`);
+- generated HTML, absolute local path shapes, non-Markdown review-doc paths, target mismatches, or ambiguous changed-review-doc discovery.
 
-The review and incorporation prompts also ask agents to flag required behavior that is not represented in the implementation pack. These are blocking when the deterministic helper can identify the gap; otherwise they are advisory review feedback.
+If a required-section failure occurs in `validate_review_doc_after_review`, retry or rerun the incorporate-review step only when the agent can regenerate the section from known context. Otherwise repair the review document before materializing the bundle, or move the issue back to Todo when the missing content is unknown and needs human input.
 
-## Required review-doc section failures
+## Semantic alignment checks
 
-`validate-review-doc` fails closed when any required review-doc section is missing or has no meaningful content. Intentionally empty sections must keep their heading and use an explicit sentinel such as `None.` or `No open questions.`. If this fails in `validate_review_doc_after_review`, retry or rerun the incorporate-review step only when the agent can regenerate the section from known context; otherwise repair the review document before materializing the bundle, or move the issue back to Todo when the missing content is unknown and needs human input.
+Semantic alignment is intentionally not enforced by deterministic keyword matching. Review-doc claims about negative/error-path tests, idempotency, manual/browser/dogfood evidence, docs/helper migration, provider-live/cache behavior, full validation, linting, and similar obligations are handled by agent-comprehension checkpoints instead:
 
-## Intentionally late checks
+- the `review_plan` / `incorporate_review` agent loop while the ExecPlan is authored, which must keep required acceptance, milestone, rollout/safety, and validation obligations represented in the implementation pack;
+- the execplan-implementation completion verifier after the actual implementation diff and command evidence exist, which must fail completion when the canonical plan or pack requires those obligations and the implementation run does not provide observable evidence.
 
-The final execplan-implementation plan-completion gate still runs. It remains responsible for failures that require inspecting the actual implementation diff or command results, including:
-
-- whether code changes truly implement the promised behavior rather than just naming it;
-- whether all referenced files, tests, docs, and helper paths were actually updated;
-- whether validation commands, lint, the `scripts/scherzo-ci` gate, pre-publish manual browser/dogfood checks, or retained evidence really ran and passed;
-- whether review feedback or base refresh introduced new gaps after the ExecPlan pack was materialized.
-
-Retained runs that motivated the preflight included missing negative/idempotency coverage, unchecked dogfood/full-validation obligations, and required docs/helper migrations omitted from implementation steps. Those classes are now checked before implementation when they appear in the plan surface or pack. Manual/browser/dogfood checks that are explicitly marked for a human/operator after implementation are carried as deferred manual verification instead of blocking the implementation workflow.
+The final execplan-implementation plan-completion gate remains responsible for failures that require comprehension or implementation evidence, including whether code changes truly implement the promised behavior, whether referenced files/tests/docs were updated, whether validation commands or pre-publish manual checks ran and passed, and whether review feedback or base refresh introduced new gaps after bundle materialization.

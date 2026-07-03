@@ -54,20 +54,6 @@ fn run_shell_in(cwd: String, command: String) -> step_artifact.StepArtifact {
   )
 }
 
-fn assert_completion_preflight_failed(
-  artifact: step_artifact.StepArtifact,
-  diagnostic: String,
-) -> Nil {
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(2)
-  assert string.contains(
-    artifact.stderr,
-    "SCHERZO_FAILURE_CODE=execplan_completion_preflight_failed",
-  )
-  assert string.contains(artifact.stderr, diagnostic)
-  Nil
-}
-
 fn assert_review_doc_section_failed(
   artifact: step_artifact.StepArtifact,
   diagnostic: String,
@@ -290,24 +276,6 @@ fn review_doc_with_validation(validation: String) -> String {
     with: "## Validation and Acceptance\n\n"
       <> validation
       <> "\n\n## Rollout, Recovery, and Idempotence",
-  )
-}
-
-fn pack_submission_with_commands_and_testing(
-  title: String,
-  commands_json: String,
-  testing: String,
-) -> String {
-  let with_commands =
-    string.replace(
-      pack_submission(title),
-      each: "\"commands\": [\"scripts/scherzo-execplan validate-review-doc --path test/fixtures/execplan_v2/review-doc.valid.md\"]",
-      with: "\"commands\": " <> commands_json,
-    )
-  string.replace(
-    with_commands,
-    each: "\"testing_and_falsifiability\": \"Run validate-review-doc and validate-bundle; any review document, pack, bundle, or hash mismatch falsifies the fixture.\"",
-    with: "\"testing_and_falsifiability\": \"" <> testing <> "\"",
   )
 }
 
@@ -2084,247 +2052,54 @@ pub fn validate_review_doc_rejects_empty_scope_boundaries_test() {
   )
 }
 
-pub fn validate_review_doc_rejects_unchecked_required_progress_test() {
-  let dir = "test/tmp/execplan-progress-preflight"
+pub fn validate_review_doc_accepts_completion_prose_without_semantic_lint_test() {
+  let dir = "test/tmp/execplan-structural-review-doc"
   test_helpers.reset_dir(dir)
   let path = dir <> "/review.md"
   let assert Ok(valid) =
     simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
-  let review =
-    string.replace(
-      valid,
-      each: "## Progress\n\n- [x] 2026-05-15: Created the fixture review document.\n\n## Surprises & Discoveries",
-      with: "## Progress\n\n- [ ] Run full validation before rollout.\n\n## Surprises & Discoveries",
-    )
-  let assert Ok(Nil) = simplifile.write(path, review)
-
-  let artifact = run_helper("validate-review-doc --path " <> path)
-
-  assert_completion_preflight_failed(
-    artifact,
-    "unchecked required implementation",
-  )
-}
-
-pub fn validate_review_doc_rejects_ambiguous_milestones_test() {
-  let dir = "test/tmp/execplan-ambiguous-milestone"
-  test_helpers.reset_dir(dir)
-  let path = dir <> "/review.md"
-  let assert Ok(valid) =
-    simplifile.read("test/fixtures/execplan_v2/review-doc.valid.md")
-  let review =
+  let with_milestones =
     string.replace(
       valid,
       each: "## Milestones\n\nThe single milestone is to validate the review document, validate the pack, and prove the bundle links the two by hash.\n\n## Progress",
       with: "## Milestones\n\nFinish the remaining implementation work as needed.\n\n## Progress",
     )
-  let assert Ok(Nil) = simplifile.write(path, review)
-
-  let artifact = run_helper("validate-review-doc --path " <> path)
-
-  assert_completion_preflight_failed(artifact, "ambiguous milestone")
-}
-
-pub fn validate_review_doc_rejects_unverifiable_acceptance_test() {
-  let dir = "test/tmp/execplan-unverifiable-acceptance"
-  test_helpers.reset_dir(dir)
-  let path = dir <> "/review.md"
-  let review =
-    review_doc_with_validation(
-      "The feature is done when the outcome looks good as needed.",
+  let with_progress =
+    string.replace(
+      with_milestones,
+      each: "## Progress\n\n- [x] 2026-05-15: Created the fixture review document.\n\n## Surprises & Discoveries",
+      with: "## Progress\n\n- [ ] Run full validation before rollout.\n\n## Surprises & Discoveries",
     )
-  let assert Ok(Nil) = simplifile.write(path, review)
-
-  let artifact = run_helper("validate-review-doc --path " <> path)
-
-  assert_completion_preflight_failed(
-    artifact,
-    "Validation and Acceptance is not verifiable",
-  )
-  assert string.contains(artifact.stderr, "broad completion wording")
-}
-
-pub fn validate_review_doc_rejects_negated_acceptance_evidence_test() {
-  let dir = "test/tmp/execplan-negated-acceptance-evidence"
-  test_helpers.reset_dir(dir)
-  let path = dir <> "/review.md"
   let review =
-    review_doc_with_validation(
-      "No manual evidence is required. No commands are required. No tests are required. No artifact output is required. The feature is complete when appropriate.",
+    string.replace(
+      with_progress,
+      each: "## Validation and Acceptance\n\nRun `scripts/scherzo-execplan validate-review-doc --path test/fixtures/execplan_v2/review-doc.valid.md` and expect a zero exit code.\n\n## Rollout, Recovery, and Idempotence",
+      with: "## Validation and Acceptance\n\nThe feature is done when the outcome looks good as needed. No manual evidence, commands, tests, or artifact output are required.\n\n## Rollout, Recovery, and Idempotence",
     )
   let assert Ok(Nil) = simplifile.write(path, review)
 
   let artifact = run_helper("validate-review-doc --path " <> path)
 
-  assert_completion_preflight_failed(
-    artifact,
-    "Validation and Acceptance is not verifiable",
-  )
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "REVIEW_DOC_VALID=ok")
 }
 
-pub fn materialize_pack_rejects_missing_negative_test_evidence_test() {
-  let dir = "test/tmp/execplan-pack-negative-evidence"
+pub fn materialize_pack_accepts_review_pack_semantic_mismatch_test() {
+  let dir = "test/tmp/execplan-pack-structural-only"
   test_helpers.reset_dir(dir)
   let review_path = dir <> "/review.md"
   let submission_path = dir <> "/submission.json"
   let output_path = dir <> "/pack.json"
   let review =
     review_doc_with_validation(
-      "Acceptance requires negative, invalid-payload, absent-output, and idempotent duplicate-conflict test evidence before implementation is complete.",
+      "Acceptance requires negative, invalid-payload, absent-output, idempotent duplicate-conflict, provider-live/cache, docs/helper migration, full validation, and lint evidence before implementation is complete.",
     )
   let assert Ok(Nil) = simplifile.write(review_path, review)
   let assert Ok(Nil) =
     simplifile.write(
       submission_path,
-      pack_submission("Missing negative evidence"),
-    )
-
-  let artifact =
-    run_helper(
-      "materialize-pack --review-doc "
-      <> review_path
-      <> " --submission "
-      <> submission_path
-      <> " --output "
-      <> output_path,
-    )
-
-  assert_completion_preflight_failed(
-    artifact,
-    "negative/error-path test coverage",
-  )
-}
-
-pub fn materialize_pack_rejects_negated_negative_test_evidence_test() {
-  let dir = "test/tmp/execplan-pack-negated-negative-evidence"
-  test_helpers.reset_dir(dir)
-  let review_path = dir <> "/review.md"
-  let submission_path = dir <> "/submission.json"
-  let output_path = dir <> "/pack.json"
-  let review =
-    review_doc_with_validation(
-      "Acceptance requires negative error-path test evidence before implementation is complete.",
-    )
-  let assert Ok(Nil) = simplifile.write(review_path, review)
-  let assert Ok(Nil) =
-    simplifile.write(
-      submission_path,
-      pack_submission_with_commands_and_testing(
-        "Negated negative evidence",
-        "[\"scripts/scherzo-execplan validate-review-doc --path test/fixtures/execplan_v2/review-doc.valid.md\"]",
-        "No negative error-path tests are included. Run validate-review-doc only.",
-      ),
-    )
-
-  let artifact =
-    run_helper(
-      "materialize-pack --review-doc "
-      <> review_path
-      <> " --submission "
-      <> submission_path
-      <> " --output "
-      <> output_path,
-    )
-
-  assert_completion_preflight_failed(
-    artifact,
-    "negative/error-path test coverage",
-  )
-}
-
-pub fn materialize_pack_rejects_missing_validation_evidence_step_test() {
-  let dir = "test/tmp/execplan-pack-no-validation-evidence"
-  test_helpers.reset_dir(dir)
-  let review_path = dir <> "/review.md"
-  let submission_path = dir <> "/submission.json"
-  let output_path = dir <> "/pack.json"
-  let review =
-    review_doc_with_validation(
-      "Run `scripts/scherzo-execplan validate-review-doc --path test/fixtures/execplan_v2/review-doc.valid.md` and expect a zero exit code.",
-    )
-  let assert Ok(Nil) = simplifile.write(review_path, review)
-  let assert Ok(Nil) =
-    simplifile.write(
-      submission_path,
-      pack_submission_with_commands_and_testing(
-        "Missing validation evidence",
-        "[]",
-        "The pack links to the review document and bundle hash.",
-      ),
-    )
-
-  let artifact =
-    run_helper(
-      "materialize-pack --review-doc "
-      <> review_path
-      <> " --submission "
-      <> submission_path
-      <> " --output "
-      <> output_path,
-    )
-
-  assert_completion_preflight_failed(
-    artifact,
-    "no validation commands or explicit manual-evidence step",
-  )
-}
-
-pub fn materialize_pack_rejects_unrecognized_validation_commands_test() {
-  let dir = "test/tmp/execplan-pack-unrecognized-validation-command"
-  test_helpers.reset_dir(dir)
-  let review_path = dir <> "/review.md"
-  let submission_path = dir <> "/submission.json"
-  let output_path = dir <> "/pack.json"
-  let review =
-    review_doc_with_validation(
-      "Run `scripts/scherzo-execplan validate-review-doc --path test/fixtures/execplan_v2/review-doc.valid.md` and expect a zero exit code.",
-    )
-  let assert Ok(Nil) = simplifile.write(review_path, review)
-  let assert Ok(Nil) =
-    simplifile.write(
-      submission_path,
-      pack_submission_with_commands_and_testing(
-        "Unrecognized validation command",
-        "[\"echo fixture ready\"]",
-        "The pack links to the review document and bundle hash.",
-      ),
-    )
-
-  let artifact =
-    run_helper(
-      "materialize-pack --review-doc "
-      <> review_path
-      <> " --submission "
-      <> submission_path
-      <> " --output "
-      <> output_path,
-    )
-
-  assert_completion_preflight_failed(
-    artifact,
-    "commands do not include a recognizable test",
-  )
-}
-
-pub fn materialize_pack_accepts_camel_case_idempotent_test_name_test() {
-  let dir = "test/tmp/execplan-pack-camel-case-idempotent"
-  test_helpers.reset_dir(dir)
-  let review_path = dir <> "/review.md"
-  let submission_path = dir <> "/submission.json"
-  let output_path = dir <> "/pack.json"
-  let review =
-    review_doc_with_validation(
-      "Acceptance requires idempotent migration evidence before implementation is complete.",
-    )
-  let assert Ok(Nil) = simplifile.write(review_path, review)
-  let assert Ok(Nil) =
-    simplifile.write(
-      submission_path,
-      pack_submission_with_commands_and_testing(
-        "Camel-case idempotent evidence",
-        "[\"go test ./internal/store/sqlite -run TestMigrateIsIdempotent\"]",
-        "Run the named Go test and assert the migration rerun leaves data readable.",
-      ),
+      pack_submission("Semantic mismatch allowed"),
     )
 
   let artifact =
@@ -2340,75 +2115,6 @@ pub fn materialize_pack_accepts_camel_case_idempotent_test_name_test() {
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   let assert Ok(_) = simplifile.read(output_path)
-}
-
-pub fn materialize_pack_accepts_manual_screenshot_evidence_without_commands_test() {
-  let dir = "test/tmp/execplan-pack-manual-evidence"
-  test_helpers.reset_dir(dir)
-  let review_path = dir <> "/review.md"
-  let submission_path = dir <> "/submission.json"
-  let output_path = dir <> "/pack.json"
-  let review =
-    review_doc_with_validation(
-      "Acceptance requires manual browser evidence: collect screenshot evidence and inspect the rendered output.",
-    )
-  let assert Ok(Nil) = simplifile.write(review_path, review)
-  let assert Ok(Nil) =
-    simplifile.write(
-      submission_path,
-      pack_submission_with_commands_and_testing(
-        "Manual screenshot evidence",
-        "[]",
-        "Collect screenshot evidence and inspect the rendered browser output manually.",
-      ),
-    )
-
-  let artifact =
-    run_helper(
-      "materialize-pack --review-doc "
-      <> review_path
-      <> " --submission "
-      <> submission_path
-      <> " --output "
-      <> output_path,
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  let assert Ok(_) = simplifile.read(output_path)
-}
-
-pub fn materialize_pack_rejects_required_behavior_missing_from_steps_test() {
-  let dir = "test/tmp/execplan-pack-missing-behavior"
-  test_helpers.reset_dir(dir)
-  let review_path = dir <> "/review.md"
-  let submission_path = dir <> "/submission.json"
-  let output_path = dir <> "/pack.json"
-  let review =
-    review_doc_with_validation(
-      "Acceptance requires migrating every local test and scheduled-job runbook reference from removed root helper paths to bundle-local helper paths.",
-    )
-  let assert Ok(Nil) = simplifile.write(review_path, review)
-  let assert Ok(Nil) =
-    simplifile.write(
-      submission_path,
-      pack_submission("Missing helper migration"),
-    )
-
-  let artifact =
-    run_helper(
-      "materialize-pack --review-doc "
-      <> review_path
-      <> " --submission "
-      <> submission_path
-      <> " --output "
-      <> output_path,
-    )
-
-  assert_completion_preflight_failed(
-    artifact,
-    "not represented in implementation pack",
-  )
 }
 
 pub fn prepare_review_doc_target_creates_custom_directory_test() {
