@@ -2806,6 +2806,8 @@ fn finish_fatal_batch_result(
                               ),
                               recovery_final_issue,
                             )
+                          let fresh_recheck_continuations =
+                            dict.delete(pi_session_continuations, step.id)
                           loop(
                             issue,
                             dag,
@@ -2827,7 +2829,7 @@ fn finish_fatal_batch_result(
                             final_issue,
                             sibling_turns + result_turns + recovery_turns,
                             cleanup_allowed,
-                            pi_session_continuations,
+                            fresh_recheck_continuations,
                             profile,
                           )
                         }

@@ -4,6 +4,12 @@ This page documents the active repair-and-recheck step-recovery path in Scherzo.
 
 Recovery remains a no-op for steps without effective recovery, for `recover.enabled: false`, and for `on_failure: continue`. A workflow run emits `succeeded_after_recovery` or `failed_after_recovery` only when the same run has durable `workflow_step_recovery_started` or `workflow_step_recovery_finished` evidence; daemon startup resume by itself does not relabel a clean run.
 
+## Agent-step recheck semantics
+
+After a recovery worker returns `recheck`, Scherzo schedules the failed step as the next normal attempt. For agent steps, that recheck is a fresh pi session using the step's original prompt mode, not a continuation of the failed pi session and not a follow-up prompt sent into the recovery worker. Any recorded startup-recovery continuation for that step is discarded before the recheck.
+
+The recheck renders the original step prompt/template again from the workflow step artifacts. The failed attempt artifact, recovery result, and previous pi transcript/session file are not added to the recheck prompt. Declared upstream interpolations such as `{{ steps.collect.stdout }}` therefore render the same on the original attempt and on the recheck while the recovery worker's workspace changes remain available on disk.
+
 ## Current merge scope
 
 Implemented in this slice:
