@@ -60,6 +60,10 @@ type SessionTarget {
   )
 }
 
+type AttemptRef {
+  AttemptRef(run_id: String, step_id: String, attempt_index: Int)
+}
+
 type RecoveryFinishData {
   RecoveryFinishData(
     result: String,
@@ -91,46 +95,37 @@ pub fn from_replay(
   let targets = session_targets(summary.session_id, records)
   let finishes = recovery_finish_index(records)
 
-  records
-  |> list.fold([], fn(acc, ledger_record) {
-    case ledger_record {
-      record.LedgerRecord(
-        _,
-        _,
-        record.WorkflowStepRecoveryStarted(
-          run_id,
-          workflow_id,
-          step_id,
-          failed_attempt_index,
-          recovery_attempt_number,
-          recovery_session_id,
+  let entries =
+    records
+    |> list.fold([], fn(acc, ledger_record) {
+      case ledger_record {
+        record.LedgerRecord(
           _,
           _,
-        ),
-      ) -> {
-        let finish =
-          dict.get(
-            finishes,
-            projection.step_recovery_key(
-              run_id,
-              step_id,
-              failed_attempt_index,
-              recovery_attempt_number,
-            ),
-          )
-          |> result_to_option
-
-        case
-          matches_any_target(
-            targets,
+          record.WorkflowStepRecoveryStarted(
             run_id,
+            workflow_id,
             step_id,
             failed_attempt_index,
             recovery_attempt_number,
-            finish,
-          )
-        {
-          True -> [
+            recovery_session_id,
+            _,
+            _,
+          ),
+        ) -> {
+          let finish =
+            dict.get(
+              finishes,
+              projection.step_recovery_key(
+                run_id,
+                step_id,
+                failed_attempt_index,
+                recovery_attempt_number,
+              ),
+            )
+            |> result_to_option
+
+          [
             history_entry(
               run_id,
               workflow_id,
@@ -143,13 +138,14 @@ pub fn from_replay(
             ),
             ..acc
           ]
-          False -> acc
         }
+        _ -> acc
       }
-      _ -> acc
-    }
-  })
-  |> list.reverse
+    })
+    |> list.reverse
+
+  entries
+  |> connected_entries(targets)
   |> History
 }
 
@@ -405,48 +401,124 @@ fn recovery_finish_index(
   })
 }
 
-fn matches_any_target(
+fn connected_entries(
+  entries: List(HistoryEntry),
   targets: List(SessionTarget),
-  run_id: String,
-  step_id: String,
-  failed_attempt_index: Int,
-  recovery_attempt_number: Int,
-  finish: Option(RecoveryFinishData),
+) -> List(HistoryEntry) {
+  let seed_attempts = target_attempts(targets, [])
+  case seed_attempts {
+    [] ->
+      list.filter(entries, fn(entry) {
+        entry_matches_recovery_target(entry, targets)
+      })
+    _ -> {
+      let attempts = expand_attempt_refs(entries, seed_attempts)
+      list.filter(entries, fn(entry) {
+        entry_touches_attempt(entry, attempts)
+        || entry_matches_recovery_target(entry, targets)
+      })
+    }
+  }
+}
+
+fn expand_attempt_refs(
+  entries: List(HistoryEntry),
+  attempts: List(AttemptRef),
+) -> List(AttemptRef) {
+  let expanded =
+    list.fold(entries, attempts, fn(acc, entry) {
+      case entry_touches_attempt(entry, acc) {
+        True -> entry_attempt_refs(entry, acc)
+        False -> acc
+      }
+    })
+
+  case list.length(expanded) == list.length(attempts) {
+    True -> expanded
+    False -> expand_attempt_refs(entries, expanded)
+  }
+}
+
+fn target_attempts(
+  targets: List(SessionTarget),
+  acc: List(AttemptRef),
+) -> List(AttemptRef) {
+  case targets {
+    [] -> acc
+    [target, ..rest] -> {
+      let acc = case target {
+        FailedAttemptTarget(run_id, step_id, attempt_index)
+        | RecheckAttemptTarget(run_id, step_id, attempt_index) ->
+          unique_attempt_insert(AttemptRef(run_id, step_id, attempt_index), acc)
+        RecoveryTarget(..) -> acc
+      }
+      target_attempts(rest, acc)
+    }
+  }
+}
+
+fn entry_attempt_refs(
+  entry: HistoryEntry,
+  attempts: List(AttemptRef),
+) -> List(AttemptRef) {
+  let attempts =
+    unique_attempt_insert(
+      AttemptRef(entry.run_id, entry.step_id, entry.failed_attempt_index),
+      attempts,
+    )
+  case entry.recheck_attempt_index {
+    Some(recheck_attempt_index) ->
+      unique_attempt_insert(
+        AttemptRef(entry.run_id, entry.step_id, recheck_attempt_index),
+        attempts,
+      )
+    None -> attempts
+  }
+}
+
+fn entry_touches_attempt(
+  entry: HistoryEntry,
+  attempts: List(AttemptRef),
 ) -> Bool {
-  list.any(targets, fn(target) {
-    case target {
-      FailedAttemptTarget(target_run_id, target_step_id, attempt_index) ->
-        target_run_id == run_id
-        && target_step_id == step_id
-        && attempt_index == failed_attempt_index
-      RecheckAttemptTarget(target_run_id, target_step_id, attempt_index) ->
-        target_run_id == run_id
-        && target_step_id == step_id
-        && recheck_attempt_matches(finish, attempt_index)
-      RecoveryTarget(
-        target_run_id,
-        target_step_id,
-        target_failed_attempt_index,
-        target_recovery_attempt_number,
-      ) ->
-        target_run_id == run_id
-        && target_step_id == step_id
-        && target_failed_attempt_index == failed_attempt_index
-        && target_recovery_attempt_number == recovery_attempt_number
+  list.any(attempts, fn(attempt) {
+    let AttemptRef(run_id, step_id, attempt_index) = attempt
+    entry.run_id == run_id
+    && entry.step_id == step_id
+    && {
+      entry.failed_attempt_index == attempt_index
+      || entry.recheck_attempt_index == Some(attempt_index)
     }
   })
 }
 
-fn recheck_attempt_matches(
-  finish: Option(RecoveryFinishData),
-  attempt_index: Int,
+fn entry_matches_recovery_target(
+  entry: HistoryEntry,
+  targets: List(SessionTarget),
 ) -> Bool {
-  case finish {
-    Some(RecoveryFinishData(
-      recheck_attempt_index: Some(recheck_attempt_index),
-      ..,
-    )) -> recheck_attempt_index == attempt_index
-    _ -> False
+  list.any(targets, fn(target) {
+    case target {
+      RecoveryTarget(
+        run_id,
+        step_id,
+        failed_attempt_index,
+        recovery_attempt_number,
+      ) ->
+        entry.run_id == run_id
+        && entry.step_id == step_id
+        && entry.failed_attempt_index == failed_attempt_index
+        && entry.recovery_attempt_number == recovery_attempt_number
+      _ -> False
+    }
+  })
+}
+
+fn unique_attempt_insert(
+  attempt: AttemptRef,
+  attempts: List(AttemptRef),
+) -> List(AttemptRef) {
+  case list.any(attempts, fn(existing) { existing == attempt }) {
+    True -> attempts
+    False -> [attempt, ..attempts]
   }
 }
 

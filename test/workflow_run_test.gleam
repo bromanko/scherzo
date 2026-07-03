@@ -363,6 +363,60 @@ fn step_finished_attempt_indexes(root: String, step_id: String) -> List(Int) {
   })
 }
 
+fn step_recovery_started_attempts(
+  root: String,
+  step_id: String,
+) -> List(#(Int, Int)) {
+  ledger_records(root)
+  |> list.filter_map(fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowStepRecoveryStarted(
+        step_id: recovered_step_id,
+        failed_attempt_index: failed_attempt_index,
+        recovery_attempt_number: recovery_attempt_number,
+        ..,
+      ) -> {
+        case recovered_step_id == step_id {
+          True -> Ok(#(failed_attempt_index, recovery_attempt_number))
+          False -> Error(Nil)
+        }
+      }
+      _ -> Error(Nil)
+    }
+  })
+}
+
+fn step_recovery_finished_attempts(
+  root: String,
+  step_id: String,
+) -> List(#(Int, Int, String, Option(Int))) {
+  ledger_records(root)
+  |> list.filter_map(fn(ledger_record) {
+    case ledger_record.body {
+      record.WorkflowStepRecoveryFinished(
+        step_id: recovered_step_id,
+        failed_attempt_index: failed_attempt_index,
+        recovery_attempt_number: recovery_attempt_number,
+        result: result,
+        retry_attempt_index: retry_attempt_index,
+        ..,
+      ) -> {
+        case recovered_step_id == step_id {
+          True ->
+            Ok(#(
+              failed_attempt_index,
+              recovery_attempt_number,
+              result,
+              retry_attempt_index,
+            ))
+          False -> Error(Nil)
+        }
+      }
+      _ -> Error(Nil)
+    }
+  })
+}
+
 fn step_batch_watchdog_timeout_stderr(detail: String) -> String {
   "SCHERZO_FAILURE_CODE=step_batch_timeout\n"
   <> "step batch deadline exceeded after 60000ms\n"
@@ -4670,6 +4724,187 @@ fn receive_events(
     True -> acc
     False -> receive_events(subject, count - 1, [receive_event(subject), ..acc])
   }
+}
+
+pub fn two_attempt_recovery_rechecks_until_success_test() {
+  let root = "test/tmp/workflow-run/two-attempt-recovery-success"
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: fixable\n    kind: command\n    run: fixable\n    run_in: main\n    recovery:\n      attempts: 2\n      prompt: repair fixable\n  - id: final\n    kind: command\n    depends_on: [fixable]\n    run: final\n    run_in: main\n",
+    )
+  let event_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let recovery_subject = process.new_subject()
+  let base = deps(event_subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      checkpoint: recording_checkpoint(root, event_subject),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let event =
+          context.step_id <> ":" <> int.to_string(context.attempt_index)
+        process.send(command_subject, event)
+        let exit_code = case context.step_id, context.attempt_index {
+          "fixable", attempt_index if attempt_index <= 2 -> 1
+          _, _ -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> event,
+          "stderr:" <> event,
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          recovery_subject,
+          context.step_id <> ":" <> int.to_string(context.attempt_index),
+        )
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "recheck",
+            "patched attempt " <> int.to_string(context.attempt_index),
+            "ready for recheck",
+          )),
+        )
+      },
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert test_async.drain_subject(command_subject)
+    == ["fixable:1", "fixable:2", "fixable:3", "final:1"]
+  assert test_async.drain_subject(recovery_subject)
+    == ["fixable:1", "fixable:2"]
+  assert workflow_finished_outcome(root)
+    == workflow_outcome.succeeded_after_recovery
+  assert step_finished_attempt_indexes(root, "fixable") == [1, 2, 3]
+  assert step_recovery_started_attempts(root, "fixable") == [#(1, 1), #(2, 2)]
+  assert step_recovery_finished_attempts(root, "fixable")
+    == [
+      #(1, 1, "recheck", Some(2)),
+      #(2, 2, "recheck", Some(3)),
+    ]
+}
+
+pub fn two_attempt_recovery_exhaustion_fails_after_recovery_test() {
+  let root = "test/tmp/workflow-run/two-attempt-recovery-exhausted"
+  test_helpers.reset_dir(root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: fixable\n    kind: command\n    run: fixable\n    run_in: main\n    recovery:\n      attempts: 2\n      prompt: repair fixable\n  - id: final\n    kind: command\n    depends_on: [fixable]\n    run: final\n    run_in: main\n",
+    )
+  let event_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let recovery_subject = process.new_subject()
+  let base = deps(event_subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      checkpoint: recording_checkpoint(root, event_subject),
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let event =
+          context.step_id <> ":" <> int.to_string(context.attempt_index)
+        process.send(command_subject, event)
+        let exit_code = case context.step_id {
+          "fixable" -> 1
+          _ -> 0
+        }
+        step_artifact.from_command_result(
+          context.step_id,
+          exit_code,
+          "stdout:" <> event,
+          "stderr:" <> event,
+          False,
+          secrets,
+          limits,
+        )
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        _prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          recovery_subject,
+          context.step_id <> ":" <> int.to_string(context.attempt_index),
+        )
+        Ok(
+          success_agent_with_result(workflow_step_recovery_result(
+            "recheck",
+            "patched attempt " <> int.to_string(context.attempt_index),
+            "ready for recheck",
+          )),
+        )
+      },
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason == "workflow_step_failed"
+  assert test_async.drain_subject(command_subject)
+    == ["fixable:1", "fixable:2", "fixable:3"]
+  assert test_async.drain_subject(recovery_subject)
+    == ["fixable:1", "fixable:2"]
+  assert workflow_finished_outcome(root)
+    == workflow_outcome.failed_after_recovery
+  assert step_finished_attempt_indexes(root, "fixable") == [1, 2, 3]
+  assert step_recovery_started_attempts(root, "fixable") == [#(1, 1), #(2, 2)]
+  assert step_recovery_finished_attempts(root, "fixable")
+    == [
+      #(1, 1, "recheck", Some(2)),
+      #(2, 2, "recheck", Some(3)),
+    ]
 }
 
 pub fn recoverable_fatal_batch_drains_siblings_and_rechecks_only_failed_step_test() {
