@@ -41,6 +41,52 @@ pub fn execplan_review_doc_prompts_preserve_living_sections_test() {
   })
 }
 
+pub fn execplan_semantic_alignment_prompt_contract_is_agent_owned_test() {
+  let draft_prompt = read_file(".scherzo/workflows/prompts/execplan-draft.md")
+  assert string.contains(
+    draft_prompt,
+    "Agent handoff consistency before submitting",
+  )
+  assert string.contains(
+    draft_prompt,
+    "Use agent comprehension, not keyword matching",
+  )
+  assert string.contains(draft_prompt, "sections.concrete_steps")
+
+  let incorporate_prompt =
+    read_file(".scherzo/workflows/prompts/execplan-incorporate-review.md")
+  assert string.contains(incorporate_prompt, "re-read the final review doc")
+  assert string.contains(
+    incorporate_prompt,
+    "it will not infer semantic alignment by keyword cue matching",
+  )
+
+  let review_prompt = read_file(".scherzo/workflows/prompts/execplan-review.md")
+  assert string.contains(
+    review_prompt,
+    "Use agent comprehension, not keyword cue matching",
+  )
+  assert string.contains(
+    review_prompt,
+    "Flag missing test evidence requirements",
+  )
+  assert string.contains(
+    review_prompt,
+    "execplan-implementation plan-completion gate",
+  )
+
+  list.each(completion_verifier_prompt_paths(), fn(path) {
+    let prompt = read_file(path)
+    assert string.contains(prompt, "Treat missing negative/error-path tests")
+    assert string.contains(prompt, "provider-live/cache coverage")
+    assert string.contains(prompt, "lint/full-validation commands")
+    assert string.contains(
+      prompt,
+      "implementation run does not provide observable evidence",
+    )
+  })
+}
+
 pub fn execplan_workflow_prompts_avoid_machine_local_skill_paths_test() {
   list.each(execplan_prompt_paths(), fn(path) {
     let prompt = read_file(path)
@@ -107,6 +153,16 @@ fn authoring_prompt_paths() -> List(String) {
     ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
     ".scherzo/workflows/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
     ".scherzo/workflows/prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
+  ]
+}
+
+fn completion_verifier_prompt_paths() -> List(String) {
+  [
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-final-repair.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
   ]
 }
 

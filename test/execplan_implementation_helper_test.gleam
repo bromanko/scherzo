@@ -771,6 +771,30 @@ pub fn plan_completion_gate_blocks_fail_verdict_test() {
   )
 }
 
+pub fn plan_completion_gate_blocks_missing_semantic_evidence_verdict_test() {
+  let dir = "test/tmp/plan-completion-gate-semantic-evidence-fail"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_verdict(
+    dir,
+    "fail",
+    fingerprint,
+    "[\"Missing negative/error-path, idempotency, lint, and provider-live/cache evidence required by the canonical plan or implementation pack.\"]",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("plan_completion_failed")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_VERDICT=fail")
+  assert string.contains(artifact.stdout, "Missing negative/error-path")
+  assert string.contains(artifact.stdout, "provider-live/cache evidence")
+}
+
 pub fn plan_completion_gate_blocks_malformed_verdict_test() {
   let dir = "test/tmp/plan-completion-gate-malformed"
   let _fingerprint = setup_plan_completion_gate_fixture(dir)
