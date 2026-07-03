@@ -206,7 +206,7 @@ pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
   let artifact =
     run_helper_in(
       dir,
-      "SCHERZO_EXECPLAN_HTML_HELPER=bin/failing-brief-helper ../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief",
+      "SCHERZO_EXECPLAN_BRIEF_HELPER=bin/failing-brief-helper ../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief",
     )
 
   assert artifact.status == step_artifact.StepFailed

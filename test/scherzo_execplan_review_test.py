@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import importlib.machinery
+import importlib.util
 import io
 import json
 import os
@@ -35,6 +37,20 @@ FIXTURE_HTML = "\n".join(
 )
 FIXTURE_MARKDOWN = "# Example\n\nThis paragraph maps to line three.\n"
 MARKDOWN_PATCH = "@@ -0,0 +1,3 @@\n+# Example\n+\n+This paragraph maps to line three."
+BRIEF_HELPER_PATH = ROOT / "workflows" / "dogfood" / "scripts" / "scherzo-execplan-brief"
+
+
+def load_brief_helper() -> Any:
+    loader = importlib.machinery.SourceFileLoader(
+        "scherzo_execplan_brief_helper", str(BRIEF_HELPER_PATH)
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load brief helper from {BRIEF_HELPER_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class FakeGh:
@@ -361,6 +377,61 @@ class ExecPlanReviewTest(unittest.TestCase):
             rendered = session.preview_path.read_text(encoding="utf-8")
             self.assertRegex(rendered, r'<h1\b[^>]*class="commentable[^"]*plan-heading"[^>]*data-source-line="1"')
             self.assertRegex(rendered, r'<p\b[^>]*class="commentable[^"]*plan-paragraph"[^>]*data-source-line="3"')
+
+    def test_markdown_renderer_keeps_list_items_commentable_by_source_line(self) -> None:
+        markdown = "\n".join(
+            [
+                "# Plan",
+                "",
+                "## Concrete Steps",
+                "",
+                "- [ ] First item with `code`",
+                "- [x] Second item with **bold**",
+                "",
+                "Paragraph with <unsafe> text.",
+            ]
+        )
+        rendered = review.render_markdown_to_html(markdown, "docs/plans/example.md")
+        self.assertRegex(
+            rendered,
+            r'<li\b[^>]*data-comment-id="li-0005-first-item-with-code"[^>]*data-source-line="5"',
+        )
+        self.assertRegex(
+            rendered,
+            r'<li\b[^>]*data-comment-id="li-0006-second-item-with-bold"[^>]*data-source-line="6"',
+        )
+        self.assertIn("<code>code</code>", rendered)
+        self.assertIn("<strong>bold</strong>", rendered)
+        self.assertIn("Paragraph with &lt;unsafe&gt; text.", rendered)
+        self.assertNotIn("<unsafe>", rendered)
+
+    def test_markdown_preview_and_brief_helper_share_heading_contract(self) -> None:
+        markdown = "\n".join(
+            [
+                "# Sample ExecPlan",
+                "",
+                "## Outcomes & Retrospective",
+                "",
+                "Record outcomes.",
+                "",
+                "### Nested Follow-up",
+                "",
+                "- Keep preview anchors and brief slugs aligned.",
+            ]
+        )
+        brief_helper = load_brief_helper()
+        document = brief_helper.parse_markdown_document(
+            "docs/plans/sample.md", "fixture-sha", markdown
+        )
+        rendered = review.render_markdown_to_html(markdown, "docs/plans/sample.md")
+        self.assertEqual([section.slug for section in document.sections], [
+            "sample-execplan",
+            "outcomes-and-retrospective",
+            "nested-follow-up",
+        ])
+        for section in document.sections:
+            prefix = "title" if section.level == 1 else f"h{section.level}"
+            self.assertIn(f'data-comment-id="{prefix}-{section.slug}"', rendered)
 
     def test_contract_probe_payload_and_submit_runner_use_review_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -13,11 +13,11 @@ ExecPlan identity model:
 
 Use these prepared files as the complete handoff:
 
-- `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`: canonical executable plan artifact resolved from descriptor-first `plan` entry in `exec_plan_bundle.entries` (or legacy `exec_plan_bundle.plan.ref` / `review_doc.path` fallback), including human-reviewable intent, scope, risks, milestones, and acceptance.
+- `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`: canonical executable plan artifact prepared from the descriptor `plan` entry in `exec_plan_bundle.entries`, including human-reviewable intent, scope, risks, milestones, and acceptance.
 - `$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json`: mechanical implementation steps, verified facts, tests, interfaces, dependencies, and artifact notes.
 - `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json`: retained bundle provenance and hashes.
 
-If intent, scope, acceptance, safety, or source-plan provenance in the canonical plan conflicts with the implementation pack beyond the expected handoff/source identity split described above, write a concise conflict report to `tmp/execplan-conflict.md` and stop without making code changes. Otherwise implement the next required milestone. Treat any repo path in `review_surface_path` or legacy `review_doc.path` as optional human-review metadata, not as the authoritative implementation input.
+If intent, scope, acceptance, safety, or source-plan provenance in the canonical plan conflicts with the implementation pack beyond the expected handoff/source identity split described above, write a concise conflict report to `tmp/execplan-conflict.md` and stop without making code changes. Otherwise implement the next required milestone. Treat any repo path in `review_surface_path` or `plan_publication_path` as optional human-review metadata, not as the authoritative implementation input.
 
 Do not create commits, manage workspaces, or open a PR; the workflow publish step owns that.
 

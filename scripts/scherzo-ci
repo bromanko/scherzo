@@ -15,6 +15,7 @@ set -euo pipefail
 #   lint                glinter + scherzo custom lint
 #   workflow-contracts  structured-output + review-lane offline contracts
 #   unit                gleam unit suite
+#   review-tools        Python review helper unit suite
 #   contract            gleam contract suites (runtime/orchestrator/tracker/workflow/repository)
 #   nix                 nix flake check
 #   package             nix build path:<repo-root>#scherzo
@@ -88,6 +89,11 @@ ci_unit() {
   run_step "gleam unit test" direnv exec . scherzo-test-unit
 }
 
+ci_review_tools() {
+  run_step "python review helper unit tests" \
+    direnv exec . python3 -m unittest test/scherzo_execplan_review_test.py
+}
+
 ci_contract() {
   run_step "gleam contract test runtime" direnv exec . scherzo-test-contract runtime
   run_step "gleam contract test orchestrator" direnv exec . scherzo-test-contract orchestrator
@@ -129,6 +135,7 @@ case "$target" in
     ci_lint
     ci_workflow_contracts
     ci_unit
+    ci_review_tools
     ci_contract
     ci_flake_check
     ;;
@@ -136,6 +143,7 @@ case "$target" in
   lint) ci_lint ;;
   workflow-contracts) ci_workflow_contracts ;;
   unit) ci_unit ;;
+  review-tools) ci_review_tools ;;
   contract) ci_contract ;;
   nix)
     ci_nix_cache
