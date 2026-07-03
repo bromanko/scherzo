@@ -381,6 +381,69 @@ fn table_columns(row: String) -> List(String) {
   |> list.filter(fn(value) { value != "" })
 }
 
+pub fn query_operation_status_wait_polls_until_terminal_test() {
+  let path = "test/tmp/ctl-query/wait-control.json"
+  let counter_path = "test/tmp/ctl-query/wait-counter.txt"
+  write_control_file(path)
+  let assert Ok(Nil) = simplifile.write(counter_path, "0")
+  let output_subject = process.new_subject()
+  let deps =
+    ctl.ControlClient(..ps_deps([], ps_now_ms, ""), query: fn(_, query) {
+      case query {
+        query_types.OperationStatus(_) -> {
+          let assert Ok(counter_text) = simplifile.read(counter_path)
+          let next = case counter_text {
+            "0" -> {
+              let assert Ok(Nil) = simplifile.write(counter_path, "1")
+              query_types.OperationStatusResponse(
+                query_types.OperationStatusDto(
+                  operation_id: "op-wait",
+                  kind: "retry_step",
+                  command: "retry_step",
+                  target: "run:run-1",
+                  run_id: Some("run-1"),
+                  issue_id: None,
+                  issue_identifier: None,
+                  requested_step_id: None,
+                  publication_id: None,
+                  status: "running",
+                  reason: None,
+                  message: Some("still running"),
+                  queued_at_ms: 1000,
+                  started_at_ms: Some(1001),
+                  finished_at_ms: None,
+                ),
+              )
+            }
+            _ -> query_operation_status_response()
+          }
+          Ok(next)
+        }
+        _ -> Ok(query_status_response())
+      }
+    })
+
+  let assert Ok(Nil) =
+    ctl.run_control_args_with_deps_and_env(
+      [
+        "query",
+        "operation-status",
+        "op-wait",
+        "--wait",
+        "--control-file",
+        path,
+      ],
+      deps,
+      output(output_subject),
+      fn(_) { Nil },
+      path.env,
+    )
+
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "operation_id: op-wait")
+  assert string.contains(transcript, "status: completed")
+}
+
 pub fn query_status_human_executes_query_and_formats_status_test() {
   let path = "test/tmp/ctl-query/human-control.json"
   write_control_file(path)
@@ -573,6 +636,374 @@ pub fn query_operation_status_json_uses_raw_request_with_query_payload_test() {
   assert string.contains(transcript, "\"type\":\"operation_status\"")
   assert string.contains(transcript, "\"operation_id\":\"op-123\"")
   assert string.contains(transcript, "\"target\"")
+}
+
+pub fn query_timeout_json_includes_timeout_policy_fields_test() {
+  let path = "test/tmp/ctl-query/json-timeout-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let raw_response =
+    protocol.success_response(
+      "1",
+      protocol.query_data(
+        Error(query_types.QueryError(
+          query_types.QueryTimeout,
+          "daemon actor query timed out while loading operation status",
+        )),
+      ),
+    )
+    |> protocol.response_to_string
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, raw_response),
+      raw_request: fn(_, _) { Ok(raw_response) },
+    )
+
+  let assert Ok(Nil) =
+    ctl.run_control_args_with_deps_and_env(
+      ["query", "status", "--json", "--control-file", path],
+      deps,
+      output(output_subject),
+      fn(_) { Nil },
+      path.env,
+    )
+
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"code\":\"timeout\"")
+  assert string.contains(transcript, "\"phase\":\"daemon_actor_query\"")
+  assert string.contains(transcript, "\"timeout_ms\":5000")
+  assert string.contains(transcript, "\"accepted\":false")
+  assert string.contains(transcript, "\"retryable\":true")
+}
+
+pub fn query_timeout_json_returns_policy_error_when_no_safe_stale_cache_exists_test() {
+  let path = "test/tmp/ctl-query/json-timeout-no-stale-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let raw_response =
+    protocol.success_response(
+      "1",
+      protocol.query_data(
+        Error(query_types.QueryError(
+          query_types.QueryTimeout,
+          "daemon actor query timed out and no safe stale data exists",
+        )),
+      ),
+    )
+    |> protocol.response_to_string
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, raw_response),
+      raw_request: fn(_, _) { Ok(raw_response) },
+    )
+
+  let assert Ok(Nil) =
+    ctl.run_control_args_with_deps_and_env(
+      ["query", "metrics", "--json", "--control-file", path],
+      deps,
+      output(output_subject),
+      fn(_) { Nil },
+      path.env,
+    )
+
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"ok\":false")
+  assert string.contains(transcript, "\"phase\":\"daemon_actor_query\"")
+  assert !string.contains(transcript, "\"fresh\"")
+  assert !string.contains(transcript, "\"stale_reason\"")
+}
+
+pub fn query_json_missing_control_file_uses_control_file_discovery_timeout_shape_test() {
+  let output_subject = process.new_subject()
+
+  let assert Ok(Nil) =
+    ctl.run_control_args_with_deps_and_env(
+      [
+        "query",
+        "status",
+        "--json",
+        "--control-file",
+        "test/tmp/ctl-query/missing-control.json",
+      ],
+      ps_deps([], ps_now_ms, ""),
+      output(output_subject),
+      fn(_) { Nil },
+      path.env,
+    )
+
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"code\":\"timeout\"")
+  assert string.contains(transcript, "\"phase\":\"control_file_discovery\"")
+  assert string.contains(transcript, "\"accepted\":false")
+  assert string.contains(transcript, "\"retryable\":true")
+}
+
+pub fn non_json_query_timeout_returns_structured_human_timeout_lines_test() {
+  let path = "test/tmp/ctl-query/human-timeout-control.json"
+  write_control_file(path)
+  let deps =
+    ctl.ControlClient(..ps_deps([], ps_now_ms, ""), query: fn(_, _) {
+      Error(control_client.RequestFailed(
+        "query_timeout",
+        "daemon actor query timed out while loading operation status",
+      ))
+    })
+
+  let assert Error(ctl.Failed("timeout", message)) =
+    ctl.run_with_deps(
+      ctl.Query(Some(path), False, query_types.Status),
+      deps,
+      output(process.new_subject()),
+    )
+
+  assert string.contains(message, "Phase: daemon_actor_query")
+  assert string.contains(message, "Accepted: false")
+  assert string.contains(message, "Retryable: yes")
+}
+
+pub fn query_operation_status_json_wait_timeout_returns_ok_true_wait_metadata_test() {
+  let path = "test/tmp/ctl-query/json-wait-timeout-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let raw_response =
+    protocol.success_response(
+      "1",
+      protocol.query_data(
+        Ok(
+          query_types.OperationStatusResponse(query_types.OperationStatusDto(
+            operation_id: "op-wait",
+            kind: "retry_step",
+            command: "retry_step",
+            target: "run:run-1",
+            run_id: Some("run-1"),
+            issue_id: None,
+            issue_identifier: None,
+            requested_step_id: None,
+            publication_id: None,
+            status: "running",
+            reason: None,
+            message: Some("still running"),
+            queued_at_ms: 1000,
+            started_at_ms: Some(1001),
+            finished_at_ms: None,
+          )),
+        ),
+      ),
+    )
+    |> protocol.response_to_string
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, raw_response),
+      query: fn(_, _) {
+        Ok(
+          query_types.OperationStatusResponse(query_types.OperationStatusDto(
+            operation_id: "op-wait",
+            kind: "retry_step",
+            command: "retry_step",
+            target: "run:run-1",
+            run_id: Some("run-1"),
+            issue_id: None,
+            issue_identifier: None,
+            requested_step_id: None,
+            publication_id: None,
+            status: "running",
+            reason: None,
+            message: Some("still running"),
+            queued_at_ms: 1000,
+            started_at_ms: Some(1001),
+            finished_at_ms: None,
+          )),
+        )
+      },
+      raw_request: fn(_, _) { Ok(raw_response) },
+    )
+
+  let assert Ok(Nil) =
+    ctl.run_control_args_with_deps_and_env(
+      [
+        "query",
+        "operation-status",
+        "op-wait",
+        "--json",
+        "--wait",
+        "--timeout",
+        "500ms",
+        "--control-file",
+        path,
+      ],
+      deps,
+      output(output_subject),
+      fn(_) { Nil },
+      path.env,
+    )
+
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"ok\":true")
+  assert string.contains(transcript, "\"phase\":\"operation_wait\"")
+  assert string.contains(transcript, "\"accepted\":true")
+  assert string.contains(transcript, "\"operation_id\":\"op-wait\"")
+}
+
+pub fn operator_json_post_send_timeout_reports_operation_admission_unknown_acceptance_test() {
+  let path = "test/tmp/ctl-operator/json-timeout-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let raw_calls = process.new_subject()
+  let deps =
+    ctl.ControlClient(..ps_deps([], ps_now_ms, ""), raw_request: fn(_, request) {
+      process.send(raw_calls, request)
+      Error(
+        control_client.ConnectionFailed(control_client.ReceiveFailed(
+          "response timed out with token=SECRET and prompt=SECRET",
+        )),
+      )
+    })
+
+  let assert Ok(Nil) =
+    ctl.run_control_args_with_deps_and_env(
+      ["pause", "--json", "--timeout", "500ms", "--control-file", path],
+      deps,
+      output(output_subject),
+      fn(_) { Nil },
+      path.env,
+    )
+
+  let assert protocol.Pause(_, _) = test_async.expect_message(raw_calls)
+  test_async.assert_no_extra_message(raw_calls)
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"code\":\"timeout\"")
+  assert string.contains(transcript, "\"phase\":\"operation_admission\"")
+  assert string.contains(transcript, "\"accepted\":\"unknown\"")
+  assert string.contains(transcript, "\"retryable\":false")
+  assert !string.contains(transcript, "SECRET")
+}
+
+pub fn operator_json_connect_refused_reports_daemon_connect_phase_test() {
+  let path = "test/tmp/ctl-operator/json-connect-refused-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let deps =
+    ctl.ControlClient(..ps_deps([], ps_now_ms, ""), raw_request: fn(_, _) {
+      Error(
+        control_client.ConnectionFailed(control_client.ConnectFailed(
+          "econnrefused token=SECRET",
+        )),
+      )
+    })
+
+  let assert Ok(Nil) =
+    ctl.run_control_args_with_deps_and_env(
+      ["ps", "--json", "--timeout", "500ms", "--control-file", path],
+      deps,
+      output(output_subject),
+      fn(_) { Nil },
+      path.env,
+    )
+
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"code\":\"timeout\"")
+  assert string.contains(transcript, "\"phase\":\"daemon_connect\"")
+  assert string.contains(transcript, "\"accepted\":false")
+  assert string.contains(transcript, "\"retryable\":true")
+  assert !string.contains(transcript, "SECRET")
+}
+
+pub fn operator_json_bad_response_returns_single_json_error_test() {
+  let path = "test/tmp/ctl-operator/json-bad-response-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let deps =
+    ctl.ControlClient(..ps_deps([], ps_now_ms, ""), raw_request: fn(_, _) {
+      Ok("not-json token=SECRET")
+    })
+
+  let assert Ok(Nil) =
+    ctl.run_control_args_with_deps_and_env(
+      ["ps", "--json", "--timeout", "500ms", "--control-file", path],
+      deps,
+      output(output_subject),
+      fn(_) { Nil },
+      path.env,
+    )
+
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"ok\":false")
+  assert string.contains(transcript, "\"code\":\"bad_response\"")
+  assert string.contains(transcript, "\"phase\":\"request_round_trip\"")
+  assert string.contains(transcript, "\"accepted\":\"unknown\"")
+  assert !string.contains(transcript, "not-json")
+  assert !string.contains(transcript, "SECRET")
+}
+
+pub fn operator_json_queued_admission_includes_accepted_and_operation_id_test() {
+  let path = "test/tmp/ctl-operator/json-queued-admission-control.json"
+  write_control_file(path)
+  let output_subject = process.new_subject()
+  let raw_response =
+    protocol.success_response(
+      "1",
+      protocol.command_result_data(command.queued_operation(
+        command.RetryIssue(command.IssueIdentifier("LIV-1342")),
+        "op-retry-1342",
+        Some("retry queued"),
+      )),
+    )
+    |> protocol.response_to_string
+  let deps =
+    ctl.ControlClient(
+      ..ps_deps([], ps_now_ms, raw_response),
+      raw_request: fn(_, _) { Ok(raw_response) },
+    )
+
+  let assert Ok(Nil) =
+    ctl.run_control_args_with_deps_and_env(
+      [
+        "task",
+        "retry",
+        "LIV-1342",
+        "--json",
+        "--timeout",
+        "500ms",
+        "--control-file",
+        path,
+      ],
+      deps,
+      output(output_subject),
+      fn(_) { Nil },
+      path.env,
+    )
+
+  let transcript = drain_output(output_subject)
+  assert string.contains(transcript, "\"ok\":true")
+  assert string.contains(transcript, "\"accepted\":true")
+  assert string.contains(transcript, "\"operation_id\":\"op-retry-1342\"")
+}
+
+pub fn mutating_admission_commands_accept_timeout_and_wait_options_test() {
+  let assert Ok(_) =
+    ctl.parse(["task", "retry", "LIV-1342", "--timeout", "500ms", "--wait"])
+  let assert Ok(_) =
+    ctl.parse([
+      "publication",
+      "retry",
+      "run-1",
+      "--publication",
+      "pub-1",
+      "--timeout",
+      "500ms",
+      "--wait",
+    ])
+  let assert Ok(_) =
+    ctl.parse([
+      "schedules",
+      "run",
+      "workspace-cleanup",
+      "--now",
+      "--timeout",
+      "500ms",
+      "--wait",
+    ])
+  Nil
 }
 
 pub fn task_list_human_executes_daemon_query_and_formats_page_test() {
@@ -1367,6 +1798,31 @@ pub fn deprecated_ctl_offline_alias_prints_hint_and_top_level_offline_does_not_t
     )
     == Ok(Nil)
   assert drain_output(offline_stderr) == ""
+}
+
+pub fn deprecated_ctl_json_alias_keeps_stdout_machine_readable_test() {
+  let root = "test/tmp/ctl-cleanup/deprecated-alias-json"
+  test_helpers.reset_dir(root)
+  let stdout_subject = process.new_subject()
+  let stderr_subject = process.new_subject()
+
+  assert ctl.run_control_args_with_deps_and_env(
+      ["cleanup", "--root", root, "--json"],
+      ps_deps([], ps_now_ms, ""),
+      output(stdout_subject),
+      subject_line(stderr_subject),
+      path.env,
+    )
+    == Ok(Nil)
+
+  let stdout = drain_output(stdout_subject)
+  let stderr = drain_output(stderr_subject)
+  assert output_lines(stdout) |> list.length == 1
+  assert string.starts_with(stdout, "{")
+  assert string.ends_with(string.trim(stdout), "}")
+  assert !string.contains(stdout, "Deprecated: scherzo ctl cleanup")
+  assert string.contains(stderr, "Deprecated: scherzo ctl cleanup")
+  assert string.contains(stderr, "use scherzo cleanup")
 }
 
 pub fn deprecated_recovery_aliases_print_resource_first_hints_test() {

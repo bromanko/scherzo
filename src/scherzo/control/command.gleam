@@ -365,6 +365,7 @@ pub fn command_result_to_json(result: CommandResult) -> json.Json {
   let base = [
     #("command", json.string(result.command)),
     #("status", json.string(status_to_string(result.status))),
+    #("accepted", json.bool(True)),
   ]
   let with_target = case result.target {
     Some(target) -> [#("target", json.string(target)), ..base]

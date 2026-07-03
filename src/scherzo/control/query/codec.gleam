@@ -250,16 +250,15 @@ pub fn response_to_string(response: types.QueryResponse) -> String {
 
 pub fn error_to_json(error: types.QueryError) -> json.Json {
   let types.QueryError(code: code, message: message) = error
+  let error_json =
+    json.object([
+      #("code", json.string(types.error_code_to_string(code))),
+      #("message", json.string(message)),
+    ])
   json.object([
     #("version", json.int(version)),
     #("ok", json.bool(False)),
-    #(
-      "error",
-      json.object([
-        #("code", json.string(types.error_code_to_string(code))),
-        #("message", json.string(message)),
-      ]),
-    ),
+    #("error", error_json),
   ])
 }
 
