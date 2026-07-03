@@ -28,9 +28,6 @@ Plan-completion gate output:
 Late recovery finalizer output:
 {{ steps.finalize_plan_completion_gate_recovery.stdout }}
 
-Native review cutover contract output:
-{{ steps.assert_native_review_cutover.stdout }}
-
 Native review preparation output:
 {{ steps.prepare_review.stdout }}
 

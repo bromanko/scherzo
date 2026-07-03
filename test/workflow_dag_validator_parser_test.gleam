@@ -321,7 +321,6 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
     list.map(workflow_dag.steps(implementation), fn(step) { step.id })
   list.each(
     [
-      "assert_native_review_cutover",
       "prepare_review",
       "lane_correctness",
       "lane_test_quality",
