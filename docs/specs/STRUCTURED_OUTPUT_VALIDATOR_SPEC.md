@@ -224,7 +224,11 @@ Command validators are the semantic escape hatch for checks that cannot be expre
 
 **SOV-CMD-010:** Scherzo MUST capture stdout and stderr separately while the command runs and MUST drain both streams without deadlock. Failure diagnostics MAY summarize stdout and stderr, but success artifacts MUST NOT persist command stdout or stderr by default.
 
-**SOV-CMD-011:** Command validators SHOULD be deterministic and SHOULD NOT mutate the workspace or run root. Scherzo MAY add detection for mutation in a future spec version, but version 1 does not require operating-system enforcement.
+**SOV-CMD-011:** Command validators SHOULD be deterministic and SHOULD NOT mutate the workspace. They SHOULD NOT mutate the run root except for intentional run-local artifact writes covered by SOV-CMD-012. Scherzo MAY add detection for mutation in a future spec version, but version 1 does not require operating-system enforcement.
+
+**SOV-CMD-012:** A command validator MAY intentionally write a workflow-specific stamped artifact under `SCHERZO_RUN_ROOT` when that artifact is part of the workflow contract. Such side effects MUST be confined to run-local state, MUST be completed before the validator exits, MUST fail non-retryably when the run-local artifact cannot be written, and MUST NOT rely on command stdout being retained on success. Scherzo still persists the structured-output artifact itself only after every validator passes.
+
+**SOV-CMD-013:** For validators that act as gates, the command exit status is the step gate result: exit status `0` allows the structured-output pipeline to continue, exit status `1` rejects the submission and uses structured-output retry/recovery semantics, and exit status `2`, timeout, start failure, or other nonzero status is treated as a non-retryable validator failure. A gate that needs the current checkout state SHOULD use `working_directory: workspace` or `working_directory: repository`; in workspace-backed runs, `repository` is the repository root of the same prepared step workspace, and `SCHERZO_WORKSPACE_PATH` identifies that workspace for defensive checks.
 
 ## 8. JSON Schema validator contract
 
@@ -304,6 +308,7 @@ Scherzo starts command validators from a clean environment. It may copy a small 
 | `SCHERZO_REPO_ROOT` | Inferred repository root. |
 | `SCHERZO_RUN_ROOT` | Per-run directory containing artifacts and run-local state. |
 | `SCHERZO_WORKFLOW_ID` | Workflow id. |
+| `SCHERZO_WORKFLOW_BUNDLE_DIR` | Directory containing the resolved workflow bundle. |
 | `SCHERZO_RUN_ID` | Run id. |
 | `SCHERZO_STEP_ID` | Agent step id. |
 | `SCHERZO_ATTEMPT_INDEX` | Numeric attempt index for the current agent attempt. |
@@ -317,6 +322,8 @@ Scherzo starts command validators from a clean environment. It may copy a small 
 | `SCHERZO_VALIDATOR_INDEX` | Zero-based validator index in declaration order. |
 
 **SOV-ENV-004:** Command validator env values are visible to the validator process and may appear in validator-authored output. Workflow authors SHOULD NOT place secrets in command validator `env` unless they intentionally trust the validator with those secrets.
+
+**Implementation note:** Version 1 does not expose the workspace-driver command (`SCHERZO_WORKSPACE_DRIVER`) in the clean command-validator environment. Validators that need checkout state can use the prepared workspace and repository VCS state directly (for example `jj` in a jj-backed workspace). A future spec revision may add an explicit workspace-driver env contract when validators need driver abstraction rather than VCS-local state.
 
 ## 13. Workflow fingerprinting requirements
 

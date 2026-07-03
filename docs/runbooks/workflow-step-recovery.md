@@ -16,6 +16,8 @@ Required structured-output validation is part of the agent step attempt. If the 
 
 When there is no retry budget, the retry worker fails, the retry result still fails validation, or the validation error is non-retryable, the agent step attempt is recorded as failed with a `structured_output_*` failure code. From that point it follows the normal fatal-step path: if `on_failure` is fatal and the step has effective `recover` configuration, `workflow_run` records the failed attempt, starts the bounded step-recovery worker, and on a `recheck` decision reruns the original agent step unchanged in the next attempt. A recovery `gave_up` decision preserves the original structured-output failure and fails the workflow as `failed_after_recovery`.
 
+Command validators used as same-step gates follow the same ordering. The validator receives the captured structured-output submission on stdin, runs in the configured working directory for that same step workspace, and can write run-local stamped artifacts under `SCHERZO_RUN_ROOT` before it exits. For a plan-completion verifier, set `validation_retries: 0` when `verdict: fail` should hand control directly to step recovery; otherwise command-validator exit status `1` first triggers the normal structured-output retry prompt. A recovery `recheck` reruns the original verifier step, captures a fresh submission, and reruns the validator so workspace fingerprints are recomputed rather than reused from the failed attempt.
+
 ## Current merge scope
 
 Implemented in this slice:
