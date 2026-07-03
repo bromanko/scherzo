@@ -4,6 +4,12 @@ This page documents the active repair-and-recheck step-recovery path in Scherzo.
 
 Recovery remains a no-op for steps without effective recovery, for `recover.enabled: false`, and for `on_failure: continue`. A workflow run emits `succeeded_after_recovery` or `failed_after_recovery` only when the same run has durable `workflow_step_recovery_started` or `workflow_step_recovery_finished` evidence; daemon startup resume by itself does not relabel a clean run.
 
+## Agent-step recheck semantics
+
+After a recovery worker returns `recheck`, Scherzo schedules the failed step as the next normal attempt. For agent steps, that recheck is a fresh pi session using the step's original prompt mode, not a continuation of the failed pi session and not a follow-up prompt sent into the recovery worker. Any recorded startup-recovery continuation for that step is discarded before the recheck.
+
+The recheck renders the original step prompt/template again from the workflow step artifacts. The failed attempt artifact, recovery result, and previous pi transcript/session file are not added to the recheck prompt. Declared upstream interpolations such as `{{ steps.collect.stdout }}` therefore render the same on the original attempt and on the recheck while the recovery worker's workspace changes remain available on disk.
+
 ## Structured-output validation failures
 
 Required structured-output validation is part of the agent step attempt. If the agent result is missing required structured output, fails the baseline object schema, fails a `json_schema` validator, or is rejected by a `command` validator, Scherzo first consumes the step's `structured_output.validation_retries` budget when the failure is retryable. That retry is an in-session `StructuredOutputRetryPrompt` to the same agent step; recovery has not started yet. Workflows that want a validator rejection to hand off immediately to step recovery should set `structured_output.validation_retries: 0`.
