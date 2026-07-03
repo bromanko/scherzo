@@ -91,14 +91,14 @@ websocket_handshake(Transport, Socket, Scheme, Host, Port, Path, Credential, Tim
     case send_transport(Transport, Socket, Request, Timeout) of
         {ok, _} ->
             case recv_http_message(Transport, Socket, Timeout) of
-                {ok, HeadersBin, _Rest} ->
-                    validate_handshake_response(HeadersBin, Key);
+                {ok, HeadersBin, Body} ->
+                    validate_handshake_response(HeadersBin, Body, Key);
                 {error, Reason} -> {error, Reason}
             end;
         {error, Reason} -> {error, Reason}
     end.
 
-validate_handshake_response(HeadersBin, Key) ->
+validate_handshake_response(HeadersBin, Body, Key) ->
     case binary:split(HeadersBin, <<"\r\n">>, [global]) of
         [StatusLine | HeaderLines] ->
             case StatusLine of
@@ -109,7 +109,7 @@ validate_handshake_response(HeadersBin, Key) ->
                         {ok, _} -> {error, <<"websocket_bad_accept">>};
                         error -> {error, <<"websocket_missing_accept">>}
                     end;
-                _ -> {error, <<"websocket_bad_status">>}
+                _ -> {error, websocket_status_error(StatusLine, Body)}
             end;
         _ -> {error, <<"websocket_bad_handshake">>}
     end.
@@ -119,28 +119,53 @@ recv_text_frame(Transport, Socket, Timeout) ->
         {ok, <<Fin:1, _Rsv:3, OpCode:4, Masked:1, Len0:7>>} ->
             case recv_payload_length(Transport, Socket, Len0, Timeout) of
                 {ok, PayloadLen} ->
-                    case recv_masking_key(Transport, Socket, Masked, Timeout) of
-                        {ok, MaskingKey} ->
-                            case recv_exact(Transport, Socket, PayloadLen, Timeout) of
-                                {ok, Payload0} ->
-                                    Payload = maybe_unmask_payload(Payload0, MaskingKey),
-                                    case {Fin, OpCode} of
-                                        {_Fin, 1} -> {ok, binary_to_utf8(Payload)};
-                                        {_Fin, 8} -> {error, <<"closed">>};
-                                        {_Fin, 9} ->
-                                            _ = send_transport(Transport, Socket, encode_client_frame(10, Payload), Timeout),
-                                            recv_text_frame(Transport, Socket, Timeout);
-                                        {_Fin, 10} -> recv_text_frame(Transport, Socket, Timeout);
-                                        _ -> recv_text_frame(Transport, Socket, Timeout)
+                    case control_frame_payload_ok(OpCode, PayloadLen) of
+                        true ->
+                            case recv_masking_key(Transport, Socket, Masked, Timeout) of
+                                {ok, MaskingKey} ->
+                                    case recv_exact(Transport, Socket, PayloadLen, Timeout) of
+                                        {ok, Payload0} ->
+                                            Payload = maybe_unmask_payload(Payload0, MaskingKey),
+                                            case {Fin, OpCode} of
+                                                {_Fin, 1} -> {ok, binary_to_utf8(Payload)};
+                                                {_Fin, 8} -> {error, websocket_close_error(Payload)};
+                                                {_Fin, 9} ->
+                                                    _ = send_transport(Transport, Socket, encode_client_frame(10, Payload), Timeout),
+                                                    recv_text_frame(Transport, Socket, Timeout);
+                                                {_Fin, 10} -> recv_text_frame(Transport, Socket, Timeout);
+                                                _ -> recv_text_frame(Transport, Socket, Timeout)
+                                            end;
+                                        {error, Reason} -> {error, Reason}
                                     end;
                                 {error, Reason} -> {error, Reason}
                             end;
-                        {error, Reason} -> {error, Reason}
+                        false -> {error, <<"websocket_control_frame_too_large">>}
                     end;
                 {error, Reason} -> {error, Reason}
             end;
         {error, Reason} -> {error, Reason}
     end.
+
+websocket_close_error(<<Code:16/big-unsigned-integer, Reason/binary>>) ->
+    ReasonText = truncate_binary(binary_to_utf8(Reason), 200),
+    <<"websocket_close:", (integer_to_binary(Code))/binary, ":", ReasonText/binary>>;
+websocket_close_error(_) -> <<"closed">>.
+
+control_frame_payload_ok(OpCode, PayloadLen) when OpCode >= 8, PayloadLen =< 125 -> true;
+control_frame_payload_ok(OpCode, _PayloadLen) when OpCode >= 8 -> false;
+control_frame_payload_ok(_OpCode, _PayloadLen) -> true.
+
+websocket_status_error(StatusLine, Body) ->
+    Code = status_code(StatusLine),
+    BodyText = truncate_binary(binary_to_utf8(Body), 200),
+    <<"websocket_http_status:", Code/binary, ":", BodyText/binary>>.
+
+status_code(<<"HTTP/1.1 ", Code:3/binary, _/binary>>) -> Code;
+status_code(<<"HTTP/1.0 ", Code:3/binary, _/binary>>) -> Code;
+status_code(_) -> <<"unknown">>.
+
+truncate_binary(Bin, Max) when byte_size(Bin) =< Max -> Bin;
+truncate_binary(Bin, Max) -> <<(binary:part(Bin, 0, Max))/binary, "...">>.
 
 recv_payload_length(Transport, Socket, 126, Timeout) ->
     case recv_exact(Transport, Socket, 2, Timeout) of

@@ -410,6 +410,7 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
         None,
       ),
       credential: "dcred_secret_1",
+      managed_launch_auth: None,
       heartbeat_interval_ms: 1000,
       state_interval_ms: 1000,
       retry_initial_ms: 50,
@@ -448,6 +449,7 @@ fn fake_remote_client_handle(key: String) -> daemon_remote_client.Handle {
           "ui websocket query bridge is unavailable",
         ))
       },
+      managed_auth_rejected: fn(_) { Nil },
       logger: fn(_, _, _, _) { Ok(Nil) },
     )
   let _ = key
@@ -466,6 +468,7 @@ fn remote_client_dependencies(
     stop_control_server: fn(_) { Nil },
     start_remote_client: fn(
       effective: config_types.EffectiveConfig,
+      _,
       _,
       _,
       _,
@@ -1324,7 +1327,7 @@ pub fn daemon_read_model_reports_remote_client_retrying_when_start_fails_test() 
       start_event_hub: fn() { Ok(hub_subject) },
       start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
       stop_control_server: fn(_) { Nil },
-      start_remote_client: fn(_, _, _, _, _, _) {
+      start_remote_client: fn(_, _, _, _, _, _, _) {
         Error(daemon.StartupError("dial_failed", "boom"))
       },
     )

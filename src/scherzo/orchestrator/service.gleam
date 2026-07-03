@@ -1167,6 +1167,12 @@ pub fn start_daemon_with_lifecycle(
     ),
   )
   let stop_subject = process.new_subject()
+  let daemon_dependencies =
+    daemon_dependencies_with_managed_auth_rejection_handler(
+      dependencies.daemon_dependencies,
+      managed_launch,
+      stop_subject,
+    )
   case dependencies.install_stop_source(stop_subject) {
     Error(error) -> {
       instance_lock.release(lock)
@@ -1188,7 +1194,7 @@ pub fn start_daemon_with_lifecycle(
         daemon.start_with_managed_launch(
           workflow_path,
           managed_launch_grant_option(managed_launch),
-          dependencies.daemon_dependencies,
+          daemon_dependencies,
         )
         |> map_daemon_error
       {
@@ -1210,8 +1216,8 @@ pub fn start_daemon_with_lifecycle(
               updated_at_ms: wall_clock_ms(),
             ),
           )
-          let result =
-            lifecycle.run_until_stop(
+          let shutdown =
+            lifecycle.run_until_stop_with_reason(
               stop_subject,
               fn(_) {
                 daemon.shutdown(started.data, dependencies.shutdown_timeout_ms)
@@ -1220,7 +1226,15 @@ pub fn start_daemon_with_lifecycle(
               fn() { instance_lock.release(lock) },
               dependencies.lifecycle_logger,
             )
-          case result {
+          case shutdown.reason {
+            lifecycle.ManagedLaunchCredentialRejected(message) ->
+              write_managed_launch_auth_rejection_status(
+                managed_launch,
+                message,
+              )
+            _ -> Nil
+          }
+          case shutdown.result {
             lifecycle.ShutdownComplete -> Ok(Nil)
             lifecycle.ShutdownTimedOut ->
               Error(StartupError(
@@ -1262,6 +1276,45 @@ fn load_managed_launch_runtime(
         }
       }
   }
+}
+
+fn daemon_dependencies_with_managed_auth_rejection_handler(
+  dependencies: daemon.RuntimeDependencies,
+  managed_launch: Option(ManagedLaunchRuntime),
+  stop_subject: process.Subject(lifecycle.StopReason),
+) -> daemon.RuntimeDependencies {
+  daemon.RuntimeDependencies(
+    ..dependencies,
+    managed_launch_auth_rejected: fn(message) {
+      case managed_launch {
+        Some(_) -> {
+          write_managed_launch_auth_rejection_status(managed_launch, message)
+          process.send(
+            stop_subject,
+            lifecycle.ManagedLaunchCredentialRejected(message),
+          )
+        }
+        None -> Nil
+      }
+    },
+  )
+}
+
+fn write_managed_launch_auth_rejection_status(
+  managed_launch: Option(ManagedLaunchRuntime),
+  message: String,
+) -> Nil {
+  write_managed_launch_status(
+    managed_launch,
+    managed_launch_status.Status(
+      launch_id: managed_launch_launch_id(managed_launch),
+      phase: "runtime",
+      ok: False,
+      code: "managed_daemon_credential_rejected",
+      message: message,
+      updated_at_ms: wall_clock_ms(),
+    ),
+  )
 }
 
 fn managed_launch_grant_option(
