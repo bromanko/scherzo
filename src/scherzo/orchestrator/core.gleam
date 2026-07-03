@@ -218,7 +218,7 @@ pub fn retry_candidate_precondition_failure(
     config_types.retry_state_allowed(config, issue.state),
     dict.has_key(state.running, orchestrator_state.issue_identity(issue)),
     retry_claim_allowed(state, issue_id),
-    is_parked_for_issue(state, issue),
+    is_parked_for_retry(state, issue),
     blockers_satisfied(config, issue)
   {
     True, _, _, _, _, _, _, _ -> Some("retry_issue_id_mismatch")
@@ -257,21 +257,42 @@ fn is_parked_for_issue(
   state: orchestrator_state.RuntimeState,
   issue: tracker_issue.Issue,
 ) -> Bool {
-  case dict.get(state.parked, orchestrator_state.issue_identity(issue)) {
-    Ok(parked) -> park_blocks_dispatch(parked, issue)
-    Error(Nil) -> False
+  parked_issue.is_parked_for_dispatch(state, issue)
+}
+
+fn is_parked_for_retry(
+  state: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
+) -> Bool {
+  parked_issue.is_parked_for_retry(state, issue)
+}
+
+pub fn retry_intent_releases_park(
+  parked: orchestrator_state.ParkedEntry,
+) -> Bool {
+  parked_issue.retry_intent_releases_park(parked)
+}
+
+pub fn retry_releasable_park_for_issue(
+  state: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
+) -> Option(orchestrator_state.ParkedEntry) {
+  parked_issue.retry_releasable_park_for_issue(state, issue)
+}
+
+pub fn parked_unpark_command(parked: orchestrator_state.ParkedEntry) -> String {
+  "scherzoctl unpark " <> shell_quote(parked_unpark_target(parked))
+}
+
+pub fn parked_unpark_target(parked: orchestrator_state.ParkedEntry) -> String {
+  case string.trim(parked.identifier) == "" {
+    True -> parked.issue_id
+    False -> parked.identifier
   }
 }
 
-fn park_blocks_dispatch(
-  parked: orchestrator_state.ParkedEntry,
-  issue: tracker_issue.Issue,
-) -> Bool {
-  case parked.release_policy {
-    orchestrator_state.ExplicitUnparkOnly -> True
-    orchestrator_state.AutoUnparkOnIssueChange(stored) ->
-      tracker_issue.fingerprint_matches(stored, issue)
-  }
+fn shell_quote(value: String) -> String {
+  "'" <> string.replace(value, each: "'", with: "'\\''") <> "'"
 }
 
 fn slots_available(

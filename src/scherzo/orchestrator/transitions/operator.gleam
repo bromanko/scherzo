@@ -268,11 +268,8 @@ fn retry_issue(
         ),
       )
     True -> {
-      let state =
-        transition_types.State(
-          ..state,
-          runtime: core.unpark_if_issue_changed(state.runtime, issue),
-        )
+      let released_park =
+        core.retry_releasable_park_for_issue(state.runtime, issue)
       case
         core.retry_candidate_precondition_failure(
           state.runtime,
@@ -288,7 +285,7 @@ fn retry_issue(
             command.rejected(
               request.operator_command,
               reason,
-              Some(retry_rejection_message(reason)),
+              Some(retry_rejection_message(reason, state.runtime, issue)),
             ),
           )
         None ->
@@ -317,7 +314,8 @@ fn retry_issue(
                   )
                 True -> {
                   let state = reset_issue_for_operator_retry(state, issue)
-                  let effects = operator_retry_effects(issue, context)
+                  let effects =
+                    operator_retry_effects(issue, context, released_park)
                   let claim_context =
                     context_without_retried_recovery(context, issue.id)
                   let claim =
@@ -515,7 +513,7 @@ fn retry_issue_start_fresh(
                 command.rejected(
                   request.operator_command,
                   other,
-                  Some(retry_rejection_message(other)),
+                  Some(retry_rejection_message(other, state.runtime, issue)),
                 ),
               )
           }
@@ -697,15 +695,27 @@ fn reset_issue_for_operator_retry(
 fn operator_retry_effects(
   issue: tracker_issue.Issue,
   context: transition_types.DispatchContext,
+  released_park: Option(orchestrator_state.ParkedEntry),
 ) -> List(effects_types.Effect) {
-  [
-    effects_types.AppendLedger(effects_types.LedgerAppend(
-      correlation_id: "operator_retry:" <> issue.id,
-      batch: ledger_batch.operator_retry_counter_reset(
+  let batch = case released_park {
+    Some(_) ->
+      ledger_batch.issue_unparked(
+        issue.id,
+        issue.identifier,
+        "operator_retry",
+        context.now_ms,
+      )
+    None ->
+      ledger_batch.operator_retry_counter_reset(
         issue.id,
         issue.identifier,
         context.now_ms,
-      ),
+      )
+  }
+  [
+    effects_types.AppendLedger(effects_types.LedgerAppend(
+      correlation_id: "operator_retry:" <> issue.id,
+      batch: batch,
       failure_event: "ledger_append_failed",
       policy: effects_types.ContinueRegardless,
     )),
@@ -714,8 +724,30 @@ fn operator_retry_effects(
   ]
 }
 
-fn retry_rejection_message(reason: String) -> String {
-  "retry rejected: " <> reason
+fn retry_rejection_message(
+  reason: String,
+  runtime: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
+) -> String {
+  case reason {
+    "retry_issue_parked" -> retry_parked_rejection_message(runtime, issue)
+    _ -> "retry rejected: " <> reason
+  }
+}
+
+fn retry_parked_rejection_message(
+  runtime: orchestrator_state.RuntimeState,
+  issue: tracker_issue.Issue,
+) -> String {
+  case dict.get(runtime.parked, orchestrator_state.issue_identity(issue)) {
+    Ok(parked) ->
+      "retry rejected: issue is parked for "
+      <> orchestrator_reason.park_to_string(parked.reason)
+      <> "; run `"
+      <> core.parked_unpark_command(parked)
+      <> "` before retry"
+    Error(Nil) -> "retry rejected: retry_issue_parked"
+  }
 }
 
 fn handle_park(

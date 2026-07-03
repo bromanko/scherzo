@@ -2537,6 +2537,20 @@ pub fn ps_and_session_human_output_show_recovery_metadata_test() {
       park_release_policy: Some("explicit_unpark_only"),
       parked_at_ms: Some(1234),
     )
+  let quarantined =
+    event.RecoveryInfo(
+      ..parked,
+      message: Some("worker_failure"),
+      park_reason: Some("worker_failure"),
+      park_release_policy: Some("auto_unpark_on_issue_change"),
+    )
+  let auto_operator_parked =
+    event.RecoveryInfo(
+      ..parked,
+      message: Some("dispatch_recovery_rejected"),
+      park_reason: Some("dispatch_recovery_rejected"),
+      park_release_policy: Some("auto_unpark_on_issue_change"),
+    )
   let cleanup =
     event.RecoveryInfo(
       ..interrupted,
@@ -2561,7 +2575,15 @@ pub fn ps_and_session_human_output_show_recovery_metadata_test() {
       ..session_summary("session-3", ps_now_ms - 1000),
       recovery: Some(cleanup),
     ),
-    session_summary("session-4", ps_now_ms - 1000),
+    event.SessionSummary(
+      ..session_summary("session-4", ps_now_ms - 1000),
+      recovery: Some(quarantined),
+    ),
+    event.SessionSummary(
+      ..session_summary("session-5", ps_now_ms - 1000),
+      recovery: Some(auto_operator_parked),
+    ),
+    session_summary("session-6", ps_now_ms - 1000),
   ]
   let subject = process.new_subject()
 
@@ -2576,7 +2598,8 @@ pub fn ps_and_session_human_output_show_recovery_metadata_test() {
   let transcript = drain_output(subject)
   assert string.contains(transcript, "RECOVERY")
   assert string.contains(transcript, "interrupted")
-  assert string.contains(transcript, "parked")
+  assert string.contains(transcript, "parked (operator)")
+  assert string.contains(transcript, "quarantined (failure backoff)")
   assert string.contains(transcript, "cleanup")
   assert string.contains(transcript, "-")
 
@@ -2599,6 +2622,40 @@ pub fn ps_and_session_human_output_show_recovery_metadata_test() {
   )
   assert string.contains(transcript, "current_pi_session_id: pi-current")
   assert string.contains(transcript, "workflow_run_id: run-1")
+
+  let subject = process.new_subject()
+  let result =
+    ctl.run_with_deps(
+      ctl.Session(Some(path), False, "session-2"),
+      session_ref_deps(sessions),
+      output(subject),
+    )
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "status: parked (operator)")
+
+  let subject = process.new_subject()
+  let result =
+    ctl.run_with_deps(
+      ctl.Session(Some(path), False, "session-4"),
+      session_ref_deps(sessions),
+      output(subject),
+    )
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "status: quarantined (failure backoff)")
+
+  let subject = process.new_subject()
+  let result =
+    ctl.run_with_deps(
+      ctl.Session(Some(path), False, "session-5"),
+      session_ref_deps(sessions),
+      output(subject),
+    )
+  assert result == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "status: parked")
+  assert !string.contains(transcript, "status: quarantined (failure backoff)")
 }
 
 pub fn ps_human_table_shows_exit_outcomes_test() {
