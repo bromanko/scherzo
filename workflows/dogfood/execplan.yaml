@@ -29,28 +29,28 @@ contract:
       artifact_type: scherzo.exec_plan.v1
       source:
         step: materialize_bundle
-        path: tmp/execplan-review-doc.md
+        path: state/implementation/execplan-review-doc.md
     implementation_pack:
       kind: file
       media_type: application/json
       artifact_type: scherzo.implementation_pack.v2
       source:
         step: materialize_pack
-        path: tmp/execplan-implementation-pack.json
+        path: state/implementation/execplan-implementation-pack.json
     exec_plan_bundle:
       kind: artifact_set
       media_type: application/json
       artifact_type: scherzo.exec_plan_bundle.v2
       source:
         step: materialize_bundle
-        path: tmp/execplan-bundle.json
+        path: state/implementation/execplan-bundle.json
     commit_stack:
       kind: commit_stack
       media_type: application/vnd.scherzo.git-commit-stack+json
       artifact_type: scherzo.git_commit_stack.v1
       source:
         step: materialize_commit_stack
-        path: tmp/execplan-commit-stack.json
+        path: state/implementation/execplan-commit-stack.json
 artifacts:
   publications:
     - id: execplan_review_doc
@@ -159,20 +159,20 @@ steps:
   - id: materialize_pack
     kind: command
     depends_on: [validate_review_doc_after_review]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$bundle_dir/scripts/scherzo-execplan" materialize-pack --review-doc-path-file tmp/execplan-review-doc.path --submission-step incorporate_review --submission-artifact implementation_pack_submission --output tmp/execplan-implementation-pack.json'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$bundle_dir/scripts/scherzo-execplan" materialize-pack --review-doc-path-file tmp/execplan-review-doc.path --submission-step incorporate_review --submission-artifact implementation_pack_submission --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json"'
     run_in: main
 
   - id: materialize_commit_stack
     kind: command
     depends_on: [materialize_pack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$bundle_dir/scripts/scherzo-execplan" materialize-commit-stack --review-doc-path-file tmp/execplan-review-doc.path --output tmp/execplan-commit-stack.json'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$bundle_dir/scripts/scherzo-execplan" materialize-commit-stack --review-doc-path-file tmp/execplan-review-doc.path --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-commit-stack.json"'
     timeout: 5m
     run_in: main
 
   - id: materialize_bundle
     kind: command
     depends_on: [materialize_commit_stack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" materialize-bundle --review-doc-path-file tmp/execplan-review-doc.path --pack tmp/execplan-implementation-pack.json --output tmp/execplan-bundle.json'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" materialize-bundle --review-doc-path-file tmp/execplan-review-doc.path --pack "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json" --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json"'
     timeout: 5m
     run_in: main
     recovery:

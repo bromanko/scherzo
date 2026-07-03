@@ -1,5 +1,7 @@
 import gleam/bit_array
+import gleam/dict
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -23,6 +25,7 @@ import scherzo/orchestrator/yaml_step_session
 import scherzo/path
 import scherzo/port
 import scherzo/result_artifact
+import scherzo/runtime/state as orchestrator_state
 import scherzo/runtime_bundle
 import scherzo/session/event
 import scherzo/session/hub
@@ -143,6 +146,166 @@ pub fn retry_step_rejects_parked_issue_before_planning_test() {
 
   assert command.status_to_string(result.status) == "rejected"
   assert command.status_reason(result.status) == Some("issue_parked")
+  let assert Some(message) = result.message
+  assert string.contains(message, "operator_hold")
+  assert string.contains(message, "scherzoctl unpark 'LIV-509'")
+  assert ledger_bodies(root) == before
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_preserves_max_sessions_safety_park_test() {
+  let dir = "test/tmp/daemon-retry-step-max-sessions-parked"
+  let issue = issue("issue-1", "LIV-509", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  append_auto_unpark_issue_change_parked_record_with_reason(
+    root,
+    issue,
+    "max_sessions_per_issue",
+    10,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let identity = orchestrator_state.issue_identity(issue)
+  let assert Ok(parked_snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(parked_snapshot.parked, identity)
+  let before = ledger_bodies(root)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("issue_parked")
+  let assert Some(message) = result.message
+  assert string.contains(message, "max_sessions_per_issue")
+  assert string.contains(message, "scherzoctl unpark 'LIV-509'")
+  let assert Ok(still_parked_snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(still_parked_snapshot.parked, identity)
+  assert ledger_bodies(root) == before
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_clears_failure_quarantine_before_planning_test() {
+  let dir = "test/tmp/daemon-retry-step-quarantine"
+  let issue = issue("issue-1", "LIV-509", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  append_auto_unpark_issue_change_parked_record(root, issue, 10)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, _, _) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let identity = orchestrator_state.issue_identity(issue)
+  let assert Ok(parked_snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(parked_snapshot.parked, identity)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "queued"
+  let assert Ok(unparked_snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert !dict.has_key(unparked_snapshot.parked, identity)
+  assert ledger_has_issue_unparked(root, issue.id, "retry_step")
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_rejects_manual_drift_like_parked_issue_test() {
+  let dir = "test/tmp/daemon-retry-step-manual-drift-like-parked"
+  let issue = issue("issue-1", "LIV-1371", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  append_explicit_parked_record(
+    root,
+    issue,
+    "issue_state_drift:non_active_state",
+    20,
+  )
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let before = ledger_bodies(root)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("issue_parked")
   assert ledger_bodies(root) == before
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -221,6 +384,164 @@ pub fn retry_step_queues_operation_and_records_lifecycle_before_spawning_recover
     "known_workspace",
     "issue_counter_updated",
     "control_operation_completed",
+  ])
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_accepts_issue_description_drift_and_records_retry_snapshot_test() {
+  let dir = "test/tmp/daemon-retry-step-issue-drift"
+  let original_issue = issue("issue-1", "LIV-1370", "Todo")
+  let changed_issue =
+    tracker_issue.Issue(
+      ..original_issue,
+      description: Some("Updated description"),
+    )
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, original_issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(changed_issue),
+      hub_subject,
+      fn(issue, context, _) {
+        process.send(
+          log_subject,
+          "recovered_worker_started:"
+            <> option.unwrap(issue.description, "missing"),
+        )
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
+  assert wait_for_log(
+    log_subject,
+    "recovered_worker_started:Updated description",
+    100,
+  )
+
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == Some("apply_feedback")
+  let changed_fingerprint = tracker_issue.content_fingerprint(changed_issue)
+  assert list.any(ledger_bodies(root), fn(body) {
+    case body {
+      record.WorkflowRunStartedWithTask(
+        run_id: body_run_id,
+        issue_fingerprint: fingerprint,
+        ..,
+      ) -> body_run_id == "run-1" && fingerprint == changed_fingerprint
+      _ -> False
+    }
+  })
+  assert count_kind(root, "issue_parked_v2") == 0
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_unparks_issue_content_drift_parked_run_and_records_current_snapshot_test() {
+  let dir = "test/tmp/daemon-retry-step-parked-issue-content-drift"
+  let drift_reason = "issue_content_drift:issue_fingerprint_changed"
+  let original_issue = issue("issue-1", "LIV-1370", "Todo")
+  let changed_issue =
+    tracker_issue.Issue(
+      ..original_issue,
+      description: Some("Updated description"),
+    )
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run_with_interruption_reason(
+    root,
+    original_issue,
+    drift_reason,
+  )
+  append_explicit_parked_record(root, original_issue, drift_reason, 20)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(changed_issue),
+      hub_subject,
+      fn(issue, context, _) {
+        process.send(
+          log_subject,
+          "recovered_worker_started:"
+            <> option.unwrap(issue.description, "missing"),
+        )
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
+  assert wait_for_log(
+    log_subject,
+    "recovered_worker_started:Updated description",
+    100,
+  )
+
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == Some("apply_feedback")
+  let changed_fingerprint = tracker_issue.content_fingerprint(changed_issue)
+  assert list.any(ledger_bodies(root), fn(body) {
+    case body {
+      record.WorkflowRunStartedWithTask(
+        run_id: body_run_id,
+        issue_fingerprint: fingerprint,
+        ..,
+      ) -> body_run_id == "run-1" && fingerprint == changed_fingerprint
+      _ -> False
+    }
+  })
+  assert contains_kind_sequence(root, [
+    "issue_parked_v2",
+    "control_operation_queued",
+    "control_operation_started",
+    "issue_unparked",
+    "workflow_repair_requested",
   ])
 
   test_async.release_barrier_if_waiting(worker_barrier)
@@ -566,23 +887,25 @@ pub fn retry_step_does_not_append_provenance_repair_when_finalization_rejects_te
   hub.stop(hub_subject)
 }
 
-pub fn retry_step_rejects_non_active_non_terminal_issue_state_for_retained_run_test() {
+pub fn retry_step_accepts_non_active_non_terminal_issue_state_for_retained_run_test() {
   let dir = "test/tmp/daemon-retry-step-non-active"
   let issue = issue("issue-1", "LIV-510", "Triage")
   let #(workflow_path, root) = write_retry_step_workflow(dir)
   seed_interrupted_retry_step_run(root, issue, include_parked: False)
-  let before = ledger_bodies(root)
   let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
       log_subject,
       tracker_with_candidate(issue),
       hub_subject,
-      fn(_, _, _) {
+      fn(issue, context, _) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
         Error(agent_types.WorkerFailure(
-          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
-          workspace_path: None,
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
           tokens: session_tokens.zero_token_totals(),
           final_issue: None,
         ))
@@ -605,28 +928,76 @@ pub fn retry_step_rejects_non_active_non_terminal_issue_state_for_retained_run_t
       ),
       1000,
     )
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
 
-  assert command.status_to_string(result.status) == "rejected"
-  assert command.status_reason(result.status)
-    == Some("issue_state_drift:non_active_state")
-  assert result.message
-    == Some(
-      "run run-1 for issue LIV-510 is currently in non-active state Triage; move the issue to a configured active state before retry-step",
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == Some("apply_feedback")
+  assert contains_kind(root, "workflow_repair_requested")
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_unparks_issue_state_drift_parked_non_active_issue_test() {
+  let dir = "test/tmp/daemon-retry-step-parked-non-active"
+  let issue = issue("issue-1", "LIV-1370", "Triage")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  let drift_reason = "issue_state_drift:non_active_state"
+  seed_interrupted_retry_step_run_with_interruption_reason(
+    root,
+    issue,
+    drift_reason,
+  )
+  append_explicit_parked_record(root, issue, drift_reason, 20)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, context, _) {
+        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
     )
-  assert ledger_bodies(root) == before
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
-  let assert Ok(run_result) =
+  let assert Ok(result) =
     daemon.apply_operator_command(
       started.data,
-      command.RetryWorkflowStep(command.RetryWorkflowStepRunId("run-1"), None),
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
       1000,
     )
-  assert command.status_to_string(run_result.status) == "rejected"
-  assert command.status_reason(run_result.status)
-    == Some("issue_state_drift:non_active_state")
-  assert run_result.message == result.message
-  assert ledger_bodies(root) == before
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
+  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
 
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == Some("apply_feedback")
+  assert contains_kind_sequence(root, [
+    "issue_parked_v2",
+    "control_operation_queued",
+    "control_operation_started",
+    "issue_unparked",
+    "workflow_repair_requested",
+  ])
+
+  test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -1421,6 +1792,74 @@ pub fn retry_step_startup_replay_replays_queued_operation_test() {
     wait_for_operation_status(root, operation_id, "completed", 20)
   assert completed_operation.requested_step_id == Some("apply_feedback")
   assert count_kind(root, "workflow_repair_requested") == 1
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_startup_replay_clears_failure_quarantine_test() {
+  let dir = "test/tmp/daemon-retry-step-startup-replay-quarantine"
+  let issue = issue("issue-1", "LIV-1262", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  append_auto_unpark_issue_change_parked_record(root, issue, 10)
+  let operation_id = "retry-step:run-1:apply_feedback:queued-quarantine"
+  append_ledger_records(root, [
+    record.with_id(
+      "queued-op",
+      40,
+      record.ControlOperationQueued(
+        operation_id: operation_id,
+        operation_kind: "retry_step",
+        command_name: "retry_step",
+        target: "run-1",
+        run_id: Some("run-1"),
+        issue_id: Some(issue.id),
+        issue_identifier: Some(issue.identifier),
+        requested_step_id: Some("apply_feedback"),
+        publication_id: None,
+      ),
+    ),
+  ])
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, context, _effective) {
+        process.send(log_subject, "startup_replay_worker_started:" <> issue.id)
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  assert wait_for_log(log_subject, "startup_replay_worker_started:issue-1", 100)
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == Some("apply_feedback")
+  assert ledger_has_issue_unparked(root, issue.id, "retry_step")
+  assert ledger_has_issue_counter_reset(root, issue.id)
+  assert contains_kind_sequence(root, [
+    "issue_unparked",
+    "issue_counter_updated",
+    "workflow_repair_requested",
+  ])
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert !dict.has_key(
+    snapshot.parked,
+    orchestrator_state.issue_identity(issue),
+  )
 
   test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -5415,19 +5854,58 @@ fn append_auto_unpark_issue_change_parked_record(
   issue: tracker_issue.Issue,
   at_ms: Int,
 ) -> Nil {
+  append_auto_unpark_issue_change_parked_record_with_reason(
+    root,
+    issue,
+    "worker_failure",
+    at_ms,
+  )
+}
+
+fn append_auto_unpark_issue_change_parked_record_with_reason(
+  root: String,
+  issue: tracker_issue.Issue,
+  reason: String,
+  at_ms: Int,
+) -> Nil {
+  append_parked_record(
+    root,
+    issue,
+    reason,
+    "auto_unpark_on_issue_change",
+    at_ms,
+  )
+}
+
+fn append_explicit_parked_record(
+  root: String,
+  issue: tracker_issue.Issue,
+  reason: String,
+  at_ms: Int,
+) -> Nil {
+  append_parked_record(root, issue, reason, "explicit_unpark_only", at_ms)
+}
+
+fn append_parked_record(
+  root: String,
+  issue: tracker_issue.Issue,
+  reason: String,
+  release_policy: String,
+  at_ms: Int,
+) -> Nil {
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) =
     ledger.append_many(
       ledger_path,
       [
         record.with_id(
-          "issue-auto-parked",
+          "issue-parked-" <> int.to_string(at_ms) <> "-" <> reason,
           at_ms,
           record.IssueParkedV2(
             issue.id,
             issue.identifier,
-            "worker_failure",
-            "auto_unpark_on_issue_change",
+            reason,
+            release_policy,
             tracker_issue.content_fingerprint(issue),
             at_ms,
           ),
@@ -5449,6 +5927,22 @@ fn seed_interrupted_retry_step_run(
     include_parked: parked,
     include_claim_lifecycle: False,
     workflow_fingerprint: "",
+    interruption_reason: "daemon_shutdown",
+  )
+}
+
+fn seed_interrupted_retry_step_run_with_interruption_reason(
+  root: String,
+  issue: tracker_issue.Issue,
+  reason: String,
+) -> Nil {
+  seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
+    root,
+    issue,
+    include_parked: False,
+    include_claim_lifecycle: False,
+    workflow_fingerprint: "",
+    interruption_reason: reason,
   )
 }
 
@@ -5464,6 +5958,7 @@ fn seed_interrupted_retry_step_run_with_workflow_fingerprint(
     include_parked: parked,
     include_claim_lifecycle: False,
     workflow_fingerprint: workflow_fingerprint,
+    interruption_reason: "daemon_shutdown",
   )
 }
 
@@ -5477,6 +5972,7 @@ fn seed_claim_handoff_interrupted_retry_step_run(
     include_parked: False,
     include_claim_lifecycle: True,
     workflow_fingerprint: "",
+    interruption_reason: "daemon_shutdown",
   )
 }
 
@@ -5486,6 +5982,7 @@ fn seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
   include_parked parked: Bool,
   include_claim_lifecycle claim_lifecycle: Bool,
   workflow_fingerprint workflow_fingerprint: String,
+  interruption_reason interruption_reason: String,
 ) -> Nil {
   let run_root = root <> "/implementation/" <> issue.identifier <> "/run-1"
   let seed_workspace = run_root <> "/workspaces/seed"
@@ -5647,7 +6144,7 @@ fn seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
         workflow_id: "implementation",
         step_id: "apply_feedback",
         attempt_index: 1,
-        reason: "daemon_shutdown",
+        reason: interruption_reason,
       ),
     ),
     record.with_id(
@@ -5657,7 +6154,7 @@ fn seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
         run_id: "run-1",
         workflow_id: "implementation",
         issue_id: issue.id,
-        reason: "daemon_shutdown",
+        reason: interruption_reason,
       ),
     ),
   ]
@@ -5666,7 +6163,7 @@ fn seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
       record.with_id(
         "run-interrupted",
         9 + claim_offset,
-        record.RunInterrupted("run-1", issue.id, "daemon_shutdown"),
+        record.RunInterrupted("run-1", issue.id, interruption_reason),
       ),
     ]
     False -> []
@@ -6314,6 +6811,33 @@ fn ledger_bodies(root: String) -> List(record.RecordBody) {
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(read) = ledger.read_records(ledger_path)
   list.map(read.records, fn(ledger_record) { ledger_record.body })
+}
+
+fn ledger_has_issue_unparked(
+  root: String,
+  expected_issue_id: String,
+  expected_reason: String,
+) -> Bool {
+  list.any(ledger_bodies(root), fn(body) {
+    case body {
+      record.IssueUnparked(issue_id, _, reason) ->
+        issue_id == expected_issue_id && reason == expected_reason
+      _ -> False
+    }
+  })
+}
+
+fn ledger_has_issue_counter_reset(
+  root: String,
+  expected_issue_id: String,
+) -> Bool {
+  list.any(ledger_bodies(root), fn(body) {
+    case body {
+      record.IssueCounterUpdated(issue_id, _, 0, 0, _, _) ->
+        issue_id == expected_issue_id
+      _ -> False
+    }
+  })
 }
 
 fn retained_workflow_diagnostic_reason(root: String, expected: String) -> Bool {

@@ -1459,7 +1459,7 @@ pub fn driver_backed_publish_pr_draft_false_prepares_core_publication_test() {
   assert artifact.status == step_artifact.StepSucceeded
   assert string.contains(
     artifact.stdout,
-    "COMMIT_STACK_PATH=tmp/scherzo-implementation-commit-stack.json",
+    "COMMIT_STACK_PATH=state/implementation/scherzo-implementation-commit-stack.json",
   )
   assert read_or_empty(dir <> "/gh.log") == ""
 }
@@ -1695,9 +1695,18 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     ],
     fn(path) {
       let assert Ok(prompt) = simplifile.read(path)
-      assert string.contains(prompt, "tmp/execplan-review-doc.md")
-      assert string.contains(prompt, "tmp/execplan-implementation-pack.json")
-      assert string.contains(prompt, "tmp/execplan-bundle.json")
+      assert string.contains(
+        prompt,
+        "$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md",
+      )
+      assert string.contains(
+        prompt,
+        "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json",
+      )
+      assert string.contains(
+        prompt,
+        "$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json",
+      )
     },
   )
 
@@ -1750,7 +1759,7 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
   assert string.contains(final_prompt, "plan-completion-context")
   assert string.contains(
     final_prompt,
-    "tmp/scherzo-plan-completion-verdict.json",
+    "$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json",
   )
 
   let assert Ok(repair_prompt) =
@@ -1770,7 +1779,7 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
   )
   assert string.contains(
     repair_prompt,
-    "tmp/scherzo-implementation-validation.json",
+    "$SCHERZO_RUN_ROOT/state/implementation/scherzo-implementation-validation.json",
   )
   assert string.contains(repair_prompt, "failure_summary")
   assert string.contains(repair_prompt, "stdout_excerpt")

@@ -336,7 +336,7 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
       assert_contains(workflow, "artifact_type: scherzo.git_commit_stack.v1")
       assert_contains(
         workflow,
-        "path: tmp/scherzo-implementation-commit-stack.json",
+        "path: state/implementation/scherzo-implementation-commit-stack.json",
       )
       assert_contains(workflow, "repository: github.code")
       assert_contains(workflow, "mode: commit_stack")
@@ -410,7 +410,10 @@ pub fn execplan_workflows_publish_review_docs_with_workspace_driver_test() {
   assert_contains(revision, "output: commit_stack")
   assert_contains(revision, "kind: sourced")
   assert_contains(revision, "output: publication_target")
-  assert_contains(revision, "path: tmp/execplan-publication-target.json")
+  assert_contains(
+    revision,
+    "path: state/implementation/execplan-publication-target.json",
+  )
   assert_contains(revision, "- id: materialize_commit_stack")
   assert_contains(revision, "materialize-commit-stack")
   assert_not_contains(revision, "publish-review-doc")
@@ -455,10 +458,13 @@ pub fn execplan_prompts_describe_bundle_handoff_test() {
   assert_contains(review_prompt, "workflow:execplan")
   assert_contains(incorporate_prompt, "implementation pack")
   assert_contains(implementation_prompt, "workflow:execplan-implementation")
-  assert_contains(implementation_prompt, "tmp/execplan-review-doc.md")
   assert_contains(
     implementation_prompt,
-    "tmp/execplan-implementation-pack.json",
+    "$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md",
+  )
+  assert_contains(
+    implementation_prompt,
+    "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json",
   )
   assert_contains(
     implementation_prompt,

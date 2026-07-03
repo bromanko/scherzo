@@ -37,7 +37,12 @@ CANONICAL_IMPLEMENTATION_STATE_RELATIVE_DIR = Path("state") / "implementation"
 CANONICAL_EXECPLAN_REVIEW_DOC_NAME = "execplan-review-doc.md"
 CANONICAL_EXECPLAN_PACK_NAME = "execplan-implementation-pack.json"
 CANONICAL_EXECPLAN_BUNDLE_NAME = "execplan-bundle.json"
+CANONICAL_PLAN_COMPLETION_CONTEXT_NAME = "scherzo-plan-completion-context.json"
 CANONICAL_PLAN_COMPLETION_VERDICT_NAME = "scherzo-plan-completion-verdict.json"
+CANONICAL_PLAN_COMPLETION_RECOVERY_NAME = "scherzo-plan-completion-recovery.json"
+CANONICAL_VALIDATION_NAME = "scherzo-implementation-validation.json"
+CANONICAL_PUBLISH_NAME = "scherzo-implementation-publish.json"
+CANONICAL_COMMIT_STACK_NAME = "scherzo-implementation-commit-stack.json"
 ANALYSIS_PATH = TMP_DIR / "scherzo-implementation-analysis.json"
 PLAN_COMPLETION_CONTEXT_PATH = TMP_DIR / "scherzo-plan-completion-context.json"
 PLAN_COMPLETION_VERDICT_PATH = TMP_DIR / "scherzo-plan-completion-verdict.json"
@@ -77,22 +82,21 @@ prepare --source ticket
 analyze       Diff from the recorded starting parent to @, detect review-
               relevant languages/files, and print review metadata.
 restore-execplan-artifacts
-              Restore the tmp/ ExecPlan compatibility files from run-root
-              canonical state after tests or helper fixtures clobber tmp/.
+              Refresh best-effort tmp/ ExecPlan compatibility files from
+              run-root canonical state after tests or helper fixtures clobber tmp/.
 plan-completion-context
               Write and print the current ExecPlan implementation patch
               fingerprint that a plan-completion verifier must copy into its
               verdict artifact.
 checkpoint-plan-completion-verdict
-              Validate and copy tmp/scherzo-plan-completion-verdict.json into
-              run-root canonical state so validation tests cannot clobber it
-              before the final gate.
+              Validate the run-root canonical plan-completion verdict and
+              refresh the best-effort tmp/ compatibility copy.
 plan-brief [--check|--refresh-if-stale]
               Regenerate, check, or refresh the derived ExecPlan brief and JSON
-              index recorded in tmp/scherzo-implementation.json.
+              index recorded in run-root implementation metadata.
 gate-plan-completion [--final]
-              Fail closed unless tmp/scherzo-plan-completion-verdict.json is
-              a fresh, well-formed passing verdict for the current ExecPlan
+              Fail closed unless the run-root canonical plan-completion verdict
+              is fresh, well-formed, and passing for the current ExecPlan
               implementation patch.
 plan-completion-recovery --phase before-late-repair|before-final-repair|after-late-repair|after-final-repair|final --attempt INT --max-attempts INT
               Classify the current plan-completion verdict for bounded recovery,
@@ -499,11 +503,87 @@ def canonical_implementation_state_path(name: str) -> Path | None:
     return Path(run_root) / CANONICAL_IMPLEMENTATION_STATE_RELATIVE_DIR / name
 
 
+def implementation_state_relative_path(name: str) -> Path:
+    return CANONICAL_IMPLEMENTATION_STATE_RELATIVE_DIR / name
+
+
+def path_under_run_root(path: Path) -> bool:
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if not run_root:
+        return False
+    try:
+        path.resolve(strict=False).relative_to(Path(run_root).resolve(strict=False))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def display_path(path: Path) -> str:
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if run_root:
+        try:
+            return path.resolve(strict=False).relative_to(Path(run_root).resolve(strict=False)).as_posix()
+        except (OSError, ValueError):
+            pass
+    return path.as_posix()
+
+
+def resolve_run_root_relative_path(path: Path) -> Path:
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if run_root and not path.is_absolute() and path.parts[:1] == ("state",):
+        return Path(run_root) / path
+    return path
+
+
+def state_backed_path(tmp_path: Path, state_name: str) -> Path:
+    canonical_path = canonical_implementation_state_path(state_name)
+    return canonical_path or tmp_path
+
+
+def copy_best_effort(source: Path, destination: Path) -> None:
+    try:
+        if source.resolve(strict=False) == destination.resolve(strict=False):
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+    except OSError:
+        pass
+
+
+def write_state_backed_json(tmp_path: Path, state_name: str, value: Any) -> Path:
+    primary = state_backed_path(tmp_path, state_name)
+    try:
+        write_json(primary, value)
+    except OSError:
+        write_json(tmp_path, value)
+        return tmp_path
+    if primary != tmp_path:
+        copy_best_effort(primary, tmp_path)
+    return primary
+
+
+def load_state_backed_json(tmp_path: Path, state_name: str, *, missing_message: str) -> dict[str, Any]:
+    primary = state_backed_path(tmp_path, state_name)
+    if primary.exists():
+        data = load_json(primary)
+        if primary != tmp_path:
+            copy_best_effort(primary, tmp_path)
+        return data
+    if primary != tmp_path and tmp_path.exists():
+        data = load_json(tmp_path)
+        try:
+            write_json(primary, data)
+        except OSError:
+            pass
+        return data
+    fail(missing_message)
+
+
 def metadata_path_field(metadata: dict[str, Any], key: str) -> Path | None:
     value = str(metadata.get(key) or "").strip()
     if not value:
         return None
-    return Path(value)
+    return resolve_run_root_relative_path(Path(value))
 
 
 def metadata_missing_message(canonical_path: Path) -> str:
@@ -542,8 +622,11 @@ def load_implementation_metadata() -> dict[str, Any]:
 
     if METADATA_PATH.exists():
         metadata = load_json(METADATA_PATH)
-        write_json(canonical_path, metadata)
-        print_metadata_backfill_diagnostic(canonical_path)
+        try:
+            write_json(canonical_path, metadata)
+            print_metadata_backfill_diagnostic(canonical_path)
+        except OSError:
+            pass
         return metadata
 
     fail(metadata_missing_message(canonical_path))
@@ -552,7 +635,10 @@ def load_implementation_metadata() -> dict[str, Any]:
 def write_implementation_metadata(metadata: dict[str, Any]) -> None:
     canonical_path = canonical_metadata_path()
     if canonical_path is not None:
-        write_json(canonical_path, metadata)
+        try:
+            write_json(canonical_path, metadata)
+        except OSError:
+            pass
     write_json(METADATA_PATH, metadata)
 
 
@@ -658,7 +744,7 @@ def restore_execplan_artifacts() -> str:
         pack_source,
         Path(
             str(
-                metadata.get("execplan_v2_implementation_pack_path")
+                metadata.get("tmp_execplan_v2_implementation_pack_path")
                 or "tmp/execplan-implementation-pack.json"
             )
         ),
@@ -667,7 +753,7 @@ def restore_execplan_artifacts() -> str:
     copy_execplan_artifact(
         bundle_source,
         Path(
-            str(metadata.get("execplan_v2_bundle_path") or "tmp/execplan-bundle.json")
+            str(metadata.get("tmp_execplan_v2_bundle_path") or "tmp/execplan-bundle.json")
         ),
         label="bundle",
     )
@@ -778,20 +864,37 @@ def fetch_linear_issue_context(identifier: str) -> dict[str, Any]:
     return issue
 
 
-def validate_prepared_execplan_path(plan_path: str, repo_root: Path) -> None:
+def resolve_prepared_execplan_path(plan_path: str, repo_root: Path) -> Path:
     path = Path(plan_path)
-    if path.is_absolute() or ".." in path.parts:
+    if ".." in path.parts:
         fail(
             f"invalid prepared ExecPlan path: {plan_path}; "
-            "expected a repository-relative Markdown path",
+            "expected a repository- or run-root-relative Markdown path",
             failure_code="execplan_metadata_invalid",
         )
+    if path.is_absolute():
+        if not path_under_run_root(path):
+            fail(
+                f"invalid prepared ExecPlan path: {plan_path}; "
+                "absolute paths must be inside SCHERZO_RUN_ROOT",
+                failure_code="execplan_metadata_invalid",
+            )
+        resolved = path
+    else:
+        resolved = resolve_run_root_relative_path(path)
+        if resolved == path:
+            resolved = repo_root / path
     if path.suffix.lower() != ".md":
         fail(
             f"invalid prepared ExecPlan path: {plan_path}; expected a Markdown path",
             failure_code="execplan_metadata_invalid",
         )
-    if not (repo_root / path).is_file():
+    return resolved
+
+
+def validate_prepared_execplan_path(plan_path: str, repo_root: Path) -> None:
+    resolved = resolve_prepared_execplan_path(plan_path, repo_root)
+    if not resolved.is_file():
         fail(
             f"ExecPlan file does not exist: {plan_path}",
             failure_code="execplan_metadata_invalid",
@@ -800,7 +903,7 @@ def validate_prepared_execplan_path(plan_path: str, repo_root: Path) -> None:
 
 def plan_source_sha256(plan_path: str) -> str:
     try:
-        return hashlib.sha256(Path(plan_path).read_bytes()).hexdigest()
+        return hashlib.sha256(resolve_prepared_execplan_path(plan_path, Path.cwd()).read_bytes()).hexdigest()
     except OSError as exc:
         fail(f"could not read ExecPlan file {plan_path}: {exc}")
 
@@ -1580,7 +1683,7 @@ def default_repo(remote: str) -> str:
 
 
 def plan_title(plan_path: str) -> str:
-    text = Path(plan_path).read_text(encoding="utf-8")
+    text = resolve_prepared_execplan_path(plan_path, Path.cwd()).read_text(encoding="utf-8")
     if plan_path.endswith(".html"):
         for pattern in [r"<h1\b[^>]*>(.*?)</h1>", r"<title\b[^>]*>(.*?)</title>"]:
             match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
@@ -1787,7 +1890,7 @@ def plan_brief_command(args: list[str]) -> None:
             print(f"PLAN_INDEX_PATH={metadata.get('plan_index_path')}")
             print(f"PLAN_SOURCE_SHA256={metadata.get('plan_source_sha256')}")
             return
-    result = generate_plan_brief(plan_path)
+    result = generate_plan_brief(str(resolve_prepared_execplan_path(plan_path, Path.cwd())))
     apply_plan_brief_result(metadata, result)
     write_implementation_metadata(metadata)
     print_plan_brief_result(result)
@@ -1897,7 +2000,7 @@ def plan_completion_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:
         "verified_parent_commit_ids": verified_parent_commit_ids,
         "verified_diff_fingerprint": fingerprint,
         "changed_files": changed_files,
-        "verdict_path": str(PLAN_COMPLETION_VERDICT_PATH),
+        "verdict_path": plan_completion_verdict_display_path(),
     }
     for metadata_key, context_key in [
         ("plan_brief_status", "plan_brief_status"),
@@ -1920,10 +2023,10 @@ def plan_completion_context_command(args: list[str]) -> None:
     restore_status = restore_execplan_artifacts()
     metadata = load_implementation_metadata()
     context = plan_completion_snapshot(metadata)
-    write_json(PLAN_COMPLETION_CONTEXT_PATH, context)
+    write_state_backed_json(PLAN_COMPLETION_CONTEXT_PATH, CANONICAL_PLAN_COMPLETION_CONTEXT_NAME, context)
     print(f"EXECPLAN_ARTIFACT_RESTORE_STATUS={restore_status}")
-    print(f"PLAN_COMPLETION_CONTEXT_PATH={PLAN_COMPLETION_CONTEXT_PATH}")
-    print(f"PLAN_COMPLETION_VERDICT_PATH={PLAN_COMPLETION_VERDICT_PATH}")
+    print(f"PLAN_COMPLETION_CONTEXT_PATH={display_path(state_backed_path(PLAN_COMPLETION_CONTEXT_PATH, CANONICAL_PLAN_COMPLETION_CONTEXT_NAME))}")
+    print(f"PLAN_COMPLETION_VERDICT_PATH={plan_completion_verdict_display_path()}")
     print(f"PLAN_COMPLETION_PLAN_PATH={context['plan_path']}")
     print(f"PLAN_COMPLETION_BASE_CHANGE_ID={context['verified_base_change_id']}")
     print(f"PLAN_COMPLETION_CHANGE_ID={context['verified_change_id']}")
@@ -1951,14 +2054,14 @@ def string_list_field(value: dict[str, Any], key: str) -> list[str]:
     field = value.get(key)
     if not isinstance(field, list):
         fail_plan_completion_gate(
-            f"{PLAN_COMPLETION_VERDICT_PATH} field {key!r} must be a list of strings",
+            f"{plan_completion_verdict_display_path()} field {key!r} must be a list of strings",
             failure_code="plan_completion_verdict_malformed",
         )
     strings: list[str] = []
     for item in field:
         if not isinstance(item, str):
             fail_plan_completion_gate(
-                f"{PLAN_COMPLETION_VERDICT_PATH} field {key!r} must be a list of strings",
+                f"{plan_completion_verdict_display_path()} field {key!r} must be a list of strings",
                 failure_code="plan_completion_verdict_malformed",
             )
         strings.append(item)
@@ -1969,14 +2072,14 @@ def deferred_manual_verification_field(value: dict[str, Any]) -> list[dict[str, 
     field = value.get("deferred_manual_verification", [])
     if not isinstance(field, list):
         fail_plan_completion_gate(
-            f"{PLAN_COMPLETION_VERDICT_PATH} field 'deferred_manual_verification' must be a list of objects",
+            f"{plan_completion_verdict_display_path()} field 'deferred_manual_verification' must be a list of objects",
             failure_code="plan_completion_verdict_malformed",
         )
     entries: list[dict[str, str]] = []
     for item in field:
         if not isinstance(item, dict):
             fail_plan_completion_gate(
-                f"{PLAN_COMPLETION_VERDICT_PATH} field 'deferred_manual_verification' must be a list of objects",
+                f"{plan_completion_verdict_display_path()} field 'deferred_manual_verification' must be a list of objects",
                 failure_code="plan_completion_verdict_malformed",
             )
         entry: dict[str, str] = {}
@@ -1984,7 +2087,7 @@ def deferred_manual_verification_field(value: dict[str, Any]) -> list[dict[str, 
             item_value = item.get(key)
             if not isinstance(item_value, str) or not item_value.strip():
                 fail_plan_completion_gate(
-                    f"{PLAN_COMPLETION_VERDICT_PATH} deferred manual verification entries must include non-empty {key!r}",
+                    f"{plan_completion_verdict_display_path()} deferred manual verification entries must include non-empty {key!r}",
                     failure_code="plan_completion_verdict_malformed",
                 )
             entry[key] = item_value.strip()
@@ -2005,43 +2108,51 @@ def required_string_field(value: dict[str, Any], key: str) -> str:
     field = value.get(key)
     if not isinstance(field, str) or not field.strip():
         fail_plan_completion_gate(
-            f"{PLAN_COMPLETION_VERDICT_PATH} field {key!r} must be a non-empty string",
+            f"{plan_completion_verdict_display_path()} field {key!r} must be a non-empty string",
             failure_code="plan_completion_verdict_malformed",
         )
     return field.strip()
 
 
 def load_plan_completion_verdict() -> dict[str, Any]:
-    if not PLAN_COMPLETION_VERDICT_PATH.exists():
+    primary = plan_completion_verdict_path()
+    source = primary
+    if not source.exists() and primary != PLAN_COMPLETION_VERDICT_PATH and PLAN_COMPLETION_VERDICT_PATH.exists():
+        source = PLAN_COMPLETION_VERDICT_PATH
+    if not source.exists():
         fail_plan_completion_gate(
-            f"missing {PLAN_COMPLETION_VERDICT_PATH}; the plan-completion verifier must write this artifact before review/publish",
+            f"missing {plan_completion_verdict_display_path()}; the plan-completion verifier must write this artifact before review/publish",
             failure_code="plan_completion_verdict_missing",
         )
     try:
-        verdict = json.loads(PLAN_COMPLETION_VERDICT_PATH.read_text())
+        verdict = json.loads(source.read_text())
     except json.JSONDecodeError as exc:
         fail_plan_completion_gate(
-            f"invalid JSON in {PLAN_COMPLETION_VERDICT_PATH}: {exc}",
+            f"invalid JSON in {display_path(source)}: {exc}",
             failure_code="plan_completion_verdict_malformed",
         )
     if not isinstance(verdict, dict):
         fail_plan_completion_gate(
-            f"{PLAN_COMPLETION_VERDICT_PATH} must contain a JSON object",
+            f"{display_path(source)} must contain a JSON object",
             failure_code="plan_completion_verdict_malformed",
         )
+    if source != primary:
+        write_json(primary, verdict)
+    if primary != PLAN_COMPLETION_VERDICT_PATH:
+        copy_best_effort(primary, PLAN_COMPLETION_VERDICT_PATH)
     return verdict
 
 
 def validate_plan_completion_verdict_shape(verdict: dict[str, Any]) -> dict[str, Any]:
     if verdict.get("schema_version") != 1:
         fail_plan_completion_gate(
-            f"{PLAN_COMPLETION_VERDICT_PATH} must set schema_version to 1",
+            f"{plan_completion_verdict_display_path()} must set schema_version to 1",
             failure_code="plan_completion_verdict_malformed",
         )
     raw_verdict = verdict.get("verdict")
     if raw_verdict not in {"pass", "fail"}:
         fail_plan_completion_gate(
-            f"{PLAN_COMPLETION_VERDICT_PATH} field 'verdict' must be 'pass' or 'fail'",
+            f"{plan_completion_verdict_display_path()} field 'verdict' must be 'pass' or 'fail'",
             failure_code="plan_completion_verdict_malformed",
         )
     blocking_findings = string_list_field(verdict, "blocking_findings")
@@ -2119,15 +2230,21 @@ def canonical_plan_completion_verdict_path() -> Path | None:
     return canonical_implementation_state_path(CANONICAL_PLAN_COMPLETION_VERDICT_NAME)
 
 
+def plan_completion_verdict_path() -> Path:
+    return state_backed_path(PLAN_COMPLETION_VERDICT_PATH, CANONICAL_PLAN_COMPLETION_VERDICT_NAME)
+
+
+def plan_completion_verdict_display_path() -> str:
+    return display_path(plan_completion_verdict_path())
+
+
 def restore_plan_completion_verdict() -> str:
     canonical_path = canonical_plan_completion_verdict_path()
     if canonical_path is None:
         return "skipped_no_run_root"
     if not canonical_path.exists():
         return "skipped_missing"
-    PLAN_COMPLETION_VERDICT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if canonical_path.resolve() != PLAN_COMPLETION_VERDICT_PATH.resolve():
-        PLAN_COMPLETION_VERDICT_PATH.write_bytes(canonical_path.read_bytes())
+    copy_best_effort(canonical_path, PLAN_COMPLETION_VERDICT_PATH)
     return "restored"
 
 
@@ -2147,11 +2264,12 @@ def checkpoint_plan_completion_verdict_command(args: list[str]) -> None:
         gate_label="plan-completion verdict checkpoint",
     )
     canonical_path.parent.mkdir(parents=True, exist_ok=True)
-    canonical_path.write_bytes(PLAN_COMPLETION_VERDICT_PATH.read_bytes())
+    write_json(canonical_path, load_plan_completion_verdict())
+    copy_best_effort(canonical_path, PLAN_COMPLETION_VERDICT_PATH)
     print("PLAN_COMPLETION_VERDICT_CHECKPOINT=written")
     print(f"PLAN_COMPLETION_VERDICT={verdict['verdict']}")
-    print(f"PLAN_COMPLETION_VERDICT_PATH={PLAN_COMPLETION_VERDICT_PATH}")
-    print(f"PLAN_COMPLETION_CANONICAL_VERDICT_PATH={canonical_path}")
+    print(f"PLAN_COMPLETION_VERDICT_PATH={plan_completion_verdict_display_path()}")
+    print(f"PLAN_COMPLETION_CANONICAL_VERDICT_PATH={display_path(canonical_path)}")
     print(
         "PLAN_COMPLETION_DIFF_FINGERPRINT="
         + str(current["verified_diff_fingerprint"])
@@ -2173,7 +2291,7 @@ def plan_completion_recovery_summary_markdown(payload: dict[str, Any]) -> str:
         f"- Phase: `{payload['phase']}`",
         f"- Attempt: `{payload['attempt']}` of `{payload['max_attempts']}`",
         f"- Verdict artifact: `{payload['verdict_path']}`",
-        f"- Recovery JSON: `{PLAN_COMPLETION_RECOVERY_PATH}`",
+        f"- Recovery JSON: `{display_path(state_backed_path(PLAN_COMPLETION_RECOVERY_PATH, CANONICAL_PLAN_COMPLETION_RECOVERY_NAME))}`",
     ]
     if payload.get("recovery_summary_path"):
         lines.append(f"- Recovery summary: `{payload['recovery_summary_path']}`")
@@ -2208,7 +2326,7 @@ def plan_completion_recovery_summary_markdown(payload: dict[str, Any]) -> str:
 
 
 def write_plan_completion_recovery_artifacts(payload: dict[str, Any]) -> None:
-    write_json(PLAN_COMPLETION_RECOVERY_PATH, payload)
+    write_state_backed_json(PLAN_COMPLETION_RECOVERY_PATH, CANONICAL_PLAN_COMPLETION_RECOVERY_NAME, payload)
     PLAN_COMPLETION_RECOVERY_SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
     PLAN_COMPLETION_RECOVERY_SUMMARY_PATH.write_text(
         plan_completion_recovery_summary_markdown(payload),
@@ -2223,7 +2341,7 @@ def print_plan_completion_recovery_summary(payload: dict[str, Any]) -> None:
     print(f"PLAN_COMPLETION_RECOVERY_MAX_ATTEMPTS={payload['max_attempts']}")
     print(f"PLAN_COMPLETION_VERDICT={payload['verdict']}")
     print(f"PLAN_COMPLETION_VERDICT_PATH={payload['verdict_path']}")
-    print(f"PLAN_COMPLETION_RECOVERY_PATH={PLAN_COMPLETION_RECOVERY_PATH}")
+    print(f"PLAN_COMPLETION_RECOVERY_PATH={display_path(state_backed_path(PLAN_COMPLETION_RECOVERY_PATH, CANONICAL_PLAN_COMPLETION_RECOVERY_NAME))}")
     print(
         "PLAN_COMPLETION_RECOVERY_SUMMARY_PATH="
         + str(PLAN_COMPLETION_RECOVERY_SUMMARY_PATH)
@@ -2283,7 +2401,7 @@ def plan_completion_recovery_command(args: list[str]) -> None:
         "attempt": attempt,
         "max_attempts": max_attempts,
         "verdict": verdict["verdict"],
-        "verdict_path": str(PLAN_COMPLETION_VERDICT_PATH),
+        "verdict_path": plan_completion_verdict_display_path(),
         "recovery_summary_path": str(PLAN_COMPLETION_RECOVERY_SUMMARY_PATH),
         "plan_path": str(current["plan_path"]),
         "verified_diff_fingerprint": str(current["verified_diff_fingerprint"]),
@@ -2359,7 +2477,7 @@ def gate_plan_completion_command(args: list[str]) -> None:
     print(f"PLAN_COMPLETION_GATE_MODE={'final' if final_gate else 'pre_review'}")
     print(f"PLAN_COMPLETION_VERDICT_RESTORE_STATUS={verdict_restore_status}")
     print(f"PLAN_COMPLETION_VERDICT={verdict['verdict']}")
-    print(f"PLAN_COMPLETION_VERDICT_PATH={PLAN_COMPLETION_VERDICT_PATH}")
+    print(f"PLAN_COMPLETION_VERDICT_PATH={plan_completion_verdict_display_path()}")
     print_list(
         "PLAN_COMPLETION_DEFERRED_MANUAL_VERIFICATION",
         deferred_manual_verification_summaries(
@@ -2505,19 +2623,32 @@ def write_validation_result(
             "Full command output is retained in the workflow command-step diagnostics "
             "for the failing validation step when Scherzo artifact retention is enabled."
         )
-    write_json(VALIDATION_PATH, result)
+    write_state_backed_json(VALIDATION_PATH, CANONICAL_VALIDATION_NAME, result)
+
+
+def load_validation_result() -> dict[str, Any]:
+    return load_state_backed_json(
+        VALIDATION_PATH,
+        CANONICAL_VALIDATION_NAME,
+        missing_message=f"missing {display_path(state_backed_path(VALIDATION_PATH, CANONICAL_VALIDATION_NAME))}; run validate before publish",
+    )
+
+
+def validation_result_exists() -> bool:
+    return state_backed_path(VALIDATION_PATH, CANONICAL_VALIDATION_NAME).exists() or VALIDATION_PATH.exists()
 
 
 def previous_validation_failure_details() -> str:
-    if not VALIDATION_PATH.exists():
+    if not validation_result_exists():
         return (
-            f"No structured validation artifact was found at {VALIDATION_PATH}. "
+            "No structured validation artifact was found at "
+            f"{display_path(state_backed_path(VALIDATION_PATH, CANONICAL_VALIDATION_NAME))}. "
             "Inspect the earlier validate_after_refresh command-step diagnostics."
         )
     try:
-        validation = json.loads(VALIDATION_PATH.read_text())
+        validation = load_validation_result()
     except json.JSONDecodeError as exc:
-        return f"Structured validation artifact {VALIDATION_PATH} is invalid JSON: {exc}"
+        return f"Structured validation artifact {display_path(state_backed_path(VALIDATION_PATH, CANONICAL_VALIDATION_NAME))} is invalid JSON: {exc}"
 
     lines = ["Previous validation result:"]
     status = str(validation.get("status") or "unknown")
@@ -2531,7 +2662,7 @@ def previous_validation_failure_details() -> str:
     commands = validation.get("commands")
     if isinstance(commands, list) and commands:
         lines.append("- command: " + str(commands[0]))
-    lines.append(f"- structured_validation_artifact: {VALIDATION_PATH}")
+    lines.append(f"- structured_validation_artifact: {display_path(state_backed_path(VALIDATION_PATH, CANONICAL_VALIDATION_NAME))}")
     lines.append(
         "- full_output_hint: inspect .scherzo/command-step-diagnostics/validate_after_refresh.txt in the retained workspace"
     )
@@ -2593,11 +2724,11 @@ def validation_fingerprint() -> str | None:
 
 
 def cached_passing_validation(fingerprint: str | None) -> dict[str, Any] | None:
-    if not fingerprint or not VALIDATION_PATH.exists():
+    if not fingerprint or not validation_result_exists():
         return None
     try:
-        prior = json.loads(VALIDATION_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
+        prior = load_validation_result()
+    except (OSError, json.JSONDecodeError, SystemExit):
         return None
     if prior.get("status") == "passed" and prior.get("fingerprint") == fingerprint:
         return prior
@@ -2668,13 +2799,13 @@ def validate_command(*, failure_code: str | None = None) -> None:
         restore_status = restore_execplan_artifacts()
         verdict_restore_status = restore_plan_completion_verdict()
         print("FINAL_VALIDATION=failed")
-        print(f"VALIDATION_RESULT_PATH={VALIDATION_PATH}")
+        print(f"VALIDATION_RESULT_PATH={display_path(state_backed_path(VALIDATION_PATH, CANONICAL_VALIDATION_NAME))}")
         print(f"EXECPLAN_ARTIFACT_RESTORE_STATUS={restore_status}")
         print(f"PLAN_COMPLETION_VERDICT_RESTORE_STATUS={verdict_restore_status}")
         summary = validation_failure_summary(proc.stdout, proc.stderr)
         fail(
             f"command failed with exit code {proc.returncode}: {' '.join(validation_command)}"
-            f"\nStructured validation artifact: {VALIDATION_PATH}"
+            f"\nStructured validation artifact: {display_path(state_backed_path(VALIDATION_PATH, CANONICAL_VALIDATION_NAME))}"
             + ("\nFailure summary:\n" + summary if summary else ""),
             failure_code=failure_code,
         )
@@ -2693,9 +2824,7 @@ def validate_command(*, failure_code: str | None = None) -> None:
 
 
 def ensure_validation_passed() -> None:
-    if not VALIDATION_PATH.exists():
-        fail(f"missing {VALIDATION_PATH}; run validate before publish")
-    validation = json.loads(VALIDATION_PATH.read_text())
+    validation = load_validation_result()
     if validation.get("status") != "passed":
         fail("final validation did not pass; run validate before publish")
 
@@ -2773,9 +2902,7 @@ def format_issue_line(issue_identifier: str, issue_title: str, issue_url: str) -
 
 
 def current_validation_result() -> dict[str, Any]:
-    if not VALIDATION_PATH.exists():
-        fail(f"missing {VALIDATION_PATH}; run validate before publish")
-    return json.loads(VALIDATION_PATH.read_text())
+    return load_validation_result()
 
 
 def validation_commands_from_result(validation: dict[str, Any]) -> list[str]:
@@ -2919,17 +3046,20 @@ def materialize_commit_stack_artifact(
     base_revision: str,
     description_title: str,
 ) -> dict[str, Any]:
+    output_path = state_backed_path(COMMIT_STACK_PATH, CANONICAL_COMMIT_STACK_NAME)
     try:
-        return commit_stack_helper.materialize_commit_stack_artifact(
+        artifact = commit_stack_helper.materialize_commit_stack_artifact(
             repository=repository,
             base_ref=base_ref,
             base_revision=base_revision,
-            output_path=COMMIT_STACK_PATH,
+            output_path=output_path,
             carrier_name=COMMIT_STACK_CARRIER_NAME,
             description_title=description_title,
             bundle_ref_namespace="commit-stack",
             tmp_dir=TMP_DIR,
         )
+        copy_best_effort(output_path, COMMIT_STACK_PATH)
+        return artifact
     except commit_stack_helper.CommitStackError as exc:
         fail(exc.message, failure_code=exc.code)
 
@@ -3010,7 +3140,7 @@ def publish_command() -> None:
         "base_drift_repair_summary_included": repair_summary_included,
         "pr_title_path": str(title_path),
         "pr_body_path": str(body_path),
-        "commit_stack_path": str(COMMIT_STACK_PATH),
+        "commit_stack_path": display_path(state_backed_path(COMMIT_STACK_PATH, CANONICAL_COMMIT_STACK_NAME)),
         "commit_stack_head_revision": commit_stack["head"]["sha"],
         "commit_stack_base_revision": commit_stack["base"]["sha"],
     }
@@ -3019,7 +3149,7 @@ def publish_command() -> None:
     if source_kind == "execplan":
         publish["plan_path"] = metadata["plan_path"]
     add_publish_issue_identity_fields(publish, metadata, source_kind)
-    write_json(PUBLISH_PATH, publish)
+    write_state_backed_json(PUBLISH_PATH, CANONICAL_PUBLISH_NAME, publish)
 
     print("## Summary")
     if source_kind == "execplan":
@@ -3036,7 +3166,7 @@ def publish_command() -> None:
     print("## Publication")
     print("PUBLICATION_MODE=commit_stack")
     print("PUBLICATION_ORCHESTRATOR=scherzo_core")
-    print(f"COMMIT_STACK_PATH={COMMIT_STACK_PATH}")
+    print(f"COMMIT_STACK_PATH={display_path(state_backed_path(COMMIT_STACK_PATH, CANONICAL_COMMIT_STACK_NAME))}")
     print(f"PR_TITLE_PATH={title_path}")
     print(f"PR_BODY_PATH={body_path}")
     print("PR_URL will be reported by Scherzo core after declarative publication completes.")

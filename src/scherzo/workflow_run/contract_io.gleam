@@ -3,6 +3,7 @@ import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/config/types as config_types
 import scherzo/json_value
 import scherzo/path
@@ -776,13 +777,10 @@ fn output_value_from_step_file(
                 "workflow_output_source_workspace_missing:" <> step_id,
               )
             Ok(workspace) -> {
-              let source_path = path.join(workspace.path, file_path)
+              let source_root = step_file_source_root(workspace, file_path)
+              let source_path = path.join(source_root, file_path)
               case
-                safe_workspace_file_bytes(
-                  workspace.path,
-                  source_path,
-                  file_path,
-                )
+                safe_workspace_file_bytes(source_root, source_path, file_path)
               {
                 Error(diagnostic) -> output_absent(spec, diagnostic)
                 Ok(contents) ->
@@ -798,6 +796,16 @@ fn output_value_from_step_file(
             }
           }
       }
+  }
+}
+
+fn step_file_source_root(
+  workspace: workspace_run.PreparedStepWorkspace,
+  file_path: String,
+) -> String {
+  case string.starts_with(file_path, "state/") {
+    True -> workspace.run_root
+    False -> workspace.path
   }
 }
 

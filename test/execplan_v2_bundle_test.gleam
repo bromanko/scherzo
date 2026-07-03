@@ -848,7 +848,10 @@ pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "PLAN=tmp/execplan-review-doc.md")
+  assert string.contains(
+    artifact.stdout,
+    "PLAN=state/implementation/execplan-review-doc.md",
+  )
   let assert Ok(prepared_plan) =
     simplifile.read(dir <> "/tmp/execplan-review-doc.md")
   let assert Ok(canonical_plan) =
@@ -874,7 +877,7 @@ pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
   assert canonical_metadata == metadata
   assert string.contains(
     metadata,
-    "\"plan_path\": \"tmp/execplan-review-doc.md\"",
+    "\"plan_path\": \"state/implementation/execplan-review-doc.md\"",
   )
   assert string.contains(
     metadata,
@@ -912,7 +915,10 @@ pub fn implementation_prepare_uses_workstream_input_manifest_test() {
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "PLAN=tmp/execplan-review-doc.md")
+  assert string.contains(
+    artifact.stdout,
+    "PLAN=state/implementation/execplan-review-doc.md",
+  )
   let assert Ok(prepared_plan) =
     simplifile.read(dir <> "/tmp/execplan-review-doc.md")
   assert prepared_plan == plan_text
@@ -3607,10 +3613,12 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
     simplifile.create_directory_all(
       run_root <> "/artifacts/review/final_dispositions",
     )
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(run_root <> "/state/implementation")
   let assert Ok(Nil) = simplifile.create_directory_all("tmp")
   let assert Ok(Nil) =
     simplifile.write(
-      "tmp/scherzo-implementation-publish.json",
+      run_root <> "/state/implementation/scherzo-implementation-publish.json",
       "{\n"
         <> "  \"branch\": \"impl/liv-315\",\n"
         <> "  \"changed_files\": [\"src/example.gleam\"],\n"
@@ -3621,12 +3629,12 @@ pub fn materialize_code_change_bundle_emits_retained_refs_test() {
     )
   let assert Ok(Nil) =
     simplifile.write(
-      "tmp/scherzo-implementation-validation.json",
+      run_root <> "/state/implementation/scherzo-implementation-validation.json",
       "{\"status\":\"passed\"}\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
-      "tmp/scherzo-plan-completion-verdict.json",
+      run_root <> "/state/implementation/scherzo-plan-completion-verdict.json",
       "{\"verdict\":\"pass\"}\n",
     )
   let assert Ok(Nil) =
@@ -3691,20 +3699,22 @@ pub fn materialize_code_change_bundle_uses_run_root_artifact_store_test() {
     simplifile.create_directory_all(
       run_root <> "/artifacts/review/final_dispositions",
     )
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(run_root <> "/state/implementation")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
   let assert Ok(Nil) =
     simplifile.write(
-      dir <> "/tmp/scherzo-implementation-publish.json",
+      run_root <> "/state/implementation/scherzo-implementation-publish.json",
       "{\"changed_files\":[\"src/example.gleam\"]}\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
-      dir <> "/tmp/scherzo-implementation-validation.json",
+      run_root <> "/state/implementation/scherzo-implementation-validation.json",
       "{\"status\":\"passed\"}\n",
     )
   let assert Ok(Nil) =
     simplifile.write(
-      dir <> "/tmp/scherzo-plan-completion-verdict.json",
+      run_root <> "/state/implementation/scherzo-plan-completion-verdict.json",
       "{\"verdict\":\"pass\"}\n",
     )
   let assert Ok(Nil) = simplifile.write(dir <> "/input.diff", "diff\n")

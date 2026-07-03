@@ -270,6 +270,7 @@ def canonical_json(value: Any) -> str:
 
 
 def write_json(path: Path, value: Any) -> None:
+    path = resolve_run_root_relative_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(canonical_json(value), encoding="utf-8")
 
@@ -358,7 +359,46 @@ def implementation_state_dir() -> Path | None:
     return Path(run_root) / IMPLEMENTATION_STATE_RELATIVE_DIR
 
 
+def implementation_state_path(name: str) -> Path | None:
+    state_dir = implementation_state_dir()
+    if state_dir is None:
+        return None
+    return state_dir / name
+
+
+def implementation_state_relative_path(name: str) -> Path:
+    return IMPLEMENTATION_STATE_RELATIVE_DIR / name
+
+
+def display_path(path: Path) -> str:
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if run_root:
+        try:
+            return path.resolve(strict=False).relative_to(Path(run_root).resolve(strict=False)).as_posix()
+        except (OSError, ValueError):
+            pass
+    return path.as_posix()
+
+
+def resolve_run_root_relative_path(path: Path) -> Path:
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if run_root and not path.is_absolute() and path.parts[:1] == ("state",):
+        return Path(run_root) / path
+    return path
+
+
+def copy_best_effort(source: Path, destination: Path) -> None:
+    try:
+        if source.resolve(strict=False) == destination.resolve(strict=False):
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+    except OSError:
+        pass
+
+
 def load_json(path: Path, *, code: str | None = None) -> Any:
+    path = resolve_run_root_relative_path(path)
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -368,6 +408,7 @@ def load_json(path: Path, *, code: str | None = None) -> Any:
 
 
 def path_bytes(path: Path, *, code: str | None = None) -> bytes:
+    path = resolve_run_root_relative_path(path)
     try:
         return path.read_bytes()
     except FileNotFoundError:
@@ -1543,10 +1584,13 @@ def canonical_plan_descriptor(run_id: str, source: Path) -> dict[str, Any]:
 
 
 def write_canonical_plan_output(source: Path) -> dict[str, Any]:
-    CANONICAL_PLAN_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if source.resolve() != CANONICAL_PLAN_OUTPUT_PATH.resolve():
-        shutil.copyfile(source, CANONICAL_PLAN_OUTPUT_PATH)
-    return canonical_plan_descriptor(os.environ.get("SCHERZO_RUN_ID", "local-run"), CANONICAL_PLAN_OUTPUT_PATH)
+    canonical_path = implementation_state_path(CANONICAL_IMPLEMENTATION_PLAN_STATE_NAME) or CANONICAL_PLAN_OUTPUT_PATH
+    canonical_path.parent.mkdir(parents=True, exist_ok=True)
+    source = resolve_run_root_relative_path(source)
+    if source.resolve(strict=False) != canonical_path.resolve(strict=False):
+        shutil.copyfile(source, canonical_path)
+    copy_best_effort(canonical_path, CANONICAL_PLAN_OUTPUT_PATH)
+    return canonical_plan_descriptor(os.environ.get("SCHERZO_RUN_ID", "local-run"), canonical_path)
 
 
 def bundle_expected_plan_sha(bundle: dict[str, Any]) -> str:
@@ -1712,7 +1756,9 @@ def materialize_pack(review_doc: Path, submission: Path, output: Path) -> dict[s
         "conflict_policy": str(payload["conflict_policy"]),
     }
     validate_schema(pack, IMPLEMENTATION_PACK_SCHEMA)
+    output = resolve_run_root_relative_path(output)
     write_json(output, pack)
+    copy_best_effort(output, Path("tmp/execplan-implementation-pack.json"))
     sys.stdout.write(canonical_json(pack))
     return pack
 
@@ -2287,16 +2333,18 @@ def command_materialize_commit_stack(args: list[str]) -> None:
     validate_commit_stack_changed_files(review_path)
     repository = configured_repo()
     base_branch = configured_base_branch()
+    output_path = resolve_run_root_relative_path(Path(ns.output))
     try:
         artifact = commit_stack_helper.materialize_commit_stack_artifact(
             repository=repository,
             base_ref=base_branch,
             base_revision="@-",
-            output_path=Path(ns.output),
+            output_path=output_path,
             carrier_name=COMMIT_STACK_CARRIER_NAME,
             description_title=f"ExecPlan review doc: {review_meta['path']}",
             bundle_ref_namespace="commit-stack",
         )
+        copy_best_effort(output_path, Path("tmp/execplan-commit-stack.json"))
     except commit_stack_helper.CommitStackError as exc:
         fail_commit_stack(exc)
     base_oid = artifact["base"]["sha"]
@@ -2309,8 +2357,10 @@ def command_materialize_commit_stack(args: list[str]) -> None:
             base_oid=base_oid,
         )
         ensure_commit_stack_base_matches_publication_target(artifact=artifact, target=target)
-        write_json(Path(ns.target_output), target)
-        print(f"TARGET_OUTPUT={ns.target_output}")
+        target_output_path = resolve_run_root_relative_path(Path(ns.target_output))
+        write_json(target_output_path, target)
+        copy_best_effort(target_output_path, Path("tmp/execplan-publication-target.json"))
+        print(f"TARGET_OUTPUT={display_path(target_output_path)}")
         print(f"TARGET_KIND={target['kind']}")
         if target["kind"] == "existing_pr_branch":
             existing = target["existing_pr_branch"]
@@ -2320,7 +2370,7 @@ def command_materialize_commit_stack(args: list[str]) -> None:
     print(f"COMMIT_STACK_BASE_REF={base_branch}")
     print(f"COMMIT_STACK_BASE_SHA={base_oid}")
     print(f"COMMIT_STACK_HEAD_SHA={head_oid}")
-    print(f"COMMIT_STACK_PATH={ns.output}")
+    print(f"COMMIT_STACK_PATH={display_path(output_path)}")
 
 
 def materialize_bundle(args: list[str]) -> None:
@@ -2414,7 +2464,9 @@ def materialize_bundle(args: list[str]) -> None:
     bundle["implementation_handoff"]["issue_identifier"] = handoff["issue_identifier"]
     bundle["implementation_handoff"]["issue_url"] = handoff["issue_url"]
     validate_schema(bundle, EXEC_PLAN_BUNDLE_SCHEMA)
-    write_json(Path(ns.output), bundle)
+    output_path = resolve_run_root_relative_path(Path(ns.output))
+    write_json(output_path, bundle)
+    copy_best_effort(output_path, Path("tmp/execplan-bundle.json"))
     final_text = canonical_json(bundle)
     final_sha = sha256_bytes(final_text.encode("utf-8"))
     update_handoff_issue_description(
@@ -3272,7 +3324,9 @@ def materialize_revision(args: list[str]) -> None:
         "validation": [{"name": "materialize-revision", "status": "passed"}],
     }
     validate_schema(bundle, EXEC_PLAN_BUNDLE_SCHEMA)
-    write_json(Path(ns.output), bundle)
+    output_path = resolve_run_root_relative_path(Path(ns.output))
+    write_json(output_path, bundle)
+    copy_best_effort(output_path, Path("tmp/execplan-bundle.json"))
     final_text = canonical_json(bundle)
     final_sha = sha256_bytes(final_text.encode("utf-8"))
     handoff = bundle["implementation_handoff"]
@@ -3364,27 +3418,30 @@ def command_implementation_prepare(args: list[str]) -> None:
     canonical_plan_path = prepared_plan_path
     canonical_pack_path = prepared_pack_path
     canonical_bundle_path = prepared_bundle_path
+    plan_metadata_path = prepared_plan_path
+    pack_metadata_path = prepared_pack_path
+    bundle_metadata_path = prepared_bundle_path
     if state_dir is not None:
         state_dir.mkdir(parents=True, exist_ok=True)
         canonical_plan_path = state_dir / CANONICAL_IMPLEMENTATION_PLAN_STATE_NAME
         canonical_pack_path = state_dir / CANONICAL_IMPLEMENTATION_PACK_STATE_NAME
         canonical_bundle_path = state_dir / CANONICAL_IMPLEMENTATION_BUNDLE_STATE_NAME
-        if plan_source_path.resolve() != canonical_plan_path.resolve():
+        plan_metadata_path = implementation_state_relative_path(CANONICAL_IMPLEMENTATION_PLAN_STATE_NAME)
+        pack_metadata_path = implementation_state_relative_path(CANONICAL_IMPLEMENTATION_PACK_STATE_NAME)
+        bundle_metadata_path = implementation_state_relative_path(CANONICAL_IMPLEMENTATION_BUNDLE_STATE_NAME)
+        if plan_source_path.resolve(strict=False) != canonical_plan_path.resolve(strict=False):
             shutil.copyfile(plan_source_path, canonical_plan_path)
-        if pack_path.resolve() != canonical_pack_path.resolve():
+        if pack_path.resolve(strict=False) != canonical_pack_path.resolve(strict=False):
             shutil.copyfile(pack_path, canonical_pack_path)
         write_json(canonical_bundle_path, bundle)
-    if canonical_plan_path.resolve() != prepared_plan_path.resolve():
-        shutil.copyfile(canonical_plan_path, prepared_plan_path)
-    elif plan_source_path.resolve() != prepared_plan_path.resolve():
+    copy_best_effort(canonical_plan_path, prepared_plan_path)
+    if not prepared_plan_path.exists() and plan_source_path.resolve(strict=False) != prepared_plan_path.resolve(strict=False):
         shutil.copyfile(plan_source_path, prepared_plan_path)
-    if canonical_pack_path.resolve() != prepared_pack_path.resolve():
-        shutil.copyfile(canonical_pack_path, prepared_pack_path)
-    elif pack_path.resolve() != prepared_pack_path.resolve():
+    copy_best_effort(canonical_pack_path, prepared_pack_path)
+    if not prepared_pack_path.exists() and pack_path.resolve(strict=False) != prepared_pack_path.resolve(strict=False):
         shutil.copyfile(pack_path, prepared_pack_path)
-    if canonical_bundle_path.resolve() != prepared_bundle_path.resolve():
-        shutil.copyfile(canonical_bundle_path, prepared_bundle_path)
-    else:
+    copy_best_effort(canonical_bundle_path, prepared_bundle_path)
+    if not prepared_bundle_path.exists():
         write_json(prepared_bundle_path, bundle)
     base_change_id = "unknown-base"
     if workspace_driver_command():
@@ -3425,19 +3482,21 @@ def command_implementation_prepare(args: list[str]) -> None:
         "source_issue_identifier": source_issue_identifier,
         "source_issue_title": source_issue_title,
         "source_issue_url": source_issue_url,
-        "plan_path": str(prepared_plan_path),
+        "plan_path": display_path(plan_metadata_path),
         "plan_sha256": plan_meta["sha256"],
         "plan_bytes": plan_meta["bytes"],
         "plan_media_type": CANONICAL_PLAN_MEDIA_TYPE,
         "plan_artifact_ref": str(bundle.get("plan", {}).get("ref") or ""),
-        "canonical_plan_path": str(canonical_plan_path),
+        "canonical_plan_path": display_path(canonical_plan_path),
         "legacy_review_doc_path": legacy_review_doc_path(bundle),
         "review_surface_path": str(bundle.get("review_surface", {}).get("review_doc_path") or legacy_review_doc_path(bundle)),
         "base_change_id": base_change_id,
-        "execplan_v2_bundle_path": "tmp/execplan-bundle.json",
-        "execplan_v2_implementation_pack_path": "tmp/execplan-implementation-pack.json",
-        "canonical_execplan_v2_bundle_path": str(canonical_bundle_path),
-        "canonical_execplan_v2_implementation_pack_path": str(canonical_pack_path),
+        "execplan_v2_bundle_path": display_path(bundle_metadata_path),
+        "execplan_v2_implementation_pack_path": display_path(pack_metadata_path),
+        "tmp_execplan_v2_bundle_path": "tmp/execplan-bundle.json",
+        "tmp_execplan_v2_implementation_pack_path": "tmp/execplan-implementation-pack.json",
+        "canonical_execplan_v2_bundle_path": display_path(canonical_bundle_path),
+        "canonical_execplan_v2_implementation_pack_path": display_path(canonical_pack_path),
     }
     marker_source = str(bundle.get("plan", {}).get("ref") or legacy_review_doc_path(bundle) or prepared_plan_path)
     marker = write_implementation_retention_marker("execplan", marker_source)
@@ -3445,13 +3504,16 @@ def command_implementation_prepare(args: list[str]) -> None:
         write_json(state_dir / "metadata.json", metadata)
     write_json(tmp / "scherzo-implementation.json", metadata)
     print("IMPLEMENTATION_PREPARE_STATUS=ok")
-    print("PLAN=tmp/execplan-review-doc.md")
-    print("REVIEW_DOC=tmp/execplan-review-doc.md")
-    print("IMPLEMENTATION_PACK=tmp/execplan-implementation-pack.json")
-    print("BUNDLE=tmp/execplan-bundle.json")
-    print(f"CANONICAL_PLAN={canonical_plan_path}")
-    print(f"CANONICAL_IMPLEMENTATION_PACK={canonical_pack_path}")
-    print(f"CANONICAL_BUNDLE={canonical_bundle_path}")
+    print(f"PLAN={display_path(plan_metadata_path)}")
+    print(f"REVIEW_DOC={display_path(plan_metadata_path)}")
+    print(f"IMPLEMENTATION_PACK={display_path(pack_metadata_path)}")
+    print(f"BUNDLE={display_path(bundle_metadata_path)}")
+    print("TMP_PLAN=tmp/execplan-review-doc.md")
+    print("TMP_IMPLEMENTATION_PACK=tmp/execplan-implementation-pack.json")
+    print("TMP_BUNDLE=tmp/execplan-bundle.json")
+    print(f"CANONICAL_PLAN={display_path(canonical_plan_path)}")
+    print(f"CANONICAL_IMPLEMENTATION_PACK={display_path(canonical_pack_path)}")
+    print(f"CANONICAL_BUNDLE={display_path(canonical_bundle_path)}")
     print(f"IMPLEMENTATION_ISSUE_IDENTIFIER={implementation_issue_identifier}")
     print(f"SOURCE_ISSUE_IDENTIFIER={source_issue_identifier}")
     if (
@@ -3513,13 +3575,14 @@ def materialize_code_change_bundle(args: list[str]) -> None:
     parser.add_argument("--bundle", required=True)
     parser.add_argument("--output", required=True)
     ns = parser.parse_args(args)
-    bundle_path = Path(ns.bundle)
+    bundle_path = resolve_run_root_relative_path(Path(ns.bundle))
     bundle = canonicalize_execplan_bundle(load_json(bundle_path))
     validate_schema(bundle, EXEC_PLAN_BUNDLE_SCHEMA)
     bundle_meta = file_meta(bundle_path)
-    publish = load_json(Path("tmp/scherzo-implementation-publish.json")) if Path("tmp/scherzo-implementation-publish.json").exists() else {}
-    validation_path = Path("tmp/scherzo-implementation-validation.json")
-    plan_completion_path = Path("tmp/scherzo-plan-completion-verdict.json")
+    publish_path = implementation_state_path("scherzo-implementation-publish.json") or Path("tmp/scherzo-implementation-publish.json")
+    publish = load_json(publish_path) if publish_path.exists() else {}
+    validation_path = implementation_state_path("scherzo-implementation-validation.json") or Path("tmp/scherzo-implementation-validation.json")
+    plan_completion_path = implementation_state_path("scherzo-plan-completion-verdict.json") or Path("tmp/scherzo-plan-completion-verdict.json")
     run_id = artifact_run_id()
     run_dir = materialization_run_artifact_dir(run_id)
     code_dir = run_dir / "execplan" / "code-change"
@@ -3603,7 +3666,7 @@ def materialize_code_change_bundle(args: list[str]) -> None:
             review_artifacts.append({"name": name, **meta})
     pack = bundle["implementation_pack"]
     source_plan_sha = bundle_expected_plan_sha(bundle)
-    source_plan_path = legacy_review_doc_path(bundle) or str(CANONICAL_PLAN_OUTPUT_PATH)
+    source_plan_path = legacy_review_doc_path(bundle) or display_path(implementation_state_relative_path(CANONICAL_IMPLEMENTATION_PLAN_STATE_NAME))
     descriptor_entries = [
         descriptor_file_entry(
             "diff",
@@ -3650,7 +3713,9 @@ def materialize_code_change_bundle(args: list[str]) -> None:
         "review_artifacts": review_artifacts,
     }
     validate_schema(code_bundle, CODE_CHANGE_BUNDLE_SCHEMA)
-    write_json(Path(ns.output), code_bundle)
+    output_path = resolve_run_root_relative_path(Path(ns.output))
+    write_json(output_path, code_bundle)
+    copy_best_effort(output_path, Path("tmp/execplan-code-change-bundle.json"))
     sys.stdout.write(canonical_json(code_bundle))
 
 
