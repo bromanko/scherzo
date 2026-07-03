@@ -1,6 +1,11 @@
+import gleam/dict
 import gleam/list
 import gleam/option.{type Option, Some}
+import scherzo/control/command
 import scherzo/retry_step_validation
+import scherzo/runtime/reason as orchestrator_reason
+import scherzo/runtime/state as orchestrator_state
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 
@@ -24,6 +29,43 @@ pub fn failure_message(
     run_id,
     step_id,
   )
+}
+
+pub fn parked_issue(
+  runtime: orchestrator_state.RuntimeState,
+  projection_state: projection.Projection,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  issue_id: String,
+) -> Result(Nil, command.CommandResult) {
+  case
+    dict.get(
+      runtime.parked,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
+    Error(Nil) -> Ok(Nil)
+    Ok(parked) -> {
+      let reason = orchestrator_reason.park_to_string(parked.reason)
+      case
+        retry_step_validation.parked_issue_can_retry_step(
+          projection_state,
+          run_id,
+          issue_id,
+        )
+      {
+        True -> Ok(Nil)
+        False ->
+          Error(command.rejected(
+            operator_command,
+            "issue_parked",
+            Some(
+              "issue is parked for " <> reason <> "; unpark before retry-step",
+            ),
+          ))
+      }
+    }
+  }
 }
 
 pub fn rejection_message(

@@ -1,5 +1,7 @@
+import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/state/projection
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_attempt
 
@@ -141,23 +143,60 @@ pub fn stable_rejection_reason(reason: String) -> String {
   }
 }
 
+pub fn parked_issue_can_retry_step(
+  projection_state: projection.Projection,
+  run_id: String,
+  issue_id: String,
+) -> Bool {
+  case dict.get(projection_state.parked_issues, issue_id) {
+    Ok(parked) ->
+      retry_step_can_use_parked_issue_reason(parked.reason)
+      && workflow_run_interrupted_for_parked_issue(
+        projection_state,
+        run_id,
+        issue_id,
+        parked.reason,
+      )
+    Error(Nil) -> False
+  }
+}
+
+fn retry_step_can_use_parked_issue_reason(reason: String) -> Bool {
+  string.starts_with(reason, "issue_content_drift:")
+  || string.starts_with(reason, "issue_state_drift:")
+}
+
+fn workflow_run_interrupted_for_parked_issue(
+  projection_state: projection.Projection,
+  run_id: String,
+  issue_id: String,
+  reason: String,
+) -> Bool {
+  case dict.get(projection_state.workflow_runs, run_id) {
+    Ok(projection.WorkflowRunInterrupted(
+      issue_id: run_issue_id,
+      reason: run_reason,
+      ..,
+    )) -> run_issue_id == issue_id && run_reason == reason
+    _ -> False
+  }
+}
+
 fn retry_step_recovery_drift(
   run_id: String,
   recorded_workflow_id: String,
   current_workflow_id: String,
   recorded_workflow_fingerprint: String,
   current_workflow_fingerprint: String,
-  recorded_issue_fingerprint: String,
-  current_issue_fingerprint: String,
+  _recorded_issue_fingerprint: String,
+  _current_issue_fingerprint: String,
 ) -> Option(#(String, String)) {
   case
-    validate_drift(
+    validate_workflow_identity(
       recorded_workflow_id,
       current_workflow_id,
       recorded_workflow_fingerprint,
       current_workflow_fingerprint,
-      recorded_issue_fingerprint,
-      current_issue_fingerprint,
     )
   {
     Ok(Nil) -> None

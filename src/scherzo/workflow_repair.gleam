@@ -193,7 +193,6 @@ pub fn plan(
         issue,
         current_workflow_id,
         current_workflow_fingerprint,
-        current_issue_fingerprint,
       ))
       use _ <- result.try(validate_run_root(
         run.run_id,
@@ -229,10 +228,7 @@ pub fn plan(
       let observed_updated_at_ms =
         observed_updated_at_ms_for_candidate(run.observed_updated_at_ms, issue)
       let issue_fingerprint =
-        retry_step_validation.recorded_or_current(
-          run.issue_fingerprint,
-          current_issue_fingerprint,
-        )
+        current_or_recorded(current_issue_fingerprint, run.issue_fingerprint)
       let workflow_fingerprint =
         retry_step_validation.recorded_or_current(
           run.workflow_fingerprint,
@@ -1192,7 +1188,6 @@ fn validate_drift(
   issue: tracker_issue.Issue,
   current_workflow_id: String,
   current_workflow_fingerprint: String,
-  current_issue_fingerprint: String,
 ) -> Result(Nil, RepairError) {
   case run.issue_id != issue.id {
     True -> Error(RepairError("issue_drift", Some("issue id drifted")))
@@ -1208,7 +1203,6 @@ fn validate_drift(
             issue,
             current_workflow_id,
             current_workflow_fingerprint,
-            current_issue_fingerprint,
           )
       }
   }
@@ -1219,26 +1213,18 @@ fn validate_fingerprints_and_task(
   issue: tracker_issue.Issue,
   current_workflow_id: String,
   current_workflow_fingerprint: String,
-  current_issue_fingerprint: String,
 ) -> Result(Nil, RepairError) {
   let workflow_fingerprint =
     retry_step_validation.recorded_or_current(
       run.workflow_fingerprint,
       current_workflow_fingerprint,
     )
-  let issue_fingerprint =
-    retry_step_validation.recorded_or_current(
-      run.issue_fingerprint,
-      current_issue_fingerprint,
-    )
   case
-    retry_step_validation.validate_drift(
+    retry_step_validation.validate_workflow_identity(
       run.workflow_id,
       current_workflow_id,
       workflow_fingerprint,
       current_workflow_fingerprint,
-      issue_fingerprint,
-      current_issue_fingerprint,
     )
   {
     Error(failure) -> Error(RepairError(failure.reason, Some(failure.message)))
@@ -1248,6 +1234,13 @@ fn validate_fingerprints_and_task(
         False ->
           Error(RepairError("issue_drift", Some("task identity drifted")))
       }
+  }
+}
+
+fn current_or_recorded(current: String, recorded: String) -> String {
+  case string.trim(current) == "" {
+    True -> recorded
+    False -> current
   }
 }
 
@@ -1690,23 +1683,28 @@ fn repair_records(
     Some(repair) -> [repair.record_body]
     None -> []
   }
+  let unpark_records =
+    retry_step_unpark_records(projection_state, run.run_id, issue)
   let prefix =
     list.append(
-      provenance_repair_records,
-      list.append(failed_attempt.normalization_records, [
-        record.WorkflowRepairRequested(
-          run.run_id,
-          run.workflow_id,
-          issue.id,
-          issue.identifier,
-          command.retry_workflow_step_target_to_string(target),
-          requested_step_id,
-          failed_attempt.step_id,
-          failed_attempt.attempt_index,
-          next_attempt_index,
-          "retry-step",
-        ),
-      ]),
+      unpark_records,
+      list.append(
+        provenance_repair_records,
+        list.append(failed_attempt.normalization_records, [
+          record.WorkflowRepairRequested(
+            run.run_id,
+            run.workflow_id,
+            issue.id,
+            issue.identifier,
+            command.retry_workflow_step_target_to_string(target),
+            requested_step_id,
+            failed_attempt.step_id,
+            failed_attempt.attempt_index,
+            next_attempt_index,
+            "retry-step",
+          ),
+        ]),
+      ),
     )
   let middle =
     supersede_records(
@@ -1739,6 +1737,23 @@ fn repair_records(
     ),
   ]
   list.append(prefix, list.append(middle, suffix))
+}
+
+fn retry_step_unpark_records(
+  projection_state: projection.Projection,
+  run_id: String,
+  issue: tracker_issue.Issue,
+) -> List(record.RecordBody) {
+  case
+    retry_step_validation.parked_issue_can_retry_step(
+      projection_state,
+      run_id,
+      issue.id,
+    )
+  {
+    True -> [record.IssueUnparked(issue.id, issue.identifier, "retry_step")]
+    False -> []
+  }
 }
 
 fn supersede_records(

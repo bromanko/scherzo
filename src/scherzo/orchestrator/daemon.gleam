@@ -2975,8 +2975,10 @@ fn retry_workflow_step_for_operator(
           case
             retry_step_issue_preflight(
               state,
+              projection_state,
               operator_command,
               target,
+              run_id,
               issue_id,
             )
           {
@@ -3362,35 +3364,31 @@ fn recollect_outputs_issue_preflight_for_run(
 
 fn retry_step_issue_preflight(
   state: State,
+  projection_state: projection.Projection,
   operator_command: command.OperatorCommand,
   target: command.RetryWorkflowStepTarget,
+  run_id: String,
   issue_id: String,
 ) -> Result(tracker_issue.Issue, command.CommandResult) {
-  case
-    dict.get(
-      state.runtime.parked,
-      orchestrator_state.linear_issue_id_identity(issue_id),
-    )
-  {
-    Ok(parked) ->
+  case issue_is_active_or_pending_except_parked(state, issue_id) {
+    True ->
       Error(command.rejected(
         operator_command,
-        "issue_parked",
-        Some(
-          "issue is parked for "
-          <> orchestrator_reason.park_to_string(parked.reason)
-          <> "; unpark before retry-step",
-        ),
+        "issue_already_active",
+        Some("issue already has an active or pending workflow"),
       ))
-    Error(Nil) ->
-      case issue_is_active_or_pending(state, issue_id) {
-        True ->
-          Error(command.rejected(
-            operator_command,
-            "issue_already_active",
-            Some("issue already has an active or pending workflow"),
-          ))
-        False ->
+    False ->
+      case
+        retry_step_operation.parked_issue(
+          state.runtime,
+          projection_state,
+          operator_command,
+          run_id,
+          issue_id,
+        )
+      {
+        Error(result) -> Error(result)
+        Ok(Nil) ->
           case fetch_issue_by_id(state, issue_id) {
             Error(status) ->
               Error(command.result_for(operator_command, status, None))
@@ -3409,26 +3407,7 @@ fn retry_step_issue_preflight(
                       <> issue_state.to_string(issue.state),
                     ),
                   ))
-                False ->
-                  case core.is_active(state.workflow.effective, issue.state) {
-                    True -> Ok(issue)
-                    False ->
-                      Error(command.rejected(
-                        operator_command,
-                        "issue_state_drift:non_active_state",
-                        Some(
-                          "run "
-                          <> command.retry_workflow_step_target_to_string(
-                            target,
-                          )
-                          <> " for issue "
-                          <> issue.identifier
-                          <> " is currently in non-active state "
-                          <> issue_state.to_string(issue.state)
-                          <> "; move the issue to a configured active state before retry-step",
-                        ),
-                      ))
-                  }
+                False -> Ok(issue)
               }
           }
       }
@@ -3641,8 +3620,10 @@ fn execute_retry_step_operation(
       case
         retry_step_issue_preflight(
           state,
+          state.ledger_projection,
           operator_command,
           command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, "")),
+          option.unwrap(operation.run_id, ""),
           issue_id,
         )
       {
@@ -4317,7 +4298,10 @@ fn worker_issue_state_name_from_resolution(
   }
 }
 
-fn issue_is_active_or_pending(state: State, issue_id: String) -> Bool {
+fn issue_is_active_or_pending_except_parked(
+  state: State,
+  issue_id: String,
+) -> Bool {
   let identity =
     orchestrator_state.issue_id_identity_for_backend(
       issue_id,
@@ -4329,7 +4313,6 @@ fn issue_is_active_or_pending(state: State, issue_id: String) -> Bool {
   || dict.has_key(state.pending_review_lane_preflights, identity)
   || dict.has_key(state.runtime.claimed, identity)
   || dict.has_key(state.runtime.retry_attempts, identity)
-  || dict.has_key(state.runtime.parked, identity)
 }
 
 fn ledger_record_bodies(
