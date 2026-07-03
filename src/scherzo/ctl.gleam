@@ -291,11 +291,19 @@ pub fn run_offline_args_with_deps_and_env(
 }
 
 pub fn parse(args: List(String)) -> Result(Command, Error) {
-  parse_command(args, command_registry.parse_control, True)
+  parse_command(
+    normalize_retry_alias_args(args),
+    command_registry.parse_control,
+    True,
+  )
 }
 
 pub fn parse_offline(args: List(String)) -> Result(Command, Error) {
-  parse_command(args, command_registry.parse_offline, False)
+  parse_command(
+    normalize_retry_alias_args(args),
+    command_registry.parse_offline,
+    False,
+  )
 }
 
 pub fn usage() -> String {
@@ -787,10 +795,18 @@ fn build_retry_command(
   parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
 ) -> Result(Command, Error) {
   let issue = issue_ref(first_positional(parsed, parsed.usage))
-  case
-    command_spec.has_flag(parsed, "--start-fresh"),
-    command_spec.option_value(parsed, "--reason")
-  {
+  let start_fresh =
+    command_spec.has_flag(parsed, "--start-fresh")
+    || command_spec.has_flag(parsed, "--from-scratch")
+  let default_reason = case parsed.path {
+    ["retry", "all"] -> Some("operator_forced_from_scratch")
+    _ -> None
+  }
+  let reason = case command_spec.option_value(parsed, "--reason") {
+    Some(reason) -> Some(reason)
+    None -> default_reason
+  }
+  case start_fresh, reason {
     True, Some(reason) ->
       Ok(TaskRetryStartFresh(
         control_file_option(parsed),
@@ -799,11 +815,35 @@ fn build_retry_command(
         reason,
       ))
     True, None ->
-      Error(UsageError("task retry --start-fresh requires --reason <text>"))
+      Error(UsageError(
+        "task retry --start-fresh/--from-scratch requires --reason <text>",
+      ))
     False, Some(_) ->
-      Error(UsageError("task retry --reason <text> requires --start-fresh"))
+      Error(UsageError(
+        "task retry --reason <text> requires --start-fresh or --from-scratch",
+      ))
     False, None ->
       Ok(operator_command(parsed, control_command.RetryIssue(issue)))
+  }
+}
+
+fn normalize_retry_alias_args(args: List(String)) -> List(String) {
+  case args {
+    ["retry", "all", task_ref, ..rest] ->
+      case list.contains(rest, "--reason") {
+        True -> ["task", "retry", task_ref, "--from-scratch", ..rest]
+        False -> [
+          "task",
+          "retry",
+          task_ref,
+          "--from-scratch",
+          "--reason",
+          "operator_forced_from_scratch",
+          ..rest
+        ]
+      }
+    ["retry", "step", target, ..rest] -> ["retry-step", target, ..rest]
+    _ -> args
   }
 }
 
@@ -816,7 +856,7 @@ fn build_retry_step_command(
         Some(step_id) ->
           Ok(operator_command(
             parsed,
-            control_command.RetryWorkflowStep(
+            control_command.RetryWorkflowStepExact(
               control_command.RetryWorkflowStepRunId(first_positional(
                 parsed,
                 parsed.usage,

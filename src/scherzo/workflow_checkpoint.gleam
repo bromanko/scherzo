@@ -155,6 +155,15 @@ pub type WorkflowContractManifestRecorded {
   )
 }
 
+pub type WorkflowInterfaceSnapshotRecorded {
+  WorkflowInterfaceSnapshotRecorded(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    artifact: ArtifactWritten,
+  )
+}
+
 pub type WorkflowOutputBlobWrite {
   WorkflowOutputBlobWrite(
     run_id: String,
@@ -227,6 +236,10 @@ pub type Writer {
     write_workflow_inputs_manifest: fn(String, String) ->
       Result(ArtifactWritten, CheckpointError),
     workflow_inputs_recorded: fn(WorkflowContractManifestRecorded) ->
+      Result(Nil, CheckpointError),
+    write_workflow_interface_snapshot: fn(String, String) ->
+      Result(ArtifactWritten, CheckpointError),
+    workflow_interface_snapshot_recorded: fn(WorkflowInterfaceSnapshotRecorded) ->
       Result(Nil, CheckpointError),
     write_workflow_outputs_manifest: fn(String, String) ->
       Result(ArtifactWritten, CheckpointError),
@@ -355,6 +368,14 @@ pub fn noop_writer() -> Writer {
       ))
     },
     workflow_inputs_recorded: fn(_) { Ok(Nil) },
+    write_workflow_interface_snapshot: fn(run_id, _contents) {
+      Ok(ArtifactWritten(
+        ref: "noop/" <> run_id <> "/workflow-interface.v1.json",
+        sha256: "noop",
+        bytes: 0,
+      ))
+    },
+    workflow_interface_snapshot_recorded: fn(_) { Ok(Nil) },
     write_workflow_outputs_manifest: fn(run_id, _contents) {
       Ok(ArtifactWritten(
         ref: "noop/" <> run_id <> "/outputs.v1.json",
@@ -807,6 +828,47 @@ pub fn ledger_writer_with_artifact_store(
           )
       }
     },
+    write_workflow_interface_snapshot: fn(run_id, contents) {
+      use existing <- result.try(existing_workflow_interface_snapshot_record(
+        workspace_root,
+        run_id,
+      ))
+      case existing {
+        Some(artifact) -> Ok(artifact)
+        None ->
+          artifact_store.write_workflow_interface_snapshot(
+            store,
+            run_id,
+            contents,
+          )
+          |> result.map(artifact_ref_to_written)
+          |> result.map_error(fn(error) {
+            CheckpointArtifactFailed(describe_artifact_error(error))
+          })
+      }
+    },
+    workflow_interface_snapshot_recorded: fn(recorded) {
+      use existing <- result.try(existing_workflow_interface_snapshot_record(
+        workspace_root,
+        recorded.run_id,
+      ))
+      case existing {
+        Some(_) -> Ok(Nil)
+        None ->
+          append_body(
+            workspace_root,
+            now_ms,
+            record.WorkflowInterfaceSnapshotRecorded(
+              recorded.run_id,
+              recorded.workflow_id,
+              recorded.workflow_fingerprint,
+              recorded.artifact.ref,
+              recorded.artifact.sha256,
+              recorded.artifact.bytes,
+            ),
+          )
+      }
+    },
     write_workflow_outputs_manifest: fn(run_id, contents) {
       use existing <- result.try(existing_output_record(workspace_root, run_id))
       case existing {
@@ -1103,6 +1165,22 @@ fn existing_output_record(
   use projection_state <- result.try(load_projection(workspace_root))
   Ok(case projection.workflow_output_manifest(projection_state, run_id) {
     Some(manifest) -> Some(manifest_ref_to_written(manifest))
+    None -> None
+  })
+}
+
+fn existing_workflow_interface_snapshot_record(
+  workspace_root: String,
+  run_id: String,
+) -> Result(Option(ArtifactWritten), CheckpointError) {
+  use projection_state <- result.try(load_projection(workspace_root))
+  Ok(case projection.workflow_interface_snapshot(projection_state, run_id) {
+    Some(snapshot) ->
+      Some(ArtifactWritten(
+        ref: snapshot.artifact_ref,
+        sha256: snapshot.artifact_sha256,
+        bytes: snapshot.artifact_bytes,
+      ))
     None -> None
   })
 }

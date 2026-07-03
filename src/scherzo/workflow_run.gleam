@@ -28,6 +28,7 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_contract_manifest as contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_identity
+import scherzo/workflow_interface_snapshot
 import scherzo/workflow_outcome
 import scherzo/workflow_run/command_step_timeout_retry
 import scherzo/workflow_run/contract_io
@@ -732,65 +733,83 @@ pub fn execute_with_context(
               ))
             Ok(Nil) ->
               case
-                record_inputs_if_contracted(
-                  issue,
+                record_workflow_interface_snapshot(
                   dag,
-                  orchestrator,
                   invocation,
-                  dependencies,
-                  profile,
+                  dependencies.checkpoint,
                 )
               {
-                Error(error) -> {
-                  let reason = contract_error.describe_error(error)
-                  ignore_secondary_checkpoint_result(
-                    dependencies.checkpoint.workflow_finished(
-                      workflow_checkpoint.WorkflowFinished(
-                        run_id: invocation.run_id,
-                        workflow_id: workflow_dag.id(dag),
-                        issue_id: issue.id,
-                        task_ref: task_ref(issue),
-                        outcome: workflow_outcome.terminal_failed_fatal(
-                          workflow_outcome.NoStepRecovery,
-                        ),
-                        token_total: 0,
-                        turns: 0,
-                      ),
-                    ),
-                  )
+                Error(error) ->
                   Error(WorkflowRunFailure(
-                    reason: reason,
+                    reason: "checkpoint_failed:"
+                      <> workflow_checkpoint.describe_error(error),
                     agent_reason: None,
                     artifacts: dict.new(),
                     run_root: None,
                     failed_step_id: None,
                   ))
-                }
                 Ok(Nil) ->
-                  loop(
-                    issue,
-                    dag,
-                    orchestrator,
-                    tracker_client,
-                    secrets,
-                    invocation.run_id,
-                    invocation.workflow_fingerprint,
-                    None,
-                    workflow_outcome.NoStepRecovery,
-                    False,
-                    dependencies,
-                    workflow_scheduler.init(dag),
-                    dict.new(),
-                    dict.new(),
-                    None,
-                    dict.new(),
-                    session_tokens.zero_token_totals(),
-                    None,
-                    0,
-                    True,
-                    dict.new(),
-                    profile,
-                  )
+                  case
+                    record_inputs_if_contracted(
+                      issue,
+                      dag,
+                      orchestrator,
+                      invocation,
+                      dependencies,
+                      profile,
+                    )
+                  {
+                    Error(error) -> {
+                      let reason = contract_error.describe_error(error)
+                      ignore_secondary_checkpoint_result(
+                        dependencies.checkpoint.workflow_finished(
+                          workflow_checkpoint.WorkflowFinished(
+                            run_id: invocation.run_id,
+                            workflow_id: workflow_dag.id(dag),
+                            issue_id: issue.id,
+                            task_ref: task_ref(issue),
+                            outcome: workflow_outcome.terminal_failed_fatal(
+                              workflow_outcome.NoStepRecovery,
+                            ),
+                            token_total: 0,
+                            turns: 0,
+                          ),
+                        ),
+                      )
+                      Error(WorkflowRunFailure(
+                        reason: reason,
+                        agent_reason: None,
+                        artifacts: dict.new(),
+                        run_root: None,
+                        failed_step_id: None,
+                      ))
+                    }
+                    Ok(Nil) ->
+                      loop(
+                        issue,
+                        dag,
+                        orchestrator,
+                        tracker_client,
+                        secrets,
+                        invocation.run_id,
+                        invocation.workflow_fingerprint,
+                        None,
+                        workflow_outcome.NoStepRecovery,
+                        False,
+                        dependencies,
+                        workflow_scheduler.init(dag),
+                        dict.new(),
+                        dict.new(),
+                        None,
+                        dict.new(),
+                        session_tokens.zero_token_totals(),
+                        None,
+                        0,
+                        True,
+                        dict.new(),
+                        profile,
+                      )
+                  }
               }
           }
         RecoveredRun(recovered) ->
@@ -1031,6 +1050,28 @@ fn ensure_recovered_workflow_started(
     run_root: recovered.run_root,
   ))
   |> result.map_error(WorkflowStartCheckpointFailed)
+}
+
+fn record_workflow_interface_snapshot(
+  dag: workflow_dag.WorkflowDag,
+  invocation: RunInvocation,
+  checkpoint: workflow_checkpoint.Writer,
+) -> Result(Nil, workflow_checkpoint.CheckpointError) {
+  let snapshot =
+    workflow_interface_snapshot.from_dag(dag, invocation.workflow_fingerprint)
+  let contents = workflow_interface_snapshot.to_string(snapshot)
+  use written <- result.try(checkpoint.write_workflow_interface_snapshot(
+    invocation.run_id,
+    contents,
+  ))
+  checkpoint.workflow_interface_snapshot_recorded(
+    workflow_checkpoint.WorkflowInterfaceSnapshotRecorded(
+      run_id: invocation.run_id,
+      workflow_id: workflow_dag.id(dag),
+      workflow_fingerprint: invocation.workflow_fingerprint,
+      artifact: written,
+    ),
+  )
 }
 
 fn record_recovered_inputs_if_contracted(

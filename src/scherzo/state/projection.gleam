@@ -28,6 +28,7 @@ pub type Projection {
     workflow_run_provenances: Dict(String, WorkflowRunProvenance),
     workflow_task_refs: Dict(String, record.TaskRefFields),
     workflow_input_manifests: Dict(String, WorkflowContractManifestRef),
+    workflow_interface_snapshots: Dict(String, WorkflowInterfaceSnapshotRef),
     workflow_output_manifests: Dict(String, WorkflowContractManifestRef),
     publication_attempts: Dict(String, List(PublicationAttempt)),
     publication_latest_by_series: Dict(String, PublicationAttempt),
@@ -103,6 +104,17 @@ pub type WorkflowRunStatus {
 
 pub type WorkflowContractManifestRef {
   WorkflowContractManifestRef(
+    workflow_id: String,
+    workflow_fingerprint: String,
+    artifact_ref: String,
+    artifact_sha256: String,
+    artifact_bytes: Int,
+    recorded_at_ms: Int,
+  )
+}
+
+pub type WorkflowInterfaceSnapshotRef {
+  WorkflowInterfaceSnapshotRef(
     workflow_id: String,
     workflow_fingerprint: String,
     artifact_ref: String,
@@ -701,6 +713,13 @@ type WorkflowContractManifestSnapshot {
   )
 }
 
+type WorkflowInterfaceSnapshotRefSnapshot {
+  WorkflowInterfaceSnapshotRefSnapshot(
+    run_id: String,
+    snapshot: WorkflowInterfaceSnapshotRef,
+  )
+}
+
 type PublicationAttemptSnapshot {
   PublicationAttemptSnapshot(key: String, attempts: List(PublicationAttempt))
 }
@@ -717,6 +736,7 @@ type SnapshotFields {
     workflow_run_provenances: List(WorkflowRunProvenanceSnapshot),
     workflow_task_refs: List(WorkflowTaskRefSnapshot),
     workflow_input_manifests: List(WorkflowContractManifestSnapshot),
+    workflow_interface_snapshots: List(WorkflowInterfaceSnapshotRefSnapshot),
     workflow_output_manifests: List(WorkflowContractManifestSnapshot),
     publication_attempts: List(PublicationAttemptSnapshot),
     publication_latest_by_series: List(#(String, PublicationAttempt)),
@@ -748,6 +768,7 @@ pub fn new() -> Projection {
     workflow_run_provenances: dict.new(),
     workflow_task_refs: dict.new(),
     workflow_input_manifests: dict.new(),
+    workflow_interface_snapshots: dict.new(),
     workflow_output_manifests: dict.new(),
     publication_attempts: dict.new(),
     publication_latest_by_series: dict.new(),
@@ -1021,6 +1042,29 @@ pub fn apply(
           projection.workflow_input_manifests,
           run_id,
           WorkflowContractManifestRef(
+            workflow_id,
+            workflow_fingerprint,
+            artifact_ref,
+            artifact_sha256,
+            artifact_bytes,
+            at_ms,
+          ),
+        ),
+      )
+    record.WorkflowInterfaceSnapshotRecorded(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      artifact_ref,
+      artifact_sha256,
+      artifact_bytes,
+    ) ->
+      Projection(
+        ..projection,
+        workflow_interface_snapshots: dict.insert(
+          projection.workflow_interface_snapshots,
+          run_id,
+          WorkflowInterfaceSnapshotRef(
             workflow_id,
             workflow_fingerprint,
             artifact_ref,
@@ -3267,6 +3311,16 @@ pub fn workflow_output_manifest(
   )
 }
 
+pub fn workflow_interface_snapshot(
+  projection: Projection,
+  run_id: String,
+) -> Option(WorkflowInterfaceSnapshotRef) {
+  workflow_runs_projection.workflow_interface_snapshot(
+    projection.workflow_interface_snapshots,
+    run_id,
+  )
+}
+
 pub fn latest_workflow_repair(
   projection: Projection,
   run_id: String,
@@ -3652,6 +3706,13 @@ pub fn to_json(projection: Projection) -> json.Json {
       ),
     ),
     #(
+      "workflow_interface_snapshots",
+      json.array(
+        dict.to_list(projection.workflow_interface_snapshots),
+        of: workflow_interface_snapshot_ref_entry_to_json,
+      ),
+    ),
+    #(
       "workflow_output_manifests",
       json.array(
         dict.to_list(projection.workflow_output_manifests),
@@ -3822,6 +3883,12 @@ fn decode_current_snapshot(
           |> list.map(fn(entry) {
             let WorkflowContractManifestSnapshot(run_id, manifest) = entry
             #(run_id, manifest)
+          })
+          |> dict.from_list,
+        workflow_interface_snapshots: fields.workflow_interface_snapshots
+          |> list.map(fn(entry) {
+            let WorkflowInterfaceSnapshotRefSnapshot(run_id, snapshot) = entry
+            #(run_id, snapshot)
           })
           |> dict.from_list,
         workflow_output_manifests: fields.workflow_output_manifests
@@ -4131,6 +4198,21 @@ fn workflow_contract_manifest_entry_to_json(
     #("artifact_sha256", json.string(manifest.artifact_sha256)),
     #("artifact_bytes", json.int(manifest.artifact_bytes)),
     #("recorded_at_ms", json.int(manifest.recorded_at_ms)),
+  ])
+}
+
+fn workflow_interface_snapshot_ref_entry_to_json(
+  entry: #(String, WorkflowInterfaceSnapshotRef),
+) -> json.Json {
+  let #(run_id, snapshot) = entry
+  json.object([
+    #("run_id", json.string(run_id)),
+    #("workflow_id", json.string(snapshot.workflow_id)),
+    #("workflow_fingerprint", json.string(snapshot.workflow_fingerprint)),
+    #("artifact_ref", json.string(snapshot.artifact_ref)),
+    #("artifact_sha256", json.string(snapshot.artifact_sha256)),
+    #("artifact_bytes", json.int(snapshot.artifact_bytes)),
+    #("recorded_at_ms", json.int(snapshot.recorded_at_ms)),
   ])
 }
 
@@ -5017,6 +5099,11 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
     [],
     decode.list(of: workflow_contract_manifest_snapshot_decoder()),
   )
+  use workflow_interface_snapshots <- decode.optional_field(
+    "workflow_interface_snapshots",
+    [],
+    decode.list(of: workflow_interface_snapshot_ref_snapshot_decoder()),
+  )
   use workflow_output_manifests <- decode.optional_field(
     "workflow_output_manifests",
     [],
@@ -5104,6 +5191,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         workflow_run_provenances,
         workflow_task_refs,
         workflow_input_manifests,
+        workflow_interface_snapshots,
         workflow_output_manifests,
         publication_attempts,
         publication_latest_by_series,
@@ -5126,6 +5214,7 @@ fn snapshot_decoder() -> decode.Decoder(SnapshotFields) {
         SnapshotFields(
           [],
           False,
+          [],
           [],
           [],
           [],
@@ -5384,6 +5473,32 @@ fn workflow_contract_manifest_snapshot_decoder() -> decode.Decoder(
   decode.success(WorkflowContractManifestSnapshot(
     run_id,
     WorkflowContractManifestRef(
+      workflow_id,
+      workflow_fingerprint,
+      artifact_ref,
+      artifact_sha256,
+      artifact_bytes,
+      recorded_at_ms,
+    ),
+  ))
+}
+
+fn workflow_interface_snapshot_ref_snapshot_decoder() -> decode.Decoder(
+  WorkflowInterfaceSnapshotRefSnapshot,
+) {
+  use run_id <- decode.field("run_id", decode.string)
+  use workflow_id <- decode.field("workflow_id", decode.string)
+  use workflow_fingerprint <- decode.field(
+    "workflow_fingerprint",
+    decode.string,
+  )
+  use artifact_ref <- decode.field("artifact_ref", decode.string)
+  use artifact_sha256 <- decode.field("artifact_sha256", decode.string)
+  use artifact_bytes <- decode.field("artifact_bytes", decode.int)
+  use recorded_at_ms <- decode.field("recorded_at_ms", decode.int)
+  decode.success(WorkflowInterfaceSnapshotRefSnapshot(
+    run_id,
+    WorkflowInterfaceSnapshotRef(
       workflow_id,
       workflow_fingerprint,
       artifact_ref,

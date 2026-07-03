@@ -323,6 +323,45 @@ pub fn step_attempt_interruption_after_finished_preserves_finished_status_test()
     )
 }
 
+pub fn projection_exposes_workflow_interface_snapshot_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "workflow-started",
+        1000,
+        record.WorkflowRunStarted(
+          run_id: "run-1",
+          workflow_id: "workflow-a",
+          workflow_fingerprint: "fp-1",
+          issue_id: "issue-1",
+          issue_identifier: "SCH-1",
+          issue_fingerprint: "issue-fp-1",
+          observed_updated_at_ms: 999,
+          run_root: "/tmp/run-1",
+        ),
+      ),
+      record.with_id(
+        "workflow-interface-snapshot",
+        1010,
+        record.WorkflowInterfaceSnapshotRecorded(
+          run_id: "run-1",
+          workflow_id: "workflow-a",
+          workflow_fingerprint: "fp-1",
+          artifact_ref: "runs/run-1/workflow-interface.v1.json",
+          artifact_sha256: "sha-1",
+          artifact_bytes: 123,
+        ),
+      ),
+    ])
+
+  let assert Some(snapshot) =
+    projection.workflow_interface_snapshot(folded, "run-1")
+  assert snapshot.workflow_id == "workflow-a"
+  assert snapshot.artifact_ref == "runs/run-1/workflow-interface.v1.json"
+  assert snapshot.artifact_bytes == 123
+  assert projection.workflow_interface_snapshot(folded, "run-2") == None
+}
+
 pub fn projection_exposes_recovery_facts_test() {
   let records = [
     record.with_id(

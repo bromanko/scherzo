@@ -549,7 +549,7 @@ pub fn retry_step_unparks_issue_content_drift_parked_run_and_records_current_sna
   hub.stop(hub_subject)
 }
 
-pub fn retry_step_resume_validation_failure_is_operation_noop_test() {
+pub fn run_retry_step_exact_resume_validation_failure_is_operation_noop_test() {
   let dir = "test/tmp/daemon-retry-step-resume-validation-noop"
   let issue = issue("issue-1", "LIV-1368", "Todo")
   let #(workflow_path, root) = write_retry_step_workflow(dir)
@@ -594,7 +594,7 @@ pub fn retry_step_resume_validation_failure_is_operation_noop_test() {
   let assert Ok(first_result) =
     daemon.apply_operator_command(
       started.data,
-      command.RetryWorkflowStep(
+      command.RetryWorkflowStepExact(
         command.RetryWorkflowStepRunId("run-1"),
         Some("apply_feedback"),
       ),
@@ -628,7 +628,7 @@ pub fn retry_step_resume_validation_failure_is_operation_noop_test() {
   let assert Ok(second_result) =
     daemon.apply_operator_command(
       started.data,
-      command.RetryWorkflowStep(
+      command.RetryWorkflowStepExact(
         command.RetryWorkflowStepRunId("run-1"),
         Some("apply_feedback"),
       ),
@@ -772,7 +772,7 @@ pub fn retry_step_repairs_missing_provenance_after_finalization_accepts_test() {
   hub.stop(hub_subject)
 }
 
-pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnostic_test() {
+pub fn run_retry_step_exact_artifact_recovery_failure_returns_detail_and_retains_diagnostic_test() {
   let dir = "test/tmp/daemon-retry-step-artifact-detail"
   let issue = issue("issue-1", "LIV-509", "Todo")
   let #(workflow_path, root) = write_retry_step_workflow(dir)
@@ -807,7 +807,7 @@ pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnosti
   let assert Ok(result) =
     daemon.apply_operator_command(
       started.data,
-      command.RetryWorkflowStep(
+      command.RetryWorkflowStepExact(
         command.RetryWorkflowStepRunId("run-1"),
         Some("apply_feedback"),
       ),
@@ -838,7 +838,7 @@ pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnosti
   hub.stop(hub_subject)
 }
 
-pub fn retry_step_does_not_append_provenance_repair_when_finalization_rejects_test() {
+pub fn run_retry_step_exact_does_not_append_provenance_repair_when_finalization_rejects_test() {
   let dir = "test/tmp/daemon-retry-step-missing-provenance-corrupt-artifact"
   let issue = issue("issue-1", "LIV-696", "Todo")
   let #(workflow_path, root) = write_retry_step_workflow(dir)
@@ -870,7 +870,7 @@ pub fn retry_step_does_not_append_provenance_repair_when_finalization_rejects_te
   let assert Ok(result) =
     daemon.apply_operator_command(
       started.data,
-      command.RetryWorkflowStep(
+      command.RetryWorkflowStepExact(
         command.RetryWorkflowStepRunId("run-1"),
         Some("apply_feedback"),
       ),

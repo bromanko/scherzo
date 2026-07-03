@@ -7,14 +7,18 @@ import gleam/order.{type Order, Eq, Gt, Lt}
 import gleam/result
 import gleam/string
 import scherzo/control/command
+import scherzo/hash
 import scherzo/path
 import scherzo/retry_step_validation
+import scherzo/state/artifact_store
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
+import scherzo/workflow_interface_snapshot
 import scherzo/workflow_outcome
+import scherzo/workflow_retry_planner
 
 pub const retry_step_auto_repair_mode = "retry_step_auto"
 
@@ -89,6 +93,11 @@ type RepairBoundary {
     attempt_index: Int,
     normalization_records: List(record.RecordBody),
   )
+}
+
+type RepairPlanningMode {
+  TotalRetryPlanning
+  ExactRetryPlanning
 }
 
 type IssueTarget {
@@ -177,6 +186,37 @@ pub fn plan(
   selected_step_id: Option(String),
   current: recovery.CurrentWorkflowObservation,
 ) -> Result(RepairPlan, RepairError) {
+  plan_with_mode(
+    projection_state,
+    target,
+    selected_step_id,
+    current,
+    TotalRetryPlanning,
+  )
+}
+
+pub fn plan_exact(
+  projection_state: projection.Projection,
+  target: command.RetryWorkflowStepTarget,
+  selected_step_id: Option(String),
+  current: recovery.CurrentWorkflowObservation,
+) -> Result(RepairPlan, RepairError) {
+  plan_with_mode(
+    projection_state,
+    target,
+    selected_step_id,
+    current,
+    ExactRetryPlanning,
+  )
+}
+
+fn plan_with_mode(
+  projection_state: projection.Projection,
+  target: command.RetryWorkflowStepTarget,
+  selected_step_id: Option(String),
+  current: recovery.CurrentWorkflowObservation,
+  mode: RepairPlanningMode,
+) -> Result(RepairPlan, RepairError) {
   use run <- result.try(select_run(projection_state, target))
   case require_current_workflow(current) {
     Error(error) -> Error(error)
@@ -188,7 +228,8 @@ pub fn plan(
       dag,
       workspace_root,
     )) -> {
-      use _ <- result.try(validate_drift(
+      use _ <- result.try(validate_for_planning_mode(
+        mode,
         run,
         issue,
         current_workflow_id,
@@ -200,14 +241,24 @@ pub fn plan(
         workspace_root,
       ))
       let attempts = attempts_for_run(projection_state, run.run_id)
-      use failed_attempt <- result.try(select_repair_boundary(
+      use selected_boundary <- result.try(select_repair_boundary(
         run,
         attempts,
         dag,
         selected_step_id,
       ))
-      let excluded_steps =
-        descendants_including_self(dag, failed_attempt.step_id)
+      let #(failed_attempt, excluded_steps) =
+        repair_boundary_for_planning_mode(
+          mode,
+          projection_state,
+          run,
+          current_workflow_id,
+          current_workflow_fingerprint,
+          selected_boundary,
+          dag,
+          attempts,
+          workspace_root,
+        )
       let next_attempt_index =
         projection.next_attempt_index(
           projection_state,
@@ -230,9 +281,9 @@ pub fn plan(
       let issue_fingerprint =
         current_or_recorded(current_issue_fingerprint, run.issue_fingerprint)
       let workflow_fingerprint =
-        retry_step_validation.recorded_or_current(
-          run.workflow_fingerprint,
+        current_or_recorded(
           current_workflow_fingerprint,
+          run.workflow_fingerprint,
         )
       let provenance_repair =
         run.provenance_repair
@@ -294,6 +345,122 @@ pub fn plan(
     }
     Ok(_) ->
       Error(RepairError("workflow_unavailable", Some("workflow is unavailable")))
+  }
+}
+
+fn validate_for_planning_mode(
+  mode: RepairPlanningMode,
+  run: SelectedRun,
+  issue: tracker_issue.Issue,
+  current_workflow_id: String,
+  current_workflow_fingerprint: String,
+) -> Result(Nil, RepairError) {
+  case mode {
+    TotalRetryPlanning -> validate_issue_and_task(run, issue)
+    ExactRetryPlanning ->
+      validate_drift(
+        run,
+        issue,
+        current_workflow_id,
+        current_workflow_fingerprint,
+      )
+  }
+}
+
+fn repair_boundary_for_planning_mode(
+  mode: RepairPlanningMode,
+  projection_state: projection.Projection,
+  run: SelectedRun,
+  current_workflow_id: String,
+  current_workflow_fingerprint: String,
+  selected_boundary: RepairBoundary,
+  dag: workflow_dag.WorkflowDag,
+  attempts: List(projection.StepAttemptStatus),
+  workspace_root: String,
+) -> #(RepairBoundary, List(String)) {
+  case mode {
+    ExactRetryPlanning -> #(
+      selected_boundary,
+      descendants_including_self(dag, selected_boundary.step_id),
+    )
+    TotalRetryPlanning -> {
+      let retry_plan =
+        build_retry_plan(
+          projection_state,
+          run,
+          current_workflow_id,
+          current_workflow_fingerprint,
+          selected_boundary.step_id,
+          dag,
+          attempts,
+          workspace_root,
+        )
+      let boundary_step =
+        boundary_step_id(retry_plan, selected_boundary.step_id)
+      let selected_attempt_index =
+        boundary_attempt_index(
+          attempts,
+          boundary_step,
+          selected_boundary.attempt_index,
+        )
+      let boundary =
+        RepairBoundary(
+          step_id: boundary_step,
+          attempt_index: selected_attempt_index,
+          normalization_records: selected_boundary.normalization_records,
+        )
+      #(boundary, excluded_steps_for_plan(dag, boundary_step, retry_plan))
+    }
+  }
+}
+
+pub fn validate_exact_target(
+  projection_state: projection.Projection,
+  target: command.RetryWorkflowStepTarget,
+  current: recovery.CurrentWorkflowObservation,
+) -> Result(Nil, RepairError) {
+  use run <- result.try(select_run(projection_state, target))
+  case require_current_workflow(current) {
+    Error(error) -> Error(error)
+    Ok(recovery.CurrentWorkflow(
+      issue,
+      current_workflow_id,
+      current_workflow_fingerprint,
+      _,
+      _,
+      _,
+    )) -> {
+      use _ <- result.try(validate_issue_and_task(run, issue))
+      validate_exact_workflow(
+        run,
+        current_workflow_id,
+        current_workflow_fingerprint,
+      )
+    }
+    Ok(_) ->
+      Error(RepairError("workflow_unavailable", Some("workflow is unavailable")))
+  }
+}
+
+fn validate_exact_workflow(
+  run: SelectedRun,
+  current_workflow_id: String,
+  current_workflow_fingerprint: String,
+) -> Result(Nil, RepairError) {
+  case run.workflow_id != current_workflow_id {
+    True -> Error(RepairError("workflow_drift", Some("workflow id drifted")))
+    False ->
+      case
+        run.workflow_fingerprint != ""
+        && run.workflow_fingerprint != current_workflow_fingerprint
+      {
+        True ->
+          Error(RepairError(
+            "workflow_drift",
+            Some("workflow fingerprint drifted"),
+          ))
+        False -> Ok(Nil)
+      }
   }
 }
 
@@ -1183,6 +1350,28 @@ fn require_current_workflow(
   }
 }
 
+fn validate_issue_and_task(
+  run: SelectedRun,
+  issue: tracker_issue.Issue,
+) -> Result(Nil, RepairError) {
+  case run.issue_id != issue.id {
+    True -> Error(RepairError("issue_drift", Some("issue id drifted")))
+    False ->
+      case
+        run.issue_identifier != "" && run.issue_identifier != issue.identifier
+      {
+        True ->
+          Error(RepairError("issue_drift", Some("issue identifier drifted")))
+        False ->
+          case task_ref_matches_issue(run.task_ref, issue) {
+            True -> Ok(Nil)
+            False ->
+              Error(RepairError("issue_drift", Some("task identity drifted")))
+          }
+      }
+  }
+}
+
 fn validate_drift(
   run: SelectedRun,
   issue: tracker_issue.Issue,
@@ -1234,6 +1423,328 @@ fn validate_fingerprints_and_task(
         False ->
           Error(RepairError("issue_drift", Some("task identity drifted")))
       }
+  }
+}
+
+fn build_retry_plan(
+  projection_state: projection.Projection,
+  run: SelectedRun,
+  current_workflow_id: String,
+  current_workflow_fingerprint: String,
+  repair_step_id: String,
+  dag: workflow_dag.WorkflowDag,
+  attempts: List(projection.StepAttemptStatus),
+  workspace_root: String,
+) -> workflow_retry_planner.RetryPlan {
+  let compatibility =
+    workflow_compatibility(
+      projection_state,
+      run.run_id,
+      run.workflow_id,
+      run.workflow_fingerprint,
+      current_workflow_id,
+      current_workflow_fingerprint,
+      repair_step_id,
+      dag,
+      workspace_root,
+    )
+  let repair_prefix =
+    repair_prefix_for_compatibility(dag, repair_step_id, compatibility)
+  let run_workflow_fingerprint =
+    retry_planner_run_workflow_fingerprint(
+      run.workflow_id,
+      run.workflow_fingerprint,
+      current_workflow_id,
+      current_workflow_fingerprint,
+    )
+  workflow_retry_planner.plan(workflow_retry_planner.RetryPlannerInput(
+    run_workflow_id: run.workflow_id,
+    run_workflow_fingerprint: run_workflow_fingerprint,
+    current_workflow_id: current_workflow_id,
+    current_workflow_fingerprint: current_workflow_fingerprint,
+    repair_step_id: repair_step_id,
+    dag: dag,
+    attempted_step_ids: attempts
+      |> list.map(fn(attempt) {
+        let #(_, step_id, _) = attempt_identity(attempt)
+        step_id
+      }),
+    artifact_proofs: artifact_proofs_for_prefix(
+      attempts,
+      repair_prefix,
+      artifact_store.new(workspace_root),
+    ),
+    compatibility: compatibility,
+    guards: workflow_retry_planner.RetryGuards(
+      operator_hold: False,
+      terminal_issue: False,
+      dispatch_paused: False,
+      duplicate_active: False,
+    ),
+  ))
+}
+
+fn retry_planner_run_workflow_fingerprint(
+  recorded_workflow_id: String,
+  recorded_workflow_fingerprint: String,
+  current_workflow_id: String,
+  current_workflow_fingerprint: String,
+) -> String {
+  case
+    recorded_workflow_id == current_workflow_id
+    && string.trim(recorded_workflow_fingerprint) == ""
+  {
+    True -> current_workflow_fingerprint
+    False -> recorded_workflow_fingerprint
+  }
+}
+
+fn workflow_compatibility(
+  projection_state: projection.Projection,
+  run_id: String,
+  recorded_workflow_id: String,
+  recorded_workflow_fingerprint: String,
+  current_workflow_id: String,
+  current_workflow_fingerprint: String,
+  repair_step_id: String,
+  dag: workflow_dag.WorkflowDag,
+  workspace_root: String,
+) -> workflow_retry_planner.WorkflowCompatibility {
+  case
+    recorded_workflow_id == current_workflow_id
+    && recorded_workflow_fingerprint == current_workflow_fingerprint
+  {
+    True -> workflow_retry_planner.ExactWorkflowMatch
+    False ->
+      case projection.workflow_interface_snapshot(projection_state, run_id) {
+        None -> workflow_retry_planner.InterfaceSnapshotMissing
+        Some(snapshot_ref) ->
+          case
+            artifact_store.read_artifact_unverified(
+              artifact_store.new(workspace_root),
+              snapshot_ref.artifact_ref,
+            )
+          {
+            Error(_) -> workflow_retry_planner.InterfaceSnapshotMissing
+            Ok(contents) ->
+              case workflow_interface_snapshot.decode_string(contents) {
+                Error(_) -> workflow_retry_planner.InterfaceSnapshotMissing
+                Ok(recorded_snapshot) -> {
+                  let current_snapshot =
+                    workflow_interface_snapshot.from_dag(
+                      dag,
+                      current_workflow_fingerprint,
+                    )
+                  case
+                    workflow_interface_snapshot.compatible_prefix(
+                      recorded_snapshot,
+                      current_snapshot,
+                      repair_step_id,
+                    )
+                  {
+                    Some(#(preserved_step_ids, rewind_step_id)) ->
+                      workflow_retry_planner.CompatiblePrefix(
+                        preserved_step_ids,
+                        rewind_step_id,
+                      )
+                    None -> workflow_retry_planner.WorkflowDagIncompatible
+                  }
+                }
+              }
+          }
+      }
+  }
+}
+
+fn repair_prefix_for_compatibility(
+  dag: workflow_dag.WorkflowDag,
+  repair_step_id: String,
+  compatibility: workflow_retry_planner.WorkflowCompatibility,
+) -> List(String) {
+  case compatibility {
+    workflow_retry_planner.CompatiblePrefix(preserved_step_ids, _) ->
+      preserved_step_ids
+    _ -> repair_prefix(dag, repair_step_id)
+  }
+}
+
+fn repair_prefix(
+  dag: workflow_dag.WorkflowDag,
+  repair_step_id: String,
+) -> List(String) {
+  dag
+  |> workflow_dag.steps
+  |> list.map(fn(step) { step.id })
+  |> list.filter(fn(step_id) { is_upstream_of(dag, step_id, repair_step_id) })
+}
+
+fn is_upstream_of(
+  dag: workflow_dag.WorkflowDag,
+  candidate_step_id: String,
+  repair_step_id: String,
+) -> Bool {
+  candidate_step_id != repair_step_id
+  && depends_on_path(dag, repair_step_id, candidate_step_id)
+}
+
+fn depends_on_path(
+  dag: workflow_dag.WorkflowDag,
+  from_step_id: String,
+  target_step_id: String,
+) -> Bool {
+  case from_step_id == target_step_id {
+    True -> True
+    False ->
+      case workflow_dag.step_by_id(dag, from_step_id) {
+        Error(Nil) -> False
+        Ok(step) ->
+          step.depends_on
+          |> list.any(fn(parent_id) {
+            depends_on_path(dag, parent_id, target_step_id)
+          })
+      }
+  }
+}
+
+fn artifact_proofs_for_prefix(
+  attempts: List(projection.StepAttemptStatus),
+  prefix_step_ids: List(String),
+  store: artifact_store.Store,
+) -> List(workflow_retry_planner.ArtifactProof) {
+  prefix_step_ids
+  |> list.map(fn(step_id) { artifact_proof_for_step(attempts, step_id, store) })
+}
+
+fn artifact_proof_for_step(
+  attempts: List(projection.StepAttemptStatus),
+  step_id: String,
+  store: artifact_store.Store,
+) -> workflow_retry_planner.ArtifactProof {
+  case latest_finished_attempt_for_step(attempts, step_id) {
+    None ->
+      workflow_retry_planner.ArtifactUnverified(
+        step_id,
+        "artifact_missing_attempt",
+      )
+    Some(projection.StepAttemptFinishedStatus(
+      artifact_ref: artifact_ref,
+      artifact_sha256: artifact_sha256,
+      ..,
+    )) ->
+      case artifact_store.read_artifact_unverified(store, artifact_ref) {
+        Error(artifact_store.MissingStepArtifact(_)) ->
+          workflow_retry_planner.ArtifactMissing(step_id)
+        Error(_) ->
+          workflow_retry_planner.ArtifactUnverified(
+            step_id,
+            "artifact_unreadable",
+          )
+        Ok(contents) -> {
+          let current_sha256 = hash.sha256_hex(contents)
+          case current_sha256 == artifact_sha256 {
+            False -> workflow_retry_planner.ArtifactShaMismatch(step_id)
+            True ->
+              case artifact_store.decode_step_artifact_contents(contents) {
+                Ok(_) -> workflow_retry_planner.ArtifactVerified(step_id)
+                Error(_) ->
+                  workflow_retry_planner.ArtifactUnverified(
+                    step_id,
+                    "artifact_decode_failed",
+                  )
+              }
+          }
+        }
+      }
+    Some(_) ->
+      workflow_retry_planner.ArtifactUnverified(
+        step_id,
+        "artifact_missing_attempt",
+      )
+  }
+}
+
+fn latest_finished_attempt_for_step(
+  attempts: List(projection.StepAttemptStatus),
+  step_id: String,
+) -> Option(projection.StepAttemptStatus) {
+  attempts
+  |> list.filter(fn(status) {
+    case status {
+      projection.StepAttemptFinishedStatus(step_id: status_step_id, ..) ->
+        status_step_id == step_id
+      _ -> False
+    }
+  })
+  |> list.sort(by: compare_attempt_status_desc)
+  |> first_attempt()
+}
+
+fn compare_attempt_status_desc(
+  left: projection.StepAttemptStatus,
+  right: projection.StepAttemptStatus,
+) -> Order {
+  let #(_, _, left_attempt_index) = attempt_identity(left)
+  let #(_, _, right_attempt_index) = attempt_identity(right)
+  int_compare_desc(left_attempt_index, right_attempt_index)
+}
+
+fn first_attempt(
+  attempts: List(projection.StepAttemptStatus),
+) -> Option(projection.StepAttemptStatus) {
+  case attempts {
+    [attempt, ..] -> Some(attempt)
+    [] -> None
+  }
+}
+
+fn boundary_step_id(
+  retry_plan: workflow_retry_planner.RetryPlan,
+  fallback: String,
+) -> String {
+  case retry_plan.safe_point {
+    workflow_retry_planner.ResumeFrom(step_id)
+    | workflow_retry_planner.RewindTo(step_id) -> step_id
+    workflow_retry_planner.FreshStart | workflow_retry_planner.HardStop(_) ->
+      fallback
+  }
+}
+
+fn boundary_attempt_index(
+  attempts: List(projection.StepAttemptStatus),
+  step_id: String,
+  fallback: Int,
+) -> Int {
+  case latest_attempt_index_for_step(attempts, step_id, fallback) {
+    attempt_index -> attempt_index
+  }
+}
+
+fn latest_attempt_index_for_step(
+  attempts: List(projection.StepAttemptStatus),
+  step_id: String,
+  fallback: Int,
+) -> Int {
+  attempts
+  |> list.fold(fallback, fn(current, status) {
+    let #(_, status_step_id, attempt_index) = attempt_identity(status)
+    case status_step_id == step_id && attempt_index > current {
+      True -> attempt_index
+      False -> current
+    }
+  })
+}
+
+fn excluded_steps_for_plan(
+  dag: workflow_dag.WorkflowDag,
+  selected_step_id: String,
+  retry_plan: workflow_retry_planner.RetryPlan,
+) -> List(String) {
+  case retry_plan.safe_point {
+    workflow_retry_planner.FreshStart ->
+      dag
+      |> workflow_dag.steps
+      |> list.map(fn(step) { step.id })
+    _ -> descendants_including_self(dag, selected_step_id)
   }
 }
 

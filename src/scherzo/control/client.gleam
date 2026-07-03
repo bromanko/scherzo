@@ -437,6 +437,8 @@ fn authenticate(
       protocol.RetryIssueStartFresh(id, control_file.token, issue_ref, reason)
     protocol.RetryWorkflowStep(id, _, target, step_id) ->
       protocol.RetryWorkflowStep(id, control_file.token, target, step_id)
+    protocol.RetryWorkflowStepExact(id, _, target, step_id) ->
+      protocol.RetryWorkflowStepExact(id, control_file.token, target, step_id)
     protocol.RecollectWorkflowOutputs(id, _, run_id) ->
       protocol.RecollectWorkflowOutputs(id, control_file.token, run_id)
     protocol.RunFinalize(
@@ -696,6 +698,7 @@ fn safe_read_command_for_operator(
         <> " --json --timeout 10s",
       )
     command.RetryWorkflowStep(_, _)
+    | command.RetryWorkflowStepExact(_, _)
     | command.RecollectWorkflowOutputs(_)
     | command.RunFinalize(_, _, _, _, _, _, _)
     | command.RetryArtifactPublication(_, _)

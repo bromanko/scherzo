@@ -29,6 +29,13 @@ pub fn workflow_output_manifest(
   dict.get(manifests, run_id) |> from_result
 }
 
+pub fn workflow_interface_snapshot(
+  snapshots: Dict(String, snapshot),
+  run_id: String,
+) -> Option(snapshot) {
+  dict.get(snapshots, run_id) |> from_result
+}
+
 pub fn latest_workflow_repair(
   repairs: Dict(String, repair),
   run_id: String,

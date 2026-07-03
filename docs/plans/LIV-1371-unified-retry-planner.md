@@ -53,10 +53,17 @@ Milestone 5 completes documentation, helper inventory, full validation, and lint
 - [x] (2026-07-03) Read the repo-local ExecPlan guidance and prepared this concise review document with mechanical implementation detail reserved for the structured pack.
 - [x] (2026-07-03) Inspected the current retry-step planner, startup/dispatch recovery planner, daemon queued operation path, command parser, artifact recovery path, and superseded-run projection support.
 - [x] (2026-07-03) Incorporated review feedback by tightening milestone specificity, acceptance evidence, test obligations, docs/helper inventory, full validation and lint obligations, and explicit non-pre-publish treatment for provider-live/cache, browser, and manual dogfood checks.
+- [x] (2026-07-03) Implemented Milestone 1's pure retry safe-point lattice in `src/scherzo/workflow_retry_planner.gleam` and added matrix coverage in `test/workflow_retry_planner_test.gleam`.
+- [x] (2026-07-03) Implemented Milestone 2 workflow-interface snapshot durability and projection plumbing in `src/scherzo/workflow_interface_snapshot.gleam`, checkpoint/artifact-store/record/projection plumbing, and snapshot/state tests.
+- [x] (2026-07-03) Implemented Milestone 3 daemon retry execution through the unified planner for common retry operations while preserving an exact fail-closed `run retry-step` path.
+- [x] (2026-07-03) Implemented Milestone 4 CLI/control aliases: `retry step`, `retry all`, `--from-scratch`, and exact `run retry-step` protocol separation.
+- [x] (2026-07-03) Completed Milestone 5 documentation/helper inventory and full validation.
 
 ## Surprises & Discoveries
 
 `workflow_repair.plan` currently checks issue and workflow drift before selecting the repair boundary, so a workflow YAML change prevents even a safe fresh degradation from the retry-step operation path. Artifact corruption is discovered during recovery finalization after a retry-step operation has already been queued, which is why the current result becomes `artifact_recovery_failed` rather than rewinding before the corrupt artifact. The repository already has `workflow_run_superseded` records and projection support, so fresh degradation can be represented additively instead of inventing a destructive migration.
+
+The first planner milestone can be delivered without touching daemon or ledger code by keeping the planner pure and expressing changed-workflow proof as a compatibility-prefix input. That gives later milestones a stable decision vocabulary to wire into artifact verification and snapshot durability.
 
 ## Decision Log
 
@@ -78,7 +85,11 @@ Milestone 5 completes documentation, helper inventory, full validation, and lint
 
 ## Outcomes & Retrospective
 
-Implementation has not started. The expected outcome is that ordinary retry no longer strands operators on drift or artifact-recovery rejections: it either starts a safe retained-run resume or starts a fresh superseding run with explicit provenance. The retrospective should compare final evidence against the three acceptance outcomes: workflow YAML changed mid-run, corrupt upstream artifact, and a matrix of retained failed/interrupted states.
+All implementation milestones are complete. The repository now has a standalone retry planner that classifies exact resume, changed-boundary rewind, artifact-prefix rewind, fresh degradation, and hard-stop guard cases with explicit preserved/discarded step sets and stable reason strings. New workflow runs record workflow-interface snapshot artifacts and ledger references so changed-workflow retry can prove compatibility rather than guessing.
+
+Common retry paths now use the unified lattice and degrade to a rewound boundary or fresh supersession for ordinary retained failed/interrupted runs instead of surfacing `workflow_drift` or `artifact_recovery_failed` as stranded common-retry outcomes. The `run retry-step <run-id> --step <step-id>` expert override remains exact and fail-closed. The CLI/control surface includes `retry step`, `retry all`, `task retry --from-scratch`, and protocol separation for exact retry-step.
+
+Validation evidence: `direnv exec . gleam test`, `direnv exec . gleam format --check src test`, `direnv exec . gleam run -m glinter`, `direnv exec . gleam run -m scherzo_lint`, and `.scherzo/workflows/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-1371-unified-retry-planner.md` all exit zero in this workspace. Glinter/Scherzo lint still print the repository's pre-existing warning inventory with 0 errors. No `.scherzo/workflows/scripts/*`, workflow schema, provider-facing structured-output helper, or review-lane contract migration was needed; provider-live/cache, browser, and manual dogfood evidence remain out of scope and deferred.
 
 ## Validation and Acceptance
 
