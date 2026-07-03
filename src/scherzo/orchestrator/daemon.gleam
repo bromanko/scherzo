@@ -2983,7 +2983,10 @@ fn retry_workflow_step_for_operator(
             )
           {
             Error(result) -> #(state, result)
-            Ok(_) -> {
+            Ok(retry_step_operation.IssuePreflight(
+              released_park: released_park,
+              ..,
+            )) -> {
               let operation_id =
                 make_retry_step_operation_id(state, run_id, step_id)
               let queued_body =
@@ -3001,15 +3004,39 @@ fn retry_workflow_step_for_operator(
                   requested_step_id: step_id,
                   publication_id: None,
                 )
-              queue_control_operation(
-                state,
-                operator_command,
-                operation_id,
-                queued_body,
-                "retry_step_queue_append_failed",
-                "failed to append retry-step operation",
-                "retry-step accepted; poll query operation-status for completion",
-              )
+              let queue_released_park =
+                retry_step_operation.queue_released_park(released_park)
+              let queued_bodies =
+                list.append(
+                  retry_step_operation.unpark_bodies(
+                    queue_released_park,
+                    state.dependencies.now_ms(),
+                  ),
+                  [queued_body],
+                )
+              let #(state, result) =
+                queue_control_operation_with_bodies(
+                  state,
+                  operator_command,
+                  operation_id,
+                  queued_bodies,
+                  "retry_step_queue_append_failed",
+                  "failed to append retry-step operation",
+                  "retry-step accepted; poll query operation-status for completion",
+                )
+              case result.status {
+                command.Queued -> #(
+                  State(
+                    ..state,
+                    runtime: retry_step_operation.clear_released_park(
+                      state.runtime,
+                      queue_released_park,
+                    ),
+                  ),
+                  result,
+                )
+                _ -> #(state, result)
+              }
             }
           }
       }
@@ -3025,8 +3052,28 @@ fn queue_control_operation(
   append_failure_message: String,
   queued_message: String,
 ) -> #(State, command.CommandResult) {
+  queue_control_operation_with_bodies(
+    state,
+    operator_command,
+    operation_id,
+    [queued_body],
+    append_event,
+    append_failure_message,
+    queued_message,
+  )
+}
+
+fn queue_control_operation_with_bodies(
+  state: State,
+  operator_command: command.OperatorCommand,
+  operation_id: String,
+  queued_bodies: List(record.RecordBody),
+  append_event: String,
+  append_failure_message: String,
+  queued_message: String,
+) -> #(State, command.CommandResult) {
   let #(state, appended) =
-    append_ledger_bodies(state, [queued_body], append_event)
+    append_ledger_bodies(state, queued_bodies, append_event)
   case appended {
     False -> #(
       state,
@@ -3369,49 +3416,29 @@ fn retry_step_issue_preflight(
   target: command.RetryWorkflowStepTarget,
   run_id: String,
   issue_id: String,
-) -> Result(tracker_issue.Issue, command.CommandResult) {
-  case issue_is_active_or_pending_except_parked(state, issue_id) {
-    True ->
-      Error(command.rejected(
-        operator_command,
-        "issue_already_active",
-        Some("issue already has an active or pending workflow"),
-      ))
-    False ->
-      case
-        retry_step_operation.parked_issue(
-          state.runtime,
-          projection_state,
-          operator_command,
-          run_id,
-          issue_id,
-        )
-      {
-        Error(result) -> Error(result)
-        Ok(Nil) ->
-          case fetch_issue_by_id(state, issue_id) {
-            Error(status) ->
-              Error(command.result_for(operator_command, status, None))
-            Ok(issue) ->
-              case core.is_terminal(state.workflow.effective, issue.state) {
-                True ->
-                  Error(command.rejected(
-                    operator_command,
-                    "issue_state_drift:terminal_state",
-                    Some(
-                      "run "
-                      <> command.retry_workflow_step_target_to_string(target)
-                      <> " for issue "
-                      <> issue.identifier
-                      <> " is currently in terminal state "
-                      <> issue_state.to_string(issue.state),
-                    ),
-                  ))
-                False -> Ok(issue)
-              }
-          }
-      }
-  }
+) -> Result(retry_step_operation.IssuePreflight, command.CommandResult) {
+  retry_step_operation.issue_preflight(
+    state.runtime,
+    projection_state,
+    state.workflow.effective,
+    operator_command,
+    target,
+    run_id,
+    issue_id,
+    fn(issue_id) { fetch_issue_by_id(state, issue_id) },
+    fn(released_park) {
+      retry_step_operation.issue_is_active_or_pending(
+        state.runtime,
+        state.tracker_adapter.kind,
+        issue_id,
+        released_park,
+        has_active_run(state, issue_id),
+        state.pending_claims,
+        state.pending_dispatch_validations,
+        state.pending_review_lane_preflights,
+      )
+    },
+  )
 }
 
 fn run_queued_control_operation(state: State, operation_id: String) -> State {
@@ -3628,7 +3655,11 @@ fn execute_retry_step_operation(
         )
       {
         Error(result) -> queued_control_operation_failure_result(result)
-        Ok(issue) -> continue_retry_step_operation(state, operation, issue)
+        Ok(retry_step_operation.IssuePreflight(
+          issue: issue,
+          released_park: released_park,
+        )) ->
+          continue_retry_step_operation(state, operation, issue, released_park)
       }
   }
 }
@@ -3637,6 +3668,7 @@ fn continue_retry_step_operation(
   state: State,
   operation: projection.ControlOperationStatus,
   issue: tracker_issue.Issue,
+  released_park: Option(orchestrator_state.ParkedEntry),
 ) -> QueuedControlOperationResult {
   let projection_state = state.ledger_projection
   let target =
@@ -3679,15 +3711,21 @@ fn continue_retry_step_operation(
               let message = retry_step_applied_message(plan)
               let bodies =
                 list.append(
-                  plan.records_to_append,
+                  retry_step_operation.unpark_bodies(
+                    retry_step_operation.queue_released_park(released_park),
+                    state.dependencies.now_ms(),
+                  ),
                   list.append(
-                    ledger_record_bodies(finalization.records_to_append),
-                    [
-                      record.ControlOperationCompleted(
-                        operation.operation_id,
-                        Some(message),
-                      ),
-                    ],
+                    plan.records_to_append,
+                    list.append(
+                      ledger_record_bodies(finalization.records_to_append),
+                      [
+                        record.ControlOperationCompleted(
+                          operation.operation_id,
+                          Some(message),
+                        ),
+                      ],
+                    ),
                   ),
                 )
               QueuedControlOperationSucceeded(bodies, resumption)
@@ -4296,23 +4334,6 @@ fn worker_issue_state_name_from_resolution(
       Some(issue_state.to_string(handle.issue.state))
     _ -> None
   }
-}
-
-fn issue_is_active_or_pending_except_parked(
-  state: State,
-  issue_id: String,
-) -> Bool {
-  let identity =
-    orchestrator_state.issue_id_identity_for_backend(
-      issue_id,
-      state.tracker_adapter.kind,
-    )
-  has_active_run(state, issue_id)
-  || dict.has_key(state.pending_claims, identity)
-  || dict.has_key(state.pending_dispatch_validations, identity)
-  || dict.has_key(state.pending_review_lane_preflights, identity)
-  || dict.has_key(state.runtime.claimed, identity)
-  || dict.has_key(state.runtime.retry_attempts, identity)
 }
 
 fn ledger_record_bodies(

@@ -333,8 +333,28 @@ fn ps_status_to_string(status: event.SessionStatus) -> String {
 
 fn ps_recovery_to_string(recovery: Option(event.RecoveryInfo)) -> String {
   case recovery {
-    Some(recovery) -> event.recovery_status_to_string(recovery.status)
+    Some(recovery) -> recovery_status_label(recovery)
     None -> "-"
+  }
+}
+
+fn recovery_status_label(recovery: event.RecoveryInfo) -> String {
+  case recovery.status {
+    event.Parked -> parked_recovery_status_label(recovery)
+    _ -> event.recovery_status_to_string(recovery.status)
+  }
+}
+
+fn parked_recovery_status_label(recovery: event.RecoveryInfo) -> String {
+  case recovery.park_release_policy, recovery.park_reason {
+    Some("auto_unpark_on_issue_change"), Some("worker_failure") ->
+      "quarantined (failure backoff)"
+    Some("explicit_unpark_only"), _ ->
+      case recovery.drift_kind {
+        Some(_) -> event.recovery_status_to_string(recovery.status)
+        None -> "parked (operator)"
+      }
+    _, _ -> event.recovery_status_to_string(recovery.status)
   }
 }
 
@@ -444,9 +464,7 @@ fn print_recovery_section(
     None -> output_line("recovery: -")
     Some(recovery) -> {
       output_line("recovery:")
-      output_line(
-        "  status: " <> event.recovery_status_to_string(recovery.status),
-      )
+      output_line("  status: " <> recovery_status_label(recovery))
       output_line("  source: " <> recovery.source)
       case recovery.message {
         Some(message) -> output_line("  reason: " <> message)

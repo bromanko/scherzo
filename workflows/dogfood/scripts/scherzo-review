@@ -2947,6 +2947,22 @@ def json_clone(value: Any) -> Any:
     return json.loads(json.dumps(value))
 
 
+def location_dedupe_key(location: dict[str, Any]) -> str:
+    return json.dumps(location, sort_keys=True, separators=(",", ":"))
+
+
+def dedupe_locations(locations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for location in locations:
+        key = location_dedupe_key(location)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(location)
+    return deduped
+
+
 def severity_rank(severity: Any) -> int:
     if isinstance(severity, str):
         return SEVERITY_RANK.get(severity, -1)
