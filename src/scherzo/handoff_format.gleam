@@ -616,6 +616,8 @@ fn suggested_next_action(code: String) -> String {
       case code {
         "prepare_plan_ambiguous" ->
           "Clarify the Linear issue so it references exactly one ExecPlan path, then retry the workflow."
+        "execplan_metadata_invalid" ->
+          "Rerun `scherzo-execplan implementation-prepare` to refresh the ExecPlan bundle metadata, ensure it points at one repository-relative Markdown ExecPlan, then retry the workflow."
         "base_refresh_conflict" ->
           "Refresh or reconcile the PR base, then retry the workflow."
         "publish_rebase_conflict" ->
