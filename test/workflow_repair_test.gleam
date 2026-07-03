@@ -66,6 +66,90 @@ pub fn retry_step_can_repair_interrupted_attempt_test() {
   )
 }
 
+pub fn retry_step_can_plan_scheduled_run_without_tracker_issue_test() {
+  let run_id = "schedule-nightly-20260703T000000Z"
+  let projection =
+    projection.fold([
+      record.with_id(
+        "scheduled-started",
+        1,
+        record.WorkflowRunStarted(
+          run_id: run_id,
+          workflow_id: "implementation",
+          workflow_fingerprint: "workflow-fp-1",
+          issue_id: "",
+          issue_identifier: "nightly",
+          issue_fingerprint: "",
+          observed_updated_at_ms: 0,
+          run_root: "test/tmp/workflow-repair/scheduled/nightly/run",
+        ),
+      ),
+      record.with_id(
+        "apply-feedback-prepared",
+        2,
+        record.StepAttemptPrepared(
+          run_id: run_id,
+          workflow_id: "implementation",
+          step_id: "apply_feedback",
+          attempt_index: 1,
+          workspace_name: "main",
+          workspace_path: "test/tmp/workflow-repair/scheduled/nightly/run/main",
+          run_root: "test/tmp/workflow-repair/scheduled/nightly/run",
+          source_workspace_name: None,
+          source_workspace_path: None,
+        ),
+      ),
+      record.with_id(
+        "apply-feedback-started",
+        3,
+        record.StepAttemptStarted(
+          run_id: run_id,
+          workflow_id: "implementation",
+          step_id: "apply_feedback",
+          attempt_index: 1,
+          operator_session_id: "session-scheduled",
+          external_session_ref: None,
+          continuation_capable: False,
+        ),
+      ),
+      record.with_id(
+        "apply-feedback-interrupted",
+        4,
+        record.StepAttemptInterrupted(
+          run_id: run_id,
+          workflow_id: "implementation",
+          step_id: "apply_feedback",
+          attempt_index: 1,
+          reason: "daemon_shutdown",
+        ),
+      ),
+      record.with_id(
+        "workflow-interrupted",
+        5,
+        record.WorkflowRunInterrupted(
+          run_id: run_id,
+          workflow_id: "implementation",
+          issue_id: "",
+          reason: "daemon_shutdown",
+        ),
+      ),
+    ])
+  let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId(run_id),
+      Some("apply_feedback"),
+      current_scheduled_workflow(dag),
+    )
+
+  assert plan.issue_id == ""
+  assert plan.issue_identifier == "nightly"
+  assert plan.candidate.task_ref.task_remote_id == ""
+  assert plan.selected_step_id == "apply_feedback"
+}
+
 pub fn retry_step_reconstructs_missing_workflow_run_provenance_test() {
   let projection = projection.fold(missing_provenance_interrupted_run_records())
   let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
@@ -1176,6 +1260,35 @@ fn current_workflow(
     workflow_id: "implementation",
     workflow_fingerprint: "workflow-fp-1",
     issue_fingerprint: tracker_issue.content_fingerprint(issue),
+    dag: dag,
+    workspace_root: "test/tmp/workflow-repair",
+  )
+}
+
+fn current_scheduled_workflow(
+  dag: workflow_dag.WorkflowDag,
+) -> recovery.CurrentWorkflowObservation {
+  let issue =
+    tracker_issue.Issue(
+      id: "",
+      identifier: "nightly",
+      title: "Scheduled job nightly",
+      description: None,
+      priority: None,
+      state: issue_state.from_string_unchecked("scheduled"),
+      branch_name: None,
+      url: None,
+      labels: [],
+      blocked_by: [],
+      blocked_by_complete: True,
+      created_at: None,
+      updated_at: None,
+    )
+  recovery.CurrentWorkflow(
+    issue: issue,
+    workflow_id: "implementation",
+    workflow_fingerprint: "workflow-fp-1",
+    issue_fingerprint: "",
     dag: dag,
     workspace_root: "test/tmp/workflow-repair",
   )

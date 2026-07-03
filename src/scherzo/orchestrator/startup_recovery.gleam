@@ -339,7 +339,8 @@ fn recover_enabled_scheduled_run(
       )
     projection.ScheduledIdle
     | projection.ScheduledTerminalSuccess
-    | projection.ScheduledTerminalFailure -> #(runtime, effects)
+    | projection.ScheduledTerminalFailure
+    | projection.ScheduledQuarantined -> #(runtime, effects)
   }
 }
 
@@ -644,7 +645,8 @@ fn add_startup_park_report(
   release_policy: Option(String),
 ) -> List(adapter.ParkReport) {
   case
-    list.contains(seen_issue_ids, issue_id)
+    string.trim(issue_id) == ""
+    || list.contains(seen_issue_ids, issue_id)
     || claim_abandonment.is_reason_text(reason_text)
   {
     True -> startup_park_reports_loop(rest, run_ids, seen_issue_ids, reports)

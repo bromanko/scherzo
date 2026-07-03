@@ -498,6 +498,11 @@ pub type RecordBody {
     next_retry_at_ms: Int,
     generation: Int,
   )
+  ScheduledJobQuarantineReleased(
+    job_id: String,
+    reason: String,
+    released_at_ms: Int,
+  )
   OutboxPending(
     outbox_id: String,
     issue_id: String,
@@ -855,6 +860,7 @@ pub fn kind(body: RecordBody) -> String {
     ScheduledRunRetryCancelled(..) -> "scheduled_run_retry_cancelled"
     ScheduledFailureReported(..) -> "scheduled_failure_reported"
     ScheduledFailureReportFailed(..) -> "scheduled_failure_report_failed"
+    ScheduledJobQuarantineReleased(..) -> "scheduled_job_quarantine_released"
     OutboxPending(..) -> "outbox_pending"
     OutboxPendingV2(..) | OutboxPendingV2WithTask(..) -> "outbox_pending_v2"
     OutboxAttempted(..) | OutboxAttemptedWithTask(..) -> "outbox_attempted"
@@ -1724,6 +1730,12 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         error_message,
         next_retry_at_ms,
         generation,
+      )
+    ScheduledJobQuarantineReleased(job_id, reason, released_at_ms) ->
+      scheduled_record.quarantine_released_entries(
+        job_id,
+        reason,
+        released_at_ms,
       )
     OutboxPending(outbox_id, issue_id, outbox_kind, dedupe_key) ->
       outbox_record.pending_entries(
@@ -2981,7 +2993,8 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
     | "scheduled_run_retry_scheduled"
     | "scheduled_run_retry_cancelled"
     | "scheduled_failure_reported"
-    | "scheduled_failure_report_failed" -> {
+    | "scheduled_failure_report_failed"
+    | "scheduled_job_quarantine_released" -> {
       use decoded <- result.try(
         scheduled_record.decode(
           fields.kind,
@@ -3231,6 +3244,11 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
             next_retry_at_ms,
             generation,
           ))
+        scheduled_record.ScheduledJobQuarantineReleasedBody(
+          job_id,
+          reason,
+          released_at_ms,
+        ) -> Ok(ScheduledJobQuarantineReleased(job_id, reason, released_at_ms))
       }
     }
     "outbox_pending" -> {

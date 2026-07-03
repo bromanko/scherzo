@@ -225,6 +225,16 @@ pub fn apply(
           #(context.state, result)
         }
       }
+    command.ReenableSchedule(_) -> {
+      let result =
+        command.rejected(
+          operator_command,
+          "daemon_shell_required",
+          Some("schedule re-enable must be handled by the daemon shell path"),
+        )
+      log_context_result(context, context.state, result, [])
+      #(context.state, result)
+    }
     command.WorkItemAction(_) -> {
       let result =
         command.rejected(

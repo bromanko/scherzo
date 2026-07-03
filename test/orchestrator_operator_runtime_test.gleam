@@ -111,6 +111,9 @@ fn handlers(
     schedule_run_now_for_operator: fn(state, _, _) {
       #(state, command.applied(command.ReloadWorkflow, None), [])
     },
+    reenable_schedule_for_operator: fn(state, _, _) {
+      #(state, command.applied(command.ReloadWorkflow, None), [])
+    },
     abort_session_for_operator_sync: fn(state, _, _, _) {
       #(state, command.applied(command.ReloadWorkflow, None), [])
     },

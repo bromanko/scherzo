@@ -491,6 +491,7 @@ pub type ScheduledRunState {
   ScheduledReportRetryWaiting
   ScheduledTerminalSuccess
   ScheduledTerminalFailure
+  ScheduledQuarantined
 }
 
 pub type ScheduledRunSummary {
@@ -539,6 +540,9 @@ pub type ScheduledJobStatus {
     failure_dedupe_key: Option(String),
     report_retry: Option(ScheduledReportRetry),
     recent_run_ids: List(String),
+    consecutive_failure_count: Int,
+    quarantine_reason: Option(String),
+    quarantined_at_ms: Option(Int),
   )
 }
 
@@ -2079,6 +2083,8 @@ pub fn apply(
       apply_scheduled_record(projection, ledger_record)
     record.ScheduledFailureReportFailed(..) ->
       apply_scheduled_record(projection, ledger_record)
+    record.ScheduledJobQuarantineReleased(..) ->
+      apply_scheduled_record(projection, ledger_record)
     record.OutboxPending(outbox_id, issue_id, outbox_kind, dedupe_key) ->
       Projection(
         ..projection,
@@ -2523,6 +2529,7 @@ fn local_scheduled_status_to_parent(
         ScheduledReportRetryWaiting
       scheduled_projection.ScheduledTerminalSuccess -> ScheduledTerminalSuccess
       scheduled_projection.ScheduledTerminalFailure -> ScheduledTerminalFailure
+      scheduled_projection.ScheduledQuarantined -> ScheduledQuarantined
     },
     current_run: case status.current_run {
       Some(run) ->
@@ -2565,6 +2572,9 @@ fn local_scheduled_status_to_parent(
       None -> None
     },
     recent_run_ids: status.recent_run_ids,
+    consecutive_failure_count: status.consecutive_failure_count,
+    quarantine_reason: status.quarantine_reason,
+    quarantined_at_ms: status.quarantined_at_ms,
   )
 }
 
@@ -2586,6 +2596,7 @@ fn parent_scheduled_status_to_local(
         scheduled_projection.ScheduledReportRetryWaiting
       ScheduledTerminalSuccess -> scheduled_projection.ScheduledTerminalSuccess
       ScheduledTerminalFailure -> scheduled_projection.ScheduledTerminalFailure
+      ScheduledQuarantined -> scheduled_projection.ScheduledQuarantined
     },
     current_run: case status.current_run {
       Some(run) ->
@@ -2628,6 +2639,9 @@ fn parent_scheduled_status_to_local(
       None -> None
     },
     recent_run_ids: status.recent_run_ids,
+    consecutive_failure_count: status.consecutive_failure_count,
+    quarantine_reason: status.quarantine_reason,
+    quarantined_at_ms: status.quarantined_at_ms,
   )
 }
 
@@ -6967,7 +6981,10 @@ fn pending_outbox_replays_loop(
             _,
             _,
           ) ->
-          case outbox_status_is_ready(status, now_ms) {
+          case
+            outbox_status_is_ready(status, now_ms)
+            && string.trim(issue_id) != ""
+          {
             True ->
               pending_outbox_replays_loop(rest, now_ms, [
                 OutboxReplay(
@@ -7006,7 +7023,13 @@ fn pending_outbox_replays_loop(
             _,
             _,
           ) ->
-          case outbox_status_is_ready(status, now_ms) {
+          case
+            outbox_status_is_ready(status, now_ms)
+            && {
+              outbox_kind == "scheduled_failure_publication"
+              || string.trim(task_ref.task_remote_id) != ""
+            }
+          {
             True ->
               pending_outbox_replays_loop(rest, now_ms, [
                 OutboxReplay(

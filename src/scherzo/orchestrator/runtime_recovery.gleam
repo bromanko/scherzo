@@ -58,6 +58,30 @@ fn runtime_with_parked_issue(
   issue_fingerprint: String,
   parked_at_ms: Int,
 ) -> orchestrator_state.RuntimeState {
+  case issue_id == "" {
+    True -> runtime
+    False ->
+      runtime_with_non_empty_parked_issue(
+        runtime,
+        issue_id,
+        issue_identifier,
+        reason_text,
+        release_policy,
+        issue_fingerprint,
+        parked_at_ms,
+      )
+  }
+}
+
+fn runtime_with_non_empty_parked_issue(
+  runtime: orchestrator_state.RuntimeState,
+  issue_id: String,
+  issue_identifier: String,
+  reason_text: String,
+  release_policy: String,
+  issue_fingerprint: String,
+  parked_at_ms: Int,
+) -> orchestrator_state.RuntimeState {
   let task_ref = orchestrator_state.linear_issue_id_ref(issue_id)
   let identity = orchestrator_state.task_ref_identity(task_ref)
   let parked_entry =

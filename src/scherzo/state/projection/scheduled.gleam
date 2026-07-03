@@ -9,6 +9,8 @@ pub const context_name = "scheduled"
 
 const max_recent_scheduled_run_ids = 25
 
+const default_quarantine_after_failures = 3
+
 pub type ScheduledRunState {
   ScheduledIdle
   ScheduledDuePending
@@ -19,6 +21,7 @@ pub type ScheduledRunState {
   ScheduledReportRetryWaiting
   ScheduledTerminalSuccess
   ScheduledTerminalFailure
+  ScheduledQuarantined
 }
 
 pub type ScheduledRunSummary {
@@ -67,6 +70,9 @@ pub type ScheduledJobStatus {
     failure_dedupe_key: Option(String),
     report_retry: Option(ScheduledReportRetry),
     recent_run_ids: List(String),
+    consecutive_failure_count: Int,
+    quarantine_reason: Option(String),
+    quarantined_at_ms: Option(Int),
   )
 }
 
@@ -253,6 +259,19 @@ pub fn apply_record(
       )
       |> Ok
 
+    record.ScheduledJobQuarantineReleased(job_id, reason, released_at_ms) ->
+      case dict.get(statuses, job_id) {
+        Ok(status) ->
+          case status.state {
+            ScheduledQuarantined ->
+              status
+              |> quarantine_released_status(reason, released_at_ms)
+              |> Ok
+            _ -> Error(Nil)
+          }
+        Error(Nil) -> Error(Nil)
+      }
+
     _ -> Error(Nil)
   }
 }
@@ -293,6 +312,9 @@ pub fn empty_status(job_id: String, workflow_id: String) -> ScheduledJobStatus {
     failure_dedupe_key: None,
     report_retry: None,
     recent_run_ids: [],
+    consecutive_failure_count: 0,
+    quarantine_reason: None,
+    quarantined_at_ms: None,
   )
 }
 
@@ -440,6 +462,9 @@ pub fn succeeded_status(
     last_success_run_id: Some(run_id),
     report_retry: None,
     recent_run_ids: insert_recent_run(status.recent_run_ids, run_id),
+    consecutive_failure_count: 0,
+    quarantine_reason: None,
+    quarantined_at_ms: None,
   )
 }
 
@@ -453,9 +478,15 @@ pub fn failed_status(
   retry_exhausted: Bool,
   run_root: Option(String),
 ) -> ScheduledJobStatus {
-  let next_state = case retry_exhausted {
-    True -> ScheduledTerminalFailure
-    False -> ScheduledRetryWaiting
+  let next_failure_count = case retry_exhausted {
+    True -> status.consecutive_failure_count + 1
+    False -> status.consecutive_failure_count
+  }
+  let quarantine = next_failure_count >= default_quarantine_after_failures
+  let next_state = case retry_exhausted, quarantine {
+    True, True -> ScheduledQuarantined
+    True, False -> ScheduledTerminalFailure
+    False, _ -> ScheduledRetryWaiting
   }
   ScheduledJobStatus(
     ..status,
@@ -475,6 +506,15 @@ pub fn failed_status(
     last_failure_reason: Some(reason),
     retry_count: attempt,
     recent_run_ids: insert_recent_run(status.recent_run_ids, run_id),
+    consecutive_failure_count: next_failure_count,
+    quarantine_reason: case quarantine {
+      True -> Some(reason)
+      False -> status.quarantine_reason
+    },
+    quarantined_at_ms: case quarantine {
+      True -> Some(finished_at_ms)
+      False -> status.quarantined_at_ms
+    },
   )
 }
 
@@ -502,6 +542,20 @@ pub fn retry_status(
   )
 }
 
+pub fn quarantine_released_status(
+  status: ScheduledJobStatus,
+  _reason: String,
+  _released_at_ms: Int,
+) -> ScheduledJobStatus {
+  ScheduledJobStatus(
+    ..status,
+    state: ScheduledIdle,
+    consecutive_failure_count: 0,
+    quarantine_reason: None,
+    quarantined_at_ms: None,
+  )
+}
+
 pub fn reported_status(
   status: ScheduledJobStatus,
   dedupe_key: String,
@@ -509,7 +563,7 @@ pub fn reported_status(
 ) -> ScheduledJobStatus {
   ScheduledJobStatus(
     ..status,
-    state: ScheduledTerminalFailure,
+    state: quarantine_state_or(status, ScheduledTerminalFailure),
     failure_issue_id: Some(linear_issue_id),
     failure_dedupe_key: Some(dedupe_key),
     report_retry: None,
@@ -530,14 +584,14 @@ pub fn report_failed_status(
     True ->
       ScheduledJobStatus(
         ..status,
-        state: ScheduledTerminalFailure,
+        state: quarantine_state_or(status, ScheduledTerminalFailure),
         failure_dedupe_key: Some(dedupe_key),
         report_retry: None,
       )
     False ->
       ScheduledJobStatus(
         ..status,
-        state: ScheduledReportRetryWaiting,
+        state: quarantine_state_or(status, ScheduledReportRetryWaiting),
         failure_dedupe_key: Some(dedupe_key),
         report_retry: Some(ScheduledReportRetry(
           run_id: run_id,
@@ -549,6 +603,16 @@ pub fn report_failed_status(
           generation: generation,
         )),
       )
+  }
+}
+
+fn quarantine_state_or(
+  status: ScheduledJobStatus,
+  fallback: ScheduledRunState,
+) -> ScheduledRunState {
+  case status.state {
+    ScheduledQuarantined -> ScheduledQuarantined
+    _ -> fallback
   }
 }
 
@@ -599,6 +663,9 @@ pub fn entry_to_json(entry: #(String, ScheduledJobStatus)) -> json.Json {
     #("failure_dedupe_key", option_string_to_json(status.failure_dedupe_key)),
     #("report_retry", option_report_retry_to_json(status.report_retry)),
     #("recent_run_ids", json.array(status.recent_run_ids, of: json.string)),
+    #("consecutive_failure_count", json.int(status.consecutive_failure_count)),
+    #("quarantine_reason", option_string_to_json(status.quarantine_reason)),
+    #("quarantined_at_ms", option_int_to_json(status.quarantined_at_ms)),
   ])
 }
 
@@ -726,6 +793,7 @@ fn state_to_string(state: ScheduledRunState) -> String {
     ScheduledReportRetryWaiting -> "report_retry_waiting"
     ScheduledTerminalSuccess -> "terminal_success"
     ScheduledTerminalFailure -> "terminal_failure"
+    ScheduledQuarantined -> "quarantined"
   }
 }
 
@@ -739,6 +807,7 @@ fn state_from_string(value: String) -> ScheduledRunState {
     "report_retry_waiting" -> ScheduledReportRetryWaiting
     "terminal_success" -> ScheduledTerminalSuccess
     "terminal_failure" -> ScheduledTerminalFailure
+    "quarantined" -> ScheduledQuarantined
     _ -> ScheduledIdle
   }
 }
@@ -875,6 +944,21 @@ fn scheduled_job_snapshot_decoder() -> decode.Decoder(ScheduledJobSnapshot) {
     [],
     decode.list(of: decode.string),
   )
+  use consecutive_failure_count <- decode.optional_field(
+    "consecutive_failure_count",
+    0,
+    decode.int,
+  )
+  use quarantine_reason <- decode.optional_field(
+    "quarantine_reason",
+    None,
+    decode.optional(decode.string),
+  )
+  use quarantined_at_ms <- decode.optional_field(
+    "quarantined_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
   decode.success(ScheduledJobSnapshot(
     job_id,
     ScheduledJobStatus(
@@ -897,6 +981,9 @@ fn scheduled_job_snapshot_decoder() -> decode.Decoder(ScheduledJobSnapshot) {
       failure_dedupe_key: failure_dedupe_key,
       report_retry: report_retry,
       recent_run_ids: trim_recent_runs(recent_run_ids),
+      consecutive_failure_count: consecutive_failure_count,
+      quarantine_reason: quarantine_reason,
+      quarantined_at_ms: quarantined_at_ms,
     ),
   ))
 }

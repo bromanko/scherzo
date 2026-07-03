@@ -21,4 +21,5 @@
 {"session_id":"session-1","message":"continue please","version":1,"id":"req-prompt","token":"secret","type":"prompt"}
 {"session_id":"session-1","request_id":"ui-1","value":"approved","version":1,"id":"req-respond-ui","token":"secret","type":"respond_ui"}
 {"job_id":"nightly-repair","version":1,"id":"req-schedule-now","token":"secret","type":"schedule_run_now"}
+{"job_id":"nightly-repair","version":1,"id":"req-schedule-reenable","token":"secret","type":"schedule_reenable"}
 {"action_id":"work_subtask.cancel","action_instance_id":"wia_1","target_kind":"workflow_subtask","target_provider":"linear","target_id":"issue-1","observed_fingerprint":"fp-1","idempotency_key":"idem-1","params":[{"name":"confirm","value":"true"}],"version":1,"id":"req-work-item-action","token":"secret","type":"work_item_action"}

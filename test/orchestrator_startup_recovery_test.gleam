@@ -409,6 +409,9 @@ fn scheduled_status(
     failure_dedupe_key: None,
     report_retry: report_retry,
     recent_run_ids: [run.run_id],
+    consecutive_failure_count: 0,
+    quarantine_reason: None,
+    quarantined_at_ms: None,
   )
 }
 

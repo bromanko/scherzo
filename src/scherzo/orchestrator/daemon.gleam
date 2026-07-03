@@ -86,6 +86,7 @@ import scherzo/work_item/action_derivation
 import scherzo/work_item/action_executor
 import scherzo/work_item/action_receipts
 import scherzo/work_item_invalidation
+import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_completion_policy.{type LinearStateRef}
 import scherzo/workflow_dag
@@ -1571,6 +1572,220 @@ fn advance_startup_recovery(state: State) -> State {
   }
 }
 
+fn spawn_retry_step_resumption(
+  state: State,
+  recovered: recovery.RecoveredWorkflowRun,
+) -> State {
+  case scheduled_resumption_context(state, recovered) {
+    Ok(#(scheduled, dag)) ->
+      spawn_recovered_scheduled_workflow_resumption(
+        state,
+        recovered,
+        scheduled,
+        dag,
+      )
+    Error(Nil) -> spawn_recovered_workflow_resumption(state, recovered)
+  }
+}
+
+fn scheduled_resumption_context(
+  state: State,
+  recovered: recovery.RecoveredWorkflowRun,
+) -> Result(#(schedule_core.ScheduledRunContext, workflow_dag.WorkflowDag), Nil) {
+  case is_schedule_run_without_tracker(recovered.run_id, recovered.issue.id) {
+    False -> Error(Nil)
+    True -> {
+      let job_id = recovered.issue.identifier
+      case scheduled_job_by_id(state, job_id) {
+        Error(Nil) -> Error(Nil)
+        Ok(job) ->
+          case
+            runtime_bundle.workflow_by_id(state.workflow.bundle, job.workflow)
+          {
+            Error(_) -> Error(Nil)
+            Ok(#(_, dag)) -> {
+              let #(due_at_ms, attempt) =
+                scheduled_retry_context_values(state, job_id, recovered.run_id)
+              Ok(#(
+                schedule_core.ScheduledRunContext(
+                  job_id: job.id,
+                  workflow_id: job.workflow,
+                  due_at_ms: due_at_ms,
+                  started_at_ms: state.dependencies.now_ms(),
+                  run_id: recovered.run_id,
+                  attempt: attempt,
+                  trigger: "retry-step",
+                ),
+                dag,
+              ))
+            }
+          }
+      }
+    }
+  }
+}
+
+fn scheduled_retry_context_values(
+  state: State,
+  job_id: String,
+  run_id: String,
+) -> #(Int, Int) {
+  case projection.scheduled_status_for(state.ledger_projection, job_id) {
+    Ok(status) ->
+      case status.current_run {
+        Some(run) if run.run_id == run_id -> #(
+          run.due_at_ms,
+          case run.attempt <= 0 {
+            True -> 1
+            False -> run.attempt + 1
+          },
+        )
+        _ -> #(state.dependencies.now_ms(), 1)
+      }
+    Error(Nil) -> #(state.dependencies.now_ms(), 1)
+  }
+}
+
+fn spawn_recovered_scheduled_workflow_resumption(
+  state: State,
+  recovered: recovery.RecoveredWorkflowRun,
+  scheduled: schedule_core.ScheduledRunContext,
+  dag: workflow_dag.WorkflowDag,
+) -> State {
+  case
+    worker_registry.scheduled_worker_for_run(state.registry, recovered.run_id)
+  {
+    Ok(_) -> state
+    Error(Nil) -> {
+      let #(registry, session_sequence) =
+        worker_registry.reserve_session_sequence(state.registry)
+      let state = State(..state, registry: registry)
+      let session_id =
+        make_recovered_session_id(recovered.run_id, session_sequence)
+      let started_at_ms = state.dependencies.now_ms()
+      hub.register_session(
+        state.event_hub,
+        session_event.SessionSummary(
+          session_id: session_id,
+          display_name: session_name.generate(
+            "scheduled-" <> scheduled.job_id,
+            session_id,
+          ),
+          issue_id: "",
+          issue_identifier: scheduled.job_id,
+          issue_title: "Scheduled job " <> scheduled.job_id,
+          workspace_path: recovered.run_root,
+          pi_session_id: None,
+          status: session_event.Preparing,
+          recovery: Some(
+            session_recovery.base_info(
+              session_event.Resumed,
+              "workflow_recovery.resumed",
+              Some(
+                "scheduled workflow retry-step resumed from retained artifacts",
+              ),
+              [],
+            ),
+          ),
+          current_turn: 0,
+          current_turn_status: None,
+          current_turn_started_at_ms: None,
+          last_turn_finished_at_ms: None,
+          last_turn_duration_ms: None,
+          last_turn_token_delta: session_tokens.zero_token_totals(),
+          last_turn_reason: None,
+          started_at_ms: started_at_ms,
+          last_event_at_ms: started_at_ms,
+          token_totals: session_tokens.zero_token_totals(),
+        ),
+      )
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.DispatchStarted,
+        Some("scheduled_retry_step"),
+      )
+      let state =
+        append_ledger_bodies_best_effort(
+          state,
+          [
+            record.ScheduledRunStarted(
+              scheduled.job_id,
+              scheduled.workflow_id,
+              scheduled.due_at_ms,
+              started_at_ms,
+              scheduled.run_id,
+              scheduled.attempt,
+              session_id,
+              recovered.run_root,
+            ),
+          ],
+          "scheduled_started_append_failed",
+        )
+      log_state(state, "info", "scheduled_retry_step_resumed", [
+        #("job_id", scheduled.job_id),
+        #("run_id", recovered.run_id),
+        #("workflow_id", recovered.workflow_id),
+      ])
+      let subject = state.subject
+      let dependencies = state.dependencies
+      let tracker_client = state.tracker_client
+      let bundle = state.workflow.bundle
+      let secrets = state.workflow.secrets
+      let event_hub = state.event_hub
+      let pid =
+        process.spawn_unlinked(fn() {
+          let result =
+            run_recovered_scheduled_workflow_worker(
+              scheduled,
+              recovered,
+              dag,
+              bundle,
+              tracker_client,
+              secrets,
+              dependencies.workflow_run_dependencies,
+              subject,
+              event_hub,
+              session_id,
+              dependencies.now_ms,
+            )
+          process.send(
+            subject,
+            ScheduledWorkerFinished(recovered.run_id, result),
+          )
+        })
+      let monitor = process.monitor(pid)
+      event_publisher.lifecycle(
+        state.event_hub,
+        session_id,
+        session_event.WorkerStarted,
+        Some("scheduled_retry_step"),
+      )
+      hub.update_status(state.event_hub, session_id, session_event.Running)
+      let handle =
+        worker_registry.ScheduledWorkerHandle(
+          job_id: scheduled.job_id,
+          workflow_id: scheduled.workflow_id,
+          due_at_ms: scheduled.due_at_ms,
+          run_id: scheduled.run_id,
+          pid: pid,
+          monitor: monitor,
+          run_root: recovered.run_root,
+          session_id: session_id,
+          attempt: scheduled.attempt,
+          command_subject: None,
+        )
+      State(
+        ..state,
+        registry: worker_registry.register_scheduled_worker(
+          state.registry,
+          handle,
+        ),
+      )
+    }
+  }
+}
+
 fn spawn_recovered_workflow_resumption(
   state: State,
   recovered: recovery.RecoveredWorkflowRun,
@@ -1806,6 +2021,75 @@ fn run_recovered_workflow_worker(
         Error(failure) -> Error(yaml_workflow_failure(failure, recovered.issue))
       }
     }
+  }
+}
+
+fn run_recovered_scheduled_workflow_worker(
+  scheduled: schedule_core.ScheduledRunContext,
+  recovered: recovery.RecoveredWorkflowRun,
+  dag: workflow_dag.WorkflowDag,
+  bundle: runtime_bundle.RuntimeBundle,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  workflow_dependencies: workflow_run.Dependencies,
+  daemon_subject: process.Subject(Message),
+  event_hub: process.Subject(hub.Message),
+  session_id: String,
+  now_ms: fn() -> Int,
+) -> Result(workflow_run.WorkflowRunSuccess, workflow_run.WorkflowRunFailure) {
+  let workflow_dependencies =
+    workflow_run.Dependencies(
+      ..workflow_dependencies,
+      checkpoint: workflow_checkpoint.ledger_writer(
+        bundle.effective.workspace.root,
+        now_ms,
+      ),
+    )
+  let resume =
+    workflow_run.ResumeState(
+      artifacts: recovered.completed_artifacts,
+      workspaces: recovered_workspaces_to_prepared(
+        recovered.completed_workspaces,
+        "",
+        bundle.orchestrator,
+      ),
+      next_attempt_indexes: recovered.next_attempt_indexes,
+      run_root: Some(recovered.run_root),
+      recovery_evidence: recovered.recovery_evidence,
+      pi_session_continuations: recovered.pi_session_continuations,
+      contract_inputs_recorded: recovered_contract_manifest(
+        recovered.contract_input_manifest,
+      ),
+      contract_outputs_recorded: recovered_contract_manifest(
+        recovered.contract_output_manifest,
+      ),
+    )
+  case
+    workflow_run.execute_scheduled_with_resume(
+      scheduled,
+      dag,
+      bundle.orchestrator,
+      tracker_client,
+      secrets,
+      yaml_scheduled_workflow_dependencies(
+        workflow_dependencies,
+        scheduled,
+        daemon_subject,
+        event_hub,
+        now_ms,
+      ),
+      resume,
+    )
+  {
+    Ok(success) -> {
+      publish_post_success_cleanup_warning(
+        event_hub,
+        session_id,
+        success.cleanup_warning,
+      )
+      Ok(success)
+    }
+    Error(failure) -> Error(failure)
   }
 }
 
@@ -2929,6 +3213,11 @@ fn apply_shell_operator_command(
           schedule_run_now_for_operator(state, operator_command, job_id)
         #(state, result, [])
       },
+      reenable_schedule_for_operator: fn(state, operator_command, job_id) {
+        let #(state, result) =
+          reenable_schedule_for_operator(state, operator_command, job_id)
+        #(state, result, [])
+      },
       abort_session_for_operator_sync: abort_session_for_operator_sync,
       route_worker_command_sync: route_worker_command_sync,
       cleanup_orphan_steps_for_operator: fn(
@@ -2972,75 +3261,118 @@ fn retry_workflow_step_for_operator(
           ),
         )
         Ok(#(run_id, issue_id, issue_identifier)) ->
-          case
-            retry_step_issue_preflight(
-              state,
-              projection_state,
-              operator_command,
-              target,
-              run_id,
-              issue_id,
-            )
-          {
-            Error(result) -> #(state, result)
-            Ok(retry_step_operation.IssuePreflight(
-              released_park: released_park,
-              ..,
-            )) -> {
-              let operation_id =
-                make_retry_step_operation_id(state, run_id, step_id)
-              let queued_body =
-                record.ControlOperationQueued(
-                  operation_id: operation_id,
-                  operation_kind: "retry_step",
-                  command_name: command.command_name(operator_command),
-                  target: option.unwrap(
-                    command.command_target(operator_command),
-                    "",
-                  ),
-                  run_id: Some(run_id),
-                  issue_id: Some(issue_id),
-                  issue_identifier: Some(issue_identifier),
-                  requested_step_id: step_id,
-                  publication_id: None,
-                )
-              let queue_released_park =
-                retry_step_operation.queue_released_park(released_park)
-              let queued_bodies =
-                list.append(
-                  retry_step_operation.unpark_bodies(
-                    queue_released_park,
-                    state.dependencies.now_ms(),
-                  ),
-                  [queued_body],
-                )
-              let #(state, result) =
-                queue_control_operation_with_bodies(
+          case is_schedule_run_without_tracker(run_id, issue_id) {
+            True ->
+              case
+                scheduled_retry_step_observation(
                   state,
+                  projection_state,
                   operator_command,
-                  operation_id,
-                  queued_bodies,
-                  "retry_step_queue_append_failed",
-                  "failed to append retry-step operation",
-                  "retry-step accepted; poll query operation-status for completion",
+                  run_id,
                 )
-              case result.status {
-                command.Queued -> #(
-                  State(
-                    ..state,
-                    runtime: retry_step_operation.clear_released_park(
-                      state.runtime,
-                      queue_released_park,
-                    ),
-                  ),
-                  result,
-                )
-                _ -> #(state, result)
+              {
+                Error(result) -> #(state, result)
+                Ok(_) ->
+                  queue_retry_step_operation_for_operator(
+                    state,
+                    operator_command,
+                    run_id,
+                    issue_id,
+                    issue_identifier,
+                    step_id,
+                    None,
+                  )
               }
-            }
+            False ->
+              case
+                retry_step_issue_preflight(
+                  state,
+                  projection_state,
+                  operator_command,
+                  target,
+                  run_id,
+                  issue_id,
+                )
+              {
+                Error(result) -> #(state, result)
+                Ok(retry_step_operation.IssuePreflight(
+                  released_park: released_park,
+                  ..,
+                )) ->
+                  queue_retry_step_operation_for_operator(
+                    state,
+                    operator_command,
+                    run_id,
+                    issue_id,
+                    issue_identifier,
+                    step_id,
+                    released_park,
+                  )
+              }
           }
       }
   }
+}
+
+fn queue_retry_step_operation_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  issue_id: String,
+  issue_identifier: String,
+  step_id: Option(String),
+  released_park: Option(orchestrator_state.ParkedEntry),
+) -> #(State, command.CommandResult) {
+  let operation_id = make_retry_step_operation_id(state, run_id, step_id)
+  let queued_body =
+    record.ControlOperationQueued(
+      operation_id: operation_id,
+      operation_kind: "retry_step",
+      command_name: command.command_name(operator_command),
+      target: option.unwrap(command.command_target(operator_command), ""),
+      run_id: Some(run_id),
+      issue_id: Some(issue_id),
+      issue_identifier: Some(issue_identifier),
+      requested_step_id: step_id,
+      publication_id: None,
+    )
+  let queue_released_park =
+    retry_step_operation.queue_released_park(released_park)
+  let queued_bodies =
+    list.append(
+      retry_step_operation.unpark_bodies(
+        queue_released_park,
+        state.dependencies.now_ms(),
+      ),
+      [queued_body],
+    )
+  let #(state, result) =
+    queue_control_operation_with_bodies(
+      state,
+      operator_command,
+      operation_id,
+      queued_bodies,
+      "retry_step_queue_append_failed",
+      "failed to append retry-step operation",
+      "retry-step accepted; poll query operation-status for completion",
+    )
+  case result.status {
+    command.Queued -> #(
+      State(
+        ..state,
+        runtime: retry_step_operation.clear_released_park(
+          state.runtime,
+          queue_released_park,
+        ),
+      ),
+      result,
+    )
+    _ -> #(state, result)
+  }
+}
+
+fn is_schedule_run_without_tracker(run_id: String, issue_id: String) -> Bool {
+  string.starts_with(run_id, "schedule-") && string.trim(issue_id) == ""
 }
 
 fn queue_control_operation(
@@ -3409,6 +3741,86 @@ fn recollect_outputs_issue_preflight_for_run(
   }
 }
 
+fn scheduled_retry_step_observation(
+  state: State,
+  projection_state: projection.Projection,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+) -> Result(recovery.CurrentWorkflowObservation, command.CommandResult) {
+  case projection.workflow_run_provenance(projection_state, run_id) {
+    Error(Nil) ->
+      Error(command.rejected(
+        operator_command,
+        "no_failed_workflow_run",
+        Some("workflow run provenance not found"),
+      ))
+    Ok(provenance) -> {
+      let job_id = provenance.issue_identifier
+      case scheduled_job_by_id(state, job_id) {
+        Error(Nil) ->
+          Error(command.rejected(
+            operator_command,
+            "schedule_definition_unavailable",
+            Some("schedule definition not found for run " <> run_id),
+          ))
+        Ok(job) ->
+          case job.workflow == provenance.workflow_id {
+            False ->
+              Error(command.rejected(
+                operator_command,
+                "workflow_drift",
+                Some("schedule workflow no longer matches retained run"),
+              ))
+            True ->
+              case
+                runtime_bundle.workflow_by_id(
+                  state.workflow.bundle,
+                  job.workflow,
+                )
+              {
+                Error(runtime_bundle.BundleError(code, message)) ->
+                  Error(command.rejected(
+                    operator_command,
+                    "workflow_unavailable",
+                    Some(code <> ":" <> message),
+                  ))
+                Ok(#(_, dag)) ->
+                  Ok(recovery.CurrentWorkflow(
+                    scheduled_retry_placeholder_issue(job.id),
+                    job.workflow,
+                    workflow_attempt.workflow_fingerprint(
+                      dag,
+                      state.workflow.bundle.orchestrator,
+                    ),
+                    "",
+                    dag,
+                    state.workflow.effective.workspace.root,
+                  ))
+              }
+          }
+      }
+    }
+  }
+}
+
+fn scheduled_retry_placeholder_issue(job_id: String) -> tracker_issue.Issue {
+  tracker_issue.Issue(
+    id: "",
+    identifier: job_id,
+    title: "Scheduled job " <> job_id,
+    description: None,
+    priority: None,
+    state: issue_state.from_string_unchecked("scheduled"),
+    branch_name: None,
+    url: None,
+    labels: [],
+    blocked_by: [],
+    blocked_by_complete: True,
+    created_at: None,
+    updated_at: None,
+  )
+}
+
 fn retry_step_issue_preflight(
   state: State,
   projection_state: projection.Projection,
@@ -3548,7 +3960,7 @@ fn finish_queued_control_operation(
                 "ledger_append_failed",
                 Some("failed to append retry-step repair records"),
               )
-            True -> spawn_recovered_workflow_resumption(state, resumption)
+            True -> spawn_retry_step_resumption(state, resumption)
           }
         }
       }
@@ -3637,20 +4049,25 @@ fn execute_retry_step_operation(
       command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, "")),
       operation.requested_step_id,
     )
+  let run_id = option.unwrap(operation.run_id, "")
   case option.unwrap(operation.issue_id, "") {
     "" ->
-      QueuedControlOperationFailed(
-        "operation_missing_issue_id",
-        Some("retry-step operation is missing issue metadata"),
-      )
+      case is_schedule_run_without_tracker(run_id, "") {
+        True -> continue_scheduled_retry_step_operation(state, operation)
+        False ->
+          QueuedControlOperationFailed(
+            "operation_missing_issue_id",
+            Some("retry-step operation is missing issue metadata"),
+          )
+      }
     issue_id ->
       case
         retry_step_issue_preflight(
           state,
           state.ledger_projection,
           operator_command,
-          command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, "")),
-          option.unwrap(operation.run_id, ""),
+          command.RetryWorkflowStepRunId(run_id),
+          run_id,
           issue_id,
         )
       {
@@ -3664,18 +4081,60 @@ fn execute_retry_step_operation(
   }
 }
 
+fn continue_scheduled_retry_step_operation(
+  state: State,
+  operation: projection.ControlOperationStatus,
+) -> QueuedControlOperationResult {
+  let operator_command =
+    command.RetryWorkflowStep(
+      command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, "")),
+      operation.requested_step_id,
+    )
+  case
+    scheduled_retry_step_observation(
+      state,
+      state.ledger_projection,
+      operator_command,
+      option.unwrap(operation.run_id, ""),
+    )
+  {
+    Error(result) -> queued_control_operation_failure_result(result)
+    Ok(observation) ->
+      continue_retry_step_operation_with_observation(
+        state,
+        operation,
+        observation,
+        None,
+      )
+  }
+}
+
 fn continue_retry_step_operation(
   state: State,
   operation: projection.ControlOperationStatus,
   issue: tracker_issue.Issue,
   released_park: Option(orchestrator_state.ParkedEntry),
 ) -> QueuedControlOperationResult {
+  let observation =
+    startup_recovery.current_workflow_observation(state.workflow.bundle, issue)
+  continue_retry_step_operation_with_observation(
+    state,
+    operation,
+    observation,
+    released_park,
+  )
+}
+
+fn continue_retry_step_operation_with_observation(
+  state: State,
+  operation: projection.ControlOperationStatus,
+  observation: recovery.CurrentWorkflowObservation,
+  released_park: Option(orchestrator_state.ParkedEntry),
+) -> QueuedControlOperationResult {
   let projection_state = state.ledger_projection
   let target =
     command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, ""))
   let step_id = operation.requested_step_id
-  let observation =
-    startup_recovery.current_workflow_observation(state.workflow.bundle, issue)
   case workflow_repair.plan(projection_state, target, step_id, observation) {
     Error(error) -> {
       let reason = workflow_repair.describe_error(error)
@@ -4554,8 +5013,83 @@ fn schedule_run_now_for_operator(
               ),
             )
             True ->
-              schedule_run_now_for_enabled_job(state, operator_command, job)
+              case scheduled_job_quarantined(state, job.id) {
+                True -> #(
+                  state,
+                  command.rejected(
+                    operator_command,
+                    "schedule_quarantined",
+                    Some(schedule_quarantined_message(state, job.id)),
+                  ),
+                )
+                False ->
+                  schedule_run_now_for_enabled_job(state, operator_command, job)
+              }
           }
+      }
+  }
+}
+
+fn reenable_schedule_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  job_id: String,
+) -> #(State, command.CommandResult) {
+  case scheduled_job_by_id(state, job_id) {
+    Error(Nil) -> #(
+      state,
+      command.not_found(operator_command, Some("scheduled job not found")),
+    )
+    Ok(job) ->
+      case scheduled_job_quarantined(state, job.id) {
+        False -> #(
+          state,
+          command.rejected(
+            operator_command,
+            "schedule_not_quarantined",
+            Some("schedule is not quarantined"),
+          ),
+        )
+        True -> {
+          let now_ms = state.dependencies.now_ms()
+          let #(state, appended) =
+            append_ledger_bodies(
+              state,
+              [
+                record.ScheduledJobQuarantineReleased(
+                  job.id,
+                  "operator",
+                  now_ms,
+                ),
+              ],
+              "scheduled_quarantine_release_append_failed",
+            )
+          case appended {
+            False -> #(
+              state,
+              command.rejected(
+                operator_command,
+                "ledger_append_failed",
+                Some("failed to record schedule re-enable"),
+              ),
+            )
+            True -> {
+              let runtime =
+                scheduled_runtime.set_next_due(
+                  state.scheduled_runtime,
+                  job.id,
+                  schedule_core.initial_next_due(now_ms, job.every_ms),
+                )
+              #(
+                State(..state, scheduled_runtime: runtime),
+                command.applied(
+                  operator_command,
+                  Some("schedule re-enabled; future fires resumed"),
+                ),
+              )
+            }
+          }
+        }
       }
   }
 }
@@ -6410,38 +6944,47 @@ fn transition_publish_worker_exited(
   state
 }
 
+fn task_ref_has_remote_id(task_ref: task.TaskRef) -> Bool {
+  string.trim(task_ref.remote_id) != ""
+}
+
 fn transition_report_worker_success(
   state: State,
   identity: transition_effects.WorkerIdentity,
   success: agent_types.WorkerSuccess,
 ) -> State {
-  let final_issue = case success.final_issue {
-    Some(issue) -> issue
-    None -> identity.issue
+  case task_ref_has_remote_id(identity.task_ref) {
+    False -> state
+    True -> {
+      let final_issue = case success.final_issue {
+        Some(issue) -> issue
+        None -> identity.issue
+      }
+      let run_id = identity.run_id_to_string(identity.run_id)
+      let intent =
+        outbox_effects.success_intent(
+          identity.task_ref,
+          final_issue,
+          success,
+          run_id,
+          identity.workflow_id,
+          state.workflow.effective.handoff,
+          tracker_secrets(state),
+        )
+      enqueue_outbox_side_effect(state, intent, fn(intent) {
+        effect_runner.ReportSuccess(
+          outbox: intent,
+          task_ref: identity.task_ref,
+          issue_id: identity.issue_id_to_string(identity.issue_id),
+          issue: final_issue,
+          success: success,
+          run_id: run_id,
+          workflow_id: identity.workflow_id,
+          capability: require_handoff_capability(state),
+        )
+      })
+    }
   }
-  let run_id = identity.run_id_to_string(identity.run_id)
-  let intent =
-    outbox_effects.success_intent(
-      identity.task_ref,
-      final_issue,
-      success,
-      run_id,
-      identity.workflow_id,
-      state.workflow.effective.handoff,
-      tracker_secrets(state),
-    )
-  enqueue_outbox_side_effect(state, intent, fn(intent) {
-    effect_runner.ReportSuccess(
-      outbox: intent,
-      task_ref: identity.task_ref,
-      issue_id: identity.issue_id_to_string(identity.issue_id),
-      issue: final_issue,
-      success: success,
-      run_id: run_id,
-      workflow_id: identity.workflow_id,
-      capability: require_handoff_capability(state),
-    )
-  })
 }
 
 fn transition_report_worker_failure(
@@ -6449,29 +6992,34 @@ fn transition_report_worker_failure(
   identity: transition_effects.WorkerIdentity,
   failure: agent_types.WorkerFailure,
 ) -> State {
-  let run_id = identity.run_id_to_string(identity.run_id)
-  let intent =
-    outbox_effects.failure_intent(
-      identity.task_ref,
-      identity.issue,
-      failure,
-      run_id,
-      identity.workflow_id,
-      state.workflow.effective.handoff,
-      tracker_secrets(state),
-    )
-  enqueue_outbox_side_effect(state, intent, fn(intent) {
-    effect_runner.ReportFailure(
-      outbox: intent,
-      task_ref: identity.task_ref,
-      issue_id: identity.issue_id_to_string(identity.issue_id),
-      issue: identity.issue,
-      failure: failure,
-      run_id: run_id,
-      workflow_id: identity.workflow_id,
-      capability: require_handoff_capability(state),
-    )
-  })
+  case task_ref_has_remote_id(identity.task_ref) {
+    False -> state
+    True -> {
+      let run_id = identity.run_id_to_string(identity.run_id)
+      let intent =
+        outbox_effects.failure_intent(
+          identity.task_ref,
+          identity.issue,
+          failure,
+          run_id,
+          identity.workflow_id,
+          state.workflow.effective.handoff,
+          tracker_secrets(state),
+        )
+      enqueue_outbox_side_effect(state, intent, fn(intent) {
+        effect_runner.ReportFailure(
+          outbox: intent,
+          task_ref: identity.task_ref,
+          issue_id: identity.issue_id_to_string(identity.issue_id),
+          issue: identity.issue,
+          failure: failure,
+          run_id: run_id,
+          workflow_id: identity.workflow_id,
+          capability: require_handoff_capability(state),
+        )
+      })
+    }
+  }
 }
 
 fn transition_cleanup_workspace(state: State, workspace_path: String) -> State {
@@ -6491,10 +7039,20 @@ fn transition_cleanup_workspace(state: State, workspace_path: String) -> State {
 }
 
 fn transition_report_park(state: State, report: adapter.ParkReport) -> State {
-  let intent = outbox_effects.park_report_intent(report, tracker_secrets(state))
-  enqueue_outbox_side_effect(state, intent, fn(intent) {
-    effect_runner.ReportPark(intent, report, require_handoff_capability(state))
-  })
+  case task_ref_has_remote_id(report.task) {
+    False -> state
+    True -> {
+      let intent =
+        outbox_effects.park_report_intent(report, tracker_secrets(state))
+      enqueue_outbox_side_effect(state, intent, fn(intent) {
+        effect_runner.ReportPark(
+          intent,
+          report,
+          require_handoff_capability(state),
+        )
+      })
+    }
+  }
 }
 
 fn transition_park_issue(
@@ -6931,17 +7489,52 @@ fn evaluate_scheduled_job(
   job: config_types.ScheduledJobConfig,
   now_ms: Int,
 ) -> State {
-  let #(runtime, actions) =
-    scheduled_runtime.admit_due(
-      state.scheduled_runtime,
-      job.id,
-      job.workflow,
-      job.every_ms,
-      now_ms,
-      scheduled_worker_active_for_job(state, job.id),
-    )
-  let state = State(..state, scheduled_runtime: runtime)
-  apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
+  case scheduled_job_quarantined(state, job.id) {
+    True ->
+      State(
+        ..state,
+        scheduled_runtime: scheduled_runtime.set_next_due(
+          state.scheduled_runtime,
+          job.id,
+          schedule_core.next_due_after(now_ms, job.every_ms),
+        ),
+      )
+    False -> {
+      let #(runtime, actions) =
+        scheduled_runtime.admit_due(
+          state.scheduled_runtime,
+          job.id,
+          job.workflow,
+          job.every_ms,
+          now_ms,
+          scheduled_worker_active_for_job(state, job.id),
+        )
+      let state = State(..state, scheduled_runtime: runtime)
+      apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
+    }
+  }
+}
+
+fn scheduled_job_quarantined(state: State, job_id: String) -> Bool {
+  case projection.scheduled_status_for(state.ledger_projection, job_id) {
+    Ok(status) -> status.state == projection.ScheduledQuarantined
+    Error(Nil) -> False
+  }
+}
+
+fn schedule_quarantined_message(state: State, job_id: String) -> String {
+  let reason = case
+    projection.scheduled_status_for(state.ledger_projection, job_id)
+  {
+    Ok(status) ->
+      option.unwrap(status.quarantine_reason, "too many consecutive failures")
+    Error(Nil) -> "too many consecutive failures"
+  }
+  "schedule quarantined: "
+  <> reason
+  <> "; run `scherzoctl schedules re-enable "
+  <> job_id
+  <> "`"
 }
 
 fn scheduled_worker_active_for_job(state: State, job_id: String) -> Bool {
