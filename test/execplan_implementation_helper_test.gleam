@@ -79,6 +79,7 @@ fn execplan_metadata(plan_path: String, base_change_id: String) -> String {
   <> "  \"plan_path\": \""
   <> plan_path
   <> "\",\n"
+  <> "  \"execplan_v2_bundle_path\": \"tmp/execplan-bundle.json\",\n"
   <> "  \"base_change_id\": \""
   <> base_change_id
   <> "\"\n"
@@ -89,70 +90,6 @@ fn write_linear_graphql_fixture(path: String, issue_json: String) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(path, "{\"data\":{\"issue\":" <> issue_json <> "}}\n")
   Nil
-}
-
-pub fn extract_plan_requires_exactly_one_existing_plan_path_test() {
-  let dir = "test/tmp/execplan-helper-extract"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  let assert Ok(Nil) =
-    simplifile.write(dir <> "/docs/plans/example-plan.md", "# Example\n")
-  let text_path = dir <> "/issue.txt"
-  let assert Ok(Nil) =
-    simplifile.write(
-      text_path,
-      "Please implement `docs/plans/example-plan.md`.\n",
-    )
-
-  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(
-    artifact.stdout,
-    "PLAN_PATH=docs/plans/example-plan.md",
-  )
-}
-
-pub fn extract_plan_accepts_html_plan_paths_test() {
-  let dir = "test/tmp/execplan-helper-extract-html"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/docs/plans/example-plan.html",
-      html_execplan("Example"),
-    )
-  let text_path = dir <> "/issue.txt"
-  let assert Ok(Nil) =
-    simplifile.write(text_path, "Plan path: `docs/plans/example-plan.html`\n")
-
-  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(
-    artifact.stdout,
-    "PLAN_PATH=docs/plans/example-plan.html",
-  )
-}
-
-pub fn extract_plan_error_messages_prefer_markdown_and_allow_legacy_html_test() {
-  let dir = "test/tmp/execplan-helper-extract-error-copy"
-  test_helpers.reset_dir(dir)
-  let text_path = dir <> "/issue.txt"
-  let assert Ok(Nil) =
-    simplifile.write(text_path, "Plan path: `not-a-plan.txt`\n")
-
-  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
-
-  assert artifact.status == step_artifact.StepFailed
-  assert string.contains(artifact.stderr, "docs/plans/example.md")
-  assert string.contains(artifact.stderr, "legacy `docs/plans/example.html`")
-  assert !string.contains(
-    artifact.stderr,
-    "Plan path: `docs/plans/example.html`.",
-  )
 }
 
 pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
@@ -168,6 +105,7 @@ pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
       "{\n"
         <> "  \"source_kind\": \"execplan\",\n"
         <> "  \"plan_path\": \"docs/plans/example.md\",\n"
+        <> "  \"execplan_v2_bundle_path\": \"tmp/execplan-bundle.json\",\n"
         <> "  \"base_change_id\": \"local-start\"\n"
         <> "}\n",
     )
@@ -258,6 +196,7 @@ pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
       "{\n"
         <> "  \"source_kind\": \"execplan\",\n"
         <> "  \"plan_path\": \"docs/plans/example.md\",\n"
+        <> "  \"execplan_v2_bundle_path\": \"tmp/execplan-bundle.json\",\n"
         <> "  \"base_change_id\": \"local-start\"\n"
         <> "}\n",
     )
@@ -284,6 +223,74 @@ pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
   let assert Error(_) = simplifile.read(dir <> "/tmp/scherzo-execplan-brief.md")
   let assert Error(_) =
     simplifile.read(dir <> "/tmp/scherzo-execplan-index.json")
+}
+
+pub fn plan_brief_command_rejects_non_markdown_prepared_execplan_metadata_test() {
+  let dir = "test/tmp/implementation-helper-plan-brief-html-path"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/docs/plans/example.html", "<h1>Legacy</h1>\n")
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_cache_path(dir),
+      execplan_metadata("docs/plans/example.html", "local-start"),
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("execplan_metadata_invalid")
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_metadata_invalid",
+  )
+  assert string.contains(
+    artifact.stderr,
+    "invalid prepared ExecPlan path: docs/plans/example.html; expected a Markdown path",
+  )
+}
+
+pub fn plan_brief_command_requires_execplan_bundle_metadata_test() {
+  let dir = "test/tmp/implementation-helper-plan-brief-missing-bundle"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/docs/plans/example.md", execplan_markdown())
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_cache_path(dir),
+      "{\n"
+        <> "  \"source_kind\": \"execplan\",\n"
+        <> "  \"plan_path\": \"docs/plans/example.md\",\n"
+        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "../../../.scherzo/workflows/scripts/scherzo-implementation plan-brief",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("execplan_metadata_invalid")
+  assert string.contains(
+    artifact.stderr,
+    "SCHERZO_FAILURE_CODE=execplan_metadata_invalid",
+  )
+  assert string.contains(
+    artifact.stderr,
+    "plan-brief requires ExecPlan bundle metadata produced by scherzo-execplan implementation-prepare",
+  )
 }
 
 pub fn metadata_load_restores_tmp_cache_from_run_root_test() {
@@ -524,67 +531,6 @@ pub fn metadata_missing_from_run_root_and_tmp_is_unrecoverable_test() {
   )
 }
 
-pub fn prepare_execplan_writes_canonical_metadata_and_cache_test() {
-  let dir = "test/tmp/implementation-helper-prepare-execplan-canonical"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/run-root")
-  let assert Ok(Nil) =
-    simplifile.write(dir <> "/docs/plans/example.md", execplan_markdown())
-  write_fake_jj(dir <> "/bin/jj")
-  test_helpers.chmod_executable(dir <> "/bin/jj")
-  write_linear_graphql_fixture(
-    dir <> "/linear-execplan.json",
-    "{"
-      <> "\"identifier\":\"LIV-230\","
-      <> "\"title\":\"Implement durable metadata\","
-      <> "\"description\":\"Plan path: `docs/plans/example.md`\","
-      <> "\"url\":\"https://linear.example/LIV-230\","
-      <> "\"comments\":{\"nodes\":[]}}",
-  )
-
-  let artifact =
-    run_helper_in(
-      dir,
-      clean_workflow_env()
-        <> " "
-        <> run_root_env()
-        <> " SCHERZO_ISSUE_IDENTIFIER=LIV-230 SCHERZO_TEST_LINEAR_GRAPHQL_JSON=linear-execplan.json PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation prepare --source execplan",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "SOURCE_KIND=execplan")
-  assert string.contains(artifact.stdout, "PLAN_PATH=docs/plans/example.md")
-  assert string.contains(artifact.stdout, "PLAN_BRIEF_STATUS=ok")
-  let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
-  let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
-  assert cache == canonical
-  assert string.contains(cache, "\"source_kind\": \"execplan\"")
-  assert string.contains(cache, "\"issue_identifier\": \"LIV-230\"")
-  assert string.contains(
-    cache,
-    "\"issue_title\": \"Implement durable metadata\"",
-  )
-  assert string.contains(
-    cache,
-    "\"issue_url\": \"https://linear.example/LIV-230\"",
-  )
-  assert string.contains(cache, "\"plan_path\": \"docs/plans/example.md\"")
-  assert string.contains(cache, "\"base_change_id\": \"localparentcommit\"")
-  assert string.contains(cache, "\"plan_brief_status\": \"ok\"")
-  assert string.contains(
-    cache,
-    "\"plan_brief_path\": \"tmp/scherzo-execplan-brief.md\"",
-  )
-  assert string.contains(
-    cache,
-    "\"plan_index_path\": \"tmp/scherzo-execplan-index.json\"",
-  )
-  assert string.contains(cache, "\"plan_source_sha256\":")
-}
-
 pub fn prepare_ticket_writes_canonical_metadata_and_cache_test() {
   let dir = "test/tmp/implementation-helper-prepare-ticket-canonical"
   test_helpers.reset_dir(dir)
@@ -644,112 +590,7 @@ pub fn prepare_ticket_writes_canonical_metadata_and_cache_test() {
   )
 }
 
-pub fn extract_plan_prefers_explicit_plan_field_over_liv59_context_references_test() {
-  let dir = "test/tmp/execplan-helper-explicit-plan"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/docs/plans/LIV-59-implementation.md",
-      "# Implementation\n",
-    )
-  let text_path = dir <> "/issue.txt"
-  let assert Ok(Nil) =
-    simplifile.write(
-      text_path,
-      "Umbrella: `docs/plans/LIV-59-umbrella.md`\n"
-        <> "Plan path: `docs/plans/LIV-59-implementation.md`\n"
-        <> "Supersedes: `docs/plans/LIV-59-old.md`\n",
-    )
-
-  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(
-    artifact.stdout,
-    "PLAN_PATH=docs/plans/LIV-59-implementation.md",
-  )
-}
-
-pub fn extract_plan_fallback_ignores_contextual_plan_references_test() {
-  let dir = "test/tmp/execplan-helper-contextual-fallback"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  let assert Ok(Nil) =
-    simplifile.write(dir <> "/docs/plans/implementation.md", "# Impl\n")
-  let text_path = dir <> "/issue.txt"
-  let assert Ok(Nil) =
-    simplifile.write(
-      text_path,
-      "Please implement docs/plans/implementation.md.\n"
-        <> "Umbrella: `docs/plans/umbrella.md`\n"
-        <> "Supersedes: `docs/plans/old.md`\n",
-    )
-
-  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(
-    artifact.stdout,
-    "PLAN_PATH=docs/plans/implementation.md",
-  )
-}
-
-pub fn extract_plan_rejects_multiple_explicit_plan_fields_test() {
-  let dir = "test/tmp/execplan-helper-multiple-explicit"
-  test_helpers.reset_dir(dir)
-  let text_path = dir <> "/issue.txt"
-  let assert Ok(Nil) =
-    simplifile.write(
-      text_path,
-      "Plan: `docs/plans/one.md`\n" <> "Plan path: `docs/plans/two.md`\n",
-    )
-
-  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  assert string.contains(
-    artifact.stderr,
-    "found multiple explicit ExecPlan fields",
-  )
-  assert string.contains(artifact.stderr, "- `docs/plans/one.md`")
-  assert string.contains(artifact.stderr, "- `docs/plans/two.md`")
-  assert string.contains(artifact.stderr, "Suggested fix")
-}
-
-pub fn extract_plan_rejects_ambiguous_plan_paths_test() {
-  let dir = "test/tmp/execplan-helper-ambiguous"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/docs/plans")
-  let assert Ok(Nil) = simplifile.write(dir <> "/docs/plans/one.md", "# One\n")
-  let assert Ok(Nil) = simplifile.write(dir <> "/docs/plans/two.md", "# Two\n")
-  let text_path = dir <> "/issue.txt"
-  let assert Ok(Nil) =
-    simplifile.write(
-      text_path,
-      "Compare docs/plans/one.md and docs/plans/two.md.\n",
-    )
-
-  let artifact = run_helper("extract-plan " <> text_path <> " " <> dir)
-
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  assert artifact.failure_code == Some("prepare_plan_ambiguous")
-  assert string.contains(
-    artifact.stderr,
-    "SCHERZO_FAILURE_CODE=prepare_plan_ambiguous",
-  )
-  assert string.contains(
-    artifact.stderr,
-    "found multiple ExecPlan path candidates",
-  )
-  assert string.contains(artifact.stderr, "Suggested fix")
-}
-
-pub fn prepare_execplan_failure_writes_retention_marker_before_fetch_test() {
+pub fn prepare_ticket_failure_writes_retention_marker_before_fetch_test() {
   let dir = "test/tmp/implementation-helper-prepare-retention"
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
@@ -760,14 +601,14 @@ pub fn prepare_execplan_failure_writes_retention_marker_before_fetch_test() {
   let artifact =
     run_helper_in(
       dir <> "/main",
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../.scherzo/workflows/scripts/scherzo-implementation prepare --source execplan",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../.scherzo/workflows/scripts/scherzo-implementation prepare --source ticket",
     )
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
   assert string.contains(artifact.stderr, "LINEAR_API_KEY is required")
   let assert Ok(marker) = simplifile.read(dir <> "/.scherzo-keep-workspace")
-  assert string.contains(marker, "Source kind: execplan")
+  assert string.contains(marker, "Source kind: ticket")
   assert string.contains(marker, "Source: LIV-71")
 }
 
@@ -782,7 +623,7 @@ pub fn prepare_command_failure_reports_bounded_diagnostic_excerpt_test() {
   let artifact =
     run_helper_in(
       dir <> "/main",
-      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../.scherzo/workflows/scripts/scherzo-implementation prepare --source execplan",
+      "SCHERZO_ISSUE_IDENTIFIER=LIV-71 LINEAR_API_KEY= PATH=\"$PWD/../bin:$PATH\" ../../../../.scherzo/workflows/scripts/scherzo-implementation prepare --source ticket",
     )
 
   assert artifact.status == step_artifact.StepFailed
@@ -2449,20 +2290,6 @@ fn execplan_markdown_with_title(title: String) -> String {
   <> "## Testing and Falsifiability\n\nThe stale check must fail after mutation.\n\n"
   <> "## Validation and Acceptance\n\nThe generated brief names this section.\n\n"
   <> "## Open Questions and Clarifications Needed\n\nNone.\n"
-}
-
-fn html_execplan(title: String) -> String {
-  "<!doctype html>\n"
-  <> "<html lang=\"en\"><head><meta charset=\"utf-8\"><title>"
-  <> title
-  <> " — Scherzo ExecPlan</title></head>\n"
-  <> "<body><div class=\"carbon-shell\"><nav class=\"toc-panel\">Plan contents</nav>\n"
-  <> "<main><article><h1 class=\"commentable plan-heading\" data-comment-id=\"title\">"
-  <> title
-  <> "</h1>\n"
-  <> "<section class=\"commentable plan-section\" data-comment-id=\"sec-progress\"><h2>Progress</h2><ul><li class=\"checklist-item\"><input type=\"checkbox\" checked disabled>Drafted.</li></ul></section>\n"
-  <> "<section class=\"commentable plan-section\" data-comment-id=\"sec-open\"><h2>Open Questions and Clarifications Needed</h2><p>None.</p></section>\n"
-  <> "</article></main></div></body></html>\n"
 }
 
 fn write_failing_brief_helper(path: String) -> Nil {

@@ -393,6 +393,37 @@ pub fn workflow_command_failure_handoff_renders_revalidation_action_test() {
   assert !string.contains(failure_comment, "pi_protocol_error")
 }
 
+pub fn workflow_command_failure_handoff_renders_execplan_metadata_action_test() {
+  let failure =
+    worker_failure(
+      error.WorkflowCommandFailed(
+        code: "execplan_metadata_invalid",
+        step_id: "plan-brief",
+        detail: "SCHERZO_FAILURE_CODE=execplan_metadata_invalid\ninvalid prepared ExecPlan path",
+      ),
+      Some(".scherzo/workspaces/execplan-implementation/ABC-1/run-1"),
+    )
+
+  let failure_comment =
+    capture_failure_comment(failure, "run-execplan-metadata-invalid")
+
+  assert string.contains(
+    failure_comment,
+    "| Error | `execplan_metadata_invalid` |",
+  )
+  assert string.contains(failure_comment, "| Step | `plan-brief` |")
+  assert string.contains(
+    failure_comment,
+    "Rerun `scherzo-execplan implementation-prepare`",
+  )
+  assert string.contains(
+    failure_comment,
+    "repository-relative Markdown ExecPlan",
+  )
+  assert !string.contains(failure_comment, "agent_pi_failed")
+  assert !string.contains(failure_comment, "pi_protocol_error")
+}
+
 pub fn workflow_command_failure_handoff_renders_step_batch_timeout_unrecovered_action_test() {
   let failure =
     worker_failure(

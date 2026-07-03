@@ -7,10 +7,6 @@ The checked-in dogfood workflows have two implementation contracts:
 * workflow:execplan-implementation implements a retained ExecPlan bundle
   prepared by scripts/scherzo-execplan.
 
-The legacy `prepare --source execplan` plan-path mode is retained only for
-historical retained-run recovery and local helper tests; it is no longer a
-routed workflow path.
-
 This helper keeps the common mechanics in one place: fetching source context,
 recording the starting jj parent, retaining failed run workspaces until a PR is
 published, detecting changed file languages across the full workflow history,
@@ -30,7 +26,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from scherzo_workflow import commit_stack as commit_stack_helper
 
@@ -62,17 +58,6 @@ BASE_DRIFT_REPAIR_FAILURE_PATH = TMP_DIR / "scherzo-implementation-base-drift-fa
 RETENTION_MARKER = ".scherzo-keep-workspace"
 REFRESH_STAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 JJ_CONFLICT_STATUS_RE = re.compile(r"\s+\d+-sided conflict(?:\s+.*)?$")
-PLAN_RE = re.compile(
-    r"(?<![A-Za-z0-9_./-])(docs/plans/[A-Za-z0-9][A-Za-z0-9._-]*\.(?:html|md))(?![A-Za-z0-9_/-])"
-)
-PLAN_FIELD_RE = re.compile(
-    r"^\s*(?:(?:[-*+]|\d+\.)\s+)?(?:\*\*)?"
-    r"(?P<label>Plan(?:\s+path)?|Umbrella|Supersedes)"
-    r"(?:\*\*)?\s*:\s*(?:\*\*)?\s*(?P<value>.*)$",
-    re.IGNORECASE,
-)
-EXPLICIT_PLAN_FIELD_LABELS = {"plan", "plan path"}
-CONTEXTUAL_PLAN_FIELD_LABELS = {"umbrella", "supersedes"}
 COMMAND_DIAGNOSTIC_MAX_CHARS = 3500
 VALIDATION_RESULT_EXCERPT_MAX_CHARS = 4000
 VALIDATION_FAILURE_SUMMARY_MAX_CHARS = 2500
@@ -81,16 +66,10 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 def usage() -> None:
     print(
-        """Usage: scherzo-implementation <prepare|refresh-base|analyze|restore-execplan-artifacts|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|extract-plan|languages|ticket-brief>
+        """Usage: scherzo-implementation <prepare|refresh-base|analyze|restore-execplan-artifacts|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|languages|ticket-brief>
 
 Run from a Scherzo jj workflow workspace root.
 
-prepare --source execplan
-              Legacy plan-path recovery helper only; not used by any routed
-              workflow. Fetch the Linear-backed source task, prefer an explicit
-              Plan/Plan path field, otherwise find exactly one docs/plans/*.md
-              or legacy docs/plans/*.html path, record the starting jj parent,
-              and mark the run for retention until a PR is safely published.
 prepare --source ticket
               Fetch the Linear-backed source task, write a task-context brief
               under tmp/, record the starting jj parent, and mark the run for
@@ -133,11 +112,6 @@ publish       Normalize and validate the final change, then materialize the
               declarative same-repo publication route.
 
 Test helpers:
-extract-plan <text-file> [repo-root]
-              Extract the implementation docs/plans/*.md or legacy
-              docs/plans/*.html path from text, preferring explicit Plan/Plan
-              path fields over contextual references. If repo-root is supplied,
-              the path must exist under that root.
 languages <file-list>
               Detect review-relevant languages from a newline-separated list.
 ticket-brief <issue-json>
@@ -773,30 +747,6 @@ def linear_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
     return response["data"]
 
 
-def fetch_linear_issue(identifier: str) -> dict[str, Any]:
-    query = """
-    query($id: String!) {
-      issue(id: $id) {
-        identifier
-        title
-        description
-        url
-        comments(first: 100) {
-          nodes {
-            createdAt
-            body
-            user { name }
-          }
-        }
-      }
-    }
-    """
-    issue = linear_graphql(query, {"id": identifier}).get("issue")
-    if not issue:
-        fail(f"Linear issue not found: {identifier}")
-    return issue
-
-
 def fetch_linear_issue_context(identifier: str) -> dict[str, Any]:
     query = """
     query($id: String!) {
@@ -828,147 +778,24 @@ def fetch_linear_issue_context(identifier: str) -> dict[str, Any]:
     return issue
 
 
-def issue_texts(issue: dict[str, Any]) -> list[tuple[str, str]]:
-    texts: list[tuple[str, str]] = [
-        ("title", issue.get("title") or ""),
-        ("description", issue.get("description") or ""),
-    ]
-    comments = issue.get("comments", {}).get("nodes", [])
-    comments = sorted(comments, key=lambda c: c.get("createdAt") or "", reverse=True)
-    for comment in comments:
-        source = "comment"
-        if comment.get("createdAt"):
-            source += f" {comment['createdAt']}"
-        texts.append((source, comment.get("body") or ""))
-    return texts
-
-
-def normalize_plan_field_label(label: str) -> str:
-    return re.sub(r"\s+", " ", label.strip().lower())
-
-
-def add_plan_candidate(found: dict[str, list[str]], plan_path: str, source: str) -> None:
-    sources = found.setdefault(plan_path, [])
-    if source not in sources:
-        sources.append(source)
-
-
-def plan_paths_in(text: str) -> list[str]:
-    return [match.group(1) for match in PLAN_RE.finditer(text or "")]
-
-
-def plan_candidate_lines(found: dict[str, list[str]]) -> str:
-    return "\n".join(
-        f"- `{path}` ({', '.join(sources)})" for path, sources in found.items()
-    )
-
-
-def fail_ambiguous_plan_paths(reason: str, found: dict[str, list[str]]) -> None:
-    fail(
-        reason
-        + "\nCandidates:\n"
-        + plan_candidate_lines(found)
-        + "\nSuggested fix: keep exactly one implementation ExecPlan in an "
-        "explicit `Plan:` or `Plan path:` field. Put contextual references in "
-        "fields such as `Umbrella:` or `Supersedes:`.",
-        failure_code="prepare_plan_ambiguous",
-    )
-
-
-def extract_plan_path_from_texts(texts: Iterable[tuple[str, str]]) -> str:
-    explicit: dict[str, list[str]] = {}
-    fallback: dict[str, list[str]] = {}
-    saw_explicit_field = False
-
-    for source, text in texts:
-        for line_number, line in enumerate((text or "").splitlines() or [""], start=1):
-            location = f"{source} line {line_number}"
-            field_match = PLAN_FIELD_RE.match(line)
-            if field_match:
-                label = normalize_plan_field_label(field_match.group("label"))
-                value = field_match.group("value")
-                if label in EXPLICIT_PLAN_FIELD_LABELS:
-                    saw_explicit_field = True
-                    for plan_path in plan_paths_in(value):
-                        add_plan_candidate(explicit, plan_path, location)
-                    continue
-                if label in CONTEXTUAL_PLAN_FIELD_LABELS:
-                    continue
-
-            for plan_path in plan_paths_in(line):
-                add_plan_candidate(fallback, plan_path, location)
-
-    if explicit:
-        if len(explicit) > 1:
-            fail_ambiguous_plan_paths(
-                "found multiple explicit ExecPlan fields while selecting the implementation plan.",
-                explicit,
-            )
-        return next(iter(explicit.keys()))
-
-    if saw_explicit_field:
-        fail(
-            "found an explicit `Plan:`/`Plan path:` field, but it did not contain "
-            "a valid ExecPlan path like `docs/plans/example.md` or legacy `docs/plans/example.html`. Suggested fix: "
-            "set exactly one explicit field, for example: "
-            "Plan path: `docs/plans/example.md`.",
-            failure_code="prepare_plan_ambiguous",
-        )
-
-    if not fallback:
-        fail(
-            "expected exactly one implementation ExecPlan path like "
-            "`docs/plans/example.md` or legacy `docs/plans/example.html`; found none. Contextual references in "
-            "`Umbrella:` and `Supersedes:` fields are ignored. Suggested fix: "
-            "add a field such as Plan path: `docs/plans/example.md` to the Linear issue.",
-            failure_code="prepare_plan_ambiguous",
-        )
-    if len(fallback) > 1:
-        fail_ambiguous_plan_paths(
-            "found multiple ExecPlan path candidates and no explicit `Plan:`/`Plan path:` field.",
-            fallback,
-        )
-    return next(iter(fallback.keys()))
-
-
-def validate_plan_path(plan_path: str, repo_root: Path) -> None:
-    if not PLAN_RE.fullmatch(plan_path):
-        fail(
-            f"invalid ExecPlan path: {plan_path}; expected docs/plans/<file>.md or legacy docs/plans/<file>.html",
-            failure_code="prepare_plan_ambiguous",
-        )
-    full_path = repo_root / plan_path
-    if not full_path.is_file():
-        fail(
-            f"ExecPlan file does not exist: {plan_path}",
-            failure_code="prepare_plan_ambiguous",
-        )
-
-
 def validate_prepared_execplan_path(plan_path: str, repo_root: Path) -> None:
     path = Path(plan_path)
     if path.is_absolute() or ".." in path.parts:
         fail(
-            f"invalid prepared ExecPlan path: {plan_path}; expected a repository-relative Markdown path",
-            failure_code="prepare_plan_ambiguous",
+            f"invalid prepared ExecPlan path: {plan_path}; "
+            "expected a repository-relative Markdown path",
+            failure_code="execplan_metadata_invalid",
         )
-    if path.suffix.lower() not in {".md", ".html"}:
+    if path.suffix.lower() != ".md":
         fail(
-            f"invalid prepared ExecPlan path: {plan_path}; expected Markdown or legacy HTML",
-            failure_code="prepare_plan_ambiguous",
+            f"invalid prepared ExecPlan path: {plan_path}; expected a Markdown path",
+            failure_code="execplan_metadata_invalid",
         )
     if not (repo_root / path).is_file():
         fail(
             f"ExecPlan file does not exist: {plan_path}",
-            failure_code="prepare_plan_ambiguous",
+            failure_code="execplan_metadata_invalid",
         )
-
-
-def validate_metadata_plan_path(metadata: dict[str, Any], plan_path: str, repo_root: Path) -> None:
-    if metadata.get("execplan_v2_bundle_path") or metadata.get("plan_artifact_ref"):
-        validate_prepared_execplan_path(plan_path, repo_root)
-    else:
-        validate_plan_path(plan_path, repo_root)
 
 
 def plan_source_sha256(plan_path: str) -> str:
@@ -1844,9 +1671,7 @@ def write_ticket_brief(issue: dict[str, Any]) -> Path:
 
 
 def parse_prepare_source(args: list[str]) -> str:
-    if args == ["--source", "execplan"] or args == ["execplan"]:
-        return "execplan"
-    if args == ["--source", "ticket"] or args == ["ticket"]:
+    if args == ["--source", "ticket"]:
         return "ticket"
     usage()
     sys.exit(2)
@@ -1855,8 +1680,8 @@ def parse_prepare_source(args: list[str]) -> str:
 def prepare_command(args: list[str]) -> None:
     source_kind = parse_prepare_source(args)
     issue_identifier = infer_issue_identifier()
-    # Create the retention marker before any fetch, extraction, or workspace inspection can
-    # fail so prepare-step diagnostics remain available for triage.
+    # Create the retention marker before any fetch or workspace inspection can fail so
+    # prepare-step diagnostics remain available for triage.
     write_retention_marker(source_kind, issue_identifier)
     if workspace_driver_available():
         base_change_id = str(workspace_driver_baseline()["baseline_id"])
@@ -1864,42 +1689,21 @@ def prepare_command(args: list[str]) -> None:
         require_command("jj")
         base_change_id = current_base_change_id()
 
-    if source_kind == "execplan":
-        issue = fetch_linear_issue(issue_identifier)
-        plan_path = extract_plan_path_from_texts(issue_texts(issue))
-        validate_plan_path(plan_path, Path.cwd())
-        write_retention_marker(source_kind, plan_path)
-        metadata = {
-            "source_kind": source_kind,
-            "issue_identifier": issue.get("identifier") or issue_identifier,
-            "issue_title": issue.get("title") or "",
-            "issue_url": issue.get("url") or "",
-            "plan_path": plan_path,
-            "base_change_id": base_change_id,
-        }
-        brief_result = generate_plan_brief(plan_path)
-        apply_plan_brief_result(metadata, brief_result)
-        write_implementation_metadata(metadata)
-        print(f"SOURCE_KIND={source_kind}")
-        print(f"PLAN_PATH={plan_path}")
-        print_plan_brief_result(brief_result)
-    else:
-        issue = fetch_linear_issue_context(issue_identifier)
-        brief_path = write_ticket_brief(issue)
-        issue_ref = issue.get("identifier") or issue_identifier
-        write_retention_marker(source_kind, issue_ref)
-        metadata = {
-            "source_kind": source_kind,
-            "issue_identifier": issue_ref,
-            "issue_title": issue.get("title") or "",
-            "issue_url": issue.get("url") or "",
-            "brief_path": str(brief_path),
-            "base_change_id": base_change_id,
-        }
-        write_implementation_metadata(metadata)
-        print(f"SOURCE_KIND={source_kind}")
-        print(f"BRIEF_PATH={brief_path}")
-
+    issue = fetch_linear_issue_context(issue_identifier)
+    brief_path = write_ticket_brief(issue)
+    issue_ref = issue.get("identifier") or issue_identifier
+    write_retention_marker(source_kind, issue_ref)
+    metadata = {
+        "source_kind": source_kind,
+        "issue_identifier": issue_ref,
+        "issue_title": issue.get("title") or "",
+        "issue_url": issue.get("url") or "",
+        "brief_path": str(brief_path),
+        "base_change_id": base_change_id,
+    }
+    write_implementation_metadata(metadata)
+    print(f"SOURCE_KIND={source_kind}")
+    print(f"BRIEF_PATH={brief_path}")
     print(f"BASE_CHANGE_ID={base_change_id}")
     print(f"RETENTION_MARKER={retention_marker_path()}")
     print("VALIDATION=ok")
@@ -1912,10 +1716,22 @@ def require_plan_brief_metadata() -> tuple[dict[str, Any], str]:
             "plan-brief only applies to execplan implementation workflows; "
             f"found source_kind={metadata.get('source_kind')!r}"
         )
+    if not (
+        metadata.get("execplan_v2_bundle_path") or metadata.get("plan_artifact_ref")
+    ):
+        fail(
+            "plan-brief requires ExecPlan bundle metadata produced by "
+            "scherzo-execplan implementation-prepare",
+            failure_code="execplan_metadata_invalid",
+        )
     plan_path = str(metadata.get("plan_path") or "").strip()
     if not plan_path:
-        fail(f"missing plan_path in {METADATA_PATH}; run prepare --source execplan first")
-    validate_metadata_plan_path(metadata, plan_path, Path.cwd())
+        fail(
+            f"missing plan_path in {METADATA_PATH}; run "
+            "scherzo-execplan implementation-prepare first",
+            failure_code="execplan_metadata_invalid",
+        )
+    validate_prepared_execplan_path(plan_path, Path.cwd())
     return metadata, plan_path
 
 
@@ -2012,7 +1828,8 @@ def require_execplan_metadata(metadata: dict[str, Any]) -> tuple[str, str]:
     plan_path = str(metadata.get("plan_path") or "").strip()
     if not plan_path:
         fail(
-            f"missing plan_path in {METADATA_PATH}; run prepare --source execplan first",
+            f"missing plan_path in {METADATA_PATH}; run "
+            "scherzo-execplan implementation-prepare first",
             failure_code="plan_completion_verdict_malformed",
         )
     base_change_id = str(metadata.get("base_change_id") or "").strip()
@@ -3237,18 +3054,6 @@ def publish_command() -> None:
         print(f"- `{file}`")
 
 
-def extract_plan_command(args: list[str]) -> None:
-    if len(args) not in {1, 2}:
-        usage()
-        sys.exit(2)
-    text_file = Path(args[0])
-    repo_root = Path(args[1]) if len(args) == 2 else None
-    path = extract_plan_path_from_texts([("text", text_file.read_text())])
-    if repo_root is not None:
-        validate_plan_path(path, repo_root)
-    print(f"PLAN_PATH={path}")
-
-
 def languages_command(args: list[str]) -> None:
     if len(args) != 1:
         usage()
@@ -3296,8 +3101,6 @@ def main(argv: list[str]) -> None:
         publish_command()
     elif command == "plan-brief":
         plan_brief_command(args)
-    elif command == "extract-plan":
-        extract_plan_command(args)
     elif command == "languages":
         languages_command(args)
     elif command == "ticket-brief":
