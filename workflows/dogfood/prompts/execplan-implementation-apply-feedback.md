@@ -28,9 +28,6 @@ Late recovery finalizer output:
 Latest plan-completion verifier response:
 {{ steps.verify_plan_completion_after_late_repair.final_response }}
 
-Native review cutover contract output:
-{{ steps.assert_native_review_cutover.stdout }}
-
 Native review preparation output:
 {{ steps.prepare_review.stdout }}
 

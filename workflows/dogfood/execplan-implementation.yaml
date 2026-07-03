@@ -226,15 +226,9 @@ steps:
     on_failure: continue
     run_in: main
 
-  - id: assert_native_review_cutover
-    kind: command
-    depends_on: [validate_before_native_review]
-    run: 'output_dir="$SCHERZO_RUN_ROOT/artifacts/review/cutover_contract"; mkdir -p "$output_dir"; forbidden=""; if [ -n "${SCHERZO_NATIVE_REVIEW_SCENARIO:-}" ]; then forbidden="$forbidden SCHERZO_NATIVE_REVIEW_SCENARIO"; fi; if [ -n "${SCHERZO_STAGED_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_STAGED_REVIEW_AGENT_BACKEND"; fi; if [ -n "${SCHERZO_REVIEW_AGENT_BACKEND:-}" ]; then forbidden="$forbidden SCHERZO_REVIEW_AGENT_BACKEND"; fi; if [ -n "$forbidden" ]; then printf "native implementation review cutover refuses fixture/scenario/heuristic override environment variables:%s\n" "$forbidden" | tee "$output_dir/cutover-contract.txt"; exit 1; fi; printf "native_review_cutover=enabled\nsemantic_review=kind_agent\nstructured_output_source=pi_tool_call/submit_review_lane_draft\nlegacy_backend_env=refused\nnative_review_scenario=refused\nremote_mutations=none\n" > "$output_dir/cutover-contract.txt"; cat "$output_dir/cutover-contract.txt"'
-    run_in: main
-
   - id: prepare_review
     kind: command
-    depends_on: [assert_native_review_cutover]
+    depends_on: [validate_before_native_review]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; output_dir="$SCHERZO_RUN_ROOT/artifacts/review/prepare_review"; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then "$bundle_dir/scripts/scherzo-review" prepare-native --diff-file "$SCHERZO_RUN_ROOT/input.diff" --output-dir "$output_dir" --source-label "execplan-implementation-native" --validation-result tmp/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt; else "$bundle_dir/scripts/scherzo-review" prepare-native --from "${SCHERZO_REVIEW_FROM:-@-}" --to "${SCHERZO_REVIEW_TO:-@}" --output-dir "$output_dir" --source-label "execplan-implementation-native" --validation-result tmp/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt; fi'
     timeout: 5m
     run_in: main

@@ -274,7 +274,7 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
       assert_contains(workflow, "prepare-native")
       assert_contains(workflow, "synthesize_review")
       assert_contains(workflow, "$bundle_dir/scripts/scherzo-review")
-      assert_not_contains(workflow, "run-lane --lane")
+      assert_not_contains(workflow, "run-" <> "lane --lane")
     },
   )
 

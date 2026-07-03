@@ -8,6 +8,7 @@ import gleam/result
 import gleam/string
 import scherzo/control/command
 import scherzo/path
+import scherzo/retry_step_validation
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
@@ -228,12 +229,12 @@ pub fn plan(
       let observed_updated_at_ms =
         observed_updated_at_ms_for_candidate(run.observed_updated_at_ms, issue)
       let issue_fingerprint =
-        issue_fingerprint_for_candidate(
+        retry_step_validation.recorded_or_current(
           run.issue_fingerprint,
           current_issue_fingerprint,
         )
       let workflow_fingerprint =
-        workflow_fingerprint_for_candidate(
+        retry_step_validation.recorded_or_current(
           run.workflow_fingerprint,
           current_workflow_fingerprint,
         )
@@ -1202,17 +1203,13 @@ fn validate_drift(
         True ->
           Error(RepairError("issue_drift", Some("issue identifier drifted")))
         False ->
-          case run.workflow_id != current_workflow_id {
-            True ->
-              Error(RepairError("workflow_drift", Some("workflow id drifted")))
-            False ->
-              validate_fingerprints_and_task(
-                run,
-                issue,
-                current_workflow_fingerprint,
-                current_issue_fingerprint,
-              )
-          }
+          validate_fingerprints_and_task(
+            run,
+            issue,
+            current_workflow_id,
+            current_workflow_fingerprint,
+            current_issue_fingerprint,
+          )
       }
   }
 }
@@ -1220,52 +1217,37 @@ fn validate_drift(
 fn validate_fingerprints_and_task(
   run: SelectedRun,
   issue: tracker_issue.Issue,
+  current_workflow_id: String,
   current_workflow_fingerprint: String,
   current_issue_fingerprint: String,
 ) -> Result(Nil, RepairError) {
+  let workflow_fingerprint =
+    retry_step_validation.recorded_or_current(
+      run.workflow_fingerprint,
+      current_workflow_fingerprint,
+    )
+  let issue_fingerprint =
+    retry_step_validation.recorded_or_current(
+      run.issue_fingerprint,
+      current_issue_fingerprint,
+    )
   case
-    run.workflow_fingerprint != ""
-    && run.workflow_fingerprint != current_workflow_fingerprint
+    retry_step_validation.validate_drift(
+      run.workflow_id,
+      current_workflow_id,
+      workflow_fingerprint,
+      current_workflow_fingerprint,
+      issue_fingerprint,
+      current_issue_fingerprint,
+    )
   {
-    True ->
-      Error(RepairError("workflow_drift", Some("workflow fingerprint drifted")))
-    False ->
-      case
-        run.issue_fingerprint != ""
-        && !tracker_issue.fingerprint_equivalent(
-          run.issue_fingerprint,
-          current_issue_fingerprint,
-        )
-      {
-        True ->
-          Error(RepairError("issue_drift", Some("issue fingerprint drifted")))
+    Error(failure) -> Error(RepairError(failure.reason, Some(failure.message)))
+    Ok(Nil) ->
+      case task_ref_matches_issue(run.task_ref, issue) {
+        True -> Ok(Nil)
         False ->
-          case task_ref_matches_issue(run.task_ref, issue) {
-            True -> Ok(Nil)
-            False ->
-              Error(RepairError("issue_drift", Some("task identity drifted")))
-          }
+          Error(RepairError("issue_drift", Some("task identity drifted")))
       }
-  }
-}
-
-fn workflow_fingerprint_for_candidate(
-  recorded: String,
-  current: String,
-) -> String {
-  case string.trim(recorded) == "" {
-    True -> current
-    False -> recorded
-  }
-}
-
-fn issue_fingerprint_for_candidate(
-  recorded: String,
-  current: String,
-) -> String {
-  case string.trim(recorded) == "" {
-    True -> current
-    False -> recorded
   }
 }
 

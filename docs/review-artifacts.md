@@ -19,7 +19,7 @@ Required fields:
 - `schema_version`: `1`.
 - `artifact_type`: `review_brief`.
 - `generated_at_utc`: timestamp for the brief generation.
-- `producer`: tool metadata. The checked-in dry-run producer is `.scherzo/workflows/scripts/scherzo-review`.
+- `producer`: tool metadata. The checked-in native preparation producer is `.scherzo/workflows/scripts/scherzo-review`.
 - `source`: diff source metadata, including `kind`, `label`, `diff_sha256`, and `changed_file_count`.
 - `implementation_summary`: concise summary of the observed change.
 - `changed_areas`: per-file subsystem/language/change-kind entries.
@@ -108,87 +108,91 @@ A `ReviewSynthesis` is produced after the specialist lanes finish. It records la
 
 ### `FinalReviewArtifact`
 
-A `FinalReviewArtifact` is the concise human-facing review artifact generated from the synthesis. It always exists when synthesis receives valid lane result artifacts, including when all lanes return empty findings. It includes the final Markdown review body, grouped findings, blocker evidence, non-blocking findings, risk/coverage/review notes, lane statuses, and `remote_mutations: "none"` for dry-run/preflight safety.
+A `FinalReviewArtifact` is the concise human-facing review artifact generated from the synthesis. It always exists when synthesis receives valid lane result artifacts, including when all lanes return empty findings. It includes the final Markdown review body, grouped findings, blocker evidence, non-blocking findings, risk/coverage/review notes, lane statuses, and `remote_mutations: "none"` for local-artifact safety.
 
-## Dry-run entrypoint
+## Native preparation entrypoint
 
-Use `.scherzo/workflows/scripts/scherzo-review dry-run` to generate a schema-valid brief without posting comments, updating Linear, pushing branches, checking out a PR, or mutating remote state.
+Use `.scherzo/workflows/scripts/scherzo-review prepare-native` to generate the shared inputs consumed by native Scherzo review lanes. The command is local-only: it reads a diff source, writes retained artifacts, and does not post comments, update Linear, push branches, check out PRs, or mutate remote state.
 
 Examples:
 
 ```sh
 # Current jj change, using @-..@ by default.
-.scherzo/workflows/scripts/scherzo-review dry-run --output-dir tmp/review-dry-run
+.scherzo/workflows/scripts/scherzo-review prepare-native --output-dir tmp/scherzo-review-native
 
 # Explicit local jj range.
-.scherzo/workflows/scripts/scherzo-review dry-run --from main@origin --to @ --output-dir tmp/review-dry-run
+.scherzo/workflows/scripts/scherzo-review prepare-native --from main@origin --to @ --output-dir tmp/scherzo-review-native
 
 # Saved unified diff.
-.scherzo/workflows/scripts/scherzo-review dry-run --diff-file /path/to/pr.diff --output-dir tmp/review-dry-run
+.scherzo/workflows/scripts/scherzo-review prepare-native --diff-file /path/to/change.diff --output-dir tmp/scherzo-review-native
 
 # GitHub PR diff. This uses read-only gh pr diff/view calls only.
-.scherzo/workflows/scripts/scherzo-review dry-run --pr 74 --repo scherzo-systems/scherzo --output-dir tmp/review-dry-run
+.scherzo/workflows/scripts/scherzo-review prepare-native --pr 74 --repo scherzo-systems/scherzo --output-dir tmp/scherzo-review-native
 ```
 
 The command writes:
 
-- `review-brief.v1.json`: `ReviewBrief` artifact.
-- `review-lane-result.v1.json`: `ReviewLaneResult` for the brief-generation lane.
+- `review-brief.v1.json`: `ReviewBrief` artifact for prompt-facing summary and routing context.
+- `diff.patch`: exact unified diff consumed by downstream lanes.
+- `source-metadata.v1.json`: source kind, label, diff checksum, and changed-file count.
+- `changed-files.v1.json`: per-file language, subsystem, hunk, and sample-line metadata.
+- `validation-status.v1.json`: normalized pre-native validation evidence.
+- `context-manifest.v1.json`: bounded context snapshot manifest with per-file availability and truncation metadata.
 - `manifest.v1.json`: local checksums for quick inspection.
-- `review-dry-run.log`: bounded local execution log.
+- `review-native-prepare.log`: bounded local execution log.
 
-It prints the artifact paths as `REVIEW_BRIEF_PATH=...`, `REVIEW_LANE_RESULT_PATH=...`, and `REVIEW_LOG_PATH=...`. It also prints `REVIEW_REMOTE_MUTATIONS=none` as an explicit safety marker.
+It prints the artifact paths as `REVIEW_BRIEF_PATH=...`, `REVIEW_DIFF_PATH=...`, `REVIEW_CHANGED_FILES_PATH=...`, `REVIEW_VALIDATION_STATUS_PATH=...`, and `REVIEW_CONTEXT_MANIFEST_PATH=...`. It also prints `REVIEW_REMOTE_MUTATIONS=none` as an explicit safety marker.
 
-Validate an artifact with:
+For native review preparation, `validation-status.v1.json` is the explicit pre-native validation artifact. It keeps `schema_version: 1` and `artifact_type: "validation_status"`, adds an `overall_state`, and carries compatibility arrays under both `status` and `test_build_status`. Each entry may include `name`, compatibility `status`, precise `state`, `source`, `summary`, `command`, optional integer `exit_status`, bounded `output_excerpt`, and repository- or run-root-relative `artifact_refs`. Recognized sources currently include `structured_validation_artifact`, `not_yet_run_by_design`, `validation_artifact_missing`, `malformed_validation_artifact`, and `cli`. Full command output stays in retained command-step diagnostics rather than prompt-facing artifacts.
+
+Validate prepared artifacts with:
 
 ```sh
-.scherzo/workflows/scripts/scherzo-review validate --artifact tmp/review-dry-run/review-brief.v1.json
-.scherzo/workflows/scripts/scherzo-review validate --artifact tmp/review-dry-run/review-lane-result.v1.json
+.scherzo/workflows/scripts/scherzo-review validate --artifact tmp/scherzo-review-native/review-brief.v1.json
+.scherzo/workflows/scripts/scherzo-review validate --artifact tmp/scherzo-review-native/validation-status.v1.json
+.scherzo/workflows/scripts/scherzo-review validate --artifact tmp/scherzo-review-native/changed-files.v1.json
+.scherzo/workflows/scripts/scherzo-review validate --artifact tmp/scherzo-review-native/context-manifest.v1.json
 ```
 
 The validator is deliberately minimal and dependency-free. The JSON Schema remains the documentation source of truth for future, richer validators.
 
-## Manual legacy specialist lane entrypoint
+## Native lane evidence and normalization entrypoints
 
-`.scherzo/workflows/scripts/scherzo-review run-lane` remains available for local/manual artifact validation and historical fixture coverage only. It is not the production staged-review path for implementation workflows, and operators must not use `SCHERZO_STAGED_REVIEW_AGENT_BACKEND` or `--agent-backend heuristic|fixture|external` to route normal implementation review. Normal implementation and execplan-implementation runs use native Scherzo `kind: agent` lane steps with `submit_review_lane_draft` structured-output tool submissions.
+Normal implementation and execplan-implementation review runs use native Scherzo `kind: agent` lane steps with `submit_review_lane_draft` structured-output tool submissions. Scherzo captures those submissions, rejects runner-owned metadata supplied by the model, injects deterministic lane/input metadata, validates the canonical `ReviewLaneDraft`, and then runs local evidence verification and lane-result normalization.
 
-When intentionally validating the legacy helper, run one specialist lane against a diff source plus an existing `ReviewBrief` and choose an explicit backend. The `heuristic` backend preserves the deterministic first-version lane behavior, `fixture` exercises deterministic local fixtures, and `external` exercises the legacy external command contract when `SCHERZO_REVIEW_AGENT_COMMAND` is configured.
-
-```sh
-.scherzo/workflows/scripts/scherzo-review run-lane \
-  --lane correctness \
-  --brief tmp/review-dry-run/review-brief.v1.json \
-  --diff-file /path/to/pr.diff \
-  --output-dir tmp/review-lanes/correctness \
-  --agent-backend fixture
-```
-
-The supported lane ids are:
+The supported native lane ids are:
 
 - `correctness`: looks for behavior and logic bugs. Blocking correctness findings must be verified with executable evidence (`test`, `runtime`, or `reproduction`); static-only concerns are emitted as non-blocking suspicions.
 - `test-quality`: checks whether implementation changes have meaningful committed tests, flags shallow or assertion-light test changes, and includes concrete proposed test cases for coverage gaps.
 - `idioms-maintainability`: separates `must-fix`, `should-fix`, and `optional/nit` feedback for clarity, structure, production fatal constructs, and reviewability.
-- `security-performance`: chooses `lightweight`, `standard`, or `deep` review depth from the `ReviewBrief.risk_profile`, staying lightweight for low-risk diffs and inspecting high-risk boundaries more deeply.
+- `security-performance`: chooses lightweight or deeper review based on the `ReviewBrief.risk_profile`, inspecting high-risk boundaries more carefully.
 
-Each successful lane writes:
+Evidence verification consumes a canonical draft plus the prepared native inputs and writes `evidence-ledger.v1.json`:
 
-- `review-lane-<lane-id>.v1.json`: a schema-valid `ReviewLaneResult`.
-- `review-lane-<lane-id>-analysis.v1.json`: local diagnostic details about checks performed, selected depth, risk profile, changed files, finding counts, and empty-finding rationale.
-- `review-lane-<lane-id>.log`: a bounded execution log with source, brief checksum, diff checksum, checks, and empty-finding reason when applicable.
+```sh
+.scherzo/workflows/scripts/scherzo-review verify-evidence \
+  --lane correctness \
+  --draft tmp/native-lanes/correctness/review-lane-draft.v1.json \
+  --brief tmp/scherzo-review-native/review-brief.v1.json \
+  --diff-file tmp/scherzo-review-native/diff.patch \
+  --changed-files tmp/scherzo-review-native/changed-files.v1.json \
+  --validation-status tmp/scherzo-review-native/validation-status.v1.json \
+  --context-manifest tmp/scherzo-review-native/context-manifest.v1.json \
+  --output-dir tmp/native-lanes/correctness/evidence
+```
 
-Agent-backed lane runs also retain an input bundle and backend evidence:
+Lane normalization consumes the draft and evidence ledger and writes `review-lane-<lane-id>.v1.json`:
 
-- `input/review-brief.v1.json`, `input/diff.patch`, `input/changed-files.v1.json`, `input/validation-status.v1.json`, and `input/context-manifest.v1.json`.
-- `prompt.md`, `raw-agent-output.json`, and transcript files when an external backend runs.
-- `evidence-ledger.v1.json` plus reproduction stdout/stderr/command logs when the harness runs trusted executable evidence.
+```sh
+.scherzo/workflows/scripts/scherzo-review normalize-lane-result \
+  --lane correctness \
+  --draft tmp/native-lanes/correctness/review-lane-draft.v1.json \
+  --evidence-ledger tmp/native-lanes/correctness/evidence/evidence-ledger.v1.json \
+  --brief tmp/scherzo-review-native/review-brief.v1.json \
+  --output-dir tmp/native-lanes/correctness/result
+```
 
-For native review preparation, `validation-status.v1.json` is the explicit pre-native validation artifact. It keeps `schema_version: 1` and `artifact_type: "validation_status"`, adds an `overall_state`, and carries compatibility arrays under both `status` and `test_build_status`. Each entry may include `name`, compatibility `status`, precise `state`, `source`, `summary`, `command`, optional integer `exit_status`, bounded `output_excerpt`, and repository- or run-root-relative `artifact_refs`. Recognized sources currently include `structured_validation_artifact`, `not_yet_run_by_design`, `validation_artifact_missing`, `malformed_validation_artifact`, and `cli`. Full command output stays in retained command-step diagnostics rather than prompt-facing artifacts.
-
-For agent-backed correctness lanes, a blocking correctness finding must reference a harness-issued evidence id from `evidence-ledger.v1.json` with executable evidence type `test`, `runtime`, or `reproduction`. Static-only correctness claims are downgraded into `review_notes`.
-
-If a lane fails before producing findings, it still attempts to write `review-lane-<lane-id>.v1.json` with `execution_status.state: "failed"` and a log artifact containing the error, so malformed briefs, missing external backend configuration, timeouts, malformed raw output, and containment failures are debuggable from retained workflow artifacts.
-
-The command prints `REVIEW_LANE_RESULT_PATH=...`, `REVIEW_LANE_LOG_PATH=...`, and, on success, `REVIEW_LANE_ANALYSIS_PATH=...` for workflow steps and tests to consume. It is local-only and does not post PR comments, update Linear, push branches, or mutate remote state.
+If a native lane fails before producing a usable draft, normalization still attempts to write `review-lane-<lane-id>.v1.json` with `execution_status.state: "failed"` and retained diagnostics, so malformed drafts, structured-output validation failures, timeouts, and containment failures remain debuggable from retained workflow artifacts. Static-only correctness claims are downgraded into `review_notes` unless a blocking correctness finding references verified executable evidence from `evidence-ledger.v1.json`.
 
 ## Synthesis and final artifact entrypoint
 
@@ -196,11 +200,11 @@ Use `.scherzo/workflows/scripts/scherzo-review synthesize` after the specialist 
 
 ```sh
 .scherzo/workflows/scripts/scherzo-review synthesize \
-  --brief tmp/review-dry-run/review-brief.v1.json \
-  --lane-result tmp/review-lanes/correctness/review-lane-correctness.v1.json \
-  --lane-result tmp/review-lanes/test-quality/review-lane-test-quality.v1.json \
-  --lane-result tmp/review-lanes/idioms/review-lane-idioms-maintainability.v1.json \
-  --lane-result tmp/review-lanes/security/review-lane-security-performance.v1.json \
+  --brief tmp/scherzo-review-native/review-brief.v1.json \
+  --lane-result tmp/native-lanes/correctness/result/review-lane-correctness.v1.json \
+  --lane-result tmp/native-lanes/test-quality/result/review-lane-test-quality.v1.json \
+  --lane-result tmp/native-lanes/idioms/result/review-lane-idioms-maintainability.v1.json \
+  --lane-result tmp/native-lanes/security/result/review-lane-security-performance.v1.json \
   --output-dir tmp/review-synthesis
 ```
 
@@ -212,25 +216,6 @@ The command writes:
 - `manifest.v1.json`: checksums for the synthesis artifacts.
 
 It prints `REVIEW_SYNTHESIS_PATH=...`, `REVIEW_FINAL_ARTIFACT_PATH=...`, `REVIEW_LANE_FAILURES=...`, and `REVIEW_REMOTE_MUTATIONS=none`. Failed lanes represented by valid `ReviewLaneResult` artifacts are isolated into `execution_issues`; malformed or missing lane artifacts are infrastructure errors and cause the command to fail.
-
-## E2E preflight entrypoint
-
-A single manual validation command runs the legacy script-level staged review flow against representative synthetic PR fixtures without mutating PR, Linear, or remote state:
-
-```sh
-.scherzo/workflows/scripts/scherzo-review preflight --output-dir tmp/scherzo-review-preflight
-.scherzo/workflows/scripts/scherzo-review preflight --agent-backend fixture --output-dir tmp/scherzo-review-preflight
-```
-
-The preflight suite covers small/trivial, medium feature, test-heavy, no-finding, correctness-with-evidence, security-sensitive, performance-sensitive, PR #80-inspired staged-review precision, lane-failure, malformed-lane-output, empty-findings, and duplicate/conflicting synthesis scenarios. Fixture-backed preflight additionally covers an inverted authorization control-condition fixture and a static auth/control suspicion with no trusted reproduction. It validates each generated `ReviewBrief`, `ReviewLaneResult`, `ReviewSynthesis`, and `FinalReviewArtifact`, writes per-scenario command logs, and produces `preflight-manifest.v1.json`. Review findings, including blockers intentionally present in fixtures, do not fail preflight; only workflow execution and artifact-contract problems do.
-
-`preflight-manifest.v1.json` records the selected `agent_backend`, per-lane `lane_runs[].backend`, and a `cutover_readiness` object. Validate the cutover gate with:
-
-```sh
-.scherzo/workflows/scripts/scherzo-review validate --artifact tmp/scherzo-review-preflight/preflight-manifest.v1.json --require-cutover-ready
-```
-
-That validation succeeds only for a fixture or external manifest whose required semantic scenarios passed, whose required lane runs succeeded with backend metadata, and whose artifacts preserve `remote_mutations: "none"`. A heuristic preflight remains useful for backwards compatibility, but it is not cutover-ready evidence and is never a production implementation-review fallback.
 
 ## Review-lane contract validation
 
