@@ -7,6 +7,11 @@
       "bytes": 1856,
       "kind": "file",
       "media_type": "text/markdown",
+      "metadata": {
+        "publication": {
+          "destination_path": "test/fixtures/execplan_v2/review-doc.valid.md"
+        }
+      },
       "name": "plan",
       "ref": "runs/run-1/outputs/plan.md",
       "sha256": "6f1b07718f377d21629aca606b39beb2424d6b8503b419b7e65166c003389674"

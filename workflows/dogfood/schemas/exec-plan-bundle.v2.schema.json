@@ -1,17 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://scherzo.local/workflows/schemas/exec-plan-bundle.v2.schema.json",
-  "title": "Scherzo ExecPlan v2 bundle",
+  "title": "Scherzo ExecPlan v2 descriptor-only bundle",
+  "$comment": "LIV-1359 narrows v2 consumers to descriptor-first plan resolution through entries[].name == plan. Legacy pre-descriptor plan.ref/review_doc.path-only shapes are rejected by workflow helpers.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
+    "kind",
+    "media_type",
     "artifact_type",
     "bundle_id",
     "source_issue",
     "workflow",
     "revision",
+    "plan",
     "implementation_pack",
+    "entries",
     "review_surface",
     "implementation_handoff",
     "validation"
@@ -21,10 +26,7 @@
       "const": 2
     },
     "artifact_type": {
-      "enum": [
-        "scherzo.exec_plan_bundle.v2",
-        "exec_plan_bundle"
-      ]
+      "const": "scherzo.exec_plan_bundle.v2"
     },
     "bundle_id": {
       "$ref": "#/$defs/non_empty_string"
@@ -267,18 +269,6 @@
       }
     }
   },
-  "anyOf": [
-    {
-      "required": [
-        "plan"
-      ]
-    },
-    {
-      "required": [
-        "review_doc"
-      ]
-    }
-  ],
   "allOf": [
     {
       "if": {

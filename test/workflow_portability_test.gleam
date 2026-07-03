@@ -226,12 +226,12 @@ pub fn example_workflows_parse_under_current_schema_test() {
   })
 }
 
-pub fn execplan_html_fallback_commands_use_bundle_helper_test() {
-  let script = read_file(".scherzo/workflows/scripts/scherzo-execplan-html")
+pub fn execplan_brief_fallback_commands_use_bundle_helper_test() {
+  let script = read_file(".scherzo/workflows/scripts/scherzo-execplan-brief")
 
-  assert_contains(script, ".scherzo/workflows/scripts/scherzo-execplan-html")
-  assert_not_contains(script, "return f'scripts/scherzo-execplan-html")
-  assert_not_contains(script, "use scripts/scherzo-execplan-html")
+  assert_contains(script, ".scherzo/workflows/scripts/scherzo-execplan-brief")
+  assert_not_contains(script, "return f'scripts/scherzo-execplan-brief")
+  assert_not_contains(script, "use scripts/scherzo-execplan-brief")
 }
 
 pub fn execplan_family_prompts_do_not_reference_repo_local_skill_files_test() {

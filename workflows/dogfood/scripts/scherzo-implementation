@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import html
 import json
 import os
 import re
@@ -908,11 +907,11 @@ def plan_source_sha256(plan_path: str) -> str:
         fail(f"could not read ExecPlan file {plan_path}: {exc}")
 
 
-def execplan_html_helper_path() -> Path:
-    override = os.environ.get("SCHERZO_EXECPLAN_HTML_HELPER", "").strip()
+def execplan_brief_helper_path() -> Path:
+    override = os.environ.get("SCHERZO_EXECPLAN_BRIEF_HELPER", "").strip()
     if override:
         return Path(override)
-    return Path(__file__).resolve().parent / "scherzo-execplan-html"
+    return Path(__file__).resolve().parent / "scherzo-execplan-brief"
 
 
 def remove_plan_brief_artifacts() -> None:
@@ -929,7 +928,7 @@ def plan_brief_warning(value: str) -> str:
 
 
 def generate_plan_brief(plan_path: str) -> dict[str, str]:
-    helper = execplan_html_helper_path()
+    helper = execplan_brief_helper_path()
     proc = run_proc([
         sys.executable or "python3",
         str(helper),
@@ -1684,15 +1683,6 @@ def default_repo(remote: str) -> str:
 
 def plan_title(plan_path: str) -> str:
     text = resolve_prepared_execplan_path(plan_path, Path.cwd()).read_text(encoding="utf-8")
-    if plan_path.endswith(".html"):
-        for pattern in [r"<h1\b[^>]*>(.*?)</h1>", r"<title\b[^>]*>(.*?)</title>"]:
-            match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
-            if match:
-                title = re.sub(r"<[^>]+>", " ", match.group(1))
-                title = html.unescape(re.sub(r"\s+", " ", title)).strip()
-                title = re.sub(r"\s+[—-]\s+Scherzo ExecPlan.*$", "", title).strip()
-                if title:
-                    return title
     for line in text.splitlines():
         if line.startswith("# "):
             return line.removeprefix("# ").strip()
@@ -2927,7 +2917,7 @@ def validation_body_section() -> str:
 
 
 def execplan_plan_display_path(metadata: dict[str, Any]) -> str:
-    for key in ["review_surface_path", "legacy_review_doc_path", "plan_artifact_ref", "plan_path"]:
+    for key in ["plan_publication_path", "review_surface_path", "plan_artifact_ref", "plan_path"]:
         value = str(metadata.get(key) or "").strip()
         if value:
             return value

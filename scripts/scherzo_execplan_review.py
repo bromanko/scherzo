@@ -310,35 +310,120 @@ def safe_local_path(root: Path, repo_path: str) -> Path:
     return root.joinpath(*parts)
 
 
-def execplan_html_renderer() -> Path:
-    script_path = Path(__file__).resolve()
-    repo_root = script_path.parent.parent
-    candidates = [
-        script_path.with_name("scherzo-execplan-html"),
-        repo_root / "workflows" / "dogfood" / "scripts" / "scherzo-execplan-html",
-        repo_root / ".scherzo" / "workflows" / "scripts" / "scherzo-execplan-html",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    checked = ", ".join(str(candidate) for candidate in candidates)
-    fail(f"missing ExecPlan HTML renderer; checked: {checked}")
+def slugify(text: str) -> str:
+    lowered = text.lower().replace("&", " and ")
+    lowered = re.sub(r"[^a-z0-9]+", "-", lowered)
+    lowered = re.sub(r"-+", "-", lowered).strip("-")
+    return lowered or "section"
+
+
+def render_inline_markdown(text: str) -> str:
+    escaped = html.escape(text)
+    escaped = re.sub(r"`([^`]*)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", escaped)
+    return escaped
+
+
+def commentable_attrs(comment_id: str, classes: str, line_number: int) -> str:
+    escaped_id = html.escape(comment_id, quote=True)
+    return (
+        f'id="{escaped_id}" class="commentable {classes}" '
+        f'data-comment-id="{escaped_id}" data-source-line="{line_number}"'
+    )
+
+
+def render_markdown_to_html(markdown: str, display_path: str) -> str:
+    body: list[str] = []
+    paragraph: list[tuple[int, str]] = []
+    open_list_tag: str | None = None
+
+    def close_list() -> None:
+        nonlocal open_list_tag
+        if open_list_tag is None:
+            return
+        body.append(f"</{open_list_tag}>")
+        open_list_tag = None
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if not paragraph:
+            return
+        close_list()
+        line_number = paragraph[0][0]
+        text = " ".join(line.strip() for _line, line in paragraph).strip()
+        comment_id = f"p-{line_number:04d}-{slugify(text)[:48]}"
+        body.append(
+            f"<p {commentable_attrs(comment_id, 'plan-paragraph', line_number)}>{render_inline_markdown(text)}</p>"
+        )
+        paragraph = []
+
+    def render_list_item(line_number: int, list_tag: str, text: str) -> None:
+        nonlocal open_list_tag
+        flush_paragraph()
+        if open_list_tag != list_tag:
+            close_list()
+            body.append(f"<{list_tag}>")
+            open_list_tag = list_tag
+        stripped = text.strip()
+        slug_text = re.sub(r"^\[[ xX-]\]\s+", "", stripped).strip() or stripped
+        comment_id = f"li-{line_number:04d}-{slugify(slug_text)[:48]}"
+        classes = "plan-list-item"
+        if re.match(r"^\[[ xX-]\]\s+", stripped):
+            classes += " plan-checklist-item"
+        body.append(
+            f"<li {commentable_attrs(comment_id, classes, line_number)}>{render_inline_markdown(stripped)}</li>"
+        )
+
+    for line_number, line in enumerate(markdown.splitlines(), start=1):
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if heading:
+            flush_paragraph()
+            close_list()
+            level = len(heading.group(1))
+            title = heading.group(2).strip()
+            prefix = "title" if level == 1 else f"h{level}"
+            comment_id = f"{prefix}-{slugify(title)}"
+            body.append(
+                f"<h{level} {commentable_attrs(comment_id, 'plan-heading', line_number)}>{render_inline_markdown(title)}</h{level}>"
+            )
+            continue
+        if not line.strip():
+            flush_paragraph()
+            close_list()
+            continue
+        unordered = re.match(r"^\s*[-*+]\s+(.*)$", line)
+        if unordered:
+            render_list_item(line_number, "ul", unordered.group(1))
+            continue
+        ordered = re.match(r"^\s*\d+[.)]\s+(.*)$", line)
+        if ordered:
+            render_list_item(line_number, "ol", ordered.group(1))
+            continue
+        if open_list_tag is not None:
+            close_list()
+        paragraph.append((line_number, line))
+    flush_paragraph()
+    close_list()
+    title = html.escape(display_path)
+    return (
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>"
+        + title
+        + "</title></head><body><article class=\"plan-document\" data-source-path=\""
+        + html.escape(display_path, quote=True)
+        + "\">\n"
+        + "\n".join(body)
+        + "\n</article></body></html>\n"
+    )
 
 
 def render_markdown(source_path: Path, preview_path: Path, display_path: str) -> None:
-    renderer = execplan_html_renderer()
-
-    proc = subprocess.run(
-        [sys.executable, str(renderer), "render", str(source_path), str(preview_path), display_path],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if proc.returncode != 0:
-        details = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
-        fail(f"failed to render Markdown plan {source_path}:\n{details}")
-    if proc.stderr:
-        print(proc.stderr, file=sys.stderr, end="")
+    try:
+        markdown = source_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"failed to read Markdown plan {source_path}: {exc}")
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_path.write_text(render_markdown_to_html(markdown, display_path), encoding="utf-8")
 
 
 def browser_open(url: str) -> bool:

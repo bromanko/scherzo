@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""Markdown-only helpers for bounded ExecPlan implementation context."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Sequence
+
+BRIEF_SCHEMA_VERSION = 1
+MAX_BRIEF_CHARS = 30_000
+MAX_BRIEF_SECTION_CHARS = 6_000
+MAX_BRIEF_SECTION_INDEX_ENTRIES = 80
+MAX_BRIEF_SECTION_INDEX_TITLE_CHARS = 160
+BRIEF_REQUIRED_SECTION_TITLES = [
+    "Progress",
+    "Scope Boundaries",
+    "Testing and Falsifiability",
+    "Validation and Acceptance",
+    "Rollout, Recovery, and Idempotence",
+    "Open Questions and Clarifications Needed",
+    "Outcomes & Retrospective",
+    "Milestones",
+    "Concrete Steps",
+    "Plan of Work",
+]
+BRIEF_OPTIONAL_SECTION_TITLES = ["Acceptance Criteria"]
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+HELPER_DISPLAY = ".scherzo/workflows/scripts/scherzo-execplan-brief"
+
+
+@dataclass(frozen=True)
+class PlanSection:
+    level: int
+    title: str
+    slug: str
+    source_line: int | None
+    markdown: str
+    char_count: int
+
+
+@dataclass(frozen=True)
+class PlanDocument:
+    source_path: str
+    title: str
+    raw_sha256: str
+    markdown: str
+    sections: list[PlanSection]
+
+
+def usage() -> None:
+    print(
+        """Usage: scherzo-execplan-brief <command> ...
+
+Commands:
+  extract-md PLAN
+      Print the authoritative Markdown plan.
+  section PLAN HEADING_OR_SLUG
+      Print one named Markdown plan section. Matching is exact title, exact slug,
+      then unique case-insensitive substring.
+  brief PLAN MARKDOWN_OUT JSON_OUT
+      Write a bounded ExecPlanBrief Markdown file and companion JSON index.
+""",
+        file=sys.stderr,
+    )
+
+
+def fail(message: str) -> None:
+    print(f"scherzo-execplan-brief: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def normalize_markdown(text: str) -> str:
+    return text.rstrip() + "\n"
+
+
+def slugify(text: str) -> str:
+    lowered = text.lower().replace("&", " and ")
+    lowered = re.sub(r"[^a-z0-9]+", "-", lowered)
+    lowered = re.sub(r"-+", "-", lowered).strip("-")
+    return lowered or "section"
+
+
+def raw_sha256(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        fail(f"could not read plan bytes: {exc}")
+
+
+def parse_markdown_document(source_path: str, raw_hash: str, markdown: str) -> PlanDocument:
+    lines = markdown.splitlines()
+    title = "ExecPlan"
+    for line in lines:
+        match = HEADING_RE.match(line)
+        if match and len(match.group(1)) == 1:
+            title = match.group(2).strip()
+            break
+
+    heading_positions: list[tuple[int, int, str]] = []
+    for index, line in enumerate(lines):
+        match = HEADING_RE.match(line)
+        if match:
+            heading_positions.append((index, len(match.group(1)), match.group(2).strip()))
+
+    sections: list[PlanSection] = []
+    for position, (start, level, heading_title) in enumerate(heading_positions):
+        end = len(lines)
+        for later_start, later_level, _later_title in heading_positions[position + 1 :]:
+            if later_level <= level:
+                end = later_start
+                break
+        section_markdown = normalize_markdown("\n".join(lines[start:end]))
+        sections.append(
+            PlanSection(
+                level=level,
+                title=heading_title,
+                slug=slugify(heading_title),
+                source_line=start + 1,
+                markdown=section_markdown,
+                char_count=len(section_markdown),
+            )
+        )
+    return PlanDocument(source_path, title, raw_hash, normalize_markdown(markdown), sections)
+
+
+def load_plan_document(plan_path: Path) -> PlanDocument:
+    if plan_path.suffix.lower() != ".md":
+        fail(f"ExecPlan brief helper only accepts Markdown plan paths: {plan_path}")
+    try:
+        text = plan_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"could not read plan: {exc}")
+    return parse_markdown_document(str(plan_path), raw_sha256(plan_path), normalize_markdown(text))
+
+
+def find_sections(document: PlanDocument, query: str) -> list[PlanSection]:
+    normalized = query.strip().lower()
+    if not normalized:
+        return []
+    exact_title = [section for section in document.sections if section.title.lower() == normalized]
+    if exact_title:
+        return exact_title
+    exact_slug = [section for section in document.sections if section.slug.lower() == normalized]
+    if exact_slug:
+        return exact_slug
+    return [
+        section
+        for section in document.sections
+        if normalized in section.title.lower() or normalized in section.slug.lower()
+    ]
+
+
+def available_heading_lines(document: PlanDocument, sections: Sequence[PlanSection] | None = None) -> str:
+    values = sections if sections is not None else document.sections
+    return "\n".join(f"- {section.title} ({section.slug})" for section in values)
+
+
+def section_by_title(document: PlanDocument, title: str) -> PlanSection | None:
+    for section in document.sections:
+        if section.title.lower() == title.lower():
+            return section
+    return None
+
+
+def critical_section_titles(document: PlanDocument) -> list[str]:
+    titles: list[str] = []
+    for title in BRIEF_REQUIRED_SECTION_TITLES:
+        if title == "Testing and Falsifiability":
+            for optional in BRIEF_OPTIONAL_SECTION_TITLES:
+                if section_by_title(document, optional) is not None:
+                    titles.append(optional)
+        titles.append(title)
+    return titles
+
+
+def section_fallback_command(plan_path: str, section_title: str) -> str:
+    return f'{HELPER_DISPLAY} section {plan_path} "{section_title}"'
+
+
+def truncation_warning(title: str, original_count: int, included_count: int, fallback: str) -> str:
+    return (
+        f"TRUNCATED SECTION: {title}\n"
+        f"Original characters: {original_count}\n"
+        f"Included characters: {included_count}\n"
+        f"Read the full section with: {fallback}"
+    )
+
+
+def truncate_label(value: str, max_chars: int) -> tuple[str, bool]:
+    if len(value) <= max_chars:
+        return value, False
+    if max_chars <= 1:
+        return value[:max_chars], True
+    return value[: max_chars - 1].rstrip() + "…", True
+
+
+def section_index_entries(
+    sections: Sequence[PlanSection],
+    included_slugs: set[str] | None = None,
+    truncated_by_slug: dict[str, dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    included = included_slugs or set()
+    truncated = truncated_by_slug or {}
+    entries: list[dict[str, Any]] = []
+    for section in sections[:MAX_BRIEF_SECTION_INDEX_ENTRIES]:
+        title, title_truncated = truncate_label(
+            section.title, MAX_BRIEF_SECTION_INDEX_TITLE_CHARS
+        )
+        slug, slug_truncated = truncate_label(
+            section.slug, MAX_BRIEF_SECTION_INDEX_TITLE_CHARS
+        )
+        entries.append(
+            {
+                "level": section.level,
+                "title": title,
+                "slug": slug,
+                "char_count": section.char_count,
+                "source_line": section.source_line,
+                "included_in_brief": section.slug in included,
+                "truncated_in_brief": section.slug in truncated,
+                "title_truncated": title_truncated,
+                "slug_truncated": slug_truncated,
+            }
+        )
+    return entries, len(sections) > len(entries)
+
+
+def enforce_brief_char_limit(markdown: str, fallback_command: str) -> tuple[str, bool]:
+    normalized = normalize_markdown(markdown)
+    if len(normalized) <= MAX_BRIEF_CHARS:
+        return normalized, False
+    marker = (
+        f"BRIEF TRUNCATED: output reached MAX_BRIEF_CHARS={MAX_BRIEF_CHARS}.\n"
+        f"Read the full plan with: {fallback_command}\n"
+    )
+    suffix = "\n\n" + marker
+    if len(suffix) >= MAX_BRIEF_CHARS:
+        return suffix[-MAX_BRIEF_CHARS:], True
+    keep_chars = MAX_BRIEF_CHARS - len(suffix)
+    return normalized[:keep_chars].rstrip() + suffix, True
+
+
+def build_brief(document: PlanDocument, markdown_out: Path) -> tuple[str, dict[str, Any]]:
+    critical_titles = critical_section_titles(document)
+    included_slugs: set[str] = set()
+    truncated_by_slug: dict[str, dict[str, Any]] = {}
+    missing_sections: list[str] = []
+    fallback_commands = [f"{HELPER_DISPLAY} extract-md {document.source_path}"]
+    markdown_section_index, section_index_truncated = section_index_entries(document.sections)
+    omitted_section_count = len(document.sections) - len(markdown_section_index)
+    lines = [
+        f"# ExecPlanBrief for {document.title}",
+        "",
+        "## Metadata",
+        "",
+        f"PLAN_PATH={document.source_path}",
+        f"Source plan: {document.source_path}",
+        "Source kind: markdown",
+        f"Source SHA-256: {document.raw_sha256}",
+        f"Schema version: {BRIEF_SCHEMA_VERSION}",
+        f"MAX_BRIEF_CHARS={MAX_BRIEF_CHARS}",
+        f"MAX_BRIEF_SECTION_CHARS={MAX_BRIEF_SECTION_CHARS}",
+        "Authority: derived brief only; the full source plan remains authoritative.",
+        "",
+        "## How to use this brief",
+        "",
+        "Read this brief as bounded starting context. If it is stale, missing a section, truncated, inconsistent, or ambiguous, read a named section or the full plan.",
+        "",
+        "Fallback commands:",
+        f"- {HELPER_DISPLAY} section {document.source_path} \"<section title>\"",
+        f"- {HELPER_DISPLAY} extract-md {document.source_path}",
+    ]
+    for title in critical_titles:
+        section = section_by_title(document, title)
+        if section is not None:
+            lines.append(f"- {section_fallback_command(document.source_path, section.title)}")
+    lines.extend([
+        "",
+        "## Limits and warnings",
+        "",
+        f"The whole brief target is MAX_BRIEF_CHARS={MAX_BRIEF_CHARS}; each copied section target is MAX_BRIEF_SECTION_CHARS={MAX_BRIEF_SECTION_CHARS}.",
+        f"The section index lists at most MAX_BRIEF_SECTION_INDEX_ENTRIES={MAX_BRIEF_SECTION_INDEX_ENTRIES}; long titles and slugs are shortened.",
+        "Missing and truncated critical sections are listed here and in the JSON index.",
+        "",
+        "## Section index",
+        "",
+    ])
+    for section in markdown_section_index:
+        lines.append(
+            f"- level {section['level']}: {section['title']} ({section['slug']}), {section['char_count']} chars"
+        )
+    if section_index_truncated:
+        lines.append(
+            f"- SECTION INDEX TRUNCATED: omitted {omitted_section_count} of {len(document.sections)} headings; read the full plan with: {fallback_commands[0]}"
+        )
+    lines.extend(["", "## Critical extracted sections", ""])
+
+    for title in critical_titles:
+        section = section_by_title(document, title)
+        if section is None:
+            missing_sections.append(title)
+            lines.extend([
+                f"MISSING SECTION: {title}",
+                f"If this section exists under a different heading, run: {HELPER_DISPLAY} section {document.source_path} \"{title}\"",
+                "",
+            ])
+            continue
+        fallback = section_fallback_command(document.source_path, section.title)
+        fallback_commands.append(fallback)
+        original = section.markdown.strip()
+        original_count = len(original)
+        included_count = original_count
+        included_text = original
+        truncated = False
+        if original_count > MAX_BRIEF_SECTION_CHARS:
+            included_count = MAX_BRIEF_SECTION_CHARS
+            included_text = original[:MAX_BRIEF_SECTION_CHARS].rstrip()
+            truncated = True
+        current = "\n".join(lines) + "\n"
+        warning = truncation_warning(section.title, original_count, included_count, fallback)
+        candidate = included_text + ("\n\n" + warning if truncated else "") + "\n"
+        if len(current) + len(candidate) > MAX_BRIEF_CHARS:
+            available = max(0, MAX_BRIEF_CHARS - len(current) - len(warning) - 1600)
+            included_count = min(original_count, available)
+            included_text = original[:included_count].rstrip()
+            truncated = True
+            candidate = (
+                included_text or ("#" * section.level + " " + section.title)
+            ) + "\n\n" + truncation_warning(section.title, original_count, included_count, fallback) + "\n"
+        lines.extend(candidate.rstrip().splitlines())
+        lines.append("")
+        included_slugs.add(section.slug)
+        if truncated:
+            truncated_by_slug[section.slug] = {
+                "title": section.title,
+                "slug": section.slug,
+                "original_char_count": original_count,
+                "included_char_count": included_count,
+                "fallback_command": fallback,
+            }
+
+    if missing_sections or truncated_by_slug:
+        lines.extend(["", "## Missing or truncated sections", ""])
+        for title in missing_sections:
+            lines.append(f"- Missing: {title}")
+        for entry in truncated_by_slug.values():
+            lines.append(
+                f"- Truncated: {entry['title']} ({entry['included_char_count']} of {entry['original_char_count']} chars). Read with: {entry['fallback_command']}"
+            )
+        lines.append("")
+
+    brief_markdown, brief_markdown_truncated = enforce_brief_char_limit(
+        "\n".join(lines), fallback_commands[0]
+    )
+    json_sections, json_section_index_truncated = section_index_entries(
+        document.sections, included_slugs, truncated_by_slug
+    )
+    index = {
+        "schema_version": BRIEF_SCHEMA_VERSION,
+        "source_path": document.source_path,
+        "source_kind": "markdown",
+        "source_sha256": document.raw_sha256,
+        "title": document.title,
+        "sections": json_sections,
+        "section_index_truncated": json_section_index_truncated,
+        "total_section_count": len(document.sections),
+        "included_section_index_count": len(json_sections),
+        "critical_sections": critical_titles,
+        "missing_sections": missing_sections,
+        "truncated_sections": list(truncated_by_slug.values()),
+        "brief_markdown_truncated": brief_markdown_truncated,
+        "limits": {
+            "max_brief_chars": MAX_BRIEF_CHARS,
+            "max_section_chars": MAX_BRIEF_SECTION_CHARS,
+            "max_section_index_entries": MAX_BRIEF_SECTION_INDEX_ENTRIES,
+            "max_section_index_title_chars": MAX_BRIEF_SECTION_INDEX_TITLE_CHARS,
+        },
+        "brief_markdown_path": str(markdown_out),
+        "fallback_commands": fallback_commands,
+    }
+    return brief_markdown, index
+
+
+def extract_md_command(args: Sequence[str]) -> None:
+    if len(args) != 1:
+        usage()
+        sys.exit(2)
+    document = load_plan_document(Path(args[0]))
+    print(document.markdown, end="")
+
+
+def section_command(args: Sequence[str]) -> None:
+    if len(args) != 2:
+        usage()
+        sys.exit(2)
+    document = load_plan_document(Path(args[0]))
+    matches = find_sections(document, args[1])
+    if not matches:
+        print(f"scherzo-execplan-brief: section not found: {args[1]}", file=sys.stderr)
+        print("Available headings:", file=sys.stderr)
+        print(available_heading_lines(document), file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"scherzo-execplan-brief: ambiguous section: {args[1]}", file=sys.stderr)
+        print("Candidates:", file=sys.stderr)
+        print(available_heading_lines(document, matches), file=sys.stderr)
+        sys.exit(1)
+    print(matches[0].markdown, end="")
+
+
+def brief_command(args: Sequence[str]) -> None:
+    if len(args) != 3:
+        usage()
+        sys.exit(2)
+    plan_path = Path(args[0])
+    markdown_out = Path(args[1])
+    json_out = Path(args[2])
+    document = load_plan_document(plan_path)
+    brief_markdown, index = build_brief(document, markdown_out)
+    try:
+        markdown_out.parent.mkdir(parents=True, exist_ok=True)
+        json_out.parent.mkdir(parents=True, exist_ok=True)
+        markdown_out.write_text(brief_markdown, encoding="utf-8")
+        json_out.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError as exc:
+        fail(f"could not write brief artifacts: {exc}")
+    print(f"PLAN_BRIEF_PATH={markdown_out}")
+    print(f"PLAN_INDEX_PATH={json_out}")
+    print(f"PLAN_SOURCE_SHA256={document.raw_sha256}")
+
+
+def main(argv: Sequence[str]) -> None:
+    command = argv[1] if len(argv) > 1 else ""
+    args = argv[2:]
+    if command in {"-h", "--help", "help"}:
+        usage()
+        raise SystemExit(0)
+    if command == "extract-md":
+        extract_md_command(args)
+    elif command == "section":
+        section_command(args)
+    elif command == "brief":
+        brief_command(args)
+    else:
+        usage()
+        raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
