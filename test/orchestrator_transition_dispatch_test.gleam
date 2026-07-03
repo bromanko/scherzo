@@ -17,6 +17,8 @@ import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/event as session_event
+import scherzo/state/ledger_batch
+import scherzo/state/record
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
@@ -531,6 +533,60 @@ pub fn explicit_retry_auto_unparks_changed_issue_test() {
   assert has_finished_operator_applied(effects)
 }
 
+pub fn explicit_retry_auto_unparks_failure_quarantine_test() {
+  let issue =
+    tracker_issue.Issue(
+      ..orchestrator_transition_test.fixture_issue(),
+      state: issue_state.from_string_unchecked("Triage"),
+    )
+  let request = retry_request(issue.id)
+  let parked =
+    orchestrator_state.ParkedEntry(
+      task_ref: task.from_legacy_issue(issue).ref,
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      reason: orchestrator_reason.ParkWorkerFailure,
+      release_policy: orchestrator_state.AutoUnparkOnIssueChange(
+        tracker_issue.content_fingerprint(issue),
+      ),
+      parked_at_ms: 123,
+    )
+  let runtime =
+    orchestrator_state.mark_task_parked(
+      orchestrator_transition_test.fixture_runtime(),
+      orchestrator_state.issue_identity(issue),
+      parked,
+    )
+  let state =
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      runtime: runtime,
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: context_with_failure_state("Triage"),
+        issue_resolution: transition_types.OperatorIssueResolved(issue),
+        parked_issue_resolution: transition_types.ParkedIssueNotResolved,
+      ),
+      state,
+    )
+
+  assert dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !dict.has_key(
+    next.runtime.parked,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert has_claim_issue(effects)
+  assert has_issue_unparked_append(effects, issue.id, "operator_retry")
+  assert has_finished_operator_applied(effects)
+}
+
 pub fn explicit_retry_preserves_parked_safety_test() {
   let issue = orchestrator_transition_test.fixture_issue()
   let request = retry_request(issue.id)
@@ -576,6 +632,108 @@ pub fn explicit_retry_preserves_parked_safety_test() {
   )
   assert !has_claim_issue(effects)
   assert has_finished_operator_rejected(effects, "retry_issue_parked")
+  assert has_operator_rejection_message(
+    effects,
+    "retry rejected: issue is parked for operator_hold; run `scherzoctl unpark 'ABC-1'` before retry",
+  )
+}
+
+pub fn explicit_retry_preserves_max_sessions_safety_park_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let request = retry_request(issue.id)
+  let parked =
+    orchestrator_state.ParkedEntry(
+      task_ref: task.from_legacy_issue(issue).ref,
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      reason: orchestrator_reason.ParkMaxSessionsPerIssue,
+      release_policy: orchestrator_state.AutoUnparkOnIssueChange(
+        tracker_issue.content_fingerprint(issue),
+      ),
+      parked_at_ms: 123,
+    )
+  let runtime =
+    orchestrator_state.mark_task_parked(
+      orchestrator_transition_test.fixture_runtime(),
+      orchestrator_state.issue_identity(issue),
+      parked,
+    )
+  let state =
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      runtime: runtime,
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    invariant_helpers.handle_and_assert(
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: orchestrator_transition_test.fixture_context(),
+        issue_resolution: transition_types.OperatorIssueResolved(issue),
+        parked_issue_resolution: transition_types.ParkedIssueNotResolved,
+      ),
+      state,
+    )
+
+  assert !dict.has_key(
+    next.pending_claims,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert dict.has_key(
+    next.runtime.parked,
+    orchestrator_state.issue_identity(issue),
+  )
+  assert !has_claim_issue(effects)
+  assert has_finished_operator_rejected(effects, "retry_issue_parked")
+  assert has_operator_rejection_message(
+    effects,
+    "retry rejected: issue is parked for max_sessions_per_issue; run `scherzoctl unpark 'ABC-1'` before retry",
+  )
+}
+
+pub fn explicit_retry_quotes_unpark_advice_target_test() {
+  let issue =
+    tracker_issue.Issue(
+      ..orchestrator_transition_test.fixture_issue(),
+      identifier: "ABC 1;$(touch x)",
+    )
+  let request = retry_request(issue.id)
+  let parked =
+    orchestrator_state.ParkedEntry(
+      task_ref: task.from_legacy_issue(issue).ref,
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      reason: orchestrator_reason.ParkOperator("operator_hold"),
+      release_policy: orchestrator_state.ExplicitUnparkOnly,
+      parked_at_ms: 123,
+    )
+  let runtime =
+    orchestrator_state.mark_task_parked(
+      orchestrator_transition_test.fixture_runtime(),
+      orchestrator_state.issue_identity(issue),
+      parked,
+    )
+  let state =
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      runtime: runtime,
+    )
+
+  let transition_types.Outcome(effects: effects, ..) =
+    invariant_helpers.handle_and_assert(
+      transition_types.OperatorCommandSubmitted(
+        request: request,
+        context: orchestrator_transition_test.fixture_context(),
+        issue_resolution: transition_types.OperatorIssueResolved(issue),
+        parked_issue_resolution: transition_types.ParkedIssueNotResolved,
+      ),
+      state,
+    )
+
+  assert has_operator_rejection_message(
+    effects,
+    "retry rejected: issue is parked for operator_hold; run `scherzoctl unpark 'ABC 1;$(touch x)'` before retry",
+  )
 }
 
 pub fn blocked_dependency_candidate_skipped_and_reported_test() {
@@ -1791,6 +1949,40 @@ fn has_park_issue(effects: List(effects_types.Effect)) -> Bool {
   list.any(effects, fn(effect) {
     case effect {
       effects_types.ParkIssue(_, _) -> True
+      _ -> False
+    }
+  })
+}
+
+fn has_issue_unparked_append(
+  effects: List(effects_types.Effect),
+  expected_issue_id: String,
+  expected_reason: String,
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.AppendLedger(effects_types.LedgerAppend(batch: batch, ..)) ->
+        ledger_batch.to_bodies(batch)
+        |> list.any(fn(body) {
+          case body {
+            record.IssueUnparked(issue_id, _, reason) ->
+              issue_id == expected_issue_id && reason == expected_reason
+            _ -> False
+          }
+        })
+      _ -> False
+    }
+  })
+}
+
+fn has_operator_rejection_message(
+  effects: List(effects_types.Effect),
+  expected: String,
+) -> Bool {
+  list.any(effects, fn(effect) {
+    case effect {
+      effects_types.FinishOperatorCommand(_, result) ->
+        result.message == Some(expected)
       _ -> False
     }
   })

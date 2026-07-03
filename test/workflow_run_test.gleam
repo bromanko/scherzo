@@ -996,6 +996,40 @@ fn review_result_tool_call(
   ])
 }
 
+fn completion_verdict_tool_call(
+  verdict: String,
+) -> result_artifact.ResultArtifact {
+  result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+    result_artifact.ToolCallSubmission(
+      name: "submit_completion_verdict",
+      arguments_json: Some(
+        "{\"verdict\":\"" <> verdict <> "\",\"summary\":\"checked\"}",
+      ),
+      status: Some("success"),
+      sibling_count: 1,
+      receipt_json: None,
+    ),
+  ])
+}
+
+fn completion_json_schema_tool_call(
+  findings_json: String,
+) -> result_artifact.ResultArtifact {
+  result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+    result_artifact.ToolCallSubmission(
+      name: "submit_completion_verdict",
+      arguments_json: Some(
+        "{\"schema_version\":1,\"artifact_type\":\"review_lane_draft\",\"findings\":"
+        <> findings_json
+        <> "}",
+      ),
+      status: Some("success"),
+      sibling_count: 1,
+      receipt_json: None,
+    ),
+  ])
+}
+
 fn native_review_tool_call_result(
   arguments_json: Option(String),
 ) -> result_artifact.ResultArtifact {
@@ -8582,6 +8616,369 @@ pub fn absent_step_recovery_preserves_original_failure_test() {
 
   assert failure.reason == "workflow_step_failed"
   assert_no_recovery_records(root)
+}
+
+fn structured_output_command_recovery_dag(
+  validation_retries: Int,
+) -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: verify_plan_completion\n    kind: agent\n    prompt: verify prompt\n    run_in: main\n    structured_output:\n      artifact_name: completion_verdict\n      required: true\n      validation_retries: "
+      <> int.to_string(validation_retries)
+      <> "\n      source:\n        type: pi_tool_call\n        tool_name: submit_completion_verdict\n      schema:\n        required: [verdict, summary]\n      validators:\n        - name: verdict_gate\n          type: command\n          argv:\n            - sh\n            - -c\n            - grep -q pass\n    recovery:\n      attempts: 1\n      prompt: repair plan completion\n",
+    )
+  dag
+}
+
+fn structured_output_json_schema_recovery_dag(
+  validation_retries: Int,
+) -> workflow_dag.WorkflowDag {
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: verify_plan_completion\n    kind: agent\n    prompt: verify prompt\n    run_in: main\n    structured_output:\n      artifact_name: completion_verdict\n      required: true\n      validation_retries: "
+      <> int.to_string(validation_retries)
+      <> "\n      source:\n        type: pi_tool_call\n        tool_name: submit_completion_verdict\n      schema:\n        required: [schema_version, artifact_type, findings]\n      validators:\n        - name: verdict_shape\n          type: json_schema\n          path: test/fixtures/structured_output/review_lane_draft.schema.json\n    recovery:\n      attempts: 1\n      prompt: repair plan completion\n",
+    )
+  dag
+}
+
+pub fn required_structured_output_command_validator_failure_starts_recovery_and_rechecks_agent_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/structured-command-recovery-recheck"
+  test_helpers.reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent_call:"
+            <> prompt_mode_name(prompt_mode)
+            <> ":"
+            <> int.to_string(context.attempt_index)
+            <> ":"
+            <> prompt_text(prompt_mode),
+        )
+        case prompt_mode, context.attempt_index {
+          workflow_attempt.StepRecoveryPrompt(_), _ ->
+            Ok(
+              success_agent_with_result(workflow_step_recovery_result(
+                "recheck",
+                "patched",
+                "ready for recheck",
+              )),
+            )
+          workflow_attempt.OriginalPrompt(_), 1 ->
+            Ok(success_agent_with_result(completion_verdict_tool_call("fail")))
+          workflow_attempt.StructuredOutputRetryPrompt(_), 1 ->
+            Ok(success_agent_with_result(completion_verdict_tool_call("fail")))
+          workflow_attempt.OriginalPrompt(_), 2 ->
+            Ok(success_agent_with_result(completion_verdict_tool_call("pass")))
+          _, _ ->
+            Ok(success_agent_with_result(completion_verdict_tool_call("fail")))
+        }
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      structured_output_command_recovery_dag(1),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let assert Ok(artifact) =
+    dict.get(success.artifacts, "verify_plan_completion")
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Some(step_artifact.StructuredOutputValid(_)) =
+    artifact.structured_output
+  assert workflow_finished_outcome(root)
+    == workflow_outcome.succeeded_after_recovery
+
+  assert receive_event(subject) == "prepare:verify_plan_completion:main:"
+  assert receive_event(subject) == "agent_call:original:1:verify prompt"
+  let retry = receive_event(subject)
+  assert string.starts_with(retry, "agent_call:structured_retry:1:")
+  assert receive_event(subject) == "after:verify_plan_completion"
+  let recovery = receive_event(subject)
+  assert string.starts_with(recovery, "agent_call:recovery:1:")
+  assert receive_event(subject) == "prepare:verify_plan_completion:main:"
+  assert receive_event(subject) == "agent_call:original:2:verify prompt"
+  assert receive_event(subject) == "after:verify_plan_completion"
+
+  let assert Ok(failed_attempt_json) =
+    simplifile.read(artifact_path(
+      root,
+      artifact_store.artifact_ref("run-1", "verify_plan_completion", 1),
+    ))
+  assert string.contains(
+    failed_attempt_json,
+    "\"failure_code\":\"structured_output_command_rejected\"",
+  )
+
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "verify_plan_completion",
+      1,
+      1,
+      _,
+      "recheck",
+      "patched",
+      "ready for recheck",
+      Some(2),
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+}
+
+pub fn required_structured_output_json_schema_failure_starts_recovery_and_rechecks_agent_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/structured-json-schema-recovery-recheck"
+  test_helpers.reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent_call:"
+            <> prompt_mode_name(prompt_mode)
+            <> ":"
+            <> int.to_string(context.attempt_index)
+            <> ":"
+            <> prompt_text(prompt_mode),
+        )
+        case prompt_mode, context.attempt_index {
+          workflow_attempt.StepRecoveryPrompt(_), _ ->
+            Ok(
+              success_agent_with_result(workflow_step_recovery_result(
+                "recheck",
+                "patched",
+                "ready for recheck",
+              )),
+            )
+          workflow_attempt.OriginalPrompt(_), 1 ->
+            Ok(
+              success_agent_with_result(completion_json_schema_tool_call(
+                "\"not-array\"",
+              )),
+            )
+          workflow_attempt.StructuredOutputRetryPrompt(_), 1 ->
+            Ok(
+              success_agent_with_result(completion_json_schema_tool_call(
+                "\"not-array\"",
+              )),
+            )
+          workflow_attempt.OriginalPrompt(_), 2 ->
+            Ok(
+              success_agent_with_result(completion_json_schema_tool_call("[]")),
+            )
+          _, _ ->
+            Ok(
+              success_agent_with_result(completion_json_schema_tool_call(
+                "\"not-array\"",
+              )),
+            )
+        }
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      structured_output_json_schema_recovery_dag(1),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let assert Ok(artifact) =
+    dict.get(success.artifacts, "verify_plan_completion")
+  assert artifact.status == step_artifact.StepSucceeded
+  let assert Some(step_artifact.StructuredOutputValid(_)) =
+    artifact.structured_output
+  assert workflow_finished_outcome(root)
+    == workflow_outcome.succeeded_after_recovery
+
+  assert receive_event(subject) == "prepare:verify_plan_completion:main:"
+  assert receive_event(subject) == "agent_call:original:1:verify prompt"
+  let retry = receive_event(subject)
+  assert string.starts_with(retry, "agent_call:structured_retry:1:")
+  assert receive_event(subject) == "after:verify_plan_completion"
+  let recovery = receive_event(subject)
+  assert string.starts_with(recovery, "agent_call:recovery:1:")
+  assert receive_event(subject) == "prepare:verify_plan_completion:main:"
+  assert receive_event(subject) == "agent_call:original:2:verify prompt"
+  assert receive_event(subject) == "after:verify_plan_completion"
+
+  let assert Ok(failed_attempt_json) =
+    simplifile.read(artifact_path(
+      root,
+      artifact_store.artifact_ref("run-1", "verify_plan_completion", 1),
+    ))
+  assert string.contains(
+    failed_attempt_json,
+    "\"failure_code\":\"structured_output_json_schema_rejected\"",
+  )
+
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "verify_plan_completion",
+      1,
+      1,
+      _,
+      "recheck",
+      "patched",
+      "ready for recheck",
+      Some(2),
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+}
+
+pub fn structured_output_command_validator_recovery_gave_up_fails_workflow_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/structured-command-recovery-gave-up"
+  test_helpers.reset_dir(root)
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent_call:"
+            <> prompt_mode_name(prompt_mode)
+            <> ":"
+            <> int.to_string(context.attempt_index)
+            <> ":"
+            <> prompt_text(prompt_mode),
+        )
+        case prompt_mode {
+          workflow_attempt.StepRecoveryPrompt(_) ->
+            Ok(
+              success_agent_with_result(workflow_step_recovery_result(
+                "gave_up",
+                "not fixable",
+                "needs human help",
+              )),
+            )
+          _ ->
+            Ok(success_agent_with_result(completion_verdict_tool_call("fail")))
+        }
+      },
+      checkpoint: hidden_local_path_checkpoint(root),
+    )
+
+  let assert Error(failure) =
+    workflow_run.execute(
+      issue(),
+      structured_output_command_recovery_dag(0),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert failure.reason
+    == "workflow_step_failed:structured_output_command_rejected:step=verify_plan_completion"
+  assert failure.failed_step_id == Some("verify_plan_completion")
+  assert workflow_finished_outcome(root)
+    == workflow_outcome.failed_after_recovery
+  let assert Ok(artifact) =
+    dict.get(failure.artifacts, "verify_plan_completion")
+  assert artifact.failure_code == Some("structured_output_command_rejected")
+
+  let assert [
+    record.WorkflowStepRecoveryFinished(
+      _,
+      _,
+      "verify_plan_completion",
+      1,
+      1,
+      _,
+      "gave_up",
+      "not fixable",
+      "needs human help",
+      None,
+    ),
+  ] =
+    recovery_records(root)
+    |> list.filter(fn(ledger_record) {
+      record.kind(ledger_record.body) == "workflow_step_recovery_finished"
+    })
+    |> list.map(fn(ledger_record) { ledger_record.body })
+
+  let started_attempts =
+    ledger_records(root)
+    |> list.filter(fn(ledger_record) {
+      case ledger_record.body {
+        record.StepAttemptStarted(step_id: "verify_plan_completion", ..) -> True
+        _ -> False
+      }
+    })
+  assert list.length(started_attempts) == 1
+  assert receive_event(subject) == "prepare:verify_plan_completion:main:"
+  assert receive_event(subject) == "agent_call:original:1:verify prompt"
+  assert receive_event(subject) == "after:verify_plan_completion"
+  let recovery = receive_event(subject)
+  assert string.starts_with(recovery, "agent_call:recovery:1:")
+  assert receive_event(subject)
+    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_async.assert_no_extra_message_within(subject, 50)
 }
 
 pub fn fatal_agent_step_recovery_preserves_original_definition_test() {
