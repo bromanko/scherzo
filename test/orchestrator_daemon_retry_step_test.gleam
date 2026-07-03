@@ -44,12 +44,18 @@ import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint as workflow_fingerprint_module
+import scherzo/workflow_repair
 import scherzo/workflow_run
 import scherzo/workspace
 import scherzo/workspace_manifest
 import simplifile
 import support/test_helpers
 import test_async
+
+type FetchCounterMessage {
+  FetchShouldBlock(process.Subject(Bool))
+  ArmFetchGate
+}
 
 pub fn retry_step_rejects_active_issue_for_interrupted_run_test() {
   let dir = "test/tmp/daemon-retry-step-active"
@@ -218,6 +224,111 @@ pub fn retry_step_queues_operation_and_records_lifecycle_before_spawning_recover
   ])
 
   test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_step_resume_validation_failure_is_operation_noop_test() {
+  let dir = "test/tmp/daemon-retry-step-resume-validation-noop"
+  let issue = issue("issue-1", "LIV-1368", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  let initial_fingerprint = workflow_fingerprint_for_config(workflow_path)
+  seed_interrupted_retry_step_run_with_workflow_fingerprint(
+    root,
+    issue,
+    include_parked: False,
+    workflow_fingerprint: initial_fingerprint,
+  )
+  let log_subject = process.new_subject()
+  let fetch_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let fetch_gate = start_fetch_counter()
+  let tracker_client =
+    tracker_issue_only_blocking_retry_operation_fetch(
+      issue,
+      log_subject,
+      fetch_barrier,
+      fetch_gate,
+    )
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_client,
+      tracker_adapter_with_transition_logging(log_subject, tracker_client),
+      hub_subject,
+      fn(issue, _, _) {
+        process.send(log_subject, "unexpected_worker_started:" <> issue.id)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let assert Ok(first_result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  let first_operation_id =
+    assert_retry_step_queued(first_result, Some("apply_feedback"))
+  arm_fetch_gate(fetch_gate)
+  assert wait_for_log(log_subject, "retry_step_operation_fetch_blocked", 100)
+
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/task.md", "Changed prompt")
+  let assert Ok(reload_result) =
+    daemon.apply_operator_command(started.data, command.ReloadWorkflow, 1000)
+  assert command.status_to_string(reload_result.status) == "applied"
+  test_async.release_barrier(fetch_barrier)
+
+  let assert Ok(first_operation) =
+    wait_for_operation_status(root, first_operation_id, "failed", 50)
+  assert first_operation.reason == Some("workflow_drift")
+  let assert Some(first_message) = first_operation.message
+  assert string.contains(
+    first_message,
+    "Next safe command: scripts/scherzoctl run retry-step run-1 --step apply_feedback",
+  )
+  assert count_kind(root, "workflow_repair_requested") == 0
+  assert count_kind(root, "step_attempt_superseded") == 0
+  assert count_kind(root, "workflow_run_finished") == 0
+  assert count_kind(root, "issue_parked_v2") == 0
+
+  let assert Ok(second_result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  let second_operation_id =
+    assert_retry_step_queued(second_result, Some("apply_feedback"))
+  let assert Ok(second_operation) =
+    wait_for_operation_status(root, second_operation_id, "failed", 50)
+  assert second_operation.reason == Some("workflow_drift")
+  assert count_kind(root, "workflow_repair_requested") == 0
+  assert count_kind(root, "step_attempt_superseded") == 0
+  assert count_kind(root, "issue_parked_v2") == 0
+  let assert Ok(_) =
+    workflow_repair.resolve_target_run(
+      load_projection_or_panic(root),
+      command.RetryWorkflowStepRunId("run-1"),
+    )
+  assert !wait_for_log(log_subject, "unexpected_worker_started:issue-1", 5)
+  assert !wait_for_log(log_subject, "state_transition:Todo", 5)
+
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
 }
@@ -393,8 +504,12 @@ pub fn retry_step_artifact_recovery_failure_returns_detail_and_retains_diagnosti
   let assert Ok(failed_operation) =
     wait_for_operation_status(root, operation_id, "failed", 20)
   assert failed_operation.reason == Some("artifact_recovery_failed")
-  assert failed_operation.message
-    == Some("retry-step repair was rejected by recovery validation: " <> detail)
+  let assert Some(failed_message) = failed_operation.message
+  assert string.contains(failed_message, detail)
+  assert string.contains(
+    failed_message,
+    "Next safe command: scripts/scherzoctl run retry-step run-1 --step apply_feedback",
+  )
   assert retained_workflow_diagnostic_reason(root, detail)
   assert !retained_workflow_interruption_reason(root, detail)
 
@@ -1731,6 +1846,18 @@ steps:
 ",
     )
   #(config_path, root)
+}
+
+fn workflow_fingerprint_for_config(config_path: String) -> String {
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "implementation")
+  let assert Ok(fingerprint) =
+    workflow_fingerprint_module.fingerprint_for_execution(
+      workflow,
+      bundle.orchestrator,
+    )
+  fingerprint
 }
 
 fn write_retry_command_step_workflow(dir: String) -> #(String, String) {
@@ -3111,6 +3238,80 @@ fn tracker_issue_only(candidate: tracker_issue.Issue) -> tracker.Client {
     fetch_issues_by_states: fn(_) { Ok([]) },
     fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
   )
+}
+
+fn tracker_issue_only_blocking_retry_operation_fetch(
+  candidate: tracker_issue.Issue,
+  log_subject: process.Subject(String),
+  barrier: test_async.Barrier,
+  gate: process.Subject(FetchCounterMessage),
+) -> tracker.Client {
+  tracker.Client(
+    fetch_candidate_issues: fn() { Ok([]) },
+    fetch_issues_by_states: fn(_) { Ok([]) },
+    fetch_issue_states_by_ids: fn(_) {
+      case should_block_fetch(gate) {
+        True -> {
+          process.send(log_subject, "retry_step_operation_fetch_blocked")
+          test_async.wait_at_barrier(barrier)
+          Ok([candidate])
+        }
+        False -> Ok([candidate])
+      }
+    },
+  )
+}
+
+fn start_fetch_counter() -> process.Subject(FetchCounterMessage) {
+  let reply = process.new_subject()
+  let _pid =
+    process.spawn(fn() {
+      let subject = process.new_subject()
+      process.send(reply, subject)
+      fetch_counter_loop(subject, False, False)
+    })
+  process.receive_forever(reply)
+}
+
+fn arm_fetch_gate(gate: process.Subject(FetchCounterMessage)) -> Nil {
+  process.send(gate, ArmFetchGate)
+}
+
+fn should_block_fetch(gate: process.Subject(FetchCounterMessage)) -> Bool {
+  let reply = process.new_subject()
+  process.send(gate, FetchShouldBlock(reply))
+  process.receive_forever(reply)
+}
+
+fn fetch_counter_loop(
+  subject: process.Subject(FetchCounterMessage),
+  armed: Bool,
+  consumed: Bool,
+) -> Nil {
+  case process.receive_forever(subject) {
+    ArmFetchGate -> fetch_counter_loop(subject, True, consumed)
+    FetchShouldBlock(reply) -> {
+      let #(block, armed, consumed) =
+        fetch_gate_decision(subject, armed, consumed)
+      process.send(reply, block)
+      fetch_counter_loop(subject, armed, consumed)
+    }
+  }
+}
+
+fn fetch_gate_decision(
+  _subject: process.Subject(FetchCounterMessage),
+  armed: Bool,
+  consumed: Bool,
+) -> #(Bool, Bool, Bool) {
+  case consumed {
+    True -> #(False, armed, consumed)
+    False ->
+      case armed {
+        True -> #(True, False, True)
+        False -> #(False, False, False)
+      }
+  }
 }
 
 fn run_finalize_command(
@@ -5242,11 +5443,27 @@ fn seed_interrupted_retry_step_run(
   issue: tracker_issue.Issue,
   include_parked parked: Bool,
 ) -> Nil {
-  seed_interrupted_retry_step_run_with_claim_lifecycle(
+  seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
     root,
     issue,
     include_parked: parked,
     include_claim_lifecycle: False,
+    workflow_fingerprint: "",
+  )
+}
+
+fn seed_interrupted_retry_step_run_with_workflow_fingerprint(
+  root: String,
+  issue: tracker_issue.Issue,
+  include_parked parked: Bool,
+  workflow_fingerprint workflow_fingerprint: String,
+) -> Nil {
+  seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
+    root,
+    issue,
+    include_parked: parked,
+    include_claim_lifecycle: False,
+    workflow_fingerprint: workflow_fingerprint,
   )
 }
 
@@ -5254,19 +5471,21 @@ fn seed_claim_handoff_interrupted_retry_step_run(
   root: String,
   issue: tracker_issue.Issue,
 ) -> Nil {
-  seed_interrupted_retry_step_run_with_claim_lifecycle(
+  seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
     root,
     issue,
     include_parked: False,
     include_claim_lifecycle: True,
+    workflow_fingerprint: "",
   )
 }
 
-fn seed_interrupted_retry_step_run_with_claim_lifecycle(
+fn seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
   root: String,
   issue: tracker_issue.Issue,
   include_parked parked: Bool,
   include_claim_lifecycle claim_lifecycle: Bool,
+  workflow_fingerprint workflow_fingerprint: String,
 ) -> Nil {
   let run_root = root <> "/implementation/" <> issue.identifier <> "/run-1"
   let seed_workspace = run_root <> "/workspaces/seed"
@@ -5333,7 +5552,7 @@ fn seed_interrupted_retry_step_run_with_claim_lifecycle(
       record.WorkflowRunStartedWithTask(
         run_id: "run-1",
         workflow_id: "implementation",
-        workflow_fingerprint: "",
+        workflow_fingerprint: workflow_fingerprint,
         issue_id: issue.id,
         issue_identifier: issue.identifier,
         task_ref: record.linear_task_ref_fields(

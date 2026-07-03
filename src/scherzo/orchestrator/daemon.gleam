@@ -42,6 +42,8 @@ import scherzo/orchestrator/read_model
 import scherzo/orchestrator/recollect_outputs_control
 import scherzo/orchestrator/remote_command_runtime as remote
 import scherzo/orchestrator/retry_scheduler
+import scherzo/orchestrator/retry_step_operation
+import scherzo/orchestrator/retry_step_resumption
 import scherzo/orchestrator/run_finalize_control
 import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
@@ -87,11 +89,9 @@ import scherzo/work_item_invalidation
 import scherzo/workflow_checkpoint
 import scherzo/workflow_completion_policy.{type LinearStateRef}
 import scherzo/workflow_dag
-import scherzo/workflow_fingerprint
 import scherzo/workflow_repair
 import scherzo/workflow_run
 import scherzo/workspace
-import scherzo/workspace_profile
 import scherzo/workspace_run
 
 pub type StartupError {
@@ -1740,97 +1740,72 @@ fn run_recovered_workflow_worker(
   session_id: String,
   now_ms: fn() -> Int,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
-  case runtime_bundle.select_workflow(bundle, recovered.issue) {
-    Error(runtime_bundle.BundleError(code, _)) ->
-      Error(yaml_worker_failure(code, Some(recovered.run_root), recovered.issue))
-    Ok(#(_, dag)) ->
+  case retry_step_resumption.validate(bundle, recovered) {
+    Error(failure) ->
+      Error(yaml_worker_failure(
+        "workflow_recovery_invalid:" <> failure.reason,
+        Some(recovered.run_root),
+        recovered.issue,
+      ))
+    Ok(validation) -> {
+      let workflow_dependencies =
+        workflow_run.Dependencies(
+          ..workflow_dependencies,
+          checkpoint: workflow_checkpoint.ledger_writer(
+            bundle.effective.workspace.root,
+            now_ms,
+          ),
+        )
+      let resume =
+        workflow_run.ResumeState(
+          artifacts: recovered.completed_artifacts,
+          workspaces: recovered_workspaces_to_prepared(
+            recovered.completed_workspaces,
+            validation.profile.name,
+            bundle.orchestrator,
+          ),
+          next_attempt_indexes: recovered.next_attempt_indexes,
+          run_root: Some(recovered.run_root),
+          recovery_evidence: recovered.recovery_evidence,
+          pi_session_continuations: recovered.pi_session_continuations,
+          contract_inputs_recorded: recovered_contract_manifest(
+            recovered.contract_input_manifest,
+          ),
+          contract_outputs_recorded: recovered_contract_manifest(
+            recovered.contract_output_manifest,
+          ),
+        )
       case
-        recovered_workflow_identity_matches(dag, bundle.orchestrator, recovered)
+        workflow_run.execute_with_resume(
+          recovered.issue,
+          validation.dag,
+          bundle.orchestrator,
+          tracker_client,
+          secrets,
+          recovered.run_id,
+          yaml_workflow_dependencies(
+            workflow_dependencies,
+            recovered.issue,
+            recovered.run_id,
+            session_id,
+            daemon_subject,
+            event_hub,
+            now_ms,
+          ),
+          resume,
+        )
       {
-        Error(err) ->
-          Error(yaml_worker_failure(
-            "workflow_recovery_invalid:workflow_fingerprint_failed:"
-              <> startup_recovery.fingerprint_error_message(err),
-            Some(recovered.run_root),
-            recovered.issue,
-          ))
-        Ok(False) ->
-          Error(yaml_worker_failure(
-            "workflow_recovery_invalid:workflow_drift",
-            Some(recovered.run_root),
-            recovered.issue,
-          ))
-        Ok(True) -> {
-          case workspace_profile.resolve(dag, bundle.orchestrator) {
-            Error(_) ->
-              Error(yaml_worker_failure(
-                "workflow_recovery_invalid:workspace_profile_unavailable",
-                Some(recovered.run_root),
-                recovered.issue,
-              ))
-            Ok(profile) -> {
-              let workflow_dependencies =
-                workflow_run.Dependencies(
-                  ..workflow_dependencies,
-                  checkpoint: workflow_checkpoint.ledger_writer(
-                    bundle.effective.workspace.root,
-                    now_ms,
-                  ),
-                )
-              let resume =
-                workflow_run.ResumeState(
-                  artifacts: recovered.completed_artifacts,
-                  workspaces: recovered_workspaces_to_prepared(
-                    recovered.completed_workspaces,
-                    profile.name,
-                    bundle.orchestrator,
-                  ),
-                  next_attempt_indexes: recovered.next_attempt_indexes,
-                  run_root: Some(recovered.run_root),
-                  recovery_evidence: recovered.recovery_evidence,
-                  pi_session_continuations: recovered.pi_session_continuations,
-                  contract_inputs_recorded: recovered_contract_manifest(
-                    recovered.contract_input_manifest,
-                  ),
-                  contract_outputs_recorded: recovered_contract_manifest(
-                    recovered.contract_output_manifest,
-                  ),
-                )
-              case
-                workflow_run.execute_with_resume(
-                  recovered.issue,
-                  dag,
-                  bundle.orchestrator,
-                  tracker_client,
-                  secrets,
-                  recovered.run_id,
-                  yaml_workflow_dependencies(
-                    workflow_dependencies,
-                    recovered.issue,
-                    recovered.run_id,
-                    session_id,
-                    daemon_subject,
-                    event_hub,
-                    now_ms,
-                  ),
-                  resume,
-                )
-              {
-                Ok(success) -> {
-                  publish_post_success_cleanup_warning(
-                    event_hub,
-                    session_id,
-                    success.cleanup_warning,
-                  )
-                  Ok(success.worker_success)
-                }
-                Error(failure) ->
-                  Error(yaml_workflow_failure(failure, recovered.issue))
-              }
-            }
-          }
+        Ok(success) -> {
+          publish_post_success_cleanup_warning(
+            event_hub,
+            session_id,
+            success.cleanup_warning,
+          )
+          Ok(success.worker_success)
         }
+        Error(failure) -> Error(yaml_workflow_failure(failure, recovered.issue))
       }
+    }
   }
 }
 
@@ -1845,21 +1820,6 @@ fn recovered_contract_manifest(
       bytes: manifest.bytes,
     )
   })
-}
-
-fn recovered_workflow_identity_matches(
-  dag: workflow_dag.WorkflowDag,
-  orchestrator: config_types.OrchestratorConfig,
-  recovered: recovery.RecoveredWorkflowRun,
-) -> Result(Bool, workflow_fingerprint.FingerprintError) {
-  case workflow_dag.id(dag) == recovered.workflow_id {
-    False -> Ok(False)
-    True ->
-      case workflow_fingerprint.fingerprint_for_execution(dag, orchestrator) {
-        Error(err) -> Error(err)
-        Ok(fingerprint) -> Ok(fingerprint == recovered.workflow_fingerprint)
-      }
-  }
 }
 
 fn recovered_workspaces_to_prepared(
@@ -3558,20 +3518,34 @@ fn finish_queued_control_operation(
     )
   case execution_result {
     QueuedControlOperationNoop -> state
-    QueuedControlOperationSucceeded(bodies, resumption) -> {
-      let #(state, appended) =
-        append_ledger_bodies(state, bodies, "retry_step_append_failed")
-      case appended {
-        False ->
+    QueuedControlOperationSucceeded(bodies, resumption) ->
+      case retry_step_resumption.validate(state.workflow.bundle, resumption) {
+        Error(failure) ->
           append_control_operation_failure(
             state,
             operation_id,
-            "ledger_append_failed",
-            Some("failed to append retry-step repair records"),
+            failure.reason,
+            Some(retry_step_operation.validation_rejection_message(
+              failure,
+              resumption.run_id,
+              operation_requested_step_id(state, operation_id),
+            )),
           )
-        True -> spawn_recovered_workflow_resumption(state, resumption)
+        Ok(_) -> {
+          let #(state, appended) =
+            append_ledger_bodies(state, bodies, "retry_step_append_failed")
+          case appended {
+            False ->
+              append_control_operation_failure(
+                state,
+                operation_id,
+                "ledger_append_failed",
+                Some("failed to append retry-step repair records"),
+              )
+            True -> spawn_recovered_workflow_resumption(state, resumption)
+          }
+        }
       }
-    }
     QueuedControlOperationCompleted(bodies) -> {
       let #(state, appended) =
         append_ledger_bodies(
@@ -3690,11 +3664,18 @@ fn continue_retry_step_operation(
   let observation =
     startup_recovery.current_workflow_observation(state.workflow.bundle, issue)
   case workflow_repair.plan(projection_state, target, step_id, observation) {
-    Error(error) ->
+    Error(error) -> {
+      let reason = workflow_repair.describe_error(error)
       QueuedControlOperationFailed(
-        workflow_repair.describe_error(error),
-        workflow_repair.error_message(error),
+        reason,
+        Some(retry_step_operation.failure_message(
+          reason,
+          workflow_repair.error_message(error),
+          option.unwrap(operation.run_id, ""),
+          step_id,
+        )),
       )
+    }
     Ok(plan) ->
       case
         recovery.finalize_retry_step_candidates_with_config(
@@ -3733,12 +3714,16 @@ fn continue_retry_step_operation(
             _ ->
               QueuedControlOperationRejected(
                 list.append(
-                  retry_step_rejection_diagnostic_bodies(finalization),
+                  retry_step_operation.diagnostic_bodies(finalization),
                   [
                     record.ControlOperationFailed(
                       operation.operation_id,
-                      rejection_reason_from_finalization(finalization),
-                      rejection_message_from_finalization(finalization),
+                      retry_step_operation.rejection_reason(finalization),
+                      retry_step_operation.rejection_message(
+                        finalization,
+                        plan.run_id,
+                        operation.requested_step_id,
+                      ),
                     ),
                   ],
                 ),
@@ -4368,49 +4353,13 @@ fn retry_step_applied_message(plan: workflow_repair.RepairPlan) -> String {
   <> int.to_string(plan.next_attempt_index)
 }
 
-fn rejection_message_from_finalization(
-  finalization: recovery.WorkflowFinalization,
+fn operation_requested_step_id(
+  state: State,
+  operation_id: String,
 ) -> Option(String) {
-  case finalization.diagnostics {
-    [diagnostic, ..] ->
-      Some(
-        "retry-step repair was rejected by recovery validation: "
-        <> recovery.workflow_recovery_diagnostic_message(diagnostic),
-      )
-    [] -> Some("retry-step repair was rejected by recovery validation")
-  }
-}
-
-fn retry_step_rejection_diagnostic_bodies(
-  finalization: recovery.WorkflowFinalization,
-) -> List(record.RecordBody) {
-  finalization.diagnostics
-  |> list.map(recovery.workflow_recovery_diagnostic_record_body)
-}
-
-fn rejection_reason_from_finalization(
-  finalization: recovery.WorkflowFinalization,
-) -> String {
-  case finalization.diagnostics {
-    [diagnostic, ..] -> recovery.workflow_recovery_diagnostic_reason(diagnostic)
-    [] ->
-      case finalization.records_to_append {
-        [
-          record.LedgerRecord(
-            body: record.IssueParkedV2(reason: reason, ..),
-            ..,
-          ),
-          ..
-        ] -> reason
-        [
-          record.LedgerRecord(
-            body: record.WorkflowRunInterrupted(reason: reason, ..),
-            ..,
-          ),
-          ..
-        ] -> reason
-        _ -> "artifact_recovery_failed"
-      }
+  case projection.control_operation(state.ledger_projection, operation_id) {
+    Ok(operation) -> operation.requested_step_id
+    Error(Nil) -> None
   }
 }
 
@@ -5946,7 +5895,7 @@ fn apply_dispatch_step_recovery(
           let #(state, _diagnostic_appended) =
             append_ledger_bodies(
               state,
-              retry_step_rejection_diagnostic_bodies(finalization),
+              retry_step_operation.diagnostic_bodies(finalization),
               "dispatch_recovery_rejection_diagnostic_append_failed",
             )
           park_dispatch_recovery_rejection(
@@ -5954,9 +5903,9 @@ fn apply_dispatch_step_recovery(
             remaining_candidates,
             task_ref,
             issue,
-            rejection_reason_from_finalization(finalization),
+            retry_step_operation.rejection_reason(finalization),
             string.trim(option_with_default(
-              rejection_message_from_finalization(finalization),
+              retry_step_operation.dispatch_rejection_message(finalization),
               "dispatch recovery rejected",
             )),
           )

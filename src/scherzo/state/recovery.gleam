@@ -9,6 +9,7 @@ import scherzo/claim_abandonment
 import scherzo/config/types as config_types
 import scherzo/hash
 import scherzo/path
+import scherzo/retry_step_validation
 import scherzo/runtime/identity
 import scherzo/runtime/reason
 import scherzo/runtime/recovery_policy
@@ -788,14 +789,15 @@ fn finalize_one_workflow_candidate(
       workspace_root,
     ) ->
       case
-        workflow_attempt.recovery_drift_reason(
-          candidate.run_id,
-          candidate.workflow_id,
-          workflow_id,
-          candidate.workflow_fingerprint,
-          workflow_fingerprint,
-          candidate.issue_fingerprint,
-          issue_fingerprint,
+        retry_step_validation.recovery_drift_for_mode(
+          retry_step: mode == ResumeExplicitRetryStep,
+          run_id: candidate.run_id,
+          recorded_workflow_id: candidate.workflow_id,
+          current_workflow_id: workflow_id,
+          recorded_workflow_fingerprint: candidate.workflow_fingerprint,
+          current_workflow_fingerprint: workflow_fingerprint,
+          recorded_issue_fingerprint: candidate.issue_fingerprint,
+          current_issue_fingerprint: issue_fingerprint,
         )
       {
         Some(#(reason, warning)) ->
