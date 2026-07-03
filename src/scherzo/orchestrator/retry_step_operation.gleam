@@ -9,6 +9,7 @@ import scherzo/retry_step_validation
 import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
+import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
@@ -23,9 +24,11 @@ pub type IssuePreflight {
 
 pub fn issue_preflight(
   runtime: orchestrator_state.RuntimeState,
+  projection_state: projection.Projection,
   effective: config_types.EffectiveConfig,
   operator_command: command.OperatorCommand,
   target: command.RetryWorkflowStepTarget,
+  run_id: String,
   issue_id: String,
   fetch_issue_by_id: fn(String) ->
     Result(tracker_issue.Issue, command.CommandStatus),
@@ -33,7 +36,9 @@ pub fn issue_preflight(
 ) -> Result(IssuePreflight, command.CommandResult) {
   use released_park <- result.try(released_park_result(
     runtime,
+    projection_state,
     operator_command,
+    run_id,
     issue_id,
   ))
   case issue_is_active_or_pending(released_park) {
@@ -61,7 +66,9 @@ pub fn issue_preflight(
 
 fn released_park_result(
   runtime: orchestrator_state.RuntimeState,
+  projection_state: projection.Projection,
   operator_command: command.OperatorCommand,
+  run_id: String,
   issue_id: String,
 ) -> Result(Option(orchestrator_state.ParkedEntry), command.CommandResult) {
   case
@@ -71,7 +78,14 @@ fn released_park_result(
     )
   {
     Ok(parked) ->
-      case core.retry_intent_releases_park(parked) {
+      case
+        core.retry_intent_releases_park(parked)
+        || retry_step_validation.parked_issue_can_retry_step(
+          projection_state,
+          run_id,
+          issue_id,
+        )
+      {
         True -> Ok(Some(parked))
         False ->
           Error(command.rejected(
@@ -105,24 +119,7 @@ fn validate_issue_state(
           <> issue_state.to_string(issue.state),
         ),
       ))
-    False ->
-      case core.is_active(effective, issue.state) {
-        True -> Ok(IssuePreflight(issue, released_park))
-        False ->
-          Error(command.rejected(
-            operator_command,
-            "issue_state_drift:non_active_state",
-            Some(
-              "run "
-              <> command.retry_workflow_step_target_to_string(target)
-              <> " for issue "
-              <> issue.identifier
-              <> " is currently in non-active state "
-              <> issue_state.to_string(issue.state)
-              <> "; move the issue to a configured active state before retry-step",
-            ),
-          ))
-      }
+    False -> Ok(IssuePreflight(issue, released_park))
   }
 }
 
@@ -172,6 +169,19 @@ pub fn unpark_bodies(
   }
 }
 
+pub fn queue_released_park(
+  released_park: Option(orchestrator_state.ParkedEntry),
+) -> Option(orchestrator_state.ParkedEntry) {
+  case released_park {
+    Some(parked) ->
+      case core.retry_intent_releases_park(parked) {
+        True -> Some(parked)
+        False -> None
+      }
+    None -> None
+  }
+}
+
 pub fn issue_is_active_or_pending(
   runtime: orchestrator_state.RuntimeState,
   tracker_kind: String,
@@ -217,6 +227,43 @@ pub fn failure_message(
     run_id,
     step_id,
   )
+}
+
+pub fn parked_issue(
+  runtime: orchestrator_state.RuntimeState,
+  projection_state: projection.Projection,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  issue_id: String,
+) -> Result(Nil, command.CommandResult) {
+  case
+    dict.get(
+      runtime.parked,
+      orchestrator_state.linear_issue_id_identity(issue_id),
+    )
+  {
+    Error(Nil) -> Ok(Nil)
+    Ok(parked) -> {
+      let reason = orchestrator_reason.park_to_string(parked.reason)
+      case
+        retry_step_validation.parked_issue_can_retry_step(
+          projection_state,
+          run_id,
+          issue_id,
+        )
+      {
+        True -> Ok(Nil)
+        False ->
+          Error(command.rejected(
+            operator_command,
+            "issue_parked",
+            Some(
+              "issue is parked for " <> reason <> "; unpark before retry-step",
+            ),
+          ))
+      }
+    }
+  }
 }
 
 pub fn rejection_message(

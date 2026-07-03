@@ -526,12 +526,14 @@ pub fn retry_step_rejects_workflow_fingerprint_drift_test() {
   assert workflow_repair.describe_error(error) == "workflow_drift"
 }
 
-pub fn retry_step_rejects_issue_fingerprint_drift_test() {
+pub fn retry_step_accepts_issue_fingerprint_drift_and_records_current_snapshot_test() {
   let projection = projection.fold(interrupted_run_records())
   let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
-  let changed_issue = tracker_issue.Issue(..issue(), title: "Changed title")
+  let changed_issue =
+    tracker_issue.Issue(..issue(), description: Some("Updated description"))
+  let changed_fingerprint = tracker_issue.content_fingerprint(changed_issue)
 
-  let assert Error(error) =
+  let assert Ok(plan) =
     workflow_repair.plan(
       projection,
       command.RetryWorkflowStepRunId("run-1"),
@@ -540,13 +542,64 @@ pub fn retry_step_rejects_issue_fingerprint_drift_test() {
         issue: changed_issue,
         workflow_id: "implementation",
         workflow_fingerprint: "workflow-fp-1",
-        issue_fingerprint: tracker_issue.content_fingerprint(changed_issue),
+        issue_fingerprint: changed_fingerprint,
         dag: dag,
         workspace_root: "test/tmp/workflow-repair",
       ),
     )
 
-  assert workflow_repair.describe_error(error) == "issue_drift"
+  assert plan.candidate.issue_fingerprint == changed_fingerprint
+  assert list.any(plan.records_to_append, fn(body) {
+    case body {
+      record.WorkflowRunStartedWithTask(issue_fingerprint: fingerprint, ..) ->
+        fingerprint == changed_fingerprint
+      _ -> False
+    }
+  })
+}
+
+pub fn retry_step_unparks_system_issue_content_drift_park_test() {
+  let drift_reason = "issue_content_drift:issue_fingerprint_changed"
+  let projection =
+    projection.fold(
+      list.append(
+        interrupted_run_records_with_issue_fingerprint_and_reason(
+          tracker_issue.content_fingerprint(issue()),
+          drift_reason,
+        ),
+        [
+          record.with_id(
+            "issue-content-drift-parked",
+            70,
+            record.IssueParkedV2(
+              "issue-1",
+              "LIV-509",
+              drift_reason,
+              "explicit_unpark_only",
+              tracker_issue.content_fingerprint(issue()),
+              100,
+            ),
+          ),
+        ],
+      ),
+    )
+  let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("apply_feedback"),
+      current_workflow(dag),
+    )
+
+  assert list.any(plan.records_to_append, fn(body) {
+    case body {
+      record.IssueUnparked(issue_id, _, reason) ->
+        issue_id == "issue-1" && reason == "retry_step"
+      _ -> False
+    }
+  })
 }
 
 pub fn retry_step_rejects_task_identity_drift_test() {
@@ -1252,6 +1305,16 @@ fn interrupted_run_records_with_step_recovery() -> List(record.LedgerRecord) {
 fn interrupted_run_records_with_issue_fingerprint(
   issue_fingerprint: String,
 ) -> List(record.LedgerRecord) {
+  interrupted_run_records_with_issue_fingerprint_and_reason(
+    issue_fingerprint,
+    "daemon_shutdown",
+  )
+}
+
+fn interrupted_run_records_with_issue_fingerprint_and_reason(
+  issue_fingerprint: String,
+  interruption_reason: String,
+) -> List(record.LedgerRecord) {
   [
     workflow_started_record_for_run_with_issue_fingerprint(
       "run-1",
@@ -1302,7 +1365,7 @@ fn interrupted_run_records_with_issue_fingerprint(
         workflow_id: "implementation",
         step_id: "apply_feedback",
         attempt_index: 1,
-        reason: "daemon_shutdown",
+        reason: interruption_reason,
       ),
     ),
     prepared_attempt_record("publish", 1, "main", 50),
@@ -1313,7 +1376,7 @@ fn interrupted_run_records_with_issue_fingerprint(
         run_id: "run-1",
         workflow_id: "implementation",
         issue_id: "issue-1",
-        reason: "daemon_shutdown",
+        reason: interruption_reason,
       ),
     ),
   ]

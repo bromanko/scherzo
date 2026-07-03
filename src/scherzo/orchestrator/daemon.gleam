@@ -2975,8 +2975,10 @@ fn retry_workflow_step_for_operator(
           case
             retry_step_issue_preflight(
               state,
+              projection_state,
               operator_command,
               target,
+              run_id,
               issue_id,
             )
           {
@@ -3002,10 +3004,12 @@ fn retry_workflow_step_for_operator(
                   requested_step_id: step_id,
                   publication_id: None,
                 )
+              let queue_released_park =
+                retry_step_operation.queue_released_park(released_park)
               let queued_bodies =
                 list.append(
                   retry_step_operation.unpark_bodies(
-                    released_park,
+                    queue_released_park,
                     state.dependencies.now_ms(),
                   ),
                   [queued_body],
@@ -3026,7 +3030,7 @@ fn retry_workflow_step_for_operator(
                     ..state,
                     runtime: retry_step_operation.clear_released_park(
                       state.runtime,
-                      released_park,
+                      queue_released_park,
                     ),
                   ),
                   result,
@@ -3407,15 +3411,19 @@ fn recollect_outputs_issue_preflight_for_run(
 
 fn retry_step_issue_preflight(
   state: State,
+  projection_state: projection.Projection,
   operator_command: command.OperatorCommand,
   target: command.RetryWorkflowStepTarget,
+  run_id: String,
   issue_id: String,
 ) -> Result(retry_step_operation.IssuePreflight, command.CommandResult) {
   retry_step_operation.issue_preflight(
     state.runtime,
+    projection_state,
     state.workflow.effective,
     operator_command,
     target,
+    run_id,
     issue_id,
     fn(issue_id) { fetch_issue_by_id(state, issue_id) },
     fn(released_park) {
@@ -3639,8 +3647,10 @@ fn execute_retry_step_operation(
       case
         retry_step_issue_preflight(
           state,
+          state.ledger_projection,
           operator_command,
           command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, "")),
+          option.unwrap(operation.run_id, ""),
           issue_id,
         )
       {
@@ -3702,7 +3712,7 @@ fn continue_retry_step_operation(
               let bodies =
                 list.append(
                   retry_step_operation.unpark_bodies(
-                    released_park,
+                    retry_step_operation.queue_released_park(released_park),
                     state.dependencies.now_ms(),
                   ),
                   list.append(
