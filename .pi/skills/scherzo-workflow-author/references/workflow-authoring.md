@@ -4,15 +4,15 @@ Use this reference after loading `scherzo-workflow-author` when creating or edit
 
 ## Important paths
 
-- `.scherzo/scherzo.yaml` — repository runtime config. Workflow paths in `workflows:` are relative to this file.
-- `.scherzo/workflows` — checked-in workflow bundle entry point. In this repository it is a symlink to `../workflows/dogfood`.
-- `workflows/dogfood/*.yaml` — dogfood workflow definitions.
-- `workflows/dogfood/prompts/` — bundled prompt templates.
-- `workflows/dogfood/schemas/` — canonical and provider-facing schemas for workflow artifacts and structured output.
-- `workflows/dogfood/scripts/` — workflow-local helper scripts.
-- `schemas/scherzo.workflow.v1.schema.json` — public workflow YAML schema.
-- `schemas/scherzo.config.v1.schema.json` — public runtime config schema.
-- `examples/workflows/` and `examples/scherzo*.yaml` — smaller reusable examples.
+- `.scherzo/scherzo.yaml` — conventional repository runtime config. Workflow paths in `workflows:` are relative to this file. If the user supplies another config path, use that path instead.
+- `.scherzo/workflows/` — common checked-in workflow bundle entry point. It may be a directory, symlink, vendored bundle, or generated checkout; resolve the actual edited file without hard-coding the physical target into workflow references.
+- `<workflow-bundle>/*.yaml` — workflow definitions selected by the config `workflows:` map.
+- `<workflow-bundle>/prompts/` — bundled prompt templates.
+- `<workflow-bundle>/schemas/` — canonical and provider-facing schemas for workflow artifacts and structured output.
+- `<workflow-bundle>/scripts/` — workflow-local helper scripts.
+- `schemas/scherzo.workflow.v1.schema.json` — public workflow YAML schema when present in a Scherzo source checkout.
+- `schemas/scherzo.config.v1.schema.json` — public runtime config schema when present in a Scherzo source checkout.
+- `examples/workflows/` and `examples/scherzo*.yaml` — smaller reusable examples when present.
 
 Avoid authoring changes in runtime paths such as `.scherzo/workspaces/`, `.scherzo/.scherzo-state/`, `.scherzo/command-step-diagnostics/`, or retained run artifact directories.
 
@@ -84,7 +84,7 @@ Command step:
   timeout: 20m
   run: |
     set -eu
-    direnv exec . gleam test
+    test -s result.md
   run_in: main
 ```
 
@@ -185,7 +185,7 @@ contract:
 
 ## Publication routes
 
-Publication routes live under workflow `artifacts.publications` and refer to repositories configured in `.scherzo/scherzo.yaml` under `artifacts.repositories.github`.
+Publication routes live under workflow `artifacts.publications` and refer to repositories configured in the Scherzo config under `artifacts.repositories.github`.
 
 File publication sketch:
 
@@ -229,7 +229,7 @@ If a publication uses a workspace driver, ensure the workflow declares the neede
 
 ## Config routing and schedules
 
-In `.scherzo/scherzo.yaml`:
+In the Scherzo config, commonly `.scherzo/scherzo.yaml`:
 
 ```yaml
 workflows:
@@ -237,9 +237,9 @@ workflows:
   implementation: workflows/implementation.yaml
 ```
 
-The keys are workflow ids. Paths are relative to `.scherzo/scherzo.yaml`, so `workflows/research.yaml` resolves through `.scherzo/workflows`.
+The keys are workflow ids. Paths are relative to the config file that contains them, so in the conventional layout `workflows/research.yaml` resolves through `.scherzo/workflows`.
 
-Label-based routing usually uses `workflow:<id>` labels through the tracker label policy. After adding a new workflow route, make sure the Linear project contract/documentation includes the matching label when required.
+Label-based routing usually uses `workflow:<id>` labels through the tracker label policy. After adding a new workflow route, make sure the tracker/project contract or documentation includes the matching label when required.
 
 Scheduled workflows use config-level `schedules:`:
 
@@ -264,7 +264,7 @@ Workflow-specific task update overrides live under `task_updates.workflows.<work
 
 ## Portability rules
 
-- Keep the workflow bundle self-contained: prompts, schemas, scripts, and guidance needed by the workflow should live under `.scherzo/workflows` / `workflows/dogfood`.
+- Keep the workflow bundle self-contained: prompts, schemas, scripts, and guidance needed by the workflow should live under the configured bundle directory, commonly `.scherzo/workflows/`.
 - Do not rely on personal or repository-local Pi skills in workflow prompts. Embed required guidance in bundled prompt/guidance files.
 - Do not commit secrets or real tokens. Use environment variable names and local ignored overrides.
 - Avoid absolute paths, `~`, drive-letter paths, and parent traversal in schema-checked paths.
@@ -281,22 +281,32 @@ repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
 
 - In workflow YAML, follow existing path conventions: prompt paths are bundle-relative (`prompts/name.md`), while config-level templates and schema paths that need repository-relative addressing use `.scherzo/workflows/...` or config-relative `workflows/...` as appropriate.
 - New command steps should set `set -eu` and fail closed when required inputs/artifacts are missing.
-- Prefer driver capabilities (`assert-only`, `changed-files`, `publish-commit-stack`, etc.) over ad hoc assumptions about git/jj state.
+- Prefer driver capabilities (`assert-only`, `changed-files`, `publish-commit-stack`, etc.) over ad hoc assumptions about VCS state.
 
 ## Validation checklist
 
 Use the smallest set that proves the change, and explain any skipped command.
 
-Basic workflow/config load:
+Basic workflow/config load. Use the packaged `scherzo` CLI when available; in a Scherzo source checkout, use the Gleam entry point through direnv. Pass the config path under edit:
 
 ```sh
-LINEAR_API_KEY=dummy direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
+# Packaged CLI:
+scherzo doctor --check workflow-config .scherzo/scherzo.yaml
+
+# Scherzo source checkout:
+direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
 ```
 
-Tracker label/state contract when workflow labels, states, or project assumptions changed:
+If the config requires tracker credentials even for non-mutating checks, set the appropriate dummy environment variable for that tracker.
+
+Tracker label/state contract when workflow labels, states, or project assumptions changed and tracker credentials are available:
 
 ```sh
-LINEAR_API_KEY=lin_api_... direnv exec . gleam run -- doctor --check tracker-contract .scherzo/scherzo.yaml
+# Packaged CLI:
+scherzo doctor --check tracker-contract .scherzo/scherzo.yaml
+
+# Scherzo source checkout:
+direnv exec . gleam run -- doctor --check tracker-contract .scherzo/scherzo.yaml
 ```
 
 Structured-output contracts:
@@ -306,20 +316,20 @@ direnv exec . gleam run -m scherzo_structured_output_contract -- check-workflow 
 direnv exec . gleam run -m scherzo_structured_output_contract -- check-workflows
 ```
 
-Dogfood bundle portability:
+Workflow bundle portability when the repository provides a check, for example in the Scherzo source checkout:
 
 ```sh
 nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).workflow-portability --print-build-logs
 ```
 
-Manual portability harness when investigating failures:
+Manual portability harness when investigating failures in the Scherzo source checkout:
 
 ```sh
 nix develop .#workflow-portability
 python3 scripts/scherzo-workflow-portability check --repo-root . --scherzo scherzo --output-dir tmp/scherzo-workflow-portability/manual
 ```
 
-General repository gates when production code or tests changed:
+General repository gates when production code, tests, helper scripts, or schemas changed: use the repository's own required checks. In the Scherzo source checkout, that commonly includes:
 
 ```sh
 direnv exec . gleam test
