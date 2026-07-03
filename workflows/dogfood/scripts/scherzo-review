@@ -141,6 +141,13 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def resolve_run_root_relative_path(path: Path) -> Path:
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    if run_root and not path.is_absolute() and path.parts[:1] == ("state",):
+        return Path(run_root) / path
+    return path
+
+
 def run_read_only(args: list[str]) -> str:
     proc = subprocess.run(
         args,
@@ -644,7 +651,7 @@ def bounded_text(value: Any, max_chars: int) -> str:
 
 
 def validation_artifact_ref(path_value: str, artifact_type: str) -> dict[str, Any]:
-    path = Path(path_value)
+    path = resolve_run_root_relative_path(Path(path_value))
     ref = {
         "artifact_type": artifact_type,
         "path": artifact_ref_display_path(path).as_posix(),
@@ -702,7 +709,7 @@ def normalize_validation_for_prepare_native(
     ]
 
     if args.validation_result:
-        validation_path = Path(args.validation_result)
+        validation_path = resolve_run_root_relative_path(Path(args.validation_result))
         artifact_refs = [
             validation_artifact_ref(args.validation_result, "structured_validation_result"),
             *log_refs,
@@ -2822,7 +2829,7 @@ def finalize_dispositions_command(args: argparse.Namespace) -> None:
     validate_final_review(final_review)
     disposition_input_path = Path(args.disposition_input)
     disposition_entries = load_disposition_input(disposition_input_path)
-    validation_artifact_path = Path(args.validation_artifact)
+    validation_artifact_path = resolve_run_root_relative_path(Path(args.validation_artifact))
     validation_artifact = load_json(validation_artifact_path)
 
     findings = collect_final_review_findings(final_review)

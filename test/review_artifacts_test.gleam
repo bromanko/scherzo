@@ -388,7 +388,7 @@ pub fn implementation_workflows_use_native_review_path_without_legacy_backends_t
     assert_contains(workflow, "validate_before_native_review")
     assert_contains(
       workflow,
-      "--validation-result tmp/scherzo-implementation-validation.json",
+      "--validation-result state/implementation/scherzo-implementation-validation.json",
     )
     assert_contains(
       workflow,
