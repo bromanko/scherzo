@@ -7343,6 +7343,83 @@ pub fn contracted_file_output_uses_output_path_not_truncated_stdout_test() {
   assert blob == large_json
 }
 
+pub fn contracted_state_file_output_reads_from_run_root_state_test() {
+  let subject = process.new_subject()
+  let root = "test/tmp/workflow-run/contract-state-file-output-json"
+  let run_root = root <> "/run-root"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(
+    "test/tmp/workflow-run/workspaces/implementation/ABC-123",
+  )
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: execplan\ncontract:\n  version: 1\n  outputs:\n    implementation_pack:\n      type: implementation_pack\n      source:\n        step: materialize\n        path: state/implementation/execplan-implementation-pack.json\nsteps:\n  - id: materialize\n    kind: command\n    run: ignored\n",
+    )
+  let canonical_json = "{\"schema_version\":2,\"source\":\"run-root\"}\n"
+  let workspace_json = "{\"schema_version\":2,\"source\":\"workspace\"}\n"
+  let checkpoint = workflow_checkpoint.ledger_writer(root, fn() { 123 })
+  let base_deps = deps_with_prepared_run_root(subject, None, run_root)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base_deps,
+      command_step: fn(
+        context: workflow_run.StepContext,
+        _command,
+        _timeout,
+        secrets,
+        limits,
+      ) {
+        let canonical_dir = path.join(context.run_root, "state/implementation")
+        let assert Ok(Nil) = simplifile.create_directory_all(canonical_dir)
+        let assert Ok(Nil) =
+          simplifile.write(
+            path.join(canonical_dir, "execplan-implementation-pack.json"),
+            canonical_json,
+          )
+        let workspace_dir =
+          path.join(context.workspace_path, "state/implementation")
+        let assert Ok(Nil) = simplifile.create_directory_all(workspace_dir)
+        let assert Ok(Nil) =
+          simplifile.write(
+            path.join(workspace_dir, "execplan-implementation-pack.json"),
+            workspace_json,
+          )
+        step_artifact.from_command_result(
+          context.step_id,
+          0,
+          "{not-json-from-stdout",
+          "",
+          False,
+          secrets,
+          limits,
+        )
+      },
+      checkpoint: checkpoint,
+    )
+
+  let assert Ok(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  let manifest = read_output_manifest(root, "run-1")
+  let pack = output_named(manifest.outputs, "implementation_pack")
+  assert pack.ref == Some("runs/run-1/outputs/implementation_pack.json")
+  assert pack.bytes == Some(string.length(canonical_json))
+  let assert Ok(blob) =
+    simplifile.read(
+      root
+      <> "/.scherzo-state/artifacts/runs/run-1/outputs/implementation_pack.json",
+    )
+  assert blob == canonical_json
+}
+
 pub fn contracted_inline_json_and_static_refs_emit_descriptors_test() {
   let subject = process.new_subject()
   let root = "test/tmp/workflow-run/contract-inline-json-and-static-refs"

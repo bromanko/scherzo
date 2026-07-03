@@ -5,9 +5,9 @@ You are running only because a fatal step in `workflow:execplan-implementation` 
 Inspect relevant local evidence before changing files:
 - the failed step summary and command diagnostics appended below;
 - `$SCHERZO_WORKSPACE_DRIVER status --human` and, when needed, `$SCHERZO_WORKSPACE_DRIVER diff --human`;
-- `tmp/execplan-review-doc.md`, `tmp/execplan-implementation-pack.json`, and `tmp/execplan-bundle.json` for the authoritative handoff inputs;
-- `tmp/scherzo-plan-completion-verdict.json`, `tmp/scherzo-plan-completion-context.json`, and `tmp/scherzo-plan-completion-recovery.json` when the failure mentions plan completion;
-- `tmp/scherzo-implementation-validation.json` and `.scherzo/command-step-diagnostics/<failed-step>.txt` when the failure is validation-related;
+- `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json`, and `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json` for the authoritative handoff inputs;
+- `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json`, `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-context.json`, and `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-recovery.json` when the failure mentions plan completion;
+- `$SCHERZO_RUN_ROOT/state/implementation/scherzo-implementation-validation.json` and `.scherzo/command-step-diagnostics/<failed-step>.txt` when the failure is validation-related;
 - `tmp/review-finding-dispositions.v1.json`, `artifacts/review/synthesize_review/final-review.v1.json`, and retained structured-output validation messages when the failure mentions review dispositions or structured output;
 - `tmp/scherzo-implementation-refresh-base-latest.json`, `tmp/scherzo-implementation-base-drift-repair.md`, and `tmp/scherzo-implementation-base-drift-failure.md` when the failure follows base refresh or base-drift repair.
 

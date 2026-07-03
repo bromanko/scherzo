@@ -25,14 +25,14 @@ contract:
       artifact_type: scherzo.code_change_bundle.v2
       source:
         step: materialize_code_change_bundle
-        path: tmp/execplan-code-change-bundle.json
+        path: state/implementation/execplan-code-change-bundle.json
     commit_stack:
       kind: commit_stack
       media_type: application/vnd.scherzo.git-commit-stack+json
       artifact_type: scherzo.git_commit_stack.v1
       source:
         step: materialize_commit_stack
-        path: tmp/scherzo-implementation-commit-stack.json
+        path: state/implementation/scherzo-implementation-commit-stack.json
 workstream_phase:
   phase_id: implementation
   display_name: ExecPlan implemented, reviewed, validated, and published
@@ -229,7 +229,7 @@ steps:
   - id: prepare_review
     kind: command
     depends_on: [validate_before_native_review]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; output_dir="$SCHERZO_RUN_ROOT/artifacts/review/prepare_review"; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then "$bundle_dir/scripts/scherzo-review" prepare-native --diff-file "$SCHERZO_RUN_ROOT/input.diff" --output-dir "$output_dir" --source-label "execplan-implementation-native" --validation-result tmp/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt; else "$bundle_dir/scripts/scherzo-review" prepare-native --from "${SCHERZO_REVIEW_FROM:-@-}" --to "${SCHERZO_REVIEW_TO:-@}" --output-dir "$output_dir" --source-label "execplan-implementation-native" --validation-result tmp/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt; fi'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; output_dir="$SCHERZO_RUN_ROOT/artifacts/review/prepare_review"; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then "$bundle_dir/scripts/scherzo-review" prepare-native --diff-file "$SCHERZO_RUN_ROOT/input.diff" --output-dir "$output_dir" --source-label "execplan-implementation-native" --validation-result state/implementation/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt; else "$bundle_dir/scripts/scherzo-review" prepare-native --from "${SCHERZO_REVIEW_FROM:-@-}" --to "${SCHERZO_REVIEW_TO:-@}" --output-dir "$output_dir" --source-label "execplan-implementation-native" --validation-result state/implementation/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt; fi'
     timeout: 5m
     run_in: main
 
@@ -605,7 +605,7 @@ steps:
   - id: finalize_review_dispositions
     kind: command
     depends_on: [final_validate]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; diff_path=""; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then diff_path=" --diff-file $SCHERZO_RUN_ROOT/input.diff"; fi; "$bundle_dir/scripts/scherzo-review" finalize-dispositions --final-review "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json" --disposition-input tmp/review-finding-dispositions.v1.json --validation-artifact tmp/scherzo-implementation-validation.json --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/final_dispositions" --require-publishable${diff_path}'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; diff_path=""; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then diff_path=" --diff-file $SCHERZO_RUN_ROOT/input.diff"; fi; "$bundle_dir/scripts/scherzo-review" finalize-dispositions --final-review "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json" --disposition-input tmp/review-finding-dispositions.v1.json --validation-artifact state/implementation/scherzo-implementation-validation.json --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/final_dispositions" --require-publishable${diff_path}'
     run_in: main
 
   - id: materialize_commit_stack
@@ -620,7 +620,7 @@ steps:
   - id: materialize_code_change_bundle
     kind: command
     depends_on: [materialize_commit_stack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; bundle_path=${SCHERZO_RUN_ROOT:-}/state/implementation/execplan-bundle.json; if [ ! -f "$bundle_path" ]; then bundle_path=tmp/execplan-bundle.json; fi; "$bundle_dir/scripts/scherzo-execplan" materialize-code-change-bundle --bundle "$bundle_path" --output tmp/execplan-code-change-bundle.json'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; bundle_path="$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json"; "$bundle_dir/scripts/scherzo-execplan" materialize-code-change-bundle --bundle "$bundle_path" --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-code-change-bundle.json"'
     run_in: main
     recovery:
       enabled: false

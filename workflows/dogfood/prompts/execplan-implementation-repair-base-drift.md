@@ -6,7 +6,7 @@ Task URL:
 ExecPlan identity model:
 
 - The workflow task in this prompt is the implementation handoff issue; it owns this implementation run and should be used for Linear/GitHub linkage.
-- `tmp/execplan-bundle.json` records that handoff under `implementation_handoff` and records the source ExecPlan/review-doc issue under `source_issue`.
+- `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json` records that handoff under `implementation_handoff` and records the source ExecPlan/review-doc issue under `source_issue`.
 - `implementation_handoff.issue_identifier` may differ from `source_issue.identifier`; that split is valid and expected for handoff tasks.
 - Do not report a conflict, fail completion, or request revision solely because the handoff issue, source issue, review doc path, or implementation pack provenance reference different Linear keys. Treat only review-doc/implementation-pack disagreement in intent, scope, acceptance, safety, or source-plan provenance beyond that expected split as blocking.
 
@@ -29,7 +29,7 @@ Refresh exit code:
 
 Validation result:
 - `validate_after_refresh` exit code: {{ steps.validate_after_refresh.exit_code }}
-- Structured validation artifact: `tmp/scherzo-implementation-validation.json`
+- Structured validation artifact: `$SCHERZO_RUN_ROOT/state/implementation/scherzo-implementation-validation.json`
 - For failures, read `failure_summary`, `stdout_excerpt`, and `stderr_excerpt` from the structured validation artifact; those fields are bounded. Do not rely on this prompt for full stdout/stderr.
 - Full stdout/stderr remains available in `.scherzo/command-step-diagnostics/validate_after_refresh.txt` in the retained workspace when available.
 
@@ -39,7 +39,7 @@ Workflow contract:
 - Do not use `gh` to create, edit, close, or comment on pull requests. Later deterministic command steps validate and publish.
 - This step repairs only base drift, meaning problems caused by rebasing the implementation change onto the latest configured pull request base.
 - Read `tmp/scherzo-implementation-refresh-base-before-validation.json` when it exists. If it does not exist, read `tmp/scherzo-implementation-refresh-base-latest.json`.
-- Read `tmp/scherzo-implementation-validation.json` when it exists; it contains validation status, exit code, base revision, command, and, on failure, a deterministic validation failure summary plus bounded stdout/stderr excerpts.
+- Read `$SCHERZO_RUN_ROOT/state/implementation/scherzo-implementation-validation.json` when it exists; it contains validation status, exit code, base revision, command, and, on failure, a deterministic validation failure summary plus bounded stdout/stderr excerpts.
 - In this prompt, validation succeeded means the `validate_after_refresh` command exited `0`; validation failed means it exited nonzero.
 - When validation reaches the final check, the retained stdout/stderr is the validation command's output; inspect the bounded failure summary first, then the full retained diagnostics only when deciding whether a `rebased_clean` validation failure is mechanically repairable.
 - Never treat a validation failure as repairable base drift unless the refresh status is `rebased_clean` or `conflicts`.
@@ -117,14 +117,14 @@ Validation failed, but the latest refresh status was `fresh`, so this is not cla
 `validate_after_refresh` exited <code>.
 
 ## Validation command
-The repository validation command recorded under `commands` in `tmp/scherzo-implementation-validation.json`.
+The repository validation command recorded under `commands` in `$SCHERZO_RUN_ROOT/state/implementation/scherzo-implementation-validation.json`.
 
 ## Failure summary
-Copy the concise root-cause summary from `tmp/scherzo-implementation-validation.json` when present, for example the failing validation step, Nix hash mismatch, compile error, test failure, or other first actionable error. Do not paste full transcripts.
+Copy the concise root-cause summary from `$SCHERZO_RUN_ROOT/state/implementation/scherzo-implementation-validation.json` when present, for example the failing validation step, Nix hash mismatch, compile error, test failure, or other first actionable error. Do not paste full transcripts.
 
 ## Diagnostic artifacts
 - `tmp/scherzo-implementation-refresh-base-before-validation.json`
-- `tmp/scherzo-implementation-validation.json`
+- `$SCHERZO_RUN_ROOT/state/implementation/scherzo-implementation-validation.json`
 - `.scherzo/command-step-diagnostics/validate_after_refresh.txt` in the retained workspace, when available
 
 ## Required human decision
