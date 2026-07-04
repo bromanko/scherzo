@@ -5,6 +5,7 @@ import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/command
 import scherzo/control/query/types as query_types
+import scherzo/control/remote/ui_managed_auth
 import scherzo/control/remote/ui_protocol
 import scherzo/control/remote/ui_websocket_client
 import scherzo/log
@@ -53,6 +54,7 @@ type Fixture {
     apply_requests: process.Subject(ApplyRequest),
     query_requests: process.Subject(QueryRequestCall),
     closes: process.Subject(Nil),
+    managed_auth_rejections: process.Subject(String),
     inbound_path: String,
   )
 }
@@ -71,6 +73,7 @@ fn new_fixture_with_behavior(query_behavior: QueryBehavior) -> Fixture {
   let apply_requests = process.new_subject()
   let query_requests = process.new_subject()
   let closes = process.new_subject()
+  let managed_auth_rejections = process.new_subject()
   let inbound_path = root <> "/inbound.txt"
   let connection = Connection(outbound, inbound_path)
   let settings =
@@ -87,6 +90,7 @@ fn new_fixture_with_behavior(query_behavior: QueryBehavior) -> Fixture {
         None,
       ),
       credential: "dcred_secret_1",
+      managed_launch_auth: None,
       heartbeat_interval_ms: 1000,
       state_interval_ms: 1000,
       retry_initial_ms: 50,
@@ -141,6 +145,9 @@ fn new_fixture_with_behavior(query_behavior: QueryBehavior) -> Fixture {
           }
         }
       },
+      managed_auth_rejected: fn(message) {
+        process.send(managed_auth_rejections, message)
+      },
       logger: fn(level, event, fields, secrets) {
         process.send(logs, log.format(level, event, fields, secrets))
         Ok(Nil)
@@ -156,6 +163,7 @@ fn new_fixture_with_behavior(query_behavior: QueryBehavior) -> Fixture {
     apply_requests,
     query_requests,
     closes,
+    managed_auth_rejections,
     inbound_path,
   )
 }
@@ -425,6 +433,133 @@ pub fn ui_websocket_client_reconnects_after_reader_failure_test() {
   append_inbound_line(fixture.inbound_path, "FAIL:down")
   expect_delay(fixture.delays, 50, 10)
   let _ = test_async.expect_message(fixture.connects)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_reconnects_with_managed_runtime_credential_test() {
+  let fixture = new_fixture()
+  let settings =
+    managed_launch_settings(fixture.settings, "launch_secret_1", 5000)
+  let assert Ok(handle) = ui_websocket_client.start(settings, fixture.deps)
+  let ConnectRequest(_, first_credential) =
+    test_async.expect_message(fixture.connects)
+  assert first_credential == "launch_secret_1"
+  expect_initial_outbound(fixture.outbound)
+
+  append_inbound_line(
+    fixture.inbound_path,
+    "{\"type\":\"server_hello\",\"runtimeCredential\":\"runtime_secret_1\"}",
+  )
+  append_inbound_line(fixture.inbound_path, "FAIL:down")
+
+  let _ = expect_log_contains(fixture.logs, "ui_websocket_recv_failed")
+  let ConnectRequest(_, reconnect_credential) =
+    test_async.expect_message(fixture.connects)
+  assert reconnect_credential == "runtime_secret_1"
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_reexchanges_launch_grant_when_ack_is_lost_test() {
+  let fixture = new_fixture()
+  let settings =
+    managed_launch_settings(fixture.settings, "launch_secret_1", 5000)
+  let assert Ok(handle) = ui_websocket_client.start(settings, fixture.deps)
+  let ConnectRequest(_, first_credential) =
+    test_async.expect_message(fixture.connects)
+  assert first_credential == "launch_secret_1"
+  expect_initial_outbound(fixture.outbound)
+
+  append_inbound_line(fixture.inbound_path, "FAIL:lost_ack")
+
+  let _ = expect_log_contains(fixture.logs, "ui_websocket_recv_failed")
+  let ConnectRequest(_, reconnect_credential) =
+    test_async.expect_message(fixture.connects)
+  assert reconnect_credential == "launch_secret_1"
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_rejects_managed_mode_when_grant_expired_without_runtime_credential_test() {
+  let fixture = new_fixture()
+  let settings = managed_launch_settings(fixture.settings, "launch_secret_1", 1)
+  let assert Ok(handle) = ui_websocket_client.start(settings, fixture.deps)
+
+  let message = test_async.expect_message(fixture.managed_auth_rejections)
+  assert string.contains(message, "managed launch credential")
+  test_async.assert_no_extra_message_within(fixture.connects, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_reports_managed_permanent_auth_rejection_test() {
+  let fixture = new_fixture()
+  let settings =
+    managed_launch_settings(fixture.settings, "launch_secret_1", 5000)
+  let assert Ok(handle) = ui_websocket_client.start(settings, fixture.deps)
+  let _ = test_async.expect_message(fixture.connects)
+  expect_initial_outbound(fixture.outbound)
+
+  append_inbound_line(
+    fixture.inbound_path,
+    "{\"type\":\"server_hello\",\"runtimeCredential\":\"runtime_secret_1\"}",
+  )
+  append_inbound_line(
+    fixture.inbound_path,
+    "FAIL:websocket_close:1008:credential-invalid runtime_secret_1",
+  )
+
+  let log_entry = expect_log_contains(fixture.logs, "ui_websocket_recv_failed")
+  assert string.contains(log_entry, "[REDACTED]")
+  let message = test_async.expect_message(fixture.managed_auth_rejections)
+  assert !string.contains(message, "runtime_secret_1")
+  assert !string.contains(message, "launch_secret_1")
+  test_async.assert_no_extra_message_within(fixture.connects, 100)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_retries_managed_transient_connect_failure_test() {
+  let Fixture(
+    settings:,
+    deps:,
+    connects:,
+    delays:,
+    managed_auth_rejections:,
+    ..,
+  ) = new_fixture()
+  let settings = managed_launch_settings(settings, "launch_secret_1", 5000)
+  let deps =
+    ui_websocket_client.Dependencies(..deps, connect: fn(url, credential, _) {
+      process.send(connects, ConnectRequest(url, credential))
+      Error("econnrefused")
+    })
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+
+  let ConnectRequest(_, credential) = test_async.expect_message(connects)
+  assert credential == "launch_secret_1"
+  expect_delay(delays, 50, 10)
+  test_async.assert_no_extra_message_within(managed_auth_rejections, 50)
+  assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+pub fn ui_websocket_client_retries_managed_5xx_with_auth_words_test() {
+  let Fixture(
+    settings:,
+    deps:,
+    connects:,
+    delays:,
+    managed_auth_rejections:,
+    ..,
+  ) = new_fixture()
+  let settings = managed_launch_settings(settings, "launch_secret_1", 5000)
+  let deps =
+    ui_websocket_client.Dependencies(..deps, connect: fn(url, credential, _) {
+      process.send(connects, ConnectRequest(url, credential))
+      Error("websocket_http_status:503:credential-invalid during api restart")
+    })
+  let assert Ok(handle) = ui_websocket_client.start(settings, deps)
+
+  let ConnectRequest(_, credential) = test_async.expect_message(connects)
+  assert credential == "launch_secret_1"
+  expect_delay(delays, 50, 10)
+  test_async.assert_no_extra_message_within(managed_auth_rejections, 50)
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
 }
 
@@ -1253,6 +1388,23 @@ pub fn ui_websocket_client_ignores_too_fast_server_heartbeat_test() {
   assert delay == fixture.settings.heartbeat_interval_ms
   assert delay != 1
   assert ui_websocket_client.stop(handle, 1000) == Ok(Nil)
+}
+
+fn managed_launch_settings(
+  settings: ui_websocket_client.Settings,
+  launch_credential: String,
+  expires_at_ms: Int,
+) -> ui_websocket_client.Settings {
+  ui_websocket_client.Settings(
+    ..settings,
+    credential: "",
+    managed_launch_auth: Some(ui_managed_auth.ManagedLaunchAuth(
+      launch_credential: Some(launch_credential),
+      launch_expires_at_ms: expires_at_ms,
+      runtime_credential: None,
+    )),
+    redaction_secrets: [],
+  )
 }
 
 fn expect_initial_outbound(outbound: process.Subject(String)) -> Nil {

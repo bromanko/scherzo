@@ -3,12 +3,17 @@ import scherzo/log
 
 pub type StopReason {
   Sigterm
+  ManagedLaunchCredentialRejected(String)
   TestStop(String)
 }
 
 pub type ShutdownResult {
   ShutdownComplete
   ShutdownTimedOut
+}
+
+pub type ShutdownReport {
+  ShutdownReport(result: ShutdownResult, reason: StopReason)
 }
 
 pub fn run_until_stop(
@@ -18,6 +23,24 @@ pub fn run_until_stop(
   release: fn() -> Nil,
   logger: fn(String, String, List(log.Field)) -> Nil,
 ) -> ShutdownResult {
+  let report =
+    run_until_stop_with_reason(
+      stop_subject,
+      shutdown,
+      cleanup_stop_source,
+      release,
+      logger,
+    )
+  report.result
+}
+
+pub fn run_until_stop_with_reason(
+  stop_subject: process.Subject(StopReason),
+  shutdown: fn(StopReason) -> Result(Nil, Nil),
+  cleanup_stop_source: fn() -> Nil,
+  release: fn() -> Nil,
+  logger: fn(String, String, List(log.Field)) -> Nil,
+) -> ShutdownReport {
   let reason = process.receive_forever(stop_subject)
   logger("info", "daemon_stop_requested", [
     #("reason", reason_to_string(reason)),
@@ -34,7 +57,7 @@ pub fn run_until_stop(
   }
   cleanup_stop_source()
   release()
-  result
+  ShutdownReport(result: result, reason: reason)
 }
 
 @external(erlang, "scherzo_lifecycle_ffi", "safe_shutdown")
@@ -46,6 +69,7 @@ fn safe_shutdown(
 pub fn reason_to_string(reason: StopReason) -> String {
   case reason {
     Sigterm -> "sigterm"
+    ManagedLaunchCredentialRejected(_) -> "managed_launch_credential_rejected"
     TestStop(reason) -> reason
   }
 }

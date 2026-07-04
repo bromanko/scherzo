@@ -6,10 +6,10 @@ import gleam/otp/actor
 import gleam/result
 import scherzo/control/command
 import scherzo/control/query/types as query_types
+import scherzo/control/remote/ui_managed_auth
 import scherzo/control/remote/ui_protocol
 import scherzo/control/remote_command_router
 import scherzo/log
-import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/session/event
 import scherzo/work_item_invalidation
 
@@ -27,6 +27,7 @@ pub type Settings {
     boot_id: String,
     runtime_metadata: ui_protocol.RuntimeMetadata,
     credential: String,
+    managed_launch_auth: Option(ui_managed_auth.ManagedLaunchAuth),
     heartbeat_interval_ms: Int,
     state_interval_ms: Int,
     retry_initial_ms: Int,
@@ -55,6 +56,7 @@ pub type Dependencies(connection, timer) {
       Result(command.CommandResult, Nil),
     execute_query: fn(query_types.QueryRequest, Int) ->
       Result(query_types.QueryResponse, query_types.QueryError),
+    managed_auth_rejected: fn(String) -> Nil,
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
   )
@@ -185,6 +187,12 @@ fn handle_message(
   state: State(connection, timer),
   message: Message,
 ) -> actor.Next(State(connection, timer), Message) {
+  let state =
+    ui_managed_auth.prune_expired_launch_credential(
+      state.settings.managed_launch_auth,
+      state.dependencies.now_ms(),
+    )
+    |> update_managed_launch_auth(state)
   case message {
     AttemptConnect -> actor.continue(attempt_connect(state))
     HeartbeatTick -> actor.continue(send_heartbeat_tick(state))
@@ -228,21 +236,33 @@ fn attempt_connect(
   case state.connection, state.stopped_for_repair {
     Some(_), _ | _, True -> state
     None, False -> {
-      emit_log(state, "info", "ui_websocket_connecting", [
-        #("server_url", state.settings.server_url),
-      ])
-      case
-        state.dependencies.connect(
-          state.settings.websocket_url,
-          state.settings.credential,
-          state.settings.connect_timeout_ms,
-        )
-      {
-        Ok(connection) -> handle_connected(state, connection)
+      let #(state, credential_result) = credential_for_connect(state)
+      case credential_result {
+        Ok(credential) -> {
+          emit_log(state, "info", "ui_websocket_connecting", [
+            #("server_url", state.settings.server_url),
+          ])
+          case
+            state.dependencies.connect(
+              state.settings.websocket_url,
+              credential,
+              state.settings.connect_timeout_ms,
+            )
+          {
+            Ok(connection) -> handle_connected(state, connection)
+            Error(message) ->
+              handle_connect_failure(
+                state,
+                "ui_websocket_connect_failed",
+                message,
+              )
+          }
+        }
         Error(message) ->
-          schedule_retry_after_failure(
+          stop_for_permanent_auth_rejection(
             state,
-            "ui_websocket_connect_failed",
+            None,
+            "ui_websocket_managed_auth_unavailable",
             message,
           )
       }
@@ -378,8 +398,8 @@ fn handle_reader_text(
   case generation == state.connection_generation, state.connection {
     True, Some(connection) ->
       case ui_protocol.decode_server_message(payload) {
-        Ok(ui_protocol.ServerHello(interval)) ->
-          apply_server_hello(state, interval)
+        Ok(ui_protocol.ServerHello(interval, runtime_credential)) ->
+          apply_server_hello(state, interval, runtime_credential)
         Ok(ui_protocol.CredentialRevoked(reason)) ->
           stop_for_repair(
             state,
@@ -505,8 +525,11 @@ fn handle_server_command(
   case decision {
     remote_command_router.StartApply ->
       case
-        command_without_apply_result(
-          state,
+        ui_managed_auth.command_without_apply_result(
+          state.settings.runtime_metadata,
+          state.settings.command_bridge_enabled,
+          state.settings.daemon_id,
+          state.settings.boot_id,
           operator_command,
           daemon_id,
           boot_id,
@@ -548,50 +571,6 @@ fn handle_server_command(
   }
 }
 
-fn command_without_apply_result(
-  state: State(connection, timer),
-  operator_command: command.OperatorCommand,
-  daemon_id: String,
-  boot_id: String,
-) -> Option(command.CommandResult) {
-  case
-    managed_launch_command_denied(
-      state.settings.runtime_metadata,
-      operator_command,
-    )
-  {
-    Some(result) -> Some(result)
-    None ->
-      case state.settings.command_bridge_enabled {
-        False ->
-          Some(command.not_allowed(
-            operator_command,
-            "command_bridge_disabled",
-            Some("remote command bridge is disabled"),
-          ))
-        True ->
-          case
-            daemon_id == state.settings.daemon_id,
-            boot_id == state.settings.boot_id
-          {
-            False, _ ->
-              Some(command.not_allowed(
-                operator_command,
-                "daemon_id_mismatch",
-                Some("server command daemonId does not match this daemon"),
-              ))
-            _, False ->
-              Some(command.not_allowed(
-                operator_command,
-                "boot_id_mismatch",
-                Some("server command bootId does not match this daemon boot"),
-              ))
-            True, True -> None
-          }
-      }
-  }
-}
-
 fn handle_query_request(
   state: State(connection, timer),
   connection: connection,
@@ -601,7 +580,15 @@ fn handle_query_request(
   boot_id: String,
   query: query_types.QueryRequest,
 ) -> State(connection, timer) {
-  case query_without_execute_error(state, daemon_id, boot_id) {
+  case
+    ui_managed_auth.query_without_execute_error(
+      state.settings.runtime_metadata,
+      state.settings.daemon_id,
+      state.settings.boot_id,
+      daemon_id,
+      boot_id,
+    )
+  {
     Some(error) ->
       send_query_error_for_state(state, connection, query_id, error)
     None ->
@@ -653,33 +640,6 @@ fn handle_query_request(
   }
 }
 
-fn query_without_execute_error(
-  state: State(connection, timer),
-  daemon_id: String,
-  boot_id: String,
-) -> Option(query_types.QueryError) {
-  case managed_launch_query_denied(state.settings.runtime_metadata) {
-    Some(error) -> Some(error)
-    None ->
-      case
-        daemon_id == state.settings.daemon_id,
-        boot_id == state.settings.boot_id
-      {
-        False, _ ->
-          Some(query_types.QueryError(
-            query_types.QueryBackendFailed,
-            "query_request daemonId does not match this daemon",
-          ))
-        _, False ->
-          Some(query_types.QueryError(
-            query_types.QueryBackendFailed,
-            "query_request bootId does not match this daemon boot",
-          ))
-        True, True -> None
-      }
-  }
-}
-
 fn handle_reader_failed(
   state: State(connection, timer),
   generation: Int,
@@ -708,7 +668,7 @@ fn handle_apply_completed(
     State(
       ..state,
       router: remote_command_router.complete(state.router, command_id, result),
-      last_known_dispatch_paused: update_known_dispatch_paused(
+      last_known_dispatch_paused: ui_managed_auth.update_known_dispatch_paused(
         state.last_known_dispatch_paused,
         operator_command,
         result,
@@ -948,46 +908,18 @@ fn send_work_item_invalidation(
   |> send_text_frame(connection, state)
 }
 
-fn managed_launch_command_denied(
-  metadata: ui_protocol.RuntimeMetadata,
-  operator_command: command.OperatorCommand,
-) -> Option(command.CommandResult) {
-  case ui_protocol.runtime_managed_launch_context(metadata) {
-    Some(context) ->
-      case list.contains(context.capabilities, managed_launch_grant.Command) {
-        True -> None
-        False ->
-          Some(command.not_allowed(
-            operator_command,
-            "managed_launch_command_capability_denied",
-            Some("managed launch grant does not allow remote commands"),
-          ))
-      }
-    None -> None
-  }
-}
-
-fn managed_launch_query_denied(
-  metadata: ui_protocol.RuntimeMetadata,
-) -> Option(query_types.QueryError) {
-  case ui_protocol.runtime_managed_launch_context(metadata) {
-    Some(context) ->
-      case list.contains(context.capabilities, managed_launch_grant.Query) {
-        True -> None
-        False ->
-          Some(query_types.QueryError(
-            query_types.UnsupportedQuery,
-            "managed launch grant does not allow remote queries",
-          ))
-      }
-    None -> None
-  }
-}
-
 fn apply_server_hello(
   state: State(connection, timer),
   interval: Option(Int),
+  runtime_credential: Option(String),
 ) -> State(connection, timer) {
+  let auth =
+    ui_managed_auth.capture_runtime_credential(
+      state.settings.managed_launch_auth,
+      runtime_credential,
+      state.dependencies.now_ms(),
+    )
+  let state = update_managed_launch_auth(auth, state)
   let interval = case interval {
     Some(interval) if interval >= state.settings.heartbeat_interval_ms ->
       interval
@@ -996,6 +928,28 @@ fn apply_server_hello(
   cancel_optional_timer(state.dependencies.cancel_timer, state.heartbeat_timer)
   State(..state, heartbeat_timer: None, current_heartbeat_interval_ms: interval)
   |> schedule_heartbeat_timer()
+}
+
+fn credential_for_connect(
+  state: State(connection, timer),
+) -> #(State(connection, timer), Result(String, String)) {
+  let #(auth, credential_result) =
+    ui_managed_auth.credential_for_connect(
+      state.settings.managed_launch_auth,
+      state.settings.credential,
+      state.dependencies.now_ms(),
+    )
+  #(update_managed_launch_auth(auth, state), credential_result)
+}
+
+fn update_managed_launch_auth(
+  auth: Option(ui_managed_auth.ManagedLaunchAuth),
+  state: State(connection, timer),
+) -> State(connection, timer) {
+  State(
+    ..state,
+    settings: Settings(..state.settings, managed_launch_auth: auth),
+  )
 }
 
 fn send_hello(
@@ -1079,9 +1033,19 @@ fn retry_after_send_failure(
   event: String,
   message: String,
 ) -> State(connection, timer) {
-  let state = cancel_running_queries(state)
-  state.dependencies.close(connection)
-  schedule_retry_after_failure(State(..state, connection: None), event, message)
+  case should_stop_for_permanent_auth_rejection(state, message) {
+    True ->
+      stop_for_permanent_auth_rejection(state, Some(connection), event, message)
+    False -> {
+      let state = cancel_running_queries(state)
+      state.dependencies.close(connection)
+      schedule_retry_after_failure(
+        State(..state, connection: None),
+        event,
+        message,
+      )
+    }
+  }
 }
 
 fn stop_for_repair(
@@ -1090,12 +1054,57 @@ fn stop_for_repair(
   event: String,
   reason: String,
 ) -> State(connection, timer) {
+  case ui_managed_auth.is_managed_launch(state.settings.managed_launch_auth) {
+    True ->
+      stop_for_permanent_auth_rejection(state, Some(connection), event, reason)
+    False -> {
+      let state = cancel_running_queries(state)
+      state.dependencies.close(connection)
+      emit_log(state, "warn", event, [#("reason", reason)])
+      cancel_connection_timers(
+        State(..state, connection: None, stopped_for_repair: True),
+      )
+    }
+  }
+}
+
+fn handle_connect_failure(
+  state: State(connection, timer),
+  event: String,
+  message: String,
+) -> State(connection, timer) {
+  case should_stop_for_permanent_auth_rejection(state, message) {
+    True -> stop_for_permanent_auth_rejection(state, None, event, message)
+    False -> schedule_retry_after_failure(state, event, message)
+  }
+}
+
+fn stop_for_permanent_auth_rejection(
+  state: State(connection, timer),
+  connection: Option(connection),
+  event: String,
+  reason: String,
+) -> State(connection, timer) {
   let state = cancel_running_queries(state)
-  state.dependencies.close(connection)
+  case connection {
+    Some(connection) -> state.dependencies.close(connection)
+    None -> Nil
+  }
   emit_log(state, "warn", event, [#("reason", reason)])
+  state.dependencies.managed_auth_rejected(
+    ui_managed_auth.rejection_status_message(),
+  )
   cancel_connection_timers(
     State(..state, connection: None, stopped_for_repair: True),
   )
+}
+
+fn should_stop_for_permanent_auth_rejection(
+  state: State(connection, timer),
+  message: String,
+) -> Bool {
+  ui_managed_auth.is_managed_launch(state.settings.managed_launch_auth)
+  && ui_managed_auth.is_permanent_auth_rejection(message)
 }
 
 fn schedule_retry_after_failure(
@@ -1217,6 +1226,14 @@ fn shutdown_runtime(state: State(connection, timer)) -> Nil {
   }
 }
 
+fn redaction_secrets_for_settings(settings: Settings) -> List(String) {
+  ui_managed_auth.redaction_secrets(
+    settings.managed_launch_auth,
+    settings.credential,
+    settings.redaction_secrets,
+  )
+}
+
 fn emit_command_bridge_startup_log(
   settings: Settings,
   dependencies: Dependencies(connection, timer),
@@ -1228,7 +1245,7 @@ fn emit_command_bridge_startup_log(
           "info",
           "ui_websocket_command_bridge_enabled",
           [#("message", "remote command/result bridge enabled")],
-          settings.redaction_secrets,
+          redaction_secrets_for_settings(settings),
         )
       Nil
     }
@@ -1247,7 +1264,7 @@ fn emit_log(
       level,
       event,
       fields,
-      state.settings.redaction_secrets,
+      redaction_secrets_for_settings(state.settings),
     )
   {
     Ok(Nil) | Error(Nil) -> Nil
@@ -1309,22 +1326,6 @@ fn spawn_apply_worker(
       )
     })
   Nil
-}
-
-fn update_known_dispatch_paused(
-  current: Bool,
-  operator_command: command.OperatorCommand,
-  result: command.CommandResult,
-) -> Bool {
-  case result.status {
-    command.Applied ->
-      case operator_command {
-        command.PauseDispatch -> True
-        command.ResumeDispatch -> False
-        _ -> current
-      }
-    _ -> current
-  }
 }
 
 fn normalize_settings(settings: Settings) -> Settings {

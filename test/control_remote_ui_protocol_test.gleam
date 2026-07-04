@@ -161,9 +161,13 @@ pub fn ui_protocol_encodes_daemon_label_metadata_test() {
 }
 
 pub fn ui_protocol_decodes_server_messages_test() {
-  let assert Ok(ui_protocol.ServerHello(Some(1500))) =
+  let assert Ok(ui_protocol.ServerHello(Some(1500), None)) =
     ui_protocol.decode_server_message(
       "{\"type\":\"server_hello\",\"heartbeatIntervalMs\":1500}",
+    )
+  let assert Ok(ui_protocol.ServerHello(None, Some("runtime_secret_1"))) =
+    ui_protocol.decode_server_message(
+      "{\"type\":\"server_hello\",\"runtimeCredential\":\"runtime_secret_1\"}",
     )
   let assert Ok(ui_protocol.CredentialRevoked(reason)) =
     ui_protocol.decode_server_message(

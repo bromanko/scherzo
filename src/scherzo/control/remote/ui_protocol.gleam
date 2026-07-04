@@ -102,7 +102,10 @@ pub type ClientMessage {
 }
 
 pub type ServerMessage {
-  ServerHello(heartbeat_interval_ms: Option(Int))
+  ServerHello(
+    heartbeat_interval_ms: Option(Int),
+    runtime_credential: Option(String),
+  )
   CredentialRevoked(reason: String)
   DaemonIdentityRevoked(reason: String)
   ServerCommand(
@@ -128,6 +131,7 @@ type ServerMessageFields {
   ServerMessageFields(
     type_: Option(String),
     heartbeat_interval_ms: Option(Int),
+    runtime_credential: Option(String),
     reason: Option(String),
     server_command_id: Option(String),
     daemon_id: Option(String),
@@ -483,6 +487,11 @@ fn server_message_fields_decoder() -> decode.Decoder(ServerMessageFields) {
     None,
     decode.optional(decode.int),
   )
+  use runtime_credential <- decode.optional_field(
+    "runtimeCredential",
+    None,
+    decode.optional(decode.string),
+  )
   use reason <- decode.optional_field(
     "reason",
     None,
@@ -521,6 +530,7 @@ fn server_message_fields_decoder() -> decode.Decoder(ServerMessageFields) {
   decode.success(ServerMessageFields(
     type_: type_,
     heartbeat_interval_ms: heartbeat_interval_ms,
+    runtime_credential: runtime_credential,
     reason: reason,
     server_command_id: server_command_id,
     daemon_id: daemon_id,
@@ -536,7 +546,11 @@ fn server_message_from_fields(
 ) -> Result(ServerMessage, DecodeError) {
   use type_ <- result.try(required_type(fields.type_))
   case type_ {
-    "server_hello" -> Ok(ServerHello(fields.heartbeat_interval_ms))
+    "server_hello" ->
+      Ok(ServerHello(
+        fields.heartbeat_interval_ms,
+        non_empty_optional_string(fields.runtime_credential),
+      ))
     "credential_revoked" ->
       Ok(CredentialRevoked(option_string(fields.reason, "credential revoked")))
     "daemon_identity_revoked" ->
@@ -582,6 +596,19 @@ fn option_string(value: Option(String), default: String) -> String {
   case value {
     Some(value) -> value
     None -> default
+  }
+}
+
+fn non_empty_optional_string(value: Option(String)) -> Option(String) {
+  case value {
+    Some(value) -> {
+      let value = string.trim(value)
+      case value == "" {
+        True -> None
+        False -> Some(value)
+      }
+    }
+    None -> None
   }
 }
 

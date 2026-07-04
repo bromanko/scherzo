@@ -256,6 +256,7 @@ pub fn retry_artifact_publication_rejects_missing_output_manifest_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  assert daemon.await_startup_recovery_ready(started.data, 1000) == Ok(Nil)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -285,6 +286,7 @@ pub fn retry_issue_identifier_dispatches_tracker_candidate_test() {
       ))
     })
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  assert daemon.await_startup_recovery_ready(started.data, 1000) == Ok(Nil)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -319,6 +321,7 @@ pub fn park_and_unpark_issue_identifier_round_trip_test() {
       ))
     })
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  assert daemon.await_startup_recovery_ready(started.data, 1000) == Ok(Nil)
 
   let assert Ok(parked) =
     daemon.apply_operator_command(

@@ -232,9 +232,11 @@ pub type RuntimeDependencies {
       Option(managed_launch_grant.Grant),
       process.Subject(hub.Message),
       process.Subject(Message),
+      fn(String) -> Nil,
       List(String),
       fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
     ) -> Result(remote.Handle, StartupError),
+    managed_launch_auth_rejected: fn(String) -> Nil,
     stop_remote_client: fn(remote.Handle, Int) -> Result(Nil, Nil),
     monitor_remote_client: fn(remote.Handle) -> process.Monitor,
     enqueue_startup_recovery_message: fn(process.Subject(Message), Message) ->
@@ -351,6 +353,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
       managed_launch,
       event_hub,
       daemon_subject,
+      managed_auth_rejected,
       secrets,
       logger,
     ) {
@@ -359,6 +362,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
         managed_launch,
         event_hub,
         daemon_subject,
+        managed_auth_rejected,
         secrets,
         logger,
         remote.control_dependencies(
@@ -374,6 +378,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     },
     stop_remote_client: remote.stop,
     monitor_remote_client: remote.monitor,
+    managed_launch_auth_rejected: fn(_) { Nil },
     enqueue_startup_recovery_message: process.send,
     observe_startup_recovery_stage: fn(_) { Nil },
     emit_work_item_invalidation: fn(remote_client, event) {
@@ -789,6 +794,7 @@ fn restart_remote_client_if_enabled(state: State) -> State {
           state.managed_launch,
           state.event_hub,
           state.subject,
+          state.dependencies.managed_launch_auth_rejected,
           state.workflow.secrets,
           state.dependencies.logger,
         )
