@@ -982,13 +982,17 @@ def clean_lines(output: str) -> list[str]:
 
 
 def changed_paths(root: Path) -> list[str]:
-    # Use jj's current-change diff instead of an explicit @-..@ range. Merge
-    # resolution workspaces have two parents, so @- is ambiguous there.
+    # Fallback path list: use jj's current-change diff instead of an explicit
+    # @-..@ range. Merge resolution workspaces have two parents, so @- is
+    # ambiguous there.
     output = run_jj_capture(root, ["diff", "--name-only", "--color=never"])
     return sorted(clean_lines(output))
 
 
 def parse_rename_summary_paths(rest: str) -> tuple[str, str]:
+    # Assumes jj diff --summary human rename formats observed in jj 0.41.0:
+    # either "old -> new" or brace-compacted "{old => new}" path segments.
+    # If jj changes this output, replace this parser with a template-based query.
     text = rest.strip()
     if " -> " in text:
         old_path, new_path = text.split(" -> ", 1)
@@ -1014,46 +1018,57 @@ def parse_rename_summary_paths(rest: str) -> tuple[str, str]:
     return "", text
 
 
-def parse_summary_records(summary: str) -> dict[str, dict[str, str]]:
+def parse_summary_records(summary: str) -> tuple[dict[str, dict[str, str]], list[str]]:
     records: dict[str, dict[str, str]] = {}
+    unparsed_lines: list[str] = []
     for raw_line in summary.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         parts = line.split(maxsplit=1)
         if len(parts) != 2:
+            unparsed_lines.append(line)
             continue
         token, rest = parts[0], parts[1].strip()
         status = STATUS_MAP.get(token[:1], "modified")
         record: dict[str, str]
         if status == "renamed":
             old_path, new_path = parse_rename_summary_paths(rest)
-            record = {"path": new_path.strip(), "status": "renamed"}
-            if old_path.strip():
-                record["old_path"] = old_path.strip()
+            old_path = old_path.strip()
+            new_path = new_path.strip()
+            if not old_path or not new_path:
+                unparsed_lines.append(line)
+                continue
+            record = {"path": new_path, "status": "renamed", "old_path": old_path}
         else:
             record = {"path": rest, "status": status}
         path = record.get("path", "").strip()
         if path:
             records[path] = record
-    return records
+        else:
+            unparsed_lines.append(line)
+    return records, unparsed_lines
 
 
 def changed_file_records(root: Path) -> list[dict[str, str]]:
-    paths = changed_paths(root)
     summary_proc = run_jj_proc(root, ["diff", "--summary", "--color=never"])
-    summary_records = (
-        parse_summary_records(summary_proc.stdout) if summary_proc.returncode == 0 else {}
-    )
-    records: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for path in paths:
-        record = summary_records.get(path, {"path": path, "status": "modified"})
-        records.append(record)
-        seen.add(path)
-    for path, record in summary_records.items():
-        if path not in seen:
-            records.append(record)
+    if summary_proc.returncode == 0:
+        summary_records, unparsed_lines = parse_summary_records(summary_proc.stdout)
+        # A successful but unrecognized human summary must not make safety
+        # checks see a clean workspace; fail closed instead of dropping lines.
+        if unparsed_lines:
+            sample = "; ".join(unparsed_lines[:3])
+            suffix = (
+                "" if len(unparsed_lines) <= 3
+                else f" (+{len(unparsed_lines) - 3} more)"
+            )
+            fail(f"unrecognized jj diff --summary output: {sample}{suffix}")
+        records = list(summary_records.values())
+    else:
+        records = [
+            {"path": path, "status": "modified"}
+            for path in changed_paths(root)
+        ]
     records.sort(key=lambda record: record.get("path", ""))
     return records
 
