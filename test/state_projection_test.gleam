@@ -66,6 +66,176 @@ pub fn folding_records_produces_expected_projection_test() {
   )) = dict.get(folded.outbox, "outbox-1")
 }
 
+pub fn scheduled_consecutive_failures_quarantine_and_release_test() {
+  let folded = projection.fold(scheduled_quarantine_failure_records())
+
+  let assert Ok(status) = projection.scheduled_status_for(folded, "nightly")
+  assert status.state == projection.ScheduledQuarantined
+  assert status.consecutive_failure_count == 3
+  assert status.quarantine_reason == Some("boom-3")
+  assert status.quarantined_at_ms == Some(3000)
+
+  let released =
+    projection.apply(
+      folded,
+      record.with_id(
+        "release",
+        4000,
+        record.ScheduledJobQuarantineReleased("nightly", "operator", 4000),
+      ),
+    )
+  let assert Ok(released_status) =
+    projection.scheduled_status_for(released, "nightly")
+  assert released_status.state == projection.ScheduledIdle
+  assert released_status.consecutive_failure_count == 0
+  assert released_status.quarantine_reason == None
+}
+
+pub fn scheduled_quarantine_release_ignores_non_quarantined_status_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "fail-1",
+        1000,
+        record.ScheduledRunFailed(
+          "nightly",
+          "scheduled-workflow",
+          100,
+          "schedule-nightly-1",
+          1,
+          1000,
+          "boom-1",
+          True,
+          None,
+        ),
+      ),
+    ])
+
+  let assert Ok(status) = projection.scheduled_status_for(folded, "nightly")
+  assert status.state == projection.ScheduledTerminalFailure
+  let assert Some(run) = status.current_run
+
+  let released =
+    projection.apply(
+      folded,
+      record.with_id(
+        "release",
+        1100,
+        record.ScheduledJobQuarantineReleased("nightly", "operator", 1100),
+      ),
+    )
+  let assert Ok(released_status) =
+    projection.scheduled_status_for(released, "nightly")
+  assert released_status.state == projection.ScheduledTerminalFailure
+  assert released_status.consecutive_failure_count == 1
+  let assert Some(released_run) = released_status.current_run
+  assert released_run.run_id == run.run_id
+}
+
+pub fn scheduled_failure_reporting_preserves_quarantine_test() {
+  let reported =
+    projection.fold(
+      list.append(scheduled_quarantine_failure_records(), [
+        record.with_id(
+          "reported",
+          3100,
+          record.ScheduledFailureReported(
+            "nightly",
+            "scheduled-workflow",
+            300,
+            "schedule-nightly-3",
+            1,
+            "scheduled-job:nightly",
+            "linear-1",
+            "created",
+          ),
+        ),
+      ]),
+    )
+
+  let assert Ok(reported_status) =
+    projection.scheduled_status_for(reported, "nightly")
+  assert reported_status.state == projection.ScheduledQuarantined
+  assert reported_status.failure_issue_id == Some("linear-1")
+
+  let report_retry =
+    projection.fold(
+      list.append(scheduled_quarantine_failure_records(), [
+        record.with_id(
+          "report-retry",
+          3100,
+          record.ScheduledFailureReportFailed(
+            "nightly",
+            "scheduled-workflow",
+            300,
+            "schedule-nightly-3",
+            1,
+            "scheduled-job:nightly",
+            "tracker_transient",
+            "rate limited",
+            4000,
+            1,
+          ),
+        ),
+      ]),
+    )
+
+  let assert Ok(report_retry_status) =
+    projection.scheduled_status_for(report_retry, "nightly")
+  assert report_retry_status.state == projection.ScheduledQuarantined
+  let assert Some(_) = report_retry_status.report_retry
+}
+
+fn scheduled_quarantine_failure_records() {
+  [
+    record.with_id(
+      "fail-1",
+      1000,
+      record.ScheduledRunFailed(
+        "nightly",
+        "scheduled-workflow",
+        100,
+        "schedule-nightly-1",
+        1,
+        1000,
+        "boom-1",
+        True,
+        None,
+      ),
+    ),
+    record.with_id(
+      "fail-2",
+      2000,
+      record.ScheduledRunFailed(
+        "nightly",
+        "scheduled-workflow",
+        200,
+        "schedule-nightly-2",
+        1,
+        2000,
+        "boom-2",
+        True,
+        None,
+      ),
+    ),
+    record.with_id(
+      "fail-3",
+      3000,
+      record.ScheduledRunFailed(
+        "nightly",
+        "scheduled-workflow",
+        300,
+        "schedule-nightly-3",
+        1,
+        3000,
+        "boom-3",
+        True,
+        None,
+      ),
+    ),
+  ]
+}
+
 pub fn scheduled_report_terminal_failure_clears_report_retry_projection_test() {
   let folded =
     projection.fold([

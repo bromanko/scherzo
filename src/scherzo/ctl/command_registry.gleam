@@ -40,6 +40,7 @@ pub type HandlerKey {
   SchedulesLogsKey
   SchedulesDoctorKey
   SchedulesRunKey
+  SchedulesReenableKey
   WorkstreamKey
   ArtifactPublicationListKey
   ArtifactPublicationShowKey
@@ -713,6 +714,20 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       ],
       help_lines: [
         line("schedules run <job> --now", "Start a scheduled job immediately."),
+      ],
+    ),
+    command_spec.CommandSpec(
+      handler: SchedulesReenableKey,
+      path: ["schedules", "re-enable"],
+      usage: "schedules re-enable <job>",
+      summary: "Clear schedule quarantine and resume future fires.",
+      positionals: [command_spec.Required("job")],
+      options: [control_file_option(), json_option(), timeout_option()],
+      help_lines: [
+        line(
+          "schedules re-enable <job>",
+          "Clear schedule quarantine and resume future fires.",
+        ),
       ],
     ),
     command_spec.CommandSpec(

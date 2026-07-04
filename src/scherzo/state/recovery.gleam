@@ -263,40 +263,48 @@ pub fn workflow_candidates(
         run_root,
         _,
       ) ->
-        Ok(WorkflowRecoveryCandidate(
-          run_id: run_id,
-          workflow_id: workflow_id,
-          workflow_fingerprint: workflow_fingerprint,
-          issue_id: issue_id,
-          issue_identifier: issue_identifier,
-          task_ref: workflow_task_ref_or_legacy(
-            projection,
-            run_id,
-            issue_id,
-            issue_identifier,
-          ),
-          issue_fingerprint: issue_fingerprint,
-          observed_updated_at_ms: observed_updated_at_ms,
-          run_root: run_root,
-          recovery_evidence: recovery_evidence_or_default(
-            recovery_evidence_by_run,
-            run_id,
-          ),
-          attempts: attempts_for_run(projection, run_id),
-          contract_input_manifest: projection.workflow_input_manifest(
-            projection,
-            run_id,
-          )
-            |> option.map(projection_manifest_to_recovered),
-          contract_output_manifest: projection.workflow_output_manifest(
-            projection,
-            run_id,
-          )
-            |> option.map(projection_manifest_to_recovered),
-        ))
+        case scheduled_run_without_tracker(run_id, issue_id) {
+          True -> Error(Nil)
+          False ->
+            Ok(WorkflowRecoveryCandidate(
+              run_id: run_id,
+              workflow_id: workflow_id,
+              workflow_fingerprint: workflow_fingerprint,
+              issue_id: issue_id,
+              issue_identifier: issue_identifier,
+              task_ref: workflow_task_ref_or_legacy(
+                projection,
+                run_id,
+                issue_id,
+                issue_identifier,
+              ),
+              issue_fingerprint: issue_fingerprint,
+              observed_updated_at_ms: observed_updated_at_ms,
+              run_root: run_root,
+              recovery_evidence: recovery_evidence_or_default(
+                recovery_evidence_by_run,
+                run_id,
+              ),
+              attempts: attempts_for_run(projection, run_id),
+              contract_input_manifest: projection.workflow_input_manifest(
+                projection,
+                run_id,
+              )
+                |> option.map(projection_manifest_to_recovered),
+              contract_output_manifest: projection.workflow_output_manifest(
+                projection,
+                run_id,
+              )
+                |> option.map(projection_manifest_to_recovered),
+            ))
+        }
       _ -> Error(Nil)
     }
   })
+}
+
+fn scheduled_run_without_tracker(run_id: String, issue_id: String) -> Bool {
+  string.starts_with(run_id, "schedule-") && string.trim(issue_id) == ""
 }
 
 fn projection_manifest_to_recovered(
@@ -2040,20 +2048,27 @@ fn artifact_recovery_park_candidate_bodies(
   issue_fingerprint: String,
   observed_updated_at_ms: Int,
 ) -> List(record.RecordBody) {
-  [
-    record.IssueParkedV2(
-      candidate.issue_id,
-      issue_identifier,
-      "artifact_recovery_failed",
-      claim_abandonment.explicit_unpark_only,
-      issue_fingerprint,
-      observed_updated_at_ms,
-    ),
-    ..interrupt_candidate_bodies(
-      candidate,
-      artifact_recovery_failure_message(detail),
-    )
-  ]
+  case string.trim(candidate.issue_id) == "" {
+    True ->
+      interrupt_candidate_bodies(
+        candidate,
+        artifact_recovery_failure_message(detail),
+      )
+    False -> [
+      record.IssueParkedV2(
+        candidate.issue_id,
+        issue_identifier,
+        "artifact_recovery_failed",
+        claim_abandonment.explicit_unpark_only,
+        issue_fingerprint,
+        observed_updated_at_ms,
+      ),
+      ..interrupt_candidate_bodies(
+        candidate,
+        artifact_recovery_failure_message(detail),
+      )
+    ]
+  }
 }
 
 fn park_candidate_bodies(
@@ -2063,17 +2078,20 @@ fn park_candidate_bodies(
   issue_fingerprint: String,
   observed_updated_at_ms: Int,
 ) -> List(record.RecordBody) {
-  [
-    record.IssueParkedV2(
-      candidate.issue_id,
-      issue_identifier,
-      reason,
-      claim_abandonment.explicit_unpark_only,
-      issue_fingerprint,
-      observed_updated_at_ms,
-    ),
-    ..interrupt_candidate_bodies(candidate, reason)
-  ]
+  case string.trim(candidate.issue_id) == "" {
+    True -> interrupt_candidate_bodies(candidate, reason)
+    False -> [
+      record.IssueParkedV2(
+        candidate.issue_id,
+        issue_identifier,
+        reason,
+        claim_abandonment.explicit_unpark_only,
+        issue_fingerprint,
+        observed_updated_at_ms,
+      ),
+      ..interrupt_candidate_bodies(candidate, reason)
+    ]
+  }
 }
 
 fn interrupt_candidate_bodies(
@@ -2289,27 +2307,34 @@ fn recover_outbox_entry(
 ) -> OutboxRecovery {
   let #(outbox_id, status) = entry
   case status {
-    projection.OutboxPending(issue_id, outbox_kind, _, _) ->
-      case outbox_kind == claim_abandonment.claim_kind {
+    projection.OutboxPending(issue_id, outbox_kind, _, _) -> {
+      let task_ref = legacy_linear_task_ref(issue_id)
+      case empty_task_outbox(outbox_kind, task_ref) {
         True ->
-          recover_abandoned_claim_outbox(
-            recovery,
-            projection,
-            outbox_id,
-            legacy_linear_task_ref(issue_id),
-            "startup_recovered_claim",
-            True,
-            now_ms,
-          )
+          expire_empty_task_outbox(recovery, outbox_id, task_ref, outbox_kind)
         False ->
-          fail_outbox_recovery(
-            recovery,
-            outbox_id,
-            legacy_linear_task_ref(issue_id),
-            outbox_kind,
-            outbox.OutboxPayloadMissing,
-          )
+          case outbox_kind == claim_abandonment.claim_kind {
+            True ->
+              recover_abandoned_claim_outbox(
+                recovery,
+                projection,
+                outbox_id,
+                task_ref,
+                "startup_recovered_claim",
+                True,
+                now_ms,
+              )
+            False ->
+              fail_outbox_recovery(
+                recovery,
+                outbox_id,
+                task_ref,
+                outbox_kind,
+                outbox.OutboxPayloadMissing,
+              )
+          }
       }
+    }
     projection.OutboxPendingV2(
       issue_id,
       outbox_kind,
@@ -2474,19 +2499,25 @@ fn recover_retryable_outbox(
   next_attempt_at_ms: Int,
   now_ms: Int,
 ) -> OutboxRecovery {
-  case outbox.retry_due_on_recovery(outbox_kind, next_attempt_at_ms, now_ms) {
-    True ->
-      recover_pending_outbox(
-        recovery,
-        projection,
-        outbox_id,
-        task_ref,
-        outbox_kind,
-        dedupe_key,
-        payload_json,
-        now_ms,
-      )
-    False -> recovery
+  case empty_task_outbox(outbox_kind, task_ref) {
+    True -> expire_empty_task_outbox(recovery, outbox_id, task_ref, outbox_kind)
+    False ->
+      case
+        outbox.retry_due_on_recovery(outbox_kind, next_attempt_at_ms, now_ms)
+      {
+        True ->
+          recover_pending_outbox(
+            recovery,
+            projection,
+            outbox_id,
+            task_ref,
+            outbox_kind,
+            dedupe_key,
+            payload_json,
+            now_ms,
+          )
+        False -> recovery
+      }
   }
 }
 
@@ -2500,40 +2531,77 @@ fn recover_pending_outbox(
   payload_json: String,
   now_ms: Int,
 ) -> OutboxRecovery {
-  case outbox_kind == claim_abandonment.claim_kind {
-    True ->
-      recover_abandoned_claim_outbox(
-        recovery,
-        projection,
-        outbox_id,
-        task_ref,
-        "startup_recovered_claim",
-        True,
-        now_ms,
-      )
+  case empty_task_outbox(outbox_kind, task_ref) {
+    True -> expire_empty_task_outbox(recovery, outbox_id, task_ref, outbox_kind)
     False ->
-      case outbox_kind == outbox.scheduled_failure_publication_kind {
+      case outbox_kind == claim_abandonment.claim_kind {
         True ->
-          recover_scheduled_failure_outbox(
-            recovery,
-            outbox_id,
-            task_ref,
-            outbox_kind,
-            dedupe_key,
-            payload_json,
-          )
-        False ->
-          recover_tracker_outbox(
+          recover_abandoned_claim_outbox(
             recovery,
             projection,
             outbox_id,
             task_ref,
-            outbox_kind,
-            dedupe_key,
-            payload_json,
+            "startup_recovered_claim",
+            True,
+            now_ms,
           )
+        False ->
+          case outbox_kind == outbox.scheduled_failure_publication_kind {
+            True ->
+              recover_scheduled_failure_outbox(
+                recovery,
+                outbox_id,
+                task_ref,
+                outbox_kind,
+                dedupe_key,
+                payload_json,
+              )
+            False ->
+              recover_tracker_outbox(
+                recovery,
+                projection,
+                outbox_id,
+                task_ref,
+                outbox_kind,
+                dedupe_key,
+                payload_json,
+              )
+          }
       }
   }
+}
+
+fn empty_task_outbox(
+  outbox_kind: String,
+  task_ref: record.TaskRefFields,
+) -> Bool {
+  outbox_kind != outbox.scheduled_failure_publication_kind
+  && string.trim(task_ref.task_remote_id) == ""
+}
+
+fn expire_empty_task_outbox(
+  recovery: OutboxRecovery,
+  outbox_id: String,
+  task_ref: record.TaskRefFields,
+  outbox_kind: String,
+) -> OutboxRecovery {
+  OutboxRecovery(
+    ..recovery,
+    record_bodies: [
+      record.OutboxPermanentlyFailedWithTask(
+        outbox_id,
+        task_ref,
+        outbox_kind,
+        "empty_task_ref_unreplayable",
+        1,
+      ),
+      ..recovery.record_bodies
+    ],
+    warnings: [
+      "outbox_replay_expired_empty_task:" <> outbox_id,
+      ..recovery.warnings
+    ],
+  )
 }
 
 fn recover_scheduled_failure_outbox(

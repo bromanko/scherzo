@@ -15,7 +15,9 @@ const service_path = "src/scherzo/orchestrator/service.gleam"
 
 const daemon_module = "scherzo/orchestrator/daemon"
 
-const max_daemon_lines = 9750
+const max_daemon_lines = 10_343
+
+const max_daemon_lines_source_literal = "10_343"
 
 type ShellException {
   ShellException(name: String)
@@ -271,7 +273,7 @@ fn source_guardrail_line_ratchet_fragment() -> String {
   "SourceLimit(\""
   <> daemon_path
   <> "\", "
-  <> int.to_string(max_daemon_lines)
+  <> max_daemon_lines_source_literal
   <> ","
 }
 
@@ -453,6 +455,11 @@ fn owner_rules() -> List(OwnerRule) {
       exceptions: [
         ShellException(name: "scheduled_failure_paths"),
         ShellException(name: "scheduled_job_by_id"),
+        ShellException(name: "scheduled_resumption_context"),
+        ShellException(name: "scheduled_retry_context_values"),
+        ShellException(name: "scheduled_retry_step_observation"),
+        ShellException(name: "scheduled_retry_placeholder_issue"),
+        ShellException(name: "scheduled_job_quarantined"),
         ShellException(name: "scheduled_worker_down_context"),
         ShellException(name: "scheduled_worker_active_for_job"),
         ShellException(name: "scheduled_slot_available_for_start"),

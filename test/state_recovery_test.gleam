@@ -258,6 +258,28 @@ pub fn workflow_candidates_preserve_started_recovery_without_finish_test() {
   assert candidate.recovery_evidence == workflow_outcome.StepRecoveryRan
 }
 
+pub fn workflow_candidates_skip_scheduled_runs_without_tracker_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "workflow-run-started",
+        1000,
+        record.WorkflowRunStarted(
+          run_id: "schedule-nightly-20260703T000000Z",
+          workflow_id: "implementation",
+          workflow_fingerprint: "wf-1",
+          issue_id: "",
+          issue_identifier: "nightly",
+          issue_fingerprint: "",
+          observed_updated_at_ms: 0,
+          run_root: "test/tmp/state-recovery/schedule-nightly",
+        ),
+      ),
+    ])
+
+  assert recovery.workflow_candidates(projection) == []
+}
+
 pub fn unfinished_run_terminal_issue_cleans_known_workspace_test() {
   let projection =
     projection.fold([
@@ -1063,6 +1085,36 @@ pub fn payload_less_pending_outbox_is_marked_failed_test() {
   )
 }
 
+pub fn empty_task_outbox_is_expired_without_replay_test() {
+  let projection =
+    projection.fold([
+      record.with_id(
+        "outbox-empty-task",
+        1000,
+        record.OutboxPendingV2WithTask(
+          outbox_id: "park:linear::schedule-nightly",
+          task_ref: record.TaskRefFields("linear", "", None, None),
+          outbox_kind: "park",
+          dedupe_key: "park:linear::schedule-nightly",
+          payload_json: "{\"type\":\"park\",\"marker\":\"m\",\"body\":\"park\"}",
+        ),
+      ),
+    ])
+
+  let assert Ok(plan) = recovery.plan(projection, config(), [], 7000)
+
+  assert plan.outbox_to_replay == []
+  assert has_outbox_permanently_failed(
+    plan.records_to_append,
+    "park:linear::schedule-nightly",
+    "empty_task_ref_unreplayable",
+  )
+  assert list.contains(
+    plan.warnings,
+    "outbox_replay_expired_empty_task:park:linear::schedule-nightly",
+  )
+}
+
 pub fn supported_pending_outbox_payload_is_replayed_test() {
   let projection =
     projection.fold([
@@ -1686,6 +1738,28 @@ fn has_retry(
     runtime.retry_attempts,
     orchestrator_state.linear_issue_id_identity(issue_id),
   )
+}
+
+fn has_outbox_permanently_failed(
+  records: List(record.LedgerRecord),
+  outbox_id: String,
+  error_code: String,
+) -> Bool {
+  list.any(records, fn(ledger_record) {
+    case ledger_record.body {
+      record.OutboxPermanentlyFailed(
+        outbox_id: failed_outbox_id,
+        error_code: failed_error_code,
+        ..,
+      ) -> failed_outbox_id == outbox_id && failed_error_code == error_code
+      record.OutboxPermanentlyFailedWithTask(
+        outbox_id: failed_outbox_id,
+        error_code: failed_error_code,
+        ..,
+      ) -> failed_outbox_id == outbox_id && failed_error_code == error_code
+      _ -> False
+    }
+  })
 }
 
 fn has_outbox_failed(

@@ -146,6 +146,11 @@ pub type DecodedBody {
     next_retry_at_ms: Int,
     generation: Int,
   )
+  ScheduledJobQuarantineReleasedBody(
+    job_id: String,
+    reason: String,
+    released_at_ms: Int,
+  )
 }
 
 pub fn base_entries(
@@ -379,6 +384,18 @@ pub fn failure_report_failed_entries(
     #("next_retry_at_ms", json.int(next_retry_at_ms)),
     #("generation", json.int(generation)),
   ])
+}
+
+pub fn quarantine_released_entries(
+  job_id: String,
+  reason: String,
+  released_at_ms: Int,
+) -> List(#(String, json.Json)) {
+  [
+    #("job_id", json.string(job_id)),
+    #("reason", json.string(reason)),
+    #("observed_at_ms", json.int(released_at_ms)),
+  ]
 }
 
 pub fn decode(
@@ -654,6 +671,15 @@ pub fn decode(
         next_retry_at_ms,
         generation,
       ))
+    }
+    "scheduled_job_quarantine_released" -> {
+      use job_id <- result.try(required_string(fields.job_id, "job_id"))
+      use reason <- result.try(required_string(fields.reason, "reason"))
+      use released_at_ms <- result.try(required_int(
+        fields.observed_at_ms,
+        "observed_at_ms",
+      ))
+      Ok(ScheduledJobQuarantineReleasedBody(job_id, reason, released_at_ms))
     }
     _ -> Error("unsupported scheduled kind " <> kind)
   }

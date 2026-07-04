@@ -82,6 +82,7 @@ pub type Request {
     response: command.UiResponse,
   )
   RunScheduleNow(id: String, token: String, job_id: String)
+  ReenableSchedule(id: String, token: String, job_id: String)
   WorkItemAction(
     id: String,
     token: String,
@@ -169,6 +170,7 @@ pub fn request_id(request: Request) -> String {
     PromptSession(id, _, _, _) -> id
     RespondUi(id, _, _, _, _) -> id
     RunScheduleNow(id, _, _) -> id
+    ReenableSchedule(id, _, _) -> id
     WorkItemAction(id, _, _) -> id
   }
 }
@@ -198,6 +200,7 @@ pub fn request_token(request: Request) -> String {
     PromptSession(_, token, _, _) -> token
     RespondUi(_, token, _, _, _) -> token
     RunScheduleNow(_, token, _) -> token
+    ReenableSchedule(_, token, _) -> token
     WorkItemAction(_, token, _) -> token
   }
 }
@@ -347,6 +350,12 @@ pub fn request_to_json(request: Request) -> json.Json {
       [
         #("job_id", json.string(job_id)),
         ..base_request_entries(id, token, "schedule_run_now")
+      ]
+      |> json.object
+    ReenableSchedule(id, token, job_id) ->
+      [
+        #("job_id", json.string(job_id)),
+        ..base_request_entries(id, token, "schedule_reenable")
       ]
       |> json.object
     WorkItemAction(id, token, request) ->
@@ -646,6 +655,11 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
     "schedule_run_now" | "run_schedule_now" ->
       case required_job_id(fields) {
         Ok(job_id) -> Ok(RunScheduleNow(fields.id, fields.token, job_id))
+        Error(err) -> Error(err)
+      }
+    "schedule_reenable" | "reenable_schedule" ->
+      case required_job_id(fields) {
+        Ok(job_id) -> Ok(ReenableSchedule(fields.id, fields.token, job_id))
         Error(err) -> Error(err)
       }
     "work_item_action" ->
@@ -1334,6 +1348,7 @@ pub fn command_request(
     command.RespondUi(session_id, request_id, response) ->
       RespondUi(id, token, session_id, request_id, response)
     command.RunScheduleNow(job_id) -> RunScheduleNow(id, token, job_id)
+    command.ReenableSchedule(job_id) -> ReenableSchedule(id, token, job_id)
     command.WorkItemAction(request) -> WorkItemAction(id, token, request)
   }
 }
@@ -1395,6 +1410,7 @@ pub fn request_operator_command(
     RespondUi(_, _, session_id, request_id, response) ->
       Some(command.RespondUi(session_id, request_id, response))
     RunScheduleNow(_, _, job_id) -> Some(command.RunScheduleNow(job_id))
+    ReenableSchedule(_, _, job_id) -> Some(command.ReenableSchedule(job_id))
     WorkItemAction(_, _, request) -> Some(command.WorkItemAction(request))
     Ping(_, _)
     | ListSessions(_, _)

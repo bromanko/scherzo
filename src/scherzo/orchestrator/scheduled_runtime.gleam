@@ -203,6 +203,17 @@ pub fn report_retry_tick_matches(
   }
 }
 
+pub fn set_next_due(
+  runtime: Runtime,
+  job_id: String,
+  next_due_at_ms: Int,
+) -> Runtime {
+  Runtime(
+    ..runtime,
+    next_due: dict.insert(runtime.next_due, job_id, next_due_at_ms),
+  )
+}
+
 pub fn ensure_next_due(
   runtime: Runtime,
   job_id: String,

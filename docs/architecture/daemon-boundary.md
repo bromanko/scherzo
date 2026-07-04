@@ -2,7 +2,7 @@
 
 `src/scherzo/orchestrator/daemon.gleam` remains Scherzo's public daemon actor shell. It may own public actor startup, public message receipt, compatibility types, dependency injection, control-plane/process/timer edges, top-level logging/redaction context, and handoff between subsystem outcomes. It also owns the actor-side reply bridge for operator commands whose worker acknowledgements arrive asynchronously. It must not regrow extracted subsystem helpers without an explicit update to this document and the matching source guardrail.
 
-The daemon line-count ratchet is `max_daemon_lines: 9750`. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
+The daemon line-count ratchet is `max_daemon_lines: 10343`. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
 
 `src/scherzo/orchestrator/service.gleam` is the only documented startup-edge import exception for `scherzo/orchestrator/daemon`. It may import the daemon because it is the process edge that starts the public actor. Extracted orchestrator subsystem modules must not import `scherzo/orchestrator/daemon`.
 
@@ -16,6 +16,11 @@ Exact daemon shell exceptions:
 
 - `scheduled_failure_paths`: the daemon shell still maps configured scheduled-failure routes into scheduled-runtime input lists.
 - `scheduled_job_by_id`: the daemon shell still resolves a scheduled job from the loaded workflow before handing work off.
+- `scheduled_resumption_context`: the daemon shell still rebuilds actor-owned retry timer inputs while replaying retained scheduled state.
+- `scheduled_retry_context_values`: the daemon shell still resolves retained scheduled-run retry state from the actor projection before timer handoff.
+- `scheduled_retry_step_observation`: the daemon shell still validates retained schedule-run retry-step requests against the loaded workflow bundle before queueing actor recovery.
+- `scheduled_retry_placeholder_issue`: the daemon shell still shapes the placeholder issue used to satisfy issue-centric retry-step planning for scheduled runs.
+- `scheduled_job_quarantined`: the daemon shell still checks projected quarantine state before admitting actor-owned schedule firings.
 - `scheduled_worker_down_context`: the daemon shell still shapes daemon-owned crash logging for scheduled worker exits.
 - `scheduled_worker_active_for_job`: the daemon shell still checks actor occupancy before asking scheduled-runtime whether another run may start.
 - `scheduled_slot_available_for_start`: the daemon shell still applies daemon-owned headroom and active-worker policy at the process edge.

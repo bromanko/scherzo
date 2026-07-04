@@ -97,6 +97,11 @@ gate-plan-completion [--final]
               Fail closed unless the run-root canonical plan-completion verdict
               is fresh, well-formed, and passing for the current ExecPlan
               implementation patch.
+gate-plan-completion --from-submission [--submission PATH]
+              Read a structured-output plan-completion submission from stdin
+              (or PATH for manual verification), stamp the current workspace
+              plan/change/diff fingerprint fields, write the canonical verdict
+              artifact, and fail only for a fail verdict or workspace mismatch.
 plan-completion-recovery --phase before-late-repair|before-final-repair|after-late-repair|after-final-repair|final --attempt INT --max-attempts INT
               Classify the current plan-completion verdict for bounded recovery,
               write tmp/scherzo-plan-completion-recovery.{json,md}, and either
@@ -125,11 +130,11 @@ ticket-brief <issue-json>
     )
 
 
-def fail(message: str, *, failure_code: str | None = None) -> None:
+def fail(message: str, *, failure_code: str | None = None, exit_code: int = 1) -> None:
     if failure_code:
         print(f"SCHERZO_FAILURE_CODE={failure_code}", file=sys.stderr)
     print(f"scherzo-implementation: {message}", file=sys.stderr)
-    sys.exit(1)
+    sys.exit(exit_code)
 
 
 def diagnostic_excerpt(value: str, max_chars: int = COMMAND_DIAGNOSTIC_MAX_CHARS) -> str:
@@ -2035,9 +2040,144 @@ def plan_completion_context_command(args: list[str]) -> None:
     print_list("PLAN_COMPLETION_CHANGED_FILES", context["changed_files"])
 
 
-def fail_plan_completion_gate(message: str, *, failure_code: str) -> None:
+def fail_plan_completion_gate(
+    message: str,
+    *,
+    failure_code: str,
+    exit_code: int = 1,
+) -> None:
     print("PLAN_COMPLETION_GATE=failed")
-    fail(message, failure_code=failure_code)
+    fail(message, failure_code=failure_code, exit_code=exit_code)
+
+
+PLAN_COMPLETION_MACHINE_FIELDS = {
+    "plan_path",
+    "verified_base_change_id",
+    "verified_change_id",
+    "verified_parent_commit_ids",
+    "verified_diff_fingerprint",
+    "changed_files",
+    "verdict_path",
+}
+
+
+def fail_plan_completion_submission(
+    message: str,
+    *,
+    failure_code: str = "plan_completion_submission_malformed",
+) -> None:
+    fail_plan_completion_gate(message, failure_code=failure_code)
+
+
+def read_plan_completion_submission(submission_path: str | None) -> dict[str, Any]:
+    if submission_path:
+        label = submission_path
+        try:
+            payload = Path(submission_path).read_text(encoding="utf-8")
+        except OSError as exc:
+            fail_plan_completion_submission(
+                f"could not read plan-completion submission {submission_path}: {exc}",
+                failure_code="plan_completion_submission_missing",
+            )
+    else:
+        label = "stdin"
+        payload = sys.stdin.read()
+    if not payload.strip():
+        fail_plan_completion_submission(
+            f"plan-completion structured-output submission on {label} is required",
+            failure_code="plan_completion_submission_missing",
+        )
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        fail_plan_completion_submission(
+            f"plan-completion structured-output submission on {label} must be valid JSON: {exc}",
+        )
+    if not isinstance(value, dict):
+        fail_plan_completion_submission(
+            f"plan-completion structured-output submission on {label} must be a JSON object",
+        )
+    return value
+
+
+def submission_string_list_field(value: dict[str, Any], key: str) -> list[str]:
+    field = value.get(key)
+    if not isinstance(field, list):
+        fail_plan_completion_submission(
+            f"plan-completion submission field {key!r} must be a list of strings",
+        )
+    strings: list[str] = []
+    for item in field:
+        if not isinstance(item, str):
+            fail_plan_completion_submission(
+                f"plan-completion submission field {key!r} must be a list of strings",
+            )
+        strings.append(item)
+    return strings
+
+
+def submission_deferred_manual_verification_field(
+    value: dict[str, Any],
+) -> list[dict[str, str]]:
+    field = value.get("deferred_manual_verification", [])
+    if not isinstance(field, list):
+        fail_plan_completion_submission(
+            "plan-completion submission field 'deferred_manual_verification' must be a list of objects",
+        )
+    entries: list[dict[str, str]] = []
+    for item in field:
+        if not isinstance(item, dict):
+            fail_plan_completion_submission(
+                "plan-completion submission field 'deferred_manual_verification' must be a list of objects",
+            )
+        entry: dict[str, str] = {}
+        for key in ["check", "reason", "owner", "when"]:
+            item_value = item.get(key)
+            if not isinstance(item_value, str) or not item_value.strip():
+                fail_plan_completion_submission(
+                    "plan-completion submission deferred manual verification entries must include non-empty "
+                    f"{key!r}",
+                )
+            entry[key] = item_value.strip()
+        entries.append(entry)
+    return entries
+
+
+def validate_plan_completion_submission_shape(
+    submission: dict[str, Any],
+) -> dict[str, Any]:
+    if submission.get("schema_version") != 1:
+        fail_plan_completion_submission(
+            "plan-completion submission must set schema_version to 1",
+        )
+    raw_verdict = submission.get("verdict")
+    if raw_verdict not in {"pass", "fail"}:
+        fail_plan_completion_submission(
+            "plan-completion submission field 'verdict' must be 'pass' or 'fail'",
+        )
+    machine_fields = sorted(
+        field for field in PLAN_COMPLETION_MACHINE_FIELDS if field in submission
+    )
+    if machine_fields:
+        fail_plan_completion_submission(
+            "plan-completion submission must not include workspace-stamped fields: "
+            + ", ".join(machine_fields),
+        )
+    return {
+        "verdict": raw_verdict,
+        "blocking_findings": submission_string_list_field(
+            submission,
+            "blocking_findings",
+        ),
+        "evidence": submission_string_list_field(submission, "evidence"),
+        "checked_acceptance_criteria": submission_string_list_field(
+            submission,
+            "checked_acceptance_criteria",
+        ),
+        "deferred_manual_verification": submission_deferred_manual_verification_field(
+            submission,
+        ),
+    }
 
 
 def string_list_field(value: dict[str, Any], key: str) -> list[str]:
@@ -2454,11 +2594,186 @@ def plan_completion_recovery_command(args: list[str]) -> None:
     )
 
 
-def gate_plan_completion_command(args: list[str]) -> None:
-    if args != [] and args != ["--final"]:
+def parse_gate_plan_completion_args(
+    args: list[str],
+) -> tuple[bool, bool, str | None]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--final", action="store_true")
+    parser.add_argument("--from-submission", action="store_true")
+    parser.add_argument(
+        "--submission",
+        help="Read the structured-output submission from this file instead of stdin.",
+    )
+    try:
+        parsed = parser.parse_args(args)
+    except SystemExit:
         usage()
         sys.exit(2)
-    final_gate = args == ["--final"]
+    final_gate = bool(parsed.final)
+    from_submission = bool(parsed.from_submission)
+    submission_path = parsed.submission
+    if final_gate and from_submission:
+        usage()
+        sys.exit(2)
+    if submission_path and not from_submission:
+        usage()
+        sys.exit(2)
+    return final_gate, from_submission, submission_path
+
+
+def path_contains_or_equals(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def assert_plan_completion_validator_workspace() -> None:
+    workspace_path = os.environ.get("SCHERZO_WORKSPACE_PATH", "").strip()
+    if workspace_path:
+        try:
+            workspace = Path(workspace_path).resolve(strict=False)
+            cwd = Path.cwd().resolve(strict=False)
+        except OSError as exc:
+            fail_plan_completion_gate(
+                f"could not resolve plan-completion validator workspace paths: {exc}",
+                failure_code="plan_completion_workspace_mismatch",
+                exit_code=2,
+            )
+        if not path_contains_or_equals(workspace, cwd):
+            fail_plan_completion_gate(
+                "plan-completion validator is not running in the step workspace: "
+                f"cwd={cwd} SCHERZO_WORKSPACE_PATH={workspace}",
+                failure_code="plan_completion_workspace_mismatch",
+                exit_code=2,
+            )
+    repo_root = os.environ.get("SCHERZO_REPO_ROOT", "").strip()
+    if repo_root:
+        try:
+            repo = Path(repo_root).resolve(strict=False)
+            cwd = Path.cwd().resolve(strict=False)
+        except OSError as exc:
+            fail_plan_completion_gate(
+                f"could not resolve plan-completion validator repository paths: {exc}",
+                failure_code="plan_completion_workspace_mismatch",
+                exit_code=2,
+            )
+        if not path_contains_or_equals(repo, cwd):
+            fail_plan_completion_gate(
+                "plan-completion validator is not running in the repository workspace: "
+                f"cwd={cwd} SCHERZO_REPO_ROOT={repo}",
+                failure_code="plan_completion_workspace_mismatch",
+                exit_code=2,
+            )
+
+
+def stamped_plan_completion_verdict(
+    submission: dict[str, Any],
+    current: dict[str, Any],
+) -> dict[str, Any]:
+    stamped = {
+        "schema_version": 1,
+        "verdict": submission["verdict"],
+        "blocking_findings": submission["blocking_findings"],
+        "evidence": submission["evidence"],
+        "checked_acceptance_criteria": submission["checked_acceptance_criteria"],
+        "plan_path": current["plan_path"],
+        "verified_base_change_id": current["verified_base_change_id"],
+        "verified_change_id": current["verified_change_id"],
+        "verified_parent_commit_ids": current["verified_parent_commit_ids"],
+        "verified_diff_fingerprint": current["verified_diff_fingerprint"],
+        "changed_files": current["changed_files"],
+        "deferred_manual_verification": submission["deferred_manual_verification"],
+    }
+    return stamped
+
+
+def assert_plan_completion_workspace_stable(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> None:
+    for key in [
+        "plan_path",
+        "verified_base_change_id",
+        "verified_change_id",
+        "verified_diff_fingerprint",
+    ]:
+        if before.get(key) != after.get(key):
+            fail_plan_completion_gate(
+                "plan-completion workspace changed while stamping verdict: "
+                f"{key} was {before.get(key)!r}, now {after.get(key)!r}",
+                failure_code="plan_completion_workspace_mismatch",
+                exit_code=2,
+            )
+
+
+def write_plan_completion_validator_verdict(stamped: dict[str, Any]) -> Path:
+    canonical_path = canonical_plan_completion_verdict_path()
+    if canonical_path is None:
+        fail_plan_completion_gate(
+            "SCHERZO_RUN_ROOT is required to stamp plan-completion validator verdicts",
+            failure_code="plan_completion_verdict_write_failed",
+            exit_code=2,
+        )
+    try:
+        write_json(canonical_path, stamped)
+    except OSError as exc:
+        fail_plan_completion_gate(
+            f"could not write run-root plan-completion verdict {display_path(canonical_path)}: {exc}",
+            failure_code="plan_completion_verdict_write_failed",
+            exit_code=2,
+        )
+    return canonical_path
+
+
+def gate_plan_completion_from_submission_command(submission_path: str | None) -> None:
+    assert_plan_completion_validator_workspace()
+    submission = validate_plan_completion_submission_shape(
+        read_plan_completion_submission(submission_path),
+    )
+    if not workspace_driver_available():
+        require_command("jj")
+    metadata = load_implementation_metadata()
+    current = plan_completion_snapshot(metadata)
+    stamped = stamped_plan_completion_verdict(submission, current)
+    verdict_path = write_plan_completion_validator_verdict(stamped)
+    assert_plan_completion_workspace_stable(current, plan_completion_snapshot(metadata))
+    verdict = validate_plan_completion_verdict_shape(stamped)
+
+    print("PLAN_COMPLETION_GATE_MODE=from_submission")
+    print("PLAN_COMPLETION_VERDICT_STAMP=written")
+    print(f"PLAN_COMPLETION_VERDICT={verdict['verdict']}")
+    print(f"PLAN_COMPLETION_VERDICT_PATH={display_path(verdict_path)}")
+    canonical_path = canonical_plan_completion_verdict_path()
+    if canonical_path is not None:
+        print(f"PLAN_COMPLETION_CANONICAL_VERDICT_PATH={display_path(canonical_path)}")
+    print_list(
+        "PLAN_COMPLETION_DEFERRED_MANUAL_VERIFICATION",
+        deferred_manual_verification_summaries(
+            verdict["deferred_manual_verification"]
+        ),
+    )
+    if verdict["verdict"] != "pass":
+        print_list("PLAN_COMPLETION_BLOCKING_FINDINGS", verdict["blocking_findings"])
+        fail_plan_completion_gate(
+            "plan-completion verifier reported blocking findings; code review/publish is blocked until the ExecPlan's promised behavior is complete",
+            failure_code="plan_completion_failed",
+        )
+
+    print("PLAN_COMPLETION_GATE=passed")
+    print(
+        "PLAN_COMPLETION_DIFF_FINGERPRINT="
+        + str(current["verified_diff_fingerprint"])
+    )
+    print_list("PLAN_COMPLETION_CHANGED_FILES", list(current["changed_files"]))
+
+
+def gate_plan_completion_command(args: list[str]) -> None:
+    final_gate, from_submission, submission_path = parse_gate_plan_completion_args(args)
+    if from_submission:
+        gate_plan_completion_from_submission_command(submission_path)
+        return
     gate_label = "final plan-completion gate" if final_gate else "plan-completion gate"
     verdict_restore_status = restore_plan_completion_verdict() if final_gate else "not_needed"
     metadata = load_implementation_metadata()

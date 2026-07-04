@@ -61,6 +61,8 @@ pub opaque type ShellHandlers(state) {
     ) -> #(state, command.CommandResult, List(transition_types.Message)),
     schedule_run_now_for_operator: fn(state, command.OperatorCommand, String) ->
       #(state, command.CommandResult, List(transition_types.Message)),
+    reenable_schedule_for_operator: fn(state, command.OperatorCommand, String) ->
+      #(state, command.CommandResult, List(transition_types.Message)),
     abort_session_for_operator_sync: fn(
       state,
       command.OperatorCommand,
@@ -124,6 +126,11 @@ pub fn shell_handlers(
     command.OperatorCommand,
     String,
   ) -> #(state, command.CommandResult, List(transition_types.Message)),
+  reenable_schedule_for_operator reenable_schedule_for_operator: fn(
+    state,
+    command.OperatorCommand,
+    String,
+  ) -> #(state, command.CommandResult, List(transition_types.Message)),
   abort_session_for_operator_sync abort_session_for_operator_sync: fn(
     state,
     command.OperatorCommand,
@@ -154,6 +161,7 @@ pub fn shell_handlers(
     run_finalize_for_operator: run_finalize_for_operator,
     retry_artifact_publication_for_operator: retry_artifact_publication_for_operator,
     schedule_run_now_for_operator: schedule_run_now_for_operator,
+    reenable_schedule_for_operator: reenable_schedule_for_operator,
     abort_session_for_operator_sync: abort_session_for_operator_sync,
     route_worker_command_sync: route_worker_command_sync,
     cleanup_orphan_steps_for_operator: cleanup_orphan_steps_for_operator,
@@ -192,6 +200,7 @@ pub fn operator_issue_resolution(
     | command.PromptSession(_, _)
     | command.RespondUi(_, _, _)
     | command.RunScheduleNow(_)
+    | command.ReenableSchedule(_)
     | command.WorkItemAction(_) -> transition_types.OperatorIssueNotResolved
   }
 }
@@ -228,6 +237,7 @@ pub fn parked_issue_resolution(
     | command.PromptSession(_, _)
     | command.RespondUi(_, _, _)
     | command.RunScheduleNow(_)
+    | command.ReenableSchedule(_)
     | command.WorkItemAction(_) -> transition_types.ParkedIssueNotResolved
   }
 }
@@ -283,6 +293,8 @@ pub fn apply_shell_operator_command(
       )
     command.RunScheduleNow(job_id) ->
       handlers.schedule_run_now_for_operator(state, operator_command, job_id)
+    command.ReenableSchedule(job_id) ->
+      handlers.reenable_schedule_for_operator(state, operator_command, job_id)
     command.AbortSession(session_id) ->
       handlers.abort_session_for_operator_sync(
         state,

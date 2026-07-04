@@ -49,9 +49,8 @@ pub fn prepare_tool_context(
                 run_id: context.run_id,
                 step_id: context.step_id,
                 attempt_index: context.attempt_index,
-                repository_root: structured_output.validator_repo_root(
+                repository_root: structured_output.schema_repo_root(
                   context.config_dir,
-                  context.workspace_path,
                 ),
                 spec: spec,
               ),
@@ -81,10 +80,7 @@ pub fn recovery_context(
     context.run_id,
     context.step_id,
     context.attempt_index,
-    structured_output.validator_repo_root(
-      context.config_dir,
-      context.workspace_path,
-    ),
+    structured_output.schema_repo_root(context.config_dir),
     context.run_root,
   )
   |> result.map(fn(env) { StepContext(..context, extra_pi_env: [env]) })
@@ -312,10 +308,7 @@ fn write_structured_output_artifact(
   let validation =
     structured_output_metadata.from_spec_with_receipt(
       spec,
-      structured_output.validator_repo_root(
-        context.config_dir,
-        context.workspace_path,
-      ),
+      structured_output.schema_repo_root(context.config_dir),
       receipt_json_for_source(spec.source, success.result.tool_calls),
     )
   let write =

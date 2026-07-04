@@ -118,6 +118,7 @@ pub fn handle_submitted(
     | command.StopAfterCurrentTurn(_)
     | command.CleanupOrphanSteps(_, _)
     | command.RunScheduleNow(_)
+    | command.ReenableSchedule(_)
     | command.WorkItemAction(_) -> shell_command(state, request)
   }
 }

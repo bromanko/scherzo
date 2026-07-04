@@ -490,6 +490,8 @@ fn authenticate(
       )
     protocol.RunScheduleNow(id, _, job_id) ->
       protocol.RunScheduleNow(id, control_file.token, job_id)
+    protocol.ReenableSchedule(id, _, job_id) ->
+      protocol.ReenableSchedule(id, control_file.token, job_id)
     protocol.WorkItemAction(id, _, request) ->
       protocol.WorkItemAction(id, control_file.token, request)
   }
@@ -699,6 +701,7 @@ fn safe_read_command_for_operator(
     | command.RetryArtifactPublication(_, _)
     | command.CleanupOrphanSteps(_, _)
     | command.RunScheduleNow(_)
+    | command.ReenableSchedule(_)
     | command.WorkItemAction(_) ->
       Some("scripts/scherzoctl ps --json --timeout 10s")
     command.PauseDispatch | command.ResumeDispatch | command.ReloadWorkflow ->

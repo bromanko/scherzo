@@ -741,6 +741,183 @@ pub fn plan_completion_gate_allows_deferred_manual_verification_test() {
   assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=passed")
 }
 
+pub fn plan_completion_gate_from_submission_stamps_current_workspace_test() {
+  let dir = "test/tmp/plan-completion-gate-from-submission"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_submission(dir, "pass", "[]")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/run-root/state/implementation")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "cat plan-completion-submission.json | SCHERZO_RUN_ROOT=\"$PWD/run-root\" SCHERZO_WORKSPACE_PATH=\"$PWD\" SCHERZO_REPO_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --from-submission",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_GATE_MODE=from_submission",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_VERDICT_STAMP=written",
+  )
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=passed")
+  let assert Ok(canonical_verdict) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-plan-completion-verdict.json",
+    )
+  assert string.contains(canonical_verdict, "\"verdict\": \"pass\"")
+  assert string.contains(
+    canonical_verdict,
+    "\"verified_diff_fingerprint\": \"" <> fingerprint <> "\"",
+  )
+  assert string.contains(
+    canonical_verdict,
+    "\"changed_files\": [\n    \".scherzo/workflows/scripts/scherzo-implementation\"\n  ]",
+  )
+  assert string.contains(
+    canonical_verdict,
+    "\"verified_change_id\": \"publishchange\"",
+  )
+  let assert Ok(False) =
+    simplifile.is_file(dir <> "/tmp/scherzo-plan-completion-verdict.json")
+}
+
+pub fn plan_completion_gate_from_submission_blocks_fail_after_stamping_test() {
+  let dir = "test/tmp/plan-completion-gate-from-submission-fail"
+  let fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_submission(
+    dir,
+    "fail",
+    "[\"Acceptance criterion remains unchecked.\"]",
+  )
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/run-root/state/implementation")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD/run-root\" SCHERZO_WORKSPACE_PATH=\"$PWD\" SCHERZO_REPO_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --from-submission --submission plan-completion-submission.json",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("plan_completion_failed")
+  assert string.contains(
+    artifact.stdout,
+    "PLAN_COMPLETION_VERDICT_STAMP=written",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "Acceptance criterion remains unchecked.",
+  )
+  let assert Ok(canonical_verdict) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-plan-completion-verdict.json",
+    )
+  assert string.contains(canonical_verdict, "\"verdict\": \"fail\"")
+  assert string.contains(
+    canonical_verdict,
+    "\"verified_diff_fingerprint\": \"" <> fingerprint <> "\"",
+  )
+  let assert Ok(False) =
+    simplifile.is_file(dir <> "/tmp/scherzo-plan-completion-verdict.json")
+}
+
+pub fn plan_completion_gate_from_submission_requires_run_root_test() {
+  let dir = "test/tmp/plan-completion-gate-from-submission-no-run-root"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_plan_completion_submission(dir, "pass", "[]")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_WORKSPACE_PATH=\"$PWD\" SCHERZO_REPO_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --from-submission --submission plan-completion-submission.json",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert artifact.failure_code == Some("plan_completion_verdict_write_failed")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=failed")
+  assert string.contains(artifact.stderr, "SCHERZO_RUN_ROOT is required")
+  let assert Ok(False) =
+    simplifile.is_file(dir <> "/tmp/scherzo-plan-completion-verdict.json")
+}
+
+pub fn plan_completion_gate_from_submission_rejects_malformed_submission_test() {
+  let dir = "test/tmp/plan-completion-gate-from-submission-malformed"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/run-root/state/implementation")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/plan-completion-submission.json", "{not json}\n")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD/run-root\" SCHERZO_WORKSPACE_PATH=\"$PWD\" SCHERZO_REPO_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --from-submission --submission plan-completion-submission.json",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("plan_completion_submission_malformed")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=failed")
+  assert string.contains(artifact.stderr, "must be valid JSON")
+  let assert Ok(False) =
+    simplifile.is_file(
+      dir
+      <> "/run-root/state/implementation/scherzo-plan-completion-verdict.json",
+    )
+  let assert Ok(False) =
+    simplifile.is_file(dir <> "/tmp/scherzo-plan-completion-verdict.json")
+}
+
+pub fn plan_completion_gate_from_submission_rejects_machine_fields_test() {
+  let dir = "test/tmp/plan-completion-gate-from-submission-machine-field"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/run-root/state/implementation")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/plan-completion-submission.json",
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"verdict\": \"pass\",\n"
+        <> "  \"blocking_findings\": [],\n"
+        <> "  \"evidence\": [\"Required behavior is present.\"],\n"
+        <> "  \"checked_acceptance_criteria\": [\"Required work.\"],\n"
+        <> "  \"verified_change_id\": \"agent-copied-value\"\n"
+        <> "}\n",
+    )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "SCHERZO_RUN_ROOT=\"$PWD/run-root\" SCHERZO_WORKSPACE_PATH=\"$PWD\" SCHERZO_REPO_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-plan-completion --from-submission --submission plan-completion-submission.json",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("plan_completion_submission_malformed")
+  assert string.contains(artifact.stdout, "PLAN_COMPLETION_GATE=failed")
+  assert string.contains(
+    artifact.stderr,
+    "must not include workspace-stamped fields: verified_change_id",
+  )
+  let assert Ok(False) =
+    simplifile.is_file(
+      dir
+      <> "/run-root/state/implementation/scherzo-plan-completion-verdict.json",
+    )
+  let assert Ok(False) =
+    simplifile.is_file(dir <> "/tmp/scherzo-plan-completion-verdict.json")
+}
+
 pub fn plan_completion_gate_blocks_fail_verdict_test() {
   let dir = "test/tmp/plan-completion-gate-fail"
   let fingerprint = setup_plan_completion_gate_fixture(dir)
@@ -2168,6 +2345,29 @@ fn output_value(stdout: String, prefix: String) -> String {
     string.split(stdout, on: "\n")
     |> list.find(fn(line) { string.starts_with(line, prefix) })
   string.drop_start(line, string.length(prefix))
+}
+
+fn write_plan_completion_submission(
+  dir: String,
+  verdict: String,
+  blocking_findings_json: String,
+) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/plan-completion-submission.json",
+      "{\n"
+        <> "  \"schema_version\": 1,\n"
+        <> "  \"verdict\": \""
+        <> verdict
+        <> "\",\n"
+        <> "  \"blocking_findings\": "
+        <> blocking_findings_json
+        <> ",\n"
+        <> "  \"evidence\": [\"Required behavior is present.\"],\n"
+        <> "  \"checked_acceptance_criteria\": [\"Required work.\"]\n"
+        <> "}\n",
+    )
+  Nil
 }
 
 fn write_plan_completion_verdict(

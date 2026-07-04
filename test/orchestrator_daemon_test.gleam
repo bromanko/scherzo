@@ -2116,6 +2116,44 @@ fn append_retry_waiting_scheduled_run(root: String, run_id: String) -> Nil {
   ])
 }
 
+fn append_quarantined_scheduled_job(root: String) -> Nil {
+  append_test_ledger_bodies(root, [
+    record.ScheduledRunFailed(
+      "scheduled-job",
+      "implementation",
+      1000,
+      "schedule-scheduled-job-19700101T000001Z",
+      1,
+      1000,
+      "boom-1",
+      True,
+      Some(root <> "/implementation/scheduled/scheduled-job/run-1"),
+    ),
+    record.ScheduledRunFailed(
+      "scheduled-job",
+      "implementation",
+      2000,
+      "schedule-scheduled-job-19700101T000002Z",
+      1,
+      2000,
+      "boom-2",
+      True,
+      Some(root <> "/implementation/scheduled/scheduled-job/run-2"),
+    ),
+    record.ScheduledRunFailed(
+      "scheduled-job",
+      "implementation",
+      3000,
+      "schedule-scheduled-job-19700101T000003Z",
+      1,
+      3000,
+      "boom-3",
+      True,
+      Some(root <> "/implementation/scheduled/scheduled-job/run-3"),
+    ),
+  ])
+}
+
 fn has_scheduled_due(
   records: List(record.LedgerRecord),
   run_id: String,
@@ -2448,6 +2486,20 @@ fn has_scheduled_skip(
     case entry.body {
       record.ScheduledJobSkipped(_, _, _, _, body_reason, _) ->
         body_reason == reason
+      _ -> False
+    }
+  })
+}
+
+fn has_scheduled_quarantine_released(
+  records: List(record.LedgerRecord),
+  job_id: String,
+) -> Bool {
+  records
+  |> list.any(fn(entry) {
+    case entry.body {
+      record.ScheduledJobQuarantineReleased(body_job_id, _, _) ->
+        body_job_id == job_id
       _ -> False
     }
   })
@@ -3666,6 +3718,126 @@ pub fn daemon_scheduled_startup_records_active_run_failure_without_retry_test() 
 
   process.send(started.data, daemon.ScheduledRetryTick(run_id, 1))
   test_async.assert_no_extra_message_within(command_subject, 100)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_schedule_run_now_rejects_quarantined_job_test() {
+  let dir = "test/tmp/daemon-scheduled-run-now-quarantined"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  append_quarantined_scheduled_job(root)
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let clock = start_test_clock(4000)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: fake_workflow_run_dependencies(command_subject),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RunScheduleNow("scheduled-job"),
+      1000,
+    )
+  assert result.status == command.Rejected("schedule_quarantined")
+  assert result.message
+    == Some(
+      "schedule quarantined: boom-3; run `scherzoctl schedules re-enable scheduled-job`",
+    )
+  test_async.assert_no_extra_message_within(command_subject, 100)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_schedule_reenable_rejects_non_quarantined_job_test() {
+  let dir = "test/tmp/daemon-scheduled-reenable-non-quarantined"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let clock = start_test_clock(4000)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: fake_workflow_run_dependencies(command_subject),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.ReenableSchedule("scheduled-job"),
+      1000,
+    )
+  assert result.status == command.Rejected("schedule_not_quarantined")
+  assert result.message == Some("schedule is not quarantined")
+  let records = load_test_records(root)
+  assert !has_scheduled_quarantine_released(records, "scheduled-job")
+  test_async.assert_no_extra_message_within(command_subject, 100)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(clock, StopClock)
+}
+
+pub fn daemon_schedule_reenable_releases_quarantine_and_resumes_future_fire_test() {
+  let dir = "test/tmp/daemon-scheduled-reenable-quarantined"
+  let workflow_path = write_scheduled_command_workflow(dir, 1)
+  let assert Ok(root) = path.absolute(dir <> "/workspaces")
+  append_quarantined_scheduled_job(root)
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let command_subject = process.new_subject()
+  let clock = start_test_clock(4000)
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      workflow_run_dependencies: fake_workflow_run_dependencies(command_subject),
+      now_ms: fn() { clock_now(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.ReenableSchedule("scheduled-job"),
+      1000,
+    )
+  assert result.status == command.Applied
+  assert wait_for_records(
+    root,
+    fn(records) { has_scheduled_quarantine_released(records, "scheduled-job") },
+    20,
+  )
+  let assert Ok(projected) = daemon.get_projection_snapshot(started.data, 1000)
+  let assert Ok(released_status) =
+    projection.scheduled_status_for(projected, "scheduled-job")
+  assert released_status.state == projection.ScheduledIdle
+  assert released_status.consecutive_failure_count == 0
+
+  set_clock(clock, 5000)
+  process.send(started.data, daemon.PollTick(1))
+  assert wait_for_event(command_subject, "yaml_command:scheduled_command", 20)
+  assert wait_for_event(log_subject, "scheduled_worker_exited", 20)
+  assert wait_for_records(
+    root,
+    fn(records) {
+      has_scheduled_started(records, "schedule-scheduled-job-19700101T000005Z")
+    },
+    20,
+  )
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)

@@ -101,6 +101,39 @@ fn review_lane_draft_spec() -> workflow_dag.StructuredOutputSpec {
   )
 }
 
+pub fn validator_repo_root_prefers_step_workspace_test() {
+  assert structured_output.validator_repo_root(
+      "/daemon/repo/.scherzo",
+      "/run/workspaces/main",
+    )
+    == "/run/workspaces/main"
+}
+
+pub fn validator_repo_root_treats_dot_workspace_as_missing_test() {
+  assert structured_output.validator_repo_root("/daemon/repo/.scherzo", ".")
+    == "/daemon/repo"
+}
+
+pub fn default_validator_context_uses_schema_repository_root_test() {
+  let context =
+    structured_output.default_validator_context(
+      "/daemon/repo/.scherzo",
+      "/run/root",
+      "test_workflow",
+      "/daemon/repo/.scherzo/workflows",
+      "test_run",
+      "review_json",
+      1,
+      "/run/workspaces/main",
+      "review_lane_draft",
+      "json",
+      structured_output_source.FinalResponseSource,
+    )
+
+  assert context.repository_root == "/daemon/repo"
+  assert context.workspace_path == "/run/workspaces/main"
+}
+
 fn validate(
   required: Bool,
   response: Option(String),
