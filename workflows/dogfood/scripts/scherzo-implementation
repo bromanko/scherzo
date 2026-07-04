@@ -523,6 +523,8 @@ def path_under_run_root(path: Path) -> bool:
 
 
 def display_path(path: Path) -> str:
+    if not path.is_absolute():
+        return path.as_posix()
     run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
     if run_root:
         try:
@@ -534,8 +536,15 @@ def display_path(path: Path) -> str:
 
 def resolve_run_root_relative_path(path: Path) -> Path:
     run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
-    if run_root and not path.is_absolute() and path.parts[:1] == ("state",):
-        return Path(run_root) / path
+    if run_root and not path.is_absolute():
+        if path.parts[:1] == ("state",):
+            return Path(run_root) / path
+        if (
+            len(path.parts) >= 3
+            and path.parts[0] == "workspaces"
+            and path.parts[2] == "state"
+        ):
+            return Path(run_root).joinpath(*path.parts[2:])
     return path
 
 

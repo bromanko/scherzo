@@ -876,6 +876,52 @@ pub fn implementation_prepare_uses_plan_artifact_without_repo_path_test() {
   assert string.contains(metadata, "\"plan_publication_path\": \"\"")
 }
 
+pub fn implementation_prepare_keeps_run_state_paths_when_cwd_is_workspace_test() {
+  let dir = "test/tmp/execplan-artifact-backed-plan-prepare-workspace-cwd"
+  test_helpers.reset_dir(dir)
+  let run_root = dir <> "/run-root"
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let plan_ref = "runs/run-artifact-plan/outputs/plan.md"
+  let #(bundle_ref, bundle_sha, _) =
+    write_artifact_backed_plan_bundle(dir, plan_ref, "", True)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.scherzo")
+  let assert Ok(workflows_target) = scherzo_path.absolute("workflows/dogfood")
+  let assert Ok(Nil) =
+    scherzo_path.symlink(workflows_target, workspace <> "/.scherzo/workflows")
+  let issue_context =
+    "Bundle ref: " <> bundle_ref <> "\nBundle sha256: " <> bundle_sha <> "\n"
+
+  let artifact =
+    run_shell_in(
+      workspace,
+      "env SCHERZO_REPO_ROOT=$PWD/../../.. SCHERZO_RUN_ROOT=$PWD/../.. SCHERZO_ISSUE_CONTEXT="
+        <> test_helpers.shell_quote(issue_context)
+        <> " ../../../.scherzo/workflows/scripts/scherzo-execplan implementation-prepare --from-issue-context",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "PLAN=state/implementation/execplan-review-doc.md",
+  )
+  assert !string.contains(
+    artifact.stdout,
+    "PLAN=workspaces/main/state/implementation/execplan-review-doc.md",
+  )
+  let assert Ok(metadata) =
+    simplifile.read(dir <> "/run-root/state/implementation/metadata.json")
+  assert string.contains(
+    metadata,
+    "\"plan_path\": \"state/implementation/execplan-review-doc.md\"",
+  )
+  assert !string.contains(
+    metadata,
+    "\"plan_path\": \"workspaces/main/state/implementation/execplan-review-doc.md\"",
+  )
+}
+
 pub fn implementation_prepare_uses_workstream_input_manifest_test() {
   let dir = "test/tmp/execplan-workstream-input-prepare"
   test_helpers.reset_dir(dir)

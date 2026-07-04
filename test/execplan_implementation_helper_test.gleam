@@ -4,6 +4,7 @@ import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
 import scherzo/hash
+import scherzo/path as scherzo_path
 import scherzo/step_artifact
 import simplifile
 import support/test_helpers
@@ -176,6 +177,48 @@ pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
     )
   assert fresh_again.status == step_artifact.StepSucceeded
   assert string.contains(fresh_again.stdout, "PLAN_BRIEF_STATUS=fresh")
+}
+
+pub fn plan_brief_command_resolves_legacy_workspace_prefixed_state_path_test() {
+  let dir = "test/tmp/implementation-helper-legacy-workspace-plan-path"
+  test_helpers.reset_dir(dir)
+  let run_root = dir <> "/run-root"
+  let workspace = run_root <> "/workspaces/main"
+  let state_dir = run_root <> "/state/implementation"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.create_directory_all(state_dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      state_dir <> "/execplan-review-doc.md",
+      execplan_markdown(),
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      state_dir <> "/metadata.json",
+      "{\n"
+        <> "  \"source_kind\": \"execplan\",\n"
+        <> "  \"plan_path\": \"workspaces/main/state/implementation/execplan-review-doc.md\",\n"
+        <> "  \"execplan_v2_bundle_path\": \"state/implementation/execplan-bundle.json\",\n"
+        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "}\n",
+    )
+  let assert Ok(helper) =
+    scherzo_path.absolute(".scherzo/workflows/scripts/scherzo-implementation")
+
+  let artifact =
+    run_helper_in(
+      workspace,
+      "SCHERZO_RUN_ROOT=\"$PWD/../..\" "
+        <> test_helpers.shell_quote(helper)
+        <> " plan-brief",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "PLAN_BRIEF_STATUS=ok")
+  let assert Ok(brief) =
+    simplifile.read(workspace <> "/tmp/scherzo-execplan-brief.md")
+  assert string.contains(brief, "# ExecPlanBrief for Example ExecPlan")
 }
 
 pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
