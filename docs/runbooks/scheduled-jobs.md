@@ -31,7 +31,7 @@ schedules:
 
 Start public or copied configs with `enabled: false` until `SCHERZO_GITHUB_REPO`, the Linear project slug, GitHub credentials if needed, and the resolver workflow label are configured. If tracker workflow-label enforcement is enabled, keep `merge-conflict-resolution` in top-level `workflows` so Scherzo derives the resolver label, but keep `github-pr-conflict-scout` scheduled-only; scheduled workflows are started by `schedules`, not tracker labels. Only trusted operators or automation should be able to apply the resolver workflow label because that workflow can publish the validated conflict resolution. The checked-in example config uses the same shape in `examples/scherzo.yaml`.
 
-The public example defaults to GitHub API conflict detection, caps each run at `SCHERZO_CONFLICT_MAX_OPEN_PRS` open PRs (`100` by default), and passes `--skip-local-preflight` so scheduled intervals do not perform per-PR git fetch/merge preflight by default. For known-small repositories where local merge preflight is acceptable, set `SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT=true`; the command changes to `repo_root` first so the helper can read the repository origin before it performs temporary-directory git preflight work.
+The public example caps each run at `SCHERZO_CONFLICT_MAX_OPEN_PRS` open PRs (`100` by default) and classifies same-repository PRs with local `git merge-tree --write-tree` against freshly fetched refs. The command changes to `repo_root` first so the helper can fetch PR base/head refs from `SCHERZO_CONFLICT_GIT_REMOTE` (`origin` by default) without creating per-PR temporary clones or mutating the worktree.
 
 ## Adopting the GitHub PR conflict package in another repository
 
@@ -41,7 +41,7 @@ To adopt it in another Scherzo-managed GitHub repository:
 
 1. Copy or package `examples/workflows/github-pr-conflict-scout.yaml`, `examples/workflows/merge-conflict-resolution.yaml`, and `examples/workflows/prompts/resolve-merge-conflicts.md` into that repository's Scherzo config.
 2. Route both workflows in `scherzo.yaml`, include `merge-conflict-resolution` in the trusted workflow labels, and schedule only `github-pr-conflict-scout`.
-3. Configure `SCHERZO_GITHUB_REPO=owner/repo` and either `SCHERZO_LINEAR_PROJECT_SLUG` or `LINEAR_PROJECT_SLUG`. Optionally set `SCHERZO_CONFLICT_CREATE_STATE`, `SCHERZO_CONFLICT_WORKFLOW_LABEL`, `SCHERZO_CONFLICT_MAX_OPEN_PRS`, and `SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT`.
+3. Configure `SCHERZO_GITHUB_REPO=owner/repo` and either `SCHERZO_LINEAR_PROJECT_SLUG` or `LINEAR_PROJECT_SLUG`. Optionally set `SCHERZO_CONFLICT_CREATE_STATE`, `SCHERZO_CONFLICT_WORKFLOW_LABEL`, `SCHERZO_CONFLICT_MAX_OPEN_PRS`, and `SCHERZO_CONFLICT_GIT_REMOTE`.
 4. Use a workspace driver that can publish commit stacks (`publish-commit-stack`) back to the same repository branch. The resolver assumes it may fast-forward the PR head branch in the configured repository; fork PRs are rejected.
 5. Replace the example command passed to `.scherzo/workflows/scripts/scherzo-merge-conflict run-project-validation -- ...` in `merge-conflict-resolution.yaml` with repo-local validation commands. Keep it after `.scherzo/workflows/scripts/scherzo-merge-conflict validate`: the helper performs generic guard checks, while the workflow YAML owns project-specific checks such as `npm test`, `cargo test`, or repository scripts. The `run-project-validation` wrapper scrubs `SCHERZO_*` workflow context before running those commands and records success so the publish step and PR comment know repo-local validation passed.
 6. Start with the scheduled job disabled until GitHub credentials, Linear credentials/project, workflow labels, and validation commands have been verified.
@@ -80,15 +80,14 @@ steps:
       fi
       cd "$repo_root"
       max_open_prs=${SCHERZO_CONFLICT_MAX_OPEN_PRS:-100}
+      git_remote=${SCHERZO_CONFLICT_GIT_REMOTE:-origin}
       set -- "$bundle_dir/scripts/scherzo-github-pr-conflict-scout" scan \
         --repo "$SCHERZO_GITHUB_REPO" \
         --linear-project-slug "$linear_project_slug" \
         --create-state "${SCHERZO_CONFLICT_CREATE_STATE:-Todo}" \
         --workflow-label "${SCHERZO_CONFLICT_WORKFLOW_LABEL:-workflow:merge-conflict-resolution}" \
+        --git-remote "$git_remote" \
         --max-open-prs "$max_open_prs"
-      if test "${SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT:-false}" != "true"; then
-        set -- "$@" --skip-local-preflight
-      fi
       "$@"
     timeout: 5m
     run_in: main

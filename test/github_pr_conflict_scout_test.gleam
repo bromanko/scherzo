@@ -71,6 +71,9 @@ fn safe_dirty_fixture(linear_body: String) -> String {
   <> "      \"123\": {\"mergeable\": false, \"mergeable_state\": \"dirty\", \"base\": {\"sha\": \"base-sha\"}, \"head\": {\"sha\": \"head-sha\"}}\n"
   <> "    }\n"
   <> "  },\n"
+  <> "  \"preflight\": {\n"
+  <> "    \"123\": {\"status\": \"conflicted\", \"paths\": [\"conflicted.txt\"], \"base_sha\": \"base-sha\", \"head_sha\": \"head-sha\"}\n"
+  <> "  },\n"
   <> "  \"linear\": "
   <> linear_body
   <> "\n"
@@ -169,6 +172,8 @@ fn generated_description(detection: String) -> String {
   <> "Detection: "
   <> detection
   <> "\n"
+  <> "Conflicted paths:\n"
+  <> "- conflicted.txt\n"
   <> "Observed at: "
   <> observed_at
   <> "\n"
@@ -306,6 +311,9 @@ pub fn scout_conflicted_same_repo_pr_creates_resolver_issue_test() {
     artifact.stdout,
     "PR head ref: feature/conflicted-change",
   )
+  assert string.contains(artifact.stdout, "local-merge-tree")
+  assert string.contains(artifact.stdout, "Conflicted paths:")
+  assert string.contains(artifact.stdout, "- conflicted.txt")
   assert !string.contains(artifact.stdout, "Head branch:")
   assert string.contains(artifact.stdout, "workflow-label-id")
   assert !string.contains(artifact.stdout, "support-label-id")
@@ -330,6 +338,10 @@ pub fn scout_max_open_prs_caps_fixture_scan_test() {
         <> "      \"123\": {\"mergeable\": false, \"mergeable_state\": \"dirty\", \"base\": {\"sha\": \"base-sha\"}, \"head\": {\"sha\": \"head-sha\"}},\n"
         <> "      \"124\": {\"mergeable\": false, \"mergeable_state\": \"dirty\", \"base\": {\"sha\": \"base-sha-2\"}, \"head\": {\"sha\": \"head-sha-2\"}}\n"
         <> "    }\n"
+        <> "  },\n"
+        <> "  \"preflight\": {\n"
+        <> "    \"123\": {\"status\": \"conflicted\", \"paths\": [\"first.txt\"], \"base_sha\": \"base-sha\", \"head_sha\": \"head-sha\"},\n"
+        <> "    \"124\": {\"status\": \"conflicted\", \"paths\": [\"second.txt\"], \"base_sha\": \"base-sha-2\", \"head_sha\": \"head-sha-2\"}\n"
         <> "  },\n"
         <> "  \"linear\": "
         <> linear_project_with_issues("[]")
@@ -386,7 +398,7 @@ pub fn scout_identical_existing_marker_is_noop_test() {
       "existing-issue-id",
       "LIV-501",
       "Todo",
-      generated_description("github:dirty"),
+      generated_description("local-merge-tree"),
     )
   let fixture =
     write_fixture(
@@ -462,10 +474,25 @@ pub fn scout_skips_unsafe_prs_test() {
   assert artifact.stderr == ""
 }
 
-pub fn scout_inconclusive_metadata_uses_preflight_test() {
+pub fn local_merge_tree_preflight_exercises_real_git_test() {
+  let artifact =
+    run_scout_raw(
+      "python3 test/fixtures/github_pr_conflict_scout_local_preflight.py",
+    )
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "github_pr_conflict_scout_local_preflight: ok",
+  )
+  assert artifact.stderr == ""
+}
+
+pub fn scout_clean_merge_tree_ignores_stale_dirty_metadata_test() {
   let fixture =
     write_fixture(
-      "test/tmp/github-pr-conflict-scout-preflight-conflict",
+      "test/tmp/github-pr-conflict-scout-clean-merge-tree",
       "{\n"
         <> "  \"observed_at\": \""
         <> observed_at
@@ -474,12 +501,10 @@ pub fn scout_inconclusive_metadata_uses_preflight_test() {
         <> "    \"pulls\": ["
         <> safe_pr_json(123, "feature/conflicted-change")
         <> "],\n"
-        <> "    \"details\": {\"123\": {\"mergeable\": false, \"mergeable_state\": \"blocked\"}}\n"
+        <> "    \"details\": {\"123\": {\"mergeable\": false, \"mergeable_state\": \"dirty\"}}\n"
         <> "  },\n"
-        <> "  \"preflight\": {\"123\": \"conflicted\"},\n"
-        <> "  \"linear\": "
-        <> linear_project_with_issues("[]")
-        <> "\n"
+        <> "  \"preflight\": {\"123\": {\"status\": \"clean\", \"base_sha\": \"base-sha\", \"head_sha\": \"head-sha\"}},\n"
+        <> "  \"linear\": {\"fail_if_called\": true}\n"
         <> "}\n",
     )
 
@@ -487,15 +512,16 @@ pub fn scout_inconclusive_metadata_uses_preflight_test() {
 
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
-  assert string.contains(artifact.stdout, "\"created\": [")
-  assert string.contains(artifact.stdout, "local-preflight")
+  assert string.contains(artifact.stdout, "\"created\": []")
+  assert string.contains(artifact.stdout, "\"updated\": []")
+  assert string.contains(artifact.stdout, "\"conflicted_prs\": []")
   assert artifact.stderr == ""
 }
 
-pub fn scout_preflight_unavailable_skips_without_linear_test() {
+pub fn scout_unfetchable_ref_skips_without_linear_test() {
   let fixture =
     write_fixture(
-      "test/tmp/github-pr-conflict-scout-preflight-unavailable",
+      "test/tmp/github-pr-conflict-scout-unfetchable-ref",
       "{\n"
         <> "  \"observed_at\": \""
         <> observed_at
@@ -503,10 +529,9 @@ pub fn scout_preflight_unavailable_skips_without_linear_test() {
         <> "  \"github\": {\n"
         <> "    \"pulls\": ["
         <> safe_pr_json(123, "feature/conflicted-change")
-        <> "],\n"
-        <> "    \"details\": {\"123\": {\"mergeable\": false, \"mergeable_state\": \"blocked\"}}\n"
+        <> "]\n"
         <> "  },\n"
-        <> "  \"preflight\": {\"123\": \"unavailable\"},\n"
+        <> "  \"preflight\": {\"123\": {\"status\": \"unavailable\", \"reason\": \"head_ref_fetch_failed\"}},\n"
         <> "  \"linear\": {\"fail_if_called\": true}\n"
         <> "}\n",
     )
@@ -516,6 +541,36 @@ pub fn scout_preflight_unavailable_skips_without_linear_test() {
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "preflight_unavailable")
+  assert string.contains(artifact.stdout, "head_ref_fetch_failed")
+  assert string.contains(artifact.stdout, "\"created\": []")
+  assert string.contains(artifact.stdout, "\"updated\": []")
+  assert artifact.stderr == ""
+}
+
+pub fn scout_merge_tree_unavailable_skips_without_linear_test() {
+  let fixture =
+    write_fixture(
+      "test/tmp/github-pr-conflict-scout-merge-tree-unavailable",
+      "{\n"
+        <> "  \"observed_at\": \""
+        <> observed_at
+        <> "\",\n"
+        <> "  \"github\": {\n"
+        <> "    \"pulls\": ["
+        <> safe_pr_json(123, "feature/conflicted-change")
+        <> "]\n"
+        <> "  },\n"
+        <> "  \"preflight\": {\"123\": {\"status\": \"unavailable\", \"reason\": \"merge_tree_unavailable\"}},\n"
+        <> "  \"linear\": {\"fail_if_called\": true}\n"
+        <> "}\n",
+    )
+
+  let artifact = run_scout("scan-fixture " <> fixture <> " --json-summary")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "preflight_unavailable")
+  assert string.contains(artifact.stdout, "merge_tree_unavailable")
   assert string.contains(artifact.stdout, "\"created\": []")
   assert string.contains(artifact.stdout, "\"updated\": []")
   assert artifact.stderr == ""

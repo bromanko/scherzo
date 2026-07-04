@@ -2,10 +2,9 @@
 version: 1
 id: github-pr-conflict-scout
 description: Scan open same-repository GitHub pull requests and enqueue Linear merge-conflict resolver issues.
-# Default to noop because the scheduled path passes --skip-local-preflight and
-# only needs the repository root for config/remote discovery. If local preflight
-# is enabled, the command still cd's to SCHERZO_REPO_ROOT; use a custom workflow
-# profile only when that mode needs an isolated jj workspace.
+# Default to noop because merge-tree preflight reads and fetches refs in the
+# configured repository without mutating the worktree or needing an isolated
+# workflow workspace.
 workspace:
   driver: noop
 concurrency: 1
@@ -27,15 +26,14 @@ steps:
       fi
       cd "$repo_root"
       max_open_prs=${SCHERZO_CONFLICT_MAX_OPEN_PRS:-100}
+      git_remote=${SCHERZO_CONFLICT_GIT_REMOTE:-origin}
       set -- "$bundle_dir/scripts/scherzo-github-pr-conflict-scout" scan \
         --repo "$SCHERZO_GITHUB_REPO" \
         --linear-project-slug "$linear_project_slug" \
         --create-state "${SCHERZO_CONFLICT_CREATE_STATE:-Todo}" \
         --workflow-label "${SCHERZO_CONFLICT_WORKFLOW_LABEL:-workflow:merge-conflict-resolution}" \
+        --git-remote "$git_remote" \
         --max-open-prs "$max_open_prs"
-      if test "${SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT:-false}" != "true"; then
-        set -- "$@" --skip-local-preflight
-      fi
       "$@"
     timeout: 5m
     run_in: main

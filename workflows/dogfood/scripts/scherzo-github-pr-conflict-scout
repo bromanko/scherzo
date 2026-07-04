@@ -3,8 +3,8 @@
 
 The command is intentionally conservative. It only creates Linear resolver work
 for open, non-draft pull requests whose base and head repositories are the
-configured repository, and only after GitHub metadata or an isolated local merge
-preflight indicates a likely merge conflict.
+configured repository, and only when a local ``git merge-tree --write-tree``
+preflight against freshly fetched refs reports a real merge conflict.
 """
 
 from __future__ import annotations
@@ -16,9 +16,8 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,6 +27,10 @@ DEFAULT_WORKFLOW_LABEL = "workflow:merge-conflict-resolution"
 ACTIVE_DEDUPE_STATES = {"Todo", "In Progress"}
 NON_ACTIVE_STATE_TYPES = {"completed", "canceled", "duplicate"}
 USER_AGENT = "scherzo-github-pr-conflict-scout"
+MAX_CONFLICTED_PATHS = 25
+MAX_CONFLICTED_PATH_BYTES = 4096
+MAX_CONFLICTED_PATH_CHARS = 240
+CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class ScoutError(Exception):
@@ -41,7 +44,7 @@ class Options:
     create_state: str
     workflow_label: str
     json_summary: bool
-    skip_local_preflight: bool
+    git_remote: str
     max_open_prs: int | None
     observed_at: str | None = None
 
@@ -58,12 +61,20 @@ class SafePullRequest:
 
 
 @dataclass(frozen=True)
+class ConflictPathSummary:
+    paths: list[str]
+    omitted: int = 0
+
+
+@dataclass(frozen=True)
 class ConflictObservation:
     status: str
     pr: SafePullRequest | None = None
     detection: str | None = None
     reason: str | None = None
     detail: str | None = None
+    paths: list[str] | None = None
+    paths_omitted: int = 0
 
 
 @dataclass(frozen=True)
@@ -185,62 +196,72 @@ def skipped_pr(number: int | None, url: str | None, reason: str, detail: str | N
     return value
 
 
-def merge_detail_into_pr(pr: SafePullRequest, detail: dict[str, Any]) -> SafePullRequest:
-    base_sha = pr.base_sha
-    head_sha = pr.head_sha
-    base = detail.get("base")
-    if isinstance(base, dict):
-        base_sha = optional_string(base, "sha") or base_sha
-    head = detail.get("head")
-    if isinstance(head, dict):
-        head_sha = optional_string(head, "sha") or head_sha
+def merge_preflight_detail_into_pr(
+    pr: SafePullRequest, result: dict[str, Any]
+) -> SafePullRequest:
     return SafePullRequest(
         repo=pr.repo,
         number=pr.number,
         url=pr.url,
         base_branch=pr.base_branch,
         head_branch=pr.head_branch,
-        base_sha=base_sha,
-        head_sha=head_sha,
+        base_sha=optional_string(result, "base_sha") or pr.base_sha,
+        head_sha=optional_string(result, "head_sha") or pr.head_sha,
     )
 
 
+def normalize_paths(value: Any) -> ConflictPathSummary:
+    if not isinstance(value, list):
+        return ConflictPathSummary(paths=[])
+    paths: list[str] = []
+    omitted = 0
+    used_bytes = 0
+    for candidate in value:
+        if not isinstance(candidate, str) or not candidate:
+            continue
+        path = sanitize_conflicted_path(candidate)
+        path_bytes = len(path.encode("utf-8", errors="replace"))
+        if (
+            len(paths) >= MAX_CONFLICTED_PATHS
+            or used_bytes + path_bytes > MAX_CONFLICTED_PATH_BYTES
+        ):
+            omitted += 1
+            continue
+        paths.append(path)
+        used_bytes += path_bytes
+    return ConflictPathSummary(paths=paths, omitted=omitted)
+
+
+def sanitize_conflicted_path(path: str) -> str:
+    sanitized = CONTROL_CHAR_RE.sub("?", path)
+    if len(sanitized) <= MAX_CONFLICTED_PATH_CHARS:
+        return sanitized
+    return sanitized[: MAX_CONFLICTED_PATH_CHARS - 1] + "…"
+
+
 def classify_pr(
-    options: Options,
-    github_client: Any,
     pr: SafePullRequest,
     preflight: Callable[[SafePullRequest], dict[str, Any]],
 ) -> ConflictObservation:
-    detail = github_client.pull_detail(pr.number)
-    if not isinstance(detail, dict):
-        raise ScoutError("malformed GitHub PR detail payload: expected object")
-    pr = merge_detail_into_pr(pr, detail)
-    mergeable = detail.get("mergeable")
-    mergeable_state = detail.get("mergeable_state")
-    if mergeable_state == "dirty":
-        return ConflictObservation(status="conflicted", pr=pr, detection="github:dirty")
-    if mergeable is True:
-        return ConflictObservation(status="clean", pr=pr, detection="github:mergeable")
-
-    if options.skip_local_preflight:
-        return ConflictObservation(
-            status="skipped",
-            pr=pr,
-            reason="preflight_skipped",
-            detail="local preflight disabled",
-        )
-
     result = preflight(pr)
     status = result.get("status")
+    pr = merge_preflight_detail_into_pr(pr, result)
     if status == "conflicted":
-        return ConflictObservation(status="conflicted", pr=pr, detection="local-preflight")
+        path_summary = normalize_paths(result.get("paths"))
+        return ConflictObservation(
+            status="conflicted",
+            pr=pr,
+            detection="local-merge-tree",
+            paths=path_summary.paths,
+            paths_omitted=path_summary.omitted,
+        )
     if status == "clean":
-        return ConflictObservation(status="clean", pr=pr, detection="local-preflight")
+        return ConflictObservation(status="clean", pr=pr, detection="local-merge-tree")
     return ConflictObservation(
         status="skipped",
         pr=pr,
         reason="preflight_unavailable",
-        detail=str(result.get("reason") or "local merge preflight unavailable"),
+        detail=str(result.get("reason") or "local merge-tree preflight unavailable"),
     )
 
 
@@ -284,20 +305,24 @@ def scan_with_clients(
         elif pr is not None:
             safe_prs.append(pr)
 
-    conflicts: list[tuple[SafePullRequest, str]] = []
+    conflicts: list[tuple[SafePullRequest, str, list[str], int]] = []
     for pr in safe_prs:
-        observation = classify_pr(options, github_client, pr, preflight)
+        observation = classify_pr(pr, preflight)
         if observation.status == "conflicted" and observation.pr is not None:
             detection = observation.detection or "unknown"
-            conflicts.append((observation.pr, detection))
-            summary["conflicted_prs"].append(
-                {
-                    "number": observation.pr.number,
-                    "url": observation.pr.url,
-                    "marker": marker(observation.pr.repo, observation.pr.number),
-                    "detection": detection,
-                }
-            )
+            paths = observation.paths or []
+            paths_omitted = observation.paths_omitted
+            conflicts.append((observation.pr, detection, paths, paths_omitted))
+            conflicted_pr = {
+                "number": observation.pr.number,
+                "url": observation.pr.url,
+                "marker": marker(observation.pr.repo, observation.pr.number),
+                "detection": detection,
+                "paths": paths,
+            }
+            if paths_omitted:
+                conflicted_pr["paths_omitted"] = paths_omitted
+            summary["conflicted_prs"].append(conflicted_pr)
         elif observation.status == "skipped" and observation.pr is not None:
             summary["skipped_prs"].append(
                 skipped_pr(
@@ -317,7 +342,7 @@ def scan_with_clients(
         options.linear_project_slug, options.workflow_label
     )
     observed_at = options.observed_at or utc_now()
-    for pr, detection in conflicts:
+    for pr, detection, paths, paths_omitted in conflicts:
         apply_linear_plan(
             options,
             linear_client,
@@ -325,6 +350,8 @@ def scan_with_clients(
             candidate_issues,
             pr,
             detection,
+            paths,
+            paths_omitted,
             observed_at,
             summary,
         )
@@ -466,24 +493,39 @@ def generated_title(pr: SafePullRequest) -> str:
 
 
 def generated_description(
-    pr: SafePullRequest, detection: str, observed_at: str, workflow_label: str
+    pr: SafePullRequest,
+    detection: str,
+    conflicted_paths: list[str],
+    observed_at: str,
+    workflow_label: str,
+    conflicted_paths_omitted: int = 0,
 ) -> str:
-    return "\n".join(
+    lines = [
+        marker(pr.repo, pr.number),
+        "",
+        f"GitHub PR: {pr.url}",
+        f"Repository: {pr.repo}",
+        f"PR base ref: {pr.base_branch}",
+        f"PR head ref: {pr.head_branch}",
+        f"Base SHA: {pr.base_sha or '-'}",
+        f"Head SHA: {pr.head_sha or '-'}",
+        f"Detection: {detection}",
+    ]
+    if conflicted_paths or conflicted_paths_omitted:
+        lines.append("Conflicted paths:")
+        lines.extend(f"- {path}" for path in conflicted_paths)
+        if conflicted_paths_omitted:
+            lines.append(
+                f"- ... {conflicted_paths_omitted} more conflicted path(s) omitted"
+            )
+    lines.extend(
         [
-            marker(pr.repo, pr.number),
-            "",
-            f"GitHub PR: {pr.url}",
-            f"Repository: {pr.repo}",
-            f"PR base ref: {pr.base_branch}",
-            f"PR head ref: {pr.head_branch}",
-            f"Base SHA: {pr.base_sha or '-'}",
-            f"Head SHA: {pr.head_sha or '-'}",
-            f"Detection: {detection}",
             f"Observed at: {observed_at}",
             "",
             f"Scherzo's {workflow_label} resolver should repair this same-repository PR.",
         ]
     )
+    return "\n".join(lines)
 
 
 def apply_linear_plan(
@@ -493,6 +535,8 @@ def apply_linear_plan(
     candidate_issues: list[dict[str, Any]],
     pr: SafePullRequest,
     detection: str,
+    conflicted_paths: list[str],
+    conflicted_paths_omitted: int,
     observed_at: str,
     summary: dict[str, Any],
 ) -> None:
@@ -522,7 +566,14 @@ def apply_linear_plan(
             }
         )
 
-    description = generated_description(pr, detection, observed_at, options.workflow_label)
+    description = generated_description(
+        pr,
+        detection,
+        conflicted_paths,
+        observed_at,
+        options.workflow_label,
+        conflicted_paths_omitted,
+    )
     existing = choose_dispatchable_issue(dispatchable)
     if existing is not None:
         existing_description = existing.get("description")
@@ -574,43 +625,208 @@ def apply_linear_plan(
     )
 
 
-def local_merge_preflight(repo: str, base_ref: str, head_ref: str) -> dict[str, Any]:
-    origin = discover_origin_url()
-    if not origin:
-        return {"status": "unavailable", "reason": "missing_origin_url"}
+def make_local_merge_tree_preflight(
+    git_remote: str,
+) -> Callable[[SafePullRequest], dict[str, Any]]:
+    git_command: list[str] | None = None
+    support: dict[str, Any] | None = None
+    storage_namespace = conflict_scout_storage_namespace()
+
+    def run(pr: SafePullRequest) -> dict[str, Any]:
+        nonlocal git_command, support
+        if git_command is None:
+            discovered = discover_git_command()
+            if not isinstance(discovered, list):
+                return discovered
+            git_command = discovered
+        if support is None:
+            support = check_merge_tree_support(git_command)
+        if support.get("status") != "available":
+            return support
+        return local_merge_tree_preflight(
+            pr, git_remote, git_command, storage_namespace
+        )
+
+    return run
+
+
+def discover_git_command() -> list[str] | dict[str, Any]:
     try:
-        with tempfile.TemporaryDirectory(prefix="scherzo-pr-conflict-") as tmp:
-            if run_proc(["git", "init"], tmp).returncode != 0:
-                return {"status": "unavailable", "reason": "git_init_failed"}
-            if run_proc(["git", "remote", "add", "origin", origin], tmp).returncode != 0:
-                return {"status": "unavailable", "reason": "git_remote_failed"}
-            base_refspec = f"refs/heads/{base_ref}:refs/remotes/origin/__scherzo_base"
-            head_refspec = f"refs/heads/{head_ref}:refs/remotes/origin/__scherzo_head"
-            if run_proc(["git", "fetch", "--no-tags", "origin", base_refspec], tmp).returncode != 0:
-                return {"status": "unavailable", "reason": "base_fetch_failed"}
-            if run_proc(["git", "fetch", "--no-tags", "origin", head_refspec], tmp).returncode != 0:
-                return {"status": "unavailable", "reason": "head_fetch_failed"}
-            if (
-                run_proc(
-                    ["git", "checkout", "-B", "__scherzo_base", "refs/remotes/origin/__scherzo_base"],
-                    tmp,
-                ).returncode
-                != 0
-            ):
-                return {"status": "unavailable", "reason": "checkout_failed"}
-            merge = run_proc(
-                ["git", "merge", "--no-commit", "--no-ff", "refs/remotes/origin/__scherzo_head"],
-                tmp,
-            )
-            if merge.returncode == 0:
-                return {"status": "clean"}
-            unmerged = run_proc(["git", "diff", "--name-only", "--diff-filter=U"], tmp)
-            paths = [line for line in unmerged.stdout.splitlines() if line.strip()]
-            if paths:
-                return {"status": "conflicted", "paths": paths}
-            return {"status": "unavailable", "reason": "merge_failed_without_unmerged_paths"}
+        proc = run_proc(["git", "rev-parse", "--git-dir"])
     except FileNotFoundError:
         return {"status": "unavailable", "reason": "git_not_found"}
+    if proc.returncode == 0:
+        return ["git"]
+    try:
+        jj = run_proc(["jj", "--ignore-working-copy", "git", "root", "--color=never"])
+    except FileNotFoundError:
+        return {"status": "unavailable", "reason": "missing_git_repository"}
+    git_dir = jj.stdout.strip().splitlines()[0] if jj.stdout.strip() else ""
+    if jj.returncode != 0 or not git_dir:
+        return {"status": "unavailable", "reason": "missing_git_repository"}
+    return ["git", "--git-dir", git_dir]
+
+
+def check_merge_tree_support(git_command: list[str]) -> dict[str, Any]:
+    try:
+        proc = run_proc([*git_command, "merge-tree", "-h"])
+    except FileNotFoundError:
+        return {"status": "unavailable", "reason": "git_not_found"}
+    output = proc.stdout + proc.stderr
+    if "--write-tree" not in output or "--name-only" not in output:
+        return {"status": "unavailable", "reason": "merge_tree_unavailable"}
+    if "messages" not in output:
+        return {"status": "unavailable", "reason": "merge_tree_unavailable"}
+    return {"status": "available"}
+
+
+def local_merge_tree_preflight(
+    pr: SafePullRequest,
+    git_remote: str,
+    git_command: list[str],
+    storage_namespace: str | None = None,
+) -> dict[str, Any]:
+    if storage_namespace is None:
+        storage_namespace = conflict_scout_storage_namespace()
+    base_storage_ref = conflict_scout_storage_ref(pr.number, "base", storage_namespace)
+    head_storage_ref = conflict_scout_storage_ref(pr.number, "head", storage_namespace)
+    storage_refs = [base_storage_ref, head_storage_ref]
+    try:
+        fetch_result = fetch_pr_refs(
+            git_command, git_remote, pr, base_storage_ref, head_storage_ref
+        )
+        if fetch_result is not None:
+            return fetch_result
+        base_sha = resolve_commit(git_command, base_storage_ref, "base")
+        if not isinstance(base_sha, str):
+            return base_sha
+        head_sha = resolve_commit(git_command, head_storage_ref, "head")
+        if not isinstance(head_sha, str):
+            return head_sha
+        merge = run_proc(
+            [
+                *git_command,
+                "merge-tree",
+                "--write-tree",
+                "--name-only",
+                "--no-messages",
+                "-z",
+                base_sha,
+                head_sha,
+            ]
+        )
+    except FileNotFoundError:
+        return {"status": "unavailable", "reason": "git_not_found"}
+    finally:
+        delete_storage_refs(git_command, storage_refs)
+
+    common = {"base_sha": base_sha, "head_sha": head_sha}
+    if merge.returncode == 0:
+        return {"status": "clean", **common}
+    if merge.returncode == 1:
+        paths = parse_merge_tree_paths(merge.stdout)
+        if paths:
+            return {"status": "conflicted", "paths": paths, **common}
+        return {
+            "status": "unavailable",
+            "reason": "merge_tree_conflict_without_paths",
+            **common,
+        }
+    if merge_tree_unavailable_output(merge):
+        return {"status": "unavailable", "reason": "merge_tree_unavailable", **common}
+    return {"status": "unavailable", "reason": "merge_tree_failed", **common}
+
+
+def conflict_scout_storage_namespace() -> str:
+    return f"run-{os.getpid()}-{time.time_ns()}"
+
+
+def conflict_scout_storage_ref(number: int, kind: str, storage_namespace: str) -> str:
+    return f"refs/scherzo/conflict-scout/{storage_namespace}/pr-{number}/{kind}"
+
+
+def delete_storage_refs(git_command: list[str], refs: list[str]) -> None:
+    for ref in refs:
+        try:
+            run_proc([*git_command, "update-ref", "-d", ref])
+        except FileNotFoundError:
+            return
+
+
+def fetch_pr_refs(
+    git_command: list[str],
+    git_remote: str,
+    pr: SafePullRequest,
+    base_destination_ref: str,
+    head_destination_ref: str,
+) -> dict[str, Any] | None:
+    base_refspec = branch_refspec(pr.base_branch, base_destination_ref)
+    head_refspec = branch_refspec(pr.head_branch, head_destination_ref)
+    proc = run_proc(
+        [*git_command, "fetch", "--no-tags", git_remote, base_refspec, head_refspec]
+    )
+    if proc.returncode == 0:
+        return None
+    base_fetch = fetch_branch_ref(
+        git_command, git_remote, pr.base_branch, base_destination_ref, "base"
+    )
+    if base_fetch is not None:
+        return base_fetch
+    head_fetch = fetch_branch_ref(
+        git_command, git_remote, pr.head_branch, head_destination_ref, "head"
+    )
+    if head_fetch is not None:
+        return head_fetch
+    return {"status": "unavailable", "reason": "ref_fetch_failed"}
+
+
+def fetch_branch_ref(
+    git_command: list[str],
+    git_remote: str,
+    branch: str,
+    destination_ref: str,
+    kind: str,
+) -> dict[str, Any] | None:
+    proc = run_proc(
+        [
+            *git_command,
+            "fetch",
+            "--no-tags",
+            git_remote,
+            branch_refspec(branch, destination_ref),
+        ]
+    )
+    if proc.returncode == 0:
+        return None
+    return {"status": "unavailable", "reason": f"{kind}_ref_fetch_failed"}
+
+
+def branch_refspec(branch: str, destination_ref: str) -> str:
+    return f"+refs/heads/{branch}:{destination_ref}"
+
+
+def resolve_commit(
+    git_command: list[str], ref: str, kind: str
+) -> str | dict[str, Any]:
+    proc = run_proc([*git_command, "rev-parse", "--verify", f"{ref}^{{commit}}"])
+    if proc.returncode != 0:
+        return {"status": "unavailable", "reason": f"{kind}_ref_unresolved"}
+    sha = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+    if not sha:
+        return {"status": "unavailable", "reason": f"{kind}_ref_unresolved"}
+    return sha
+
+
+def parse_merge_tree_paths(stdout: str) -> list[str]:
+    parts = [part for part in stdout.split("\0") if part]
+    if len(parts) <= 1:
+        return []
+    return parts[1:]
+
+
+def merge_tree_unavailable_output(proc: subprocess.CompletedProcess[str]) -> bool:
+    output = proc.stdout + proc.stderr
+    return "unknown option" in output or "usage: git merge-tree" in output
 
 
 def run_proc(args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -621,26 +837,6 @@ def run_proc(args: list[str], cwd: str | None = None) -> subprocess.CompletedPro
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-
-
-def discover_origin_url() -> str | None:
-    try:
-        proc = run_proc(["git", "remote", "get-url", "origin"])
-        if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip().splitlines()[0]
-    except FileNotFoundError:
-        pass
-    try:
-        proc = run_proc(["jj", "git", "remote", "list", "--color=never"])
-    except FileNotFoundError:
-        return None
-    if proc.returncode != 0:
-        return None
-    for line in proc.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] == "origin":
-            return parts[1]
-    return None
 
 
 class ProductionGithubClient:
@@ -673,19 +869,6 @@ class ProductionGithubClient:
                 break
             page += 1
         return pulls
-
-    def pull_detail(self, number: int) -> dict[str, Any]:
-        owner, repo_name = self.repo.split("/", 1)
-        path = f"/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo_name)}/pulls/{number}"
-        last: Any = None
-        for attempt in range(3):
-            last = self.get_json(path)
-            if not isinstance(last, dict):
-                raise ScoutError("malformed GitHub PR detail payload: expected object")
-            if last.get("mergeable") is not None or attempt == 2:
-                return last
-            time.sleep(1)
-        return last if isinstance(last, dict) else {}
 
     def get_json(self, path_and_query: str) -> Any:
         req = urllib.request.Request(
@@ -853,20 +1036,9 @@ class FixtureGithubClient:
         if not isinstance(github, dict):
             raise ScoutError("fixture.github must be an object")
         self.pulls = github.get("pulls", fixture.get("pulls", []))
-        self.details = github.get("details", github.get("pull_details", {}))
-        if not isinstance(self.details, dict):
-            raise ScoutError("fixture.github.details must be an object")
 
     def list_open_pulls(self) -> Any:
         return self.pulls
-
-    def pull_detail(self, number: int) -> dict[str, Any]:
-        detail = self.details.get(str(number), self.details.get(number))
-        if detail is None:
-            return {}
-        if not isinstance(detail, dict):
-            raise ScoutError("malformed GitHub PR detail payload: expected object")
-        return detail
 
 
 class FixtureLinearClient:
@@ -987,7 +1159,11 @@ def add_common_scan_args(parser: argparse.ArgumentParser, *, fixture: bool) -> N
     parser.add_argument("--create-state", default=DEFAULT_CREATE_STATE)
     parser.add_argument("--workflow-label", default=DEFAULT_WORKFLOW_LABEL)
     parser.add_argument("--json-summary", action="store_true")
-    parser.add_argument("--skip-local-preflight", action="store_true")
+    parser.add_argument(
+        "--git-remote",
+        default=env_default("SCHERZO_CONFLICT_GIT_REMOTE") or "origin",
+        help="Git remote to fetch PR base/head refs from. Defaults to SCHERZO_CONFLICT_GIT_REMOTE or origin.",
+    )
     parser.add_argument(
         "--max-open-prs",
         type=positive_int,
@@ -1023,7 +1199,7 @@ def options_from_args(args: argparse.Namespace, observed_at: str | None = None) 
         create_state=args.create_state,
         workflow_label=args.workflow_label,
         json_summary=args.json_summary,
-        skip_local_preflight=args.skip_local_preflight,
+        git_remote=(args.git_remote or "origin").strip() or "origin",
         max_open_prs=args.max_open_prs,
         observed_at=observed_at,
     )
@@ -1036,7 +1212,7 @@ def run_scan(args: argparse.Namespace) -> dict[str, Any]:
         options,
         github,
         ProductionLinearClient.from_env,
-        lambda pr: local_merge_preflight(pr.repo, pr.base_branch, pr.head_branch),
+        make_local_merge_tree_preflight(options.git_remote),
     )
 
 
