@@ -171,11 +171,12 @@ pub fn start_remote_client(
   managed_launch: Option(managed_launch_grant.Grant),
   event_hub: process.Subject(hub.Message),
   daemon_subject: process.Subject(message),
+  managed_auth_rejected: fn(String) -> Nil,
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
   dependencies: ControlDependencies(message),
 ) -> Result(Handle, StartError) {
-  daemon_remote_client.start_with_control(
+  daemon_remote_client.start_with_control_and_managed_auth_rejection(
     effective,
     managed_launch,
     event_hub,
@@ -193,6 +194,7 @@ pub fn start_remote_client(
     fn(query, timeout_ms) {
       execute_remote_query(daemon_subject, query, timeout_ms, dependencies)
     },
+    managed_auth_rejected,
     secrets,
     logger,
   )

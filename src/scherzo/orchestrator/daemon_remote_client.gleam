@@ -7,6 +7,7 @@ import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/control/remote/credential_store
+import scherzo/control/remote/ui_managed_auth
 import scherzo/control/remote/ui_protocol
 import scherzo/control/remote/ui_websocket_client
 import scherzo/control/remote/url
@@ -41,7 +42,25 @@ pub fn start(
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
 ) -> Result(Handle, StartError) {
-  start_with_control(
+  start_with_managed_auth_rejection(
+    effective,
+    managed_launch,
+    event_hub,
+    fn(_) { Nil },
+    secrets,
+    logger,
+  )
+}
+
+pub fn start_with_managed_auth_rejection(
+  effective: config_types.EffectiveConfig,
+  managed_launch: Option(managed_launch_grant.Grant),
+  event_hub: process.Subject(hub.Message),
+  managed_auth_rejected: fn(String) -> Nil,
+  secrets: List(String),
+  logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
+) -> Result(Handle, StartError) {
+  start_with_control_and_managed_auth_rejection(
     effective,
     managed_launch,
     event_hub,
@@ -59,6 +78,7 @@ pub fn start(
         "ui websocket query bridge is unavailable",
       ))
     },
+    managed_auth_rejected,
     secrets,
     logger,
   )
@@ -73,6 +93,32 @@ pub fn start_with_control(
   dispatch_paused: fn(Int) -> Result(Bool, Nil),
   execute_query: fn(query_types.QueryRequest, Int) ->
     Result(query_types.QueryResponse, query_types.QueryError),
+  secrets: List(String),
+  logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
+) -> Result(Handle, StartError) {
+  start_with_control_and_managed_auth_rejection(
+    effective,
+    managed_launch,
+    event_hub,
+    apply_command,
+    dispatch_paused,
+    execute_query,
+    fn(_) { Nil },
+    secrets,
+    logger,
+  )
+}
+
+pub fn start_with_control_and_managed_auth_rejection(
+  effective: config_types.EffectiveConfig,
+  managed_launch: Option(managed_launch_grant.Grant),
+  event_hub: process.Subject(hub.Message),
+  apply_command: fn(command.OperatorCommand, Int) ->
+    Result(command.CommandResult, Nil),
+  dispatch_paused: fn(Int) -> Result(Bool, Nil),
+  execute_query: fn(query_types.QueryRequest, Int) ->
+    Result(query_types.QueryResponse, query_types.QueryError),
+  managed_auth_rejected: fn(String) -> Nil,
   secrets: List(String),
   logger: fn(String, String, List(log.Field), List(String)) -> Result(Nil, Nil),
 ) -> Result(Handle, StartError) {
@@ -110,6 +156,7 @@ pub fn start_with_control(
       },
       apply_command: apply_command,
       execute_query: execute_query,
+      managed_auth_rejected: managed_auth_rejected,
       logger: logger,
     )
   case ui_websocket_client.start(settings, dependencies) {
@@ -173,6 +220,7 @@ fn build_durable_settings(
             managed_launch_context: None,
           ),
           credential: stored.secret,
+          managed_launch_auth: None,
           heartbeat_interval_ms: heartbeat_interval_ms,
           state_interval_ms: state_interval_ms,
           retry_initial_ms: retry_initial_ms,
@@ -204,34 +252,37 @@ fn build_managed_launch_settings(
   ) = managed_launch_runtime_settings(effective, grant)
   let capabilities =
     effective_managed_launch_capabilities(grant, command_bridge_enabled)
-  Ok(
-    ui_websocket_client.Settings(
-      server_url: grant.endpoint.base_url,
-      websocket_url: grant.endpoint.websocket_url,
-      daemon_id: identity.daemon_id,
-      boot_id: identity.boot_id,
-      runtime_metadata: ui_protocol.RuntimeMetadata(
-        host: local_hostname(),
-        scherzo_version: version.string(),
-        daemon_label: daemon_label,
-        agent_slot_capacity: effective.agent.max_concurrent_agents,
-        managed_launch_context: Some(ui_protocol.ManagedLaunchContext(
-          launch_id: grant.launch_id,
-          capabilities: capabilities,
-        )),
-      ),
-      credential: grant.credential,
-      heartbeat_interval_ms: heartbeat_interval_ms,
-      state_interval_ms: state_interval_ms,
-      retry_initial_ms: retry_initial_ms,
-      retry_max_ms: retry_max_ms,
-      connect_timeout_ms: 1000,
-      command_timeout_ms: effective.control.command_timeout_ms,
-      query_timeout_ms: effective.control.command_timeout_ms,
-      command_bridge_enabled: command_bridge_enabled,
-      redaction_secrets: [grant.credential, ..secrets],
+  Ok(ui_websocket_client.Settings(
+    server_url: grant.endpoint.base_url,
+    websocket_url: grant.endpoint.websocket_url,
+    daemon_id: identity.daemon_id,
+    boot_id: identity.boot_id,
+    runtime_metadata: ui_protocol.RuntimeMetadata(
+      host: local_hostname(),
+      scherzo_version: version.string(),
+      daemon_label: daemon_label,
+      agent_slot_capacity: effective.agent.max_concurrent_agents,
+      managed_launch_context: Some(ui_protocol.ManagedLaunchContext(
+        launch_id: grant.launch_id,
+        capabilities: capabilities,
+      )),
     ),
-  )
+    credential: "",
+    managed_launch_auth: Some(ui_managed_auth.ManagedLaunchAuth(
+      launch_credential: Some(grant.credential),
+      launch_expires_at_ms: grant.expires_at_ms,
+      runtime_credential: None,
+    )),
+    heartbeat_interval_ms: heartbeat_interval_ms,
+    state_interval_ms: state_interval_ms,
+    retry_initial_ms: retry_initial_ms,
+    retry_max_ms: retry_max_ms,
+    connect_timeout_ms: 1000,
+    command_timeout_ms: effective.control.command_timeout_ms,
+    query_timeout_ms: effective.control.command_timeout_ms,
+    command_bridge_enabled: command_bridge_enabled,
+    redaction_secrets: secrets,
+  ))
 }
 
 fn managed_launch_runtime_settings(

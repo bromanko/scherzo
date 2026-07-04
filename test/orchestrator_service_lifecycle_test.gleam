@@ -4,6 +4,7 @@ import gleam/string
 import scherzo/instance_lock
 import scherzo/lifecycle
 import scherzo/log
+import scherzo/managed_launch/status as managed_launch_status
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/service
 import scherzo/path
@@ -186,6 +187,70 @@ pub fn start_daemon_cleans_signal_and_releases_lock_when_daemon_start_fails_test
   instance_lock.release(lock)
 }
 
+pub fn managed_launch_auth_rejection_writes_status_and_stops_service_test() {
+  let dir = "test/tmp/service-lifecycle-managed-auth-rejected"
+  let #(workflow_path, root) = write_workflow(dir)
+  let grant_path = dir <> "/grant.json"
+  let status_path = dir <> "/status.json"
+  let assert Ok(Nil) = simplifile.write(grant_path, managed_launch_grant_json())
+  let assert Ok(Nil) = simplifile.set_permissions_octal(dir, 0o700)
+  let assert Ok(Nil) = simplifile.set_permissions_octal(grant_path, 0o600)
+
+  let log_subject = process.new_subject()
+  let ready = process.new_subject()
+  let cleanup_subject = process.new_subject()
+  let result_subject = process.new_subject()
+  let remote_ready = process.new_subject()
+  let rejection_barrier = test_async.new_barrier()
+  let daemon_deps =
+    daemon.RuntimeDependencies(
+      ..no_control_dependencies(log_subject),
+      start_remote_client: fn(_, _, _, _, managed_auth_rejected, _, _) {
+        process.send(remote_ready, Nil)
+        test_async.block_until_released(rejection_barrier)
+        managed_auth_rejected(
+          "managed launch credential is unavailable or rejected; Core will exit for supervised relaunch",
+        )
+        Error(daemon.StartupError("managed_auth_rejected", "stopping"))
+      },
+    )
+  let deps =
+    lifecycle_dependencies(
+      daemon_deps,
+      fake_install(ready, cleanup_subject),
+      1000,
+      log_subject,
+    )
+
+  let _pid =
+    process.spawn_unlinked(fn() {
+      let result =
+        service.start_daemon_with_lifecycle(
+          service.DaemonStartOptions(
+            Some(workflow_path),
+            Some(service.ManagedLaunchFiles(grant_path, status_path)),
+          ),
+          deps,
+        )
+      process.send(result_subject, result)
+    })
+
+  let assert Ok(_) = process.receive(ready, within: 1000)
+  let assert Ok(Nil) = process.receive(remote_ready, within: 5000)
+  test_async.release_barrier(rejection_barrier)
+
+  let assert Ok(Ok(Nil)) = process.receive(result_subject, within: 5000)
+  assert process.receive(cleanup_subject, within: 1000) == Ok("cleanup")
+  let assert Ok(contents) = simplifile.read(status_path)
+  let assert Ok(saved) = managed_launch_status.decode_string(contents)
+  assert saved.phase == "runtime"
+  assert saved.ok == False
+  assert saved.code == "managed_daemon_credential_rejected"
+  assert !string.contains(contents, "launch_secret_1")
+  let assert Ok(lock) = instance_lock.acquire(root)
+  instance_lock.release(lock)
+}
+
 pub fn graceful_service_stop_removes_control_file_and_releases_lock_test() {
   let #(workflow_path, root) = write_workflow("test/tmp/service-lifecycle-stop")
   let log_subject = process.new_subject()
@@ -265,6 +330,10 @@ pub fn daemon_shutdown_timeout_returns_error_and_releases_lock_test() {
   assert wait_for_log(log_subject, "daemon_shutdown_timeout", 20)
   let assert Ok(lock) = instance_lock.acquire(root)
   instance_lock.release(lock)
+}
+
+fn managed_launch_grant_json() -> String {
+  "{\"version\":1,\"launchId\":\"launch-123\",\"endpoint\":\"https://ui.example.test\",\"credential\":\"launch_secret_1\",\"capabilities\":[\"state\"],\"commandBridgeEnabled\":false,\"expiresAt\":\"2999-01-01T00:00:00Z\"}"
 }
 
 fn empty_tracker() -> tracker.Client {
