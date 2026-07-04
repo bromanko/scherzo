@@ -8,6 +8,8 @@ import scherzo/workflow_identity
 // values rather than real wall-clock schedule boundaries.
 const max_persisted_due_lag_ms = 2_592_000_000
 
+pub const default_quarantine_after_failures = 3
+
 pub type ScheduledRunContext {
   ScheduledRunContext(
     job_id: String,

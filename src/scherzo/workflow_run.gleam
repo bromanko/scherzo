@@ -493,6 +493,27 @@ pub fn execute_scheduled(
   )
 }
 
+pub fn execute_scheduled_with_resume(
+  scheduled: schedule_core.ScheduledRunContext,
+  dag: workflow_dag.WorkflowDag,
+  orchestrator: config_types.OrchestratorConfig,
+  tracker_client: tracker.Client,
+  secrets: List(String),
+  dependencies: Dependencies,
+  resume: ResumeState,
+) -> Result(WorkflowRunSuccess, WorkflowRunFailure) {
+  execute_with_resume(
+    scheduled_placeholder_issue(scheduled),
+    dag,
+    orchestrator,
+    tracker_client,
+    secrets,
+    scheduled.run_id,
+    scheduled_dependencies(scheduled, dependencies),
+    resume,
+  )
+}
+
 pub fn execute_with_resume(
   issue: tracker_issue.Issue,
   dag: workflow_dag.WorkflowDag,

@@ -470,7 +470,7 @@ fn print_scheduled_statuses(
           <> "  "
           <> status.workflow_id
           <> "  "
-          <> scheduled_state_to_string(status.state)
+          <> scheduled_status_summary(status)
           <> "  "
           <> optional_ms(status.last_success_at_ms)
           <> "  "
@@ -491,7 +491,7 @@ fn print_scheduled_history(
 ) -> Nil {
   output_line("job: " <> status.job_id)
   output_line("workflow: " <> status.workflow_id)
-  output_line("status: " <> scheduled_state_to_string(status.state))
+  output_line("status: " <> scheduled_status_summary(status))
   output_line("last_due_at: " <> optional_ms(status.last_due_at_ms))
   output_line("last_success_at: " <> optional_ms(status.last_success_at_ms))
   output_line(
@@ -504,6 +504,14 @@ fn print_scheduled_history(
   output_line(
     "last_failure_reason: " <> optional_string(status.last_failure_reason),
   )
+  output_line(
+    "consecutive_failure_count: "
+    <> int.to_string(status.consecutive_failure_count),
+  )
+  output_line(
+    "quarantine_reason: " <> optional_string(status.quarantine_reason),
+  )
+  output_line("quarantined_at_ms: " <> optional_ms(status.quarantined_at_ms))
   output_line(
     "skipped_overlap_count: " <> int.to_string(status.skipped_overlap_count),
   )
@@ -572,6 +580,9 @@ fn scheduled_status_to_json(
     #("failure_dedupe_key", optional_string_json(status.failure_dedupe_key)),
     #("report_retry", scheduled_report_retry_to_json(status.report_retry)),
     #("recent_run_ids", json.array(status.recent_run_ids, of: json.string)),
+    #("consecutive_failure_count", json.int(status.consecutive_failure_count)),
+    #("quarantine_reason", optional_string_json(status.quarantine_reason)),
+    #("quarantined_at_ms", optional_int_json(status.quarantined_at_ms)),
   ])
 }
 
@@ -619,6 +630,14 @@ fn scheduled_skipped_total(status: projection.ScheduledJobStatus) -> Int {
   + status.skipped_capacity_count
 }
 
+fn scheduled_status_summary(status: projection.ScheduledJobStatus) -> String {
+  case status.state {
+    projection.ScheduledQuarantined ->
+      "schedule quarantined: " <> optional_string(status.quarantine_reason)
+    _ -> scheduled_state_to_string(status.state)
+  }
+}
+
 fn scheduled_state_to_string(state: projection.ScheduledRunState) -> String {
   case state {
     projection.ScheduledIdle -> "idle"
@@ -630,6 +649,7 @@ fn scheduled_state_to_string(state: projection.ScheduledRunState) -> String {
     projection.ScheduledReportRetryWaiting -> "report_retry_waiting"
     projection.ScheduledTerminalSuccess -> "terminal_success"
     projection.ScheduledTerminalFailure -> "terminal_failure"
+    projection.ScheduledQuarantined -> "quarantined"
   }
 }
 

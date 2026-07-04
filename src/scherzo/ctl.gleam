@@ -498,6 +498,11 @@ fn build_command(
         first_positional(parsed, parsed.usage),
       ))
     command_registry.SchedulesRunKey -> build_schedules_run_command(parsed)
+    command_registry.SchedulesReenableKey ->
+      Ok(operator_command(
+        parsed,
+        control_command.ReenableSchedule(first_positional(parsed, parsed.usage)),
+      ))
     command_registry.WorkstreamKey ->
       case
         ctl_workstream.parse(

@@ -1262,6 +1262,19 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "ScheduledJobQuarantineReleased",
+      "scheduled_job_quarantine_released",
+      record.with_id(
+        "record-scheduled-job-quarantine-released",
+        1036,
+        record.ScheduledJobQuarantineReleased(
+          job_id: "nightly-repair",
+          reason: "operator",
+          released_at_ms: 20_100,
+        ),
+      ),
+    ),
+    LedgerExample(
       "OutboxPending",
       "outbox_pending",
       record.with_id(
@@ -1731,6 +1744,14 @@ fn request_examples() -> List(RequestExample) {
       protocol.RunScheduleNow("req-schedule-now", "secret", "nightly-repair"),
     ),
     RequestExample(
+      "ReenableSchedule",
+      protocol.ReenableSchedule(
+        "req-schedule-reenable",
+        "secret",
+        "nightly-repair",
+      ),
+    ),
+    RequestExample(
       "WorkItemAction",
       protocol.WorkItemAction(
         "req-work-item-action",
@@ -2040,6 +2061,9 @@ fn projection_fixture_projection() -> projection.Projection {
             generation: 1,
           )),
           recent_run_ids: ["scheduled-run-1", "scheduled-run-success"],
+          consecutive_failure_count: 1,
+          quarantine_reason: None,
+          quarantined_at_ms: None,
         ),
       ),
     ]),

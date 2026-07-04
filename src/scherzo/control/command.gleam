@@ -65,6 +65,7 @@ pub type OperatorCommand {
   PromptSession(session_id: String, message: String)
   RespondUi(session_id: String, request_id: String, response: UiResponse)
   RunScheduleNow(job_id: String)
+  ReenableSchedule(job_id: String)
   WorkItemAction(WorkItemActionRequest)
 }
 
@@ -152,6 +153,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     PromptSession(_, _) -> "prompt"
     RespondUi(_, _, _) -> "respond_ui"
     RunScheduleNow(_) -> "schedule_run_now"
+    ReenableSchedule(_) -> "schedule_reenable"
     WorkItemAction(_) -> "work_item_action"
   }
 }
@@ -174,7 +176,7 @@ pub fn command_target(command: OperatorCommand) -> Option(String) {
     | PromptSession(session_id, _)
     | RespondUi(session_id, _, _) -> Some(session_id)
     CleanupOrphanSteps(run_id, _) -> Some("run:" <> run_id)
-    RunScheduleNow(job_id) -> Some(job_id)
+    RunScheduleNow(job_id) | ReenableSchedule(job_id) -> Some(job_id)
     WorkItemAction(request) ->
       Some(request.target_kind <> ":" <> request.target_id)
   }
@@ -341,6 +343,12 @@ pub fn operator_command_to_json(
       [
         #("job_id", json.string(job_id)),
         ..base_command_entries("schedule_run_now")
+      ]
+      |> json.object
+    ReenableSchedule(job_id) ->
+      [
+        #("job_id", json.string(job_id)),
+        ..base_command_entries("schedule_reenable")
       ]
       |> json.object
     WorkItemAction(request) ->
@@ -786,6 +794,8 @@ fn operator_command_from_fields(
         }
         "schedule_run_now" ->
           required_job_id(fields) |> result.map(RunScheduleNow)
+        "schedule_reenable" ->
+          required_job_id(fields) |> result.map(ReenableSchedule)
         "work_item_action" ->
           required_work_item_action_request(fields)
           |> result.map(WorkItemAction)
