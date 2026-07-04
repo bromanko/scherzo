@@ -38,6 +38,7 @@ workspace:
       timeout: 60s
       env:
         SCHERZO_GITHUB_REPO: scherzo-systems/scherzo
+        SCHERZO_CONFLICT_GIT_REMOTE: origin
     origin-sync:
       type: noop
       timeout: 60s

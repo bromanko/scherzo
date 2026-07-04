@@ -67,8 +67,11 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
   assert_contains(run, "--repo \"$SCHERZO_GITHUB_REPO\"")
   assert_contains(run, "--linear-project-slug \"$linear_project_slug\"")
   assert_contains(run, "SCHERZO_CONFLICT_MAX_OPEN_PRS")
-  assert_contains(run, "SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT")
+  assert_contains(run, "SCHERZO_CONFLICT_GIT_REMOTE")
+  assert_contains(run, "--git-remote \"$git_remote\"")
   assert_contains(run, "cd \"$repo_root\"")
+  assert_not_contains(run, "SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT")
+  assert_not_contains(run, "--skip-local-preflight")
   assert_contains(
     run,
     "--workflow-label \"${SCHERZO_CONFLICT_WORKFLOW_LABEL:-workflow:merge-conflict-resolution}\"",
@@ -210,8 +213,10 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   assert_contains(run, "cd \"$repo_root\"")
   assert_contains(run, "SCHERZO_CONFLICT_MAX_OPEN_PRS")
   assert_contains(run, "--max-open-prs \"$max_open_prs\"")
-  assert_contains(run, "SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT")
-  assert_contains(run, "--skip-local-preflight")
+  assert_contains(run, "SCHERZO_CONFLICT_GIT_REMOTE")
+  assert_contains(run, "--git-remote \"$git_remote\"")
+  assert_not_contains(run, "SCHERZO_CONFLICT_ENABLE_LOCAL_PREFLIGHT")
+  assert_not_contains(run, "--skip-local-preflight")
   assert_contains(
     run,
     "--workflow-label \"${SCHERZO_CONFLICT_WORKFLOW_LABEL:-workflow:merge-conflict-resolution}\"",
