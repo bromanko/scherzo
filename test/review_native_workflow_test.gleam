@@ -11,7 +11,13 @@ const submit_structured_output_tool = "submit_review_lane_draft"
 
 const submit_dispositions_tool = "submit_review_finding_dispositions"
 
+const submit_plan_completion_tool = "submit_plan_completion_verdict"
+
 const disposition_provider_schema_path = ".scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json"
+
+const plan_completion_provider_schema_path = ".scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json"
+
+const plan_completion_schema_path = ".scherzo/workflows/schemas/plan-completion-verdict-submission.v1.schema.json"
 
 fn implementation_dag() -> workflow_dag.WorkflowDag {
   let assert Ok(contents) =
@@ -89,6 +95,33 @@ fn assert_disposition_tool_source(
     )
 }
 
+fn assert_plan_completion_tool_source(
+  spec: workflow_dag.StructuredOutputSpec,
+) -> Nil {
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: submit_plan_completion_tool,
+      parameters_schema_path: Some(plan_completion_provider_schema_path),
+    )
+}
+
+fn expected_plan_completion_validators() -> List(
+  workflow_dag.StructuredOutputValidator,
+) {
+  [
+    workflow_dag.JsonSchemaValidator(
+      name: "plan_completion_verdict_submission_provider_shape",
+      path: plan_completion_provider_schema_path,
+      draft: Some("2020-12"),
+    ),
+    workflow_dag.JsonSchemaValidator(
+      name: "plan_completion_verdict_submission_schema",
+      path: plan_completion_schema_path,
+      draft: Some("2020-12"),
+    ),
+  ]
+}
+
 fn expected_disposition_validators() -> List(
   workflow_dag.StructuredOutputValidator,
 ) {
@@ -134,6 +167,25 @@ fn assert_disposition_structured_output(
     ])
   assert_disposition_tool_source(spec)
   assert spec.validators == expected_disposition_validators()
+}
+
+fn assert_plan_completion_structured_output(
+  dag: workflow_dag.WorkflowDag,
+  step_id: String,
+) -> Nil {
+  let spec = lane_spec(dag, step_id)
+  assert spec.artifact_name == "plan_completion_verdict_submission"
+  assert spec.required == True
+  assert spec.schema
+    == workflow_dag.StructuredObjectSchema([
+      "verdict",
+      "blocking_findings",
+      "evidence",
+      "checked_acceptance_criteria",
+      "deferred_manual_verification",
+    ])
+  assert_plan_completion_tool_source(spec)
+  assert spec.validators == expected_plan_completion_validators()
 }
 
 fn assert_lane_workspace_from_main(
@@ -201,8 +253,20 @@ fn valid_review_lane_draft_json() -> String {
   "{\"draft_findings\":[],\"review_notes\":[],\"evidence_requests\":[],\"self_check\":{\"summary\":\"Inspected the diff and found no concrete findings.\"}}"
 }
 
+fn plan_completion_submission_json(
+  verdict: String,
+  blocking_findings_json: String,
+) -> String {
+  "{\"verdict\":\""
+  <> verdict
+  <> "\",\"blocking_findings\":"
+  <> blocking_findings_json
+  <> ",\"evidence\":[\"Required behavior is present.\"],\"checked_acceptance_criteria\":[\"Required work.\"],\"deferred_manual_verification\":[]}"
+}
+
 fn workflow_schema_files() -> List(String) {
   [
+    "plan-completion-verdict-submission.v1.schema.json",
     "review-artifacts.v1.schema.json",
     "review-finding-disposition-input.v1.schema.json",
     "review-lane-draft.v1.schema.json",
@@ -215,6 +279,7 @@ fn workflow_schema_files() -> List(String) {
 
 fn provider_schema_files() -> List(String) {
   [
+    "plan-completion-verdict-submission.v1.schema.json",
     "review-finding-dispositions.v1.schema.json",
     "review-lane-draft.correctness.v1.schema.json",
     "review-lane-draft.test-quality.v1.schema.json",
@@ -520,6 +585,132 @@ pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_te
       prompt,
       "Write `tmp/review-finding-dispositions.v1.json`",
     )
+  })
+}
+
+pub fn execplan_plan_completion_verifiers_use_structured_output_test() {
+  let dag = execplan_implementation_dag()
+  let verifier_steps = [
+    "verify_plan_completion",
+    "verify_plan_completion_after_feedback",
+    "verify_plan_completion_after_late_repair",
+    "verify_plan_completion_after_final_repair",
+    "verify_plan_completion_before_final_validation",
+  ]
+  list.each(verifier_steps, fn(step_id) {
+    assert_plan_completion_structured_output(dag, step_id)
+  })
+
+  let checkpoint_steps = [
+    #("checkpoint_initial_plan_completion_verdict", "verify_plan_completion"),
+    #(
+      "checkpoint_plan_completion_verdict_after_feedback",
+      "verify_plan_completion_after_feedback",
+    ),
+    #(
+      "checkpoint_plan_completion_verdict_after_late_repair",
+      "verify_plan_completion_after_late_repair",
+    ),
+    #(
+      "checkpoint_plan_completion_verdict_after_final_repair",
+      "verify_plan_completion_after_final_repair",
+    ),
+    #(
+      "checkpoint_final_plan_completion_verdict",
+      "verify_plan_completion_before_final_validation",
+    ),
+  ]
+  list.each(checkpoint_steps, fn(pair) {
+    let #(checkpoint_step, verifier_step) = pair
+    let assert Ok(step) = workflow_dag.step_by_id(dag, checkpoint_step)
+    assert step.depends_on == [verifier_step]
+    let run = command_step_run(dag, checkpoint_step)
+    assert_contains(run, "checkpoint-plan-completion-verdict")
+    assert_contains(run, "--submission-step " <> verifier_step)
+  })
+
+  let assert Ok(apply_plan_feedback) =
+    workflow_dag.step_by_id(dag, "apply_plan_completion_feedback")
+  assert apply_plan_feedback.depends_on
+    == ["checkpoint_initial_plan_completion_verdict"]
+  let assert Ok(gate_plan_completion) =
+    workflow_dag.step_by_id(dag, "gate_plan_completion")
+  assert gate_plan_completion.depends_on
+    == ["checkpoint_plan_completion_verdict_after_feedback"]
+  let assert Ok(gate_late) =
+    workflow_dag.step_by_id(dag, "gate_plan_completion_after_late_repair")
+  assert gate_late.depends_on
+    == ["checkpoint_plan_completion_verdict_after_late_repair"]
+  let assert Ok(gate_final_repair) =
+    workflow_dag.step_by_id(dag, "gate_plan_completion_after_final_repair")
+  assert gate_final_repair.depends_on
+    == ["checkpoint_plan_completion_verdict_after_final_repair"]
+}
+
+pub fn plan_completion_structured_output_rejects_inconsistent_verdicts_test() {
+  let spec = lane_spec(execplan_implementation_dag(), "verify_plan_completion")
+  let pass_with_blockers =
+    result_artifact.from_final_response_with_tool_calls(
+      None,
+      False,
+      "review_native_workflow_test",
+      [
+        result_artifact.ToolCallSubmission(
+          name: submit_plan_completion_tool,
+          arguments_json: Some(plan_completion_submission_json(
+            "pass",
+            "[\"Acceptance criterion remains unchecked.\"]",
+          )),
+          status: Some("success"),
+          sibling_count: 1,
+          receipt_json: Some("{\"remote_mutations\":\"none\"}"),
+        ),
+      ],
+    )
+
+  let assert Error(pass_error) = validate_result(spec, pass_with_blockers)
+  assert structured_output.error_code(pass_error)
+    == "structured_output_json_schema_rejected"
+
+  let fail_without_blockers =
+    result_artifact.from_final_response_with_tool_calls(
+      None,
+      False,
+      "review_native_workflow_test",
+      [
+        result_artifact.ToolCallSubmission(
+          name: submit_plan_completion_tool,
+          arguments_json: Some(plan_completion_submission_json("fail", "[]")),
+          status: Some("success"),
+          sibling_count: 1,
+          receipt_json: Some("{\"remote_mutations\":\"none\"}"),
+        ),
+      ],
+    )
+
+  let assert Error(fail_error) = validate_result(spec, fail_without_blockers)
+  assert structured_output.error_code(fail_error)
+    == "structured_output_json_schema_rejected"
+}
+
+pub fn plan_completion_verifier_prompts_do_not_transcribe_machine_context_test() {
+  let prompt_paths = [
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-final-repair.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
+  ]
+  list.each(prompt_paths, fn(path) {
+    let assert Ok(prompt) = simplifile.read(path)
+    assert_contains(prompt, submit_plan_completion_tool)
+    assert_contains(prompt, "Submit only semantic verdict fields")
+    assert_not_contains(prompt, "plan-completion-context")
+    assert_not_contains(prompt, "copy the context values exactly")
+    assert_not_contains(prompt, "PLAN_COMPLETION_BASE_CHANGE_ID")
+    assert_not_contains(prompt, "PLAN_COMPLETION_DIFF_FINGERPRINT")
+    assert_not_contains(prompt, "Write valid JSON")
+    assert_not_contains(prompt, "scherzo-plan-completion-verdict.json` written")
   })
 }
 

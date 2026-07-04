@@ -85,11 +85,13 @@ restore-execplan-artifacts
               run-root canonical state after tests or helper fixtures clobber tmp/.
 plan-completion-context
               Write and print the current ExecPlan implementation patch
-              fingerprint that a plan-completion verifier must copy into its
-              verdict artifact.
-checkpoint-plan-completion-verdict
-              Validate the run-root canonical plan-completion verdict and
-              refresh the best-effort tmp/ compatibility copy.
+              context for diagnostics. Checkpoint/gate commands stamp these
+              values into verdict artifacts; verifiers must not transcribe them.
+checkpoint-plan-completion-verdict [--submission PATH | --submission-step STEP [--submission-artifact ARTIFACT] [--artifact-dir DIR]]
+              Materialize a structured-output plan-completion semantic
+              submission by stamping current workspace context, or validate the
+              existing run-root canonical plan-completion verdict and refresh
+              the best-effort tmp/ compatibility copy.
 plan-brief [--check|--refresh-if-stale]
               Regenerate, check, or refresh the derived ExecPlan brief and JSON
               index recorded in run-root implementation metadata.
@@ -98,10 +100,11 @@ gate-plan-completion [--final]
               is fresh, well-formed, and passing for the current ExecPlan
               implementation patch.
 gate-plan-completion --from-submission [--submission PATH]
-              Read a structured-output plan-completion submission from stdin
-              (or PATH for manual verification), stamp the current workspace
-              plan/change/diff fingerprint fields, write the canonical verdict
-              artifact, and fail only for a fail verdict or workspace mismatch.
+              Read a structured-output plan-completion semantic submission from
+              stdin (or PATH for manual verification), stamp the current
+              workspace plan/change/diff fingerprint fields, write the
+              canonical verdict artifact, and fail only for a fail verdict or
+              workspace mismatch.
 plan-completion-recovery --phase before-late-repair|before-final-repair|after-late-repair|after-final-repair|final --attempt INT --max-attempts INT
               Classify the current plan-completion verdict for bounded recovery,
               write tmp/scherzo-plan-completion-recovery.{json,md}, and either
@@ -2059,6 +2062,16 @@ PLAN_COMPLETION_MACHINE_FIELDS = {
     "changed_files",
     "verdict_path",
 }
+PLAN_COMPLETION_SUBMISSION_FIELDS = {
+    "verdict",
+    "blocking_findings",
+    "evidence",
+    "checked_acceptance_criteria",
+    "deferred_manual_verification",
+}
+PLAN_COMPLETION_SUBMISSION_OPTIONAL_FIELDS = {"schema_version"}
+PLAN_COMPLETION_SUBMISSION_ARTIFACT_NAME = "plan_completion_verdict_submission"
+PLAN_COMPLETION_SUBMISSION_TOOL_NAME = "submit_plan_completion_verdict"
 
 
 def fail_plan_completion_submission(
@@ -2069,7 +2082,56 @@ def fail_plan_completion_submission(
     fail_plan_completion_gate(message, failure_code=failure_code)
 
 
-def read_plan_completion_submission(submission_path: str | None) -> dict[str, Any]:
+def unwrap_plan_completion_structured_artifact(
+    value: dict[str, Any],
+    *,
+    expected_step_id: str | None = None,
+    expected_artifact_name: str | None = None,
+    require_structured_output: bool = False,
+) -> dict[str, Any]:
+    if value.get("artifact_type") != "structured_output":
+        if require_structured_output:
+            fail_plan_completion_submission(
+                "retained plan-completion submission must be a structured_output artifact "
+                f"from {PLAN_COMPLETION_SUBMISSION_TOOL_NAME}",
+            )
+        return value
+
+    wrapper_errors: list[str] = []
+    if value.get("schema_version") != 1:
+        wrapper_errors.append("schema_version must be 1")
+    if value.get("format") != "json":
+        wrapper_errors.append("format must be json")
+    if expected_step_id is not None and value.get("step_id") != expected_step_id:
+        wrapper_errors.append(f"step_id must be {expected_step_id}")
+    if expected_artifact_name is not None and value.get("artifact_name") != expected_artifact_name:
+        wrapper_errors.append(f"artifact_name must be {expected_artifact_name}")
+    if value.get("source_type") != "pi_tool_call":
+        wrapper_errors.append("source_type must be pi_tool_call")
+    if value.get("source_tool_name") != PLAN_COMPLETION_SUBMISSION_TOOL_NAME:
+        wrapper_errors.append(
+            f"source_tool_name must be {PLAN_COMPLETION_SUBMISSION_TOOL_NAME}"
+        )
+
+    payload = value.get("payload")
+    if not isinstance(payload, dict):
+        wrapper_errors.append("payload must be a JSON object")
+
+    if wrapper_errors:
+        fail_plan_completion_submission(
+            "invalid structured-output artifact for plan-completion verdict submission: "
+            + "; ".join(wrapper_errors),
+        )
+    return payload
+
+
+def read_plan_completion_submission(
+    submission_path: str | None,
+    *,
+    expected_step_id: str | None = None,
+    expected_artifact_name: str | None = None,
+    require_structured_output: bool = False,
+) -> dict[str, Any]:
     if submission_path:
         label = submission_path
         try:
@@ -2097,7 +2159,12 @@ def read_plan_completion_submission(submission_path: str | None) -> dict[str, An
         fail_plan_completion_submission(
             f"plan-completion structured-output submission on {label} must be a JSON object",
         )
-    return value
+    return unwrap_plan_completion_structured_artifact(
+        value,
+        expected_step_id=expected_step_id,
+        expected_artifact_name=expected_artifact_name,
+        require_structured_output=require_structured_output,
+    )
 
 
 def submission_string_list_field(value: dict[str, Any], key: str) -> list[str]:
@@ -2146,9 +2213,10 @@ def submission_deferred_manual_verification_field(
 def validate_plan_completion_submission_shape(
     submission: dict[str, Any],
 ) -> dict[str, Any]:
-    if submission.get("schema_version") != 1:
+    schema_version = submission.get("schema_version")
+    if schema_version is not None and schema_version != 1:
         fail_plan_completion_submission(
-            "plan-completion submission must set schema_version to 1",
+            "plan-completion submission schema_version, when present, must be 1",
         )
     raw_verdict = submission.get("verdict")
     if raw_verdict not in {"pass", "fail"}:
@@ -2163,12 +2231,33 @@ def validate_plan_completion_submission_shape(
             "plan-completion submission must not include workspace-stamped fields: "
             + ", ".join(machine_fields),
         )
+    unexpected_fields = sorted(
+        field
+        for field in submission
+        if field
+        not in PLAN_COMPLETION_SUBMISSION_FIELDS
+        | PLAN_COMPLETION_SUBMISSION_OPTIONAL_FIELDS
+    )
+    if unexpected_fields:
+        fail_plan_completion_submission(
+            "plan-completion submission must not include unexpected fields: "
+            + ", ".join(unexpected_fields),
+        )
+    blocking_findings = submission_string_list_field(
+        submission,
+        "blocking_findings",
+    )
+    if raw_verdict == "pass" and blocking_findings:
+        fail_plan_completion_submission(
+            "plan-completion submission pass verdict must not include blocking_findings",
+        )
+    if raw_verdict == "fail" and not blocking_findings:
+        fail_plan_completion_submission(
+            "plan-completion submission fail verdict must include at least one blocking_finding",
+        )
     return {
         "verdict": raw_verdict,
-        "blocking_findings": submission_string_list_field(
-            submission,
-            "blocking_findings",
-        ),
+        "blocking_findings": blocking_findings,
         "evidence": submission_string_list_field(submission, "evidence"),
         "checked_acceptance_criteria": submission_string_list_field(
             submission,
@@ -2251,7 +2340,7 @@ def load_plan_completion_verdict() -> dict[str, Any]:
         source = PLAN_COMPLETION_VERDICT_PATH
     if not source.exists():
         fail_plan_completion_gate(
-            f"missing {plan_completion_verdict_display_path()}; the plan-completion verifier must write this artifact before review/publish",
+            f"missing {plan_completion_verdict_display_path()}; the plan-completion checkpoint step must stamp this artifact before review/publish",
             failure_code="plan_completion_verdict_missing",
         )
     try:
@@ -2286,6 +2375,16 @@ def validate_plan_completion_verdict_shape(verdict: dict[str, Any]) -> dict[str,
             failure_code="plan_completion_verdict_malformed",
         )
     blocking_findings = string_list_field(verdict, "blocking_findings")
+    if raw_verdict == "pass" and blocking_findings:
+        fail_plan_completion_gate(
+            f"{plan_completion_verdict_display_path()} pass verdict must not include blocking_findings",
+            failure_code="plan_completion_verdict_malformed",
+        )
+    if raw_verdict == "fail" and not blocking_findings:
+        fail_plan_completion_gate(
+            f"{plan_completion_verdict_display_path()} fail verdict must include at least one blocking_finding",
+            failure_code="plan_completion_verdict_malformed",
+        )
     evidence = string_list_field(verdict, "evidence")
     checked_acceptance_criteria = string_list_field(
         verdict,
@@ -2378,10 +2477,334 @@ def restore_plan_completion_verdict() -> str:
     return "restored"
 
 
-def checkpoint_plan_completion_verdict_command(args: list[str]) -> None:
-    if args:
+def maybe_load_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def attempt_index_from_name(name: str) -> int | None:
+    match = re.fullmatch(r"attempt-(\d+)(?:\.json)?", name)
+    if match is None:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def resolve_path_within(path: Path, root: Path) -> Path | None:
+    try:
+        root_resolved = root.resolve(strict=True)
+        path_resolved = path.resolve(strict=True)
+        path_resolved.relative_to(root_resolved)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return path_resolved
+
+
+def resolve_file_within(path: Path, root: Path) -> Path | None:
+    resolved = resolve_path_within(path, root)
+    if resolved is None or not resolved.is_file():
+        return None
+    return resolved
+
+
+def structured_output_candidate_paths(path_text: str, artifact_dir: Path) -> list[Path]:
+    candidate = Path(path_text)
+    if candidate.is_absolute():
+        return [candidate]
+    return [artifact_dir / candidate, candidate]
+
+
+def sha256_file(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def structured_output_sha_matches(path: Path, structured_output: dict[str, Any]) -> bool:
+    expected_sha = structured_output.get("sha256")
+    if not isinstance(expected_sha, str) or not expected_sha:
+        return True
+    if re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha) is None:
+        return False
+    actual_sha = sha256_file(path)
+    return actual_sha is not None and actual_sha.lower() == expected_sha.lower()
+
+
+def structured_output_ref_matches(
+    path: Path,
+    artifact_dir: Path,
+    structured_output: dict[str, Any],
+) -> bool:
+    expected_ref = structured_output.get("ref")
+    if not isinstance(expected_ref, str) or not expected_ref:
+        return True
+    try:
+        artifact_dir_resolved = artifact_dir.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    normalized_ref = expected_ref.lstrip("./")
+    candidate_roots = [artifact_dir_resolved, artifact_dir_resolved.parent]
+    if artifact_dir_resolved.parent.name == "runs":
+        candidate_roots.append(artifact_dir_resolved.parent.parent)
+    for root in candidate_roots:
+        try:
+            if path.relative_to(root).as_posix() == normalized_ref:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def step_artifact_payload(value: dict[str, Any]) -> dict[str, Any]:
+    artifact = value.get("artifact")
+    return artifact if isinstance(artifact, dict) else value
+
+
+def expected_plan_completion_submission_path(
+    *,
+    artifact_dir: Path,
+    step_id: str,
+    artifact_name: str,
+    attempt_index: int,
+) -> Path:
+    return (
+        artifact_dir
+        / step_id
+        / f"attempt-{attempt_index}"
+        / "structured"
+        / f"{artifact_name}.json"
+    )
+
+
+def plan_completion_step_metadata_paths(
+    artifact_dir: Path,
+    step_id: str,
+) -> list[tuple[int, Path]]:
+    if not artifact_dir.exists() or not artifact_dir.is_dir():
+        return []
+    candidates: list[tuple[int, Path]] = []
+    try:
+        step_dirs = list(artifact_dir.iterdir())
+    except OSError:
+        return []
+    for step_dir in step_dirs:
+        if step_dir.name != step_id and not step_dir.name.startswith(step_id + "-"):
+            continue
+        resolved_step_dir = resolve_path_within(step_dir, artifact_dir)
+        if resolved_step_dir is None or not resolved_step_dir.is_dir():
+            continue
+        try:
+            attempt_files = list(resolved_step_dir.glob("attempt-*.json"))
+        except OSError:
+            continue
+        for attempt_file in attempt_files:
+            attempt_index = attempt_index_from_name(attempt_file.name)
+            resolved_attempt_file = resolve_file_within(attempt_file, artifact_dir)
+            if attempt_index is not None and resolved_attempt_file is not None:
+                candidates.append((attempt_index, resolved_attempt_file))
+    return sorted(candidates, key=lambda item: item[0], reverse=True)
+
+
+def structured_output_path_from_step_metadata(
+    metadata_path: Path,
+    *,
+    step_id: str,
+    artifact_name: str,
+    artifact_dir: Path,
+    attempt_index: int | None,
+) -> Path | None:
+    metadata = maybe_load_json_object(metadata_path)
+    if metadata is None:
+        return None
+    artifact = step_artifact_payload(metadata)
+    if artifact.get("status") != "success" and artifact.get("state") != "succeeded":
+        return None
+    structured_output = artifact.get("structured_output")
+    if not isinstance(structured_output, dict):
+        return None
+    if structured_output.get("status") != "valid":
+        return None
+    recorded_artifact_name = structured_output.get("artifact_name")
+    if isinstance(recorded_artifact_name, str) and recorded_artifact_name != artifact_name:
+        return None
+    path_text = structured_output.get("path")
+    if not isinstance(path_text, str) or not path_text:
+        return None
+
+    expected_path = None
+    if attempt_index is not None:
+        expected_path = resolve_file_within(
+            expected_plan_completion_submission_path(
+                artifact_dir=artifact_dir,
+                step_id=step_id,
+                artifact_name=artifact_name,
+                attempt_index=attempt_index,
+            ),
+            artifact_dir,
+        )
+        if expected_path is None:
+            return None
+
+    for candidate in structured_output_candidate_paths(path_text, artifact_dir):
+        resolved_candidate = resolve_file_within(candidate, artifact_dir)
+        if resolved_candidate is None:
+            continue
+        if expected_path is not None and resolved_candidate != expected_path:
+            continue
+        if structured_output_ref_matches(
+            resolved_candidate,
+            artifact_dir,
+            structured_output,
+        ) and structured_output_sha_matches(resolved_candidate, structured_output):
+            return resolved_candidate
+    return None
+
+
+def structured_plan_completion_submission_candidates(
+    *,
+    artifact_dir: Path,
+    step_id: str,
+    artifact_name: str,
+) -> list[tuple[int, Path]]:
+    step_dir = artifact_dir / step_id
+    resolved_step_dir = resolve_path_within(step_dir, artifact_dir)
+    if resolved_step_dir is None or not resolved_step_dir.is_dir():
+        return []
+    candidates: list[tuple[int, Path]] = []
+    try:
+        attempt_dirs = list(resolved_step_dir.iterdir())
+    except OSError:
+        return []
+    for attempt_dir in attempt_dirs:
+        if not attempt_dir.is_dir():
+            continue
+        attempt_index = attempt_index_from_name(attempt_dir.name)
+        if attempt_index is None:
+            continue
+        candidate = attempt_dir / "structured" / f"{artifact_name}.json"
+        resolved_candidate = resolve_file_within(candidate, artifact_dir)
+        if resolved_candidate is not None:
+            candidates.append((attempt_index, resolved_candidate))
+    return sorted(candidates, key=lambda item: item[0], reverse=True)
+
+
+def default_run_artifact_dir() -> Path | None:
+    explicit = os.environ.get("SCHERZO_RUN_ARTIFACT_DIR", "").strip()
+    if explicit:
+        return Path(explicit)
+    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
+    run_id = os.environ.get("SCHERZO_RUN_ID", "").strip()
+    if not run_root or not run_id:
+        return None
+    run_root_path = Path(run_root)
+    candidates = [
+        run_root_path / ".scherzo-state" / "artifacts" / "runs" / run_id,
+        run_root_path.parent.parent.parent / ".scherzo-state" / "artifacts" / "runs" / run_id,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def resolve_plan_completion_submission_path(
+    *,
+    submission_path: str | None,
+    submission_step: str | None,
+    artifact_name: str,
+    artifact_dir: str | None,
+) -> Path:
+    if submission_path is not None:
+        path = Path(submission_path)
+        if path.is_file():
+            return path
+
+    resolved_artifact_dir: Path | None = None
+    if artifact_dir is not None:
+        resolved_artifact_dir = Path(artifact_dir)
+    elif submission_step is not None:
+        resolved_artifact_dir = default_run_artifact_dir()
+
+    if submission_step is not None and resolved_artifact_dir is not None:
+        for attempt_index, metadata_path in plan_completion_step_metadata_paths(
+            resolved_artifact_dir,
+            submission_step,
+        ):
+            resolved = structured_output_path_from_step_metadata(
+                metadata_path,
+                step_id=submission_step,
+                artifact_name=artifact_name,
+                artifact_dir=resolved_artifact_dir,
+                attempt_index=attempt_index,
+            )
+            if resolved is not None:
+                return resolved
+        candidates = structured_plan_completion_submission_candidates(
+            artifact_dir=resolved_artifact_dir,
+            step_id=submission_step,
+            artifact_name=artifact_name,
+        )
+        if candidates:
+            return candidates[0][1]
+
+    if submission_path is not None:
+        return Path(submission_path)
+
+    location = str(resolved_artifact_dir) if resolved_artifact_dir is not None else "<missing artifact dir>"
+    fail_plan_completion_submission(
+        "could not resolve retained structured-output plan-completion submission "
+        f"for step {submission_step!r} artifact {artifact_name!r} under {location}",
+        failure_code="plan_completion_submission_missing",
+    )
+
+
+def parse_checkpoint_plan_completion_verdict_args(
+    args: list[str],
+) -> tuple[str | None, str | None, str, str | None]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--submission")
+    parser.add_argument("--submission-step")
+    parser.add_argument(
+        "--submission-artifact",
+        default=PLAN_COMPLETION_SUBMISSION_ARTIFACT_NAME,
+    )
+    parser.add_argument("--artifact-dir")
+    try:
+        parsed = parser.parse_args(args)
+    except SystemExit:
         usage()
         sys.exit(2)
+    submission_path = parsed.submission
+    submission_step = parsed.submission_step
+    artifact_name = str(parsed.submission_artifact or PLAN_COMPLETION_SUBMISSION_ARTIFACT_NAME)
+    artifact_dir = parsed.artifact_dir
+    if submission_path and (submission_step or artifact_dir):
+        usage()
+        sys.exit(2)
+    if artifact_dir and not submission_step:
+        usage()
+        sys.exit(2)
+    if not submission_path and not submission_step:
+        if artifact_name != PLAN_COMPLETION_SUBMISSION_ARTIFACT_NAME or artifact_dir:
+            usage()
+            sys.exit(2)
+    return submission_path, submission_step, artifact_name, artifact_dir
+
+
+def checkpoint_plan_completion_verdict_command(args: list[str]) -> None:
+    submission_path, submission_step, artifact_name, artifact_dir = (
+        parse_checkpoint_plan_completion_verdict_args(args)
+    )
     canonical_path = canonical_plan_completion_verdict_path()
     if canonical_path is None:
         fail(
@@ -2389,6 +2812,47 @@ def checkpoint_plan_completion_verdict_command(args: list[str]) -> None:
             failure_code="plan_completion_checkpoint_unavailable",
         )
     metadata = load_implementation_metadata()
+
+    if submission_path is not None or submission_step is not None:
+        assert_plan_completion_validator_workspace()
+        resolved_submission_path = resolve_plan_completion_submission_path(
+            submission_path=submission_path,
+            submission_step=submission_step,
+            artifact_name=artifact_name,
+            artifact_dir=artifact_dir,
+        )
+        submission = validate_plan_completion_submission_shape(
+            read_plan_completion_submission(
+                str(resolved_submission_path),
+                expected_step_id=submission_step,
+                expected_artifact_name=(
+                    artifact_name if submission_step is not None else None
+                ),
+                require_structured_output=submission_step is not None,
+            ),
+        )
+        if not workspace_driver_available():
+            require_command("jj")
+        current = plan_completion_snapshot(metadata)
+        stamped = stamped_plan_completion_verdict(submission, current)
+        verdict_path = write_plan_completion_validator_verdict(stamped)
+        assert_plan_completion_workspace_stable(
+            current,
+            plan_completion_snapshot(metadata),
+        )
+        verdict = validate_plan_completion_verdict_shape(stamped)
+        print("PLAN_COMPLETION_VERDICT_CHECKPOINT=written")
+        print("PLAN_COMPLETION_VERDICT_SOURCE=structured_output")
+        print(f"PLAN_COMPLETION_VERDICT_SUBMISSION_PATH={display_path(resolved_submission_path)}")
+        print(f"PLAN_COMPLETION_VERDICT={verdict['verdict']}")
+        print(f"PLAN_COMPLETION_VERDICT_PATH={display_path(verdict_path)}")
+        print(f"PLAN_COMPLETION_CANONICAL_VERDICT_PATH={display_path(canonical_path)}")
+        print(
+            "PLAN_COMPLETION_DIFF_FINGERPRINT="
+            + str(current["verified_diff_fingerprint"])
+        )
+        return
+
     verdict, current = current_plan_completion_verdict(
         metadata,
         gate_label="plan-completion verdict checkpoint",
@@ -2397,6 +2861,7 @@ def checkpoint_plan_completion_verdict_command(args: list[str]) -> None:
     write_json(canonical_path, load_plan_completion_verdict())
     copy_best_effort(canonical_path, PLAN_COMPLETION_VERDICT_PATH)
     print("PLAN_COMPLETION_VERDICT_CHECKPOINT=written")
+    print("PLAN_COMPLETION_VERDICT_SOURCE=existing_artifact")
     print(f"PLAN_COMPLETION_VERDICT={verdict['verdict']}")
     print(f"PLAN_COMPLETION_VERDICT_PATH={plan_completion_verdict_display_path()}")
     print(f"PLAN_COMPLETION_CANONICAL_VERDICT_PATH={display_path(canonical_path)}")
