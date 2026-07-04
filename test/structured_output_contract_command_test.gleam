@@ -103,3 +103,36 @@ pub fn structured_output_contract_check_workflow_reports_prompt_mismatch_test() 
     "structured_output_prompt_requests_final_response_json",
   )
 }
+
+pub fn structured_output_contract_check_workflow_rejects_incomplete_finalize_lanes_test() {
+  let dir = "test/tmp/structured-output-contract/incomplete-finalize-lanes"
+  test_helpers.reset_dir(dir)
+  let workflow_path = dir <> "/workflow.yaml"
+  let prompt_path = dir <> "/prompt.md"
+  let assert Ok(Nil) =
+    simplifile.write(
+      prompt_path,
+      "Call submit_review_lane_draft with the review lane draft arguments.\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_path,
+      "version: 1\nid: incomplete-finalize-lanes\nsteps:\n  - id: lane_correctness\n    kind: agent\n    prompt: prompt.md\n    structured_output:\n      artifact_name: correctness_submission\n      required: true\n      format: json\n      source:\n        type: pi_tool_call\n        tool_name: submit_review_lane_draft\n        parameters_schema_path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n      schema:\n        type: object\n        required: [draft_findings, review_notes, evidence_requests, self_check]\n      validators:\n        - name: provider_schema\n          type: json_schema\n          path: .scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json\n          draft: '2020-12'\n  - id: finalize_lanes\n    kind: command\n    depends_on: [lane_correctness]\n    run: '.scherzo/workflows/scripts/scherzo-review finalize-lanes --prepare-dir \"$SCHERZO_RUN_ROOT/artifacts/review/prepare_review\" --review-root \"$SCHERZO_RUN_ROOT/artifacts/review\" --lane correctness'\n",
+    )
+
+  let artifact =
+    run_shell(
+      "scripts/scherzo-structured-output-contract check-workflow --workflow "
+      <> workflow_path
+      <> " --output-dir "
+      <> dir,
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert string.contains(artifact.stdout, "STRUCTURED_OUTPUT_CONTRACT=failed")
+  let assert Ok(report) =
+    simplifile.read(dir <> "/structured-output-contract-report.v1.json")
+  assert string.contains(report, "structured_output_missing_materialization")
+  assert string.contains(report, "missing_materialization")
+}

@@ -1641,12 +1641,58 @@ def review_lane_draft_unavailable_message(
     )
 
 
-def assert_no_deprecated_review_backend_env() -> None:
-    present = [
+def deprecated_review_backend_env_names() -> list[str]:
+    return [
         name
         for name in DEPRECATED_REVIEW_BACKEND_ENV_VARS
         if os.environ.get(name, "").strip()
     ]
+
+
+def write_native_review_cutover_contract(
+    *,
+    output_dir: Path,
+    deprecated_env_vars: list[str],
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    generated_at = now_utc()
+    status = "failed" if deprecated_env_vars else "ok"
+    artifact = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "native_review_cutover_contract",
+        "generated_at_utc": generated_at,
+        "status": status,
+        "backend": "native_scherzo_agent_lanes",
+        "deprecated_legacy_backend_env_vars": deprecated_env_vars,
+        "assertion": (
+            "Implementation review must use native Scherzo kind: agent lanes "
+            "with submit_review_lane_draft structured output; legacy staged-review "
+            "backend environment overrides are not supported."
+        ),
+        "remote_mutations": "none",
+    }
+    artifact_path = output_dir / "native-review-cutover-contract.v1.json"
+    write_json(artifact_path, artifact)
+    log_path = output_dir / "native-review-cutover-contract.log"
+    log_path.write_text(
+        "scherzo-review native review cutover contract\n"
+        f"generated_at_utc={generated_at}\n"
+        f"status={status}\n"
+        "deprecated_legacy_backend_env_vars=" + ",".join(deprecated_env_vars) + "\n"
+        "remote_mutations=none\n"
+    )
+
+
+def assert_no_deprecated_review_backend_env(
+    *,
+    cutover_contract_dir: Path | None = None,
+) -> None:
+    present = deprecated_review_backend_env_names()
+    if cutover_contract_dir is not None:
+        write_native_review_cutover_contract(
+            output_dir=cutover_contract_dir,
+            deprecated_env_vars=present,
+        )
     if not present:
         return
     names = ", ".join(present)
@@ -1656,6 +1702,61 @@ def assert_no_deprecated_review_backend_env() -> None:
         "implementation review now uses native Scherzo kind: agent lanes with "
         "submit_review_lane_draft structured output."
     )
+
+
+def record_review_lane_workspace_snapshot(
+    *,
+    dirty_tree_dir: Path,
+    phase: str,
+) -> dict[str, Path]:
+    if phase not in {"before", "after"}:
+        raise ReviewError(f"unknown dirty-tree snapshot phase: {phase}")
+    dirty_tree_dir.mkdir(parents=True, exist_ok=True)
+    commit_path = dirty_tree_dir / f"{phase}-lanes.txt"
+    status_path = dirty_tree_dir / f"{phase}-lanes-status.txt"
+    commit_path.write_text(run_read_only([
+        "jj",
+        "log",
+        "-r",
+        "@",
+        "--no-graph",
+        "-T",
+        "commit_id",
+        "--color=never",
+    ]))
+    status_path.write_text(run_read_only(["jj", "status", "--color=never"]))
+    return {"commit": commit_path, "status": status_path}
+
+
+def record_before_lanes_clean_tree_snapshot(dirty_tree_dir: Path) -> dict[str, Path]:
+    return record_review_lane_workspace_snapshot(
+        dirty_tree_dir=dirty_tree_dir,
+        phase="before",
+    )
+
+
+def assert_review_lane_commit_unchanged(dirty_tree_dir: Path) -> None:
+    paths = record_review_lane_workspace_snapshot(
+        dirty_tree_dir=dirty_tree_dir,
+        phase="after",
+    )
+    before_path = dirty_tree_dir / "before-lanes.txt"
+    before_status_path = dirty_tree_dir / "before-lanes-status.txt"
+    after_path = paths["commit"]
+    after_status_path = paths["status"]
+    try:
+        before_commit = before_path.read_text()
+    except OSError as exc:
+        raise ReviewError(f"could not read native review before-lanes snapshot {before_path}: {exc}") from exc
+    try:
+        after_commit = after_path.read_text()
+    except OSError as exc:
+        raise ReviewError(f"could not read native review after-lanes snapshot {after_path}: {exc}") from exc
+    if before_commit != after_commit:
+        raise ReviewError(
+            "native review lane mutated the main workspace; commit ids differ; see "
+            f"{before_path}, {after_path}, {before_status_path}, and {after_status_path}"
+        )
 
 
 def diff_source_from_args(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
@@ -1784,7 +1885,12 @@ def write_shared_review_inputs(
 
 
 def prepare_native_command(args: argparse.Namespace) -> None:
-    assert_no_deprecated_review_backend_env()
+    cutover_contract_dir = (
+        Path(args.cutover_contract_dir)
+        if str(getattr(args, "cutover_contract_dir", "") or "").strip()
+        else None
+    )
+    assert_no_deprecated_review_backend_env(cutover_contract_dir=cutover_contract_dir)
     started_at = now_utc()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1837,6 +1943,10 @@ def prepare_native_command(args: argparse.Namespace) -> None:
     }
     manifest_path = output_dir / "manifest.v1.json"
     write_json(manifest_path, manifest)
+    dirty_tree_dir = str(getattr(args, "dirty_tree_dir", "") or "").strip()
+    dirty_tree_paths: dict[str, Path] = {}
+    if dirty_tree_dir:
+        dirty_tree_paths = record_before_lanes_clean_tree_snapshot(Path(dirty_tree_dir))
     summary = {
         "review_brief_path": str(paths["brief"]),
         "diff_path": str(paths["diff"]),
@@ -1846,6 +1956,9 @@ def prepare_native_command(args: argparse.Namespace) -> None:
         "context_manifest_path": str(paths["context_manifest"]),
         "manifest_path": str(manifest_path),
     }
+    if dirty_tree_paths:
+        summary["dirty_tree_before_commit_path"] = str(dirty_tree_paths["commit"])
+        summary["dirty_tree_before_status_path"] = str(dirty_tree_paths["status"])
     print("REVIEW_NATIVE_PREPARE=ok")
     print(f"REVIEW_SCHEMA_VERSION={SCHEMA_VERSION}")
     print(f"REVIEW_ARTIFACT_DIR={output_dir}")
@@ -1854,6 +1967,9 @@ def prepare_native_command(args: argparse.Namespace) -> None:
     print(f"REVIEW_CHANGED_FILES_PATH={paths['changed_files']}")
     print(f"REVIEW_VALIDATION_STATUS_PATH={paths['validation_status']}")
     print(f"REVIEW_CONTEXT_MANIFEST_PATH={paths['context_manifest']}")
+    if dirty_tree_paths:
+        print(f"REVIEW_DIRTY_TREE_BEFORE_PATH={dirty_tree_paths['commit']}")
+        print(f"REVIEW_DIRTY_TREE_BEFORE_STATUS_PATH={dirty_tree_paths['status']}")
     print("REVIEW_REMOTE_MUTATIONS=none")
     print("REVIEW_NATIVE_PREPARE_SUMMARY=" + json.dumps(summary, sort_keys=True))
 
@@ -2511,6 +2627,183 @@ def normalize_lane_result_command(args: argparse.Namespace) -> None:
     print(f"REVIEW_LANE={lane_id}")
     print(f"REVIEW_LANE_RESULT_PATH={result_path}")
     print("REVIEW_LANE_STATE=succeeded")
+    print("REVIEW_REMOTE_MUTATIONS=none")
+
+
+def lane_pipeline_failure_message(stage: str, lane_id: str, exc: Exception) -> str:
+    code = getattr(exc, "code", "")
+    prefix = f"{stage} failed for review lane {lane_id}"
+    if isinstance(code, str) and code:
+        prefix += f" ({code})"
+    return prefix + f": {exc}"
+
+
+def record_lane_pipeline_failure(
+    *,
+    lane_dir: Path,
+    lane_id: str,
+    stage: str,
+    exc: Exception,
+) -> None:
+    message = lane_pipeline_failure_message(stage, lane_id, exc)
+    print(f"scherzo-review: {message}; continuing to normalize lane result", file=sys.stderr)
+    event: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_type": "review_lane_pipeline_failure",
+        "generated_at_utc": now_utc(),
+        "lane_id": lane_id,
+        "stage": stage,
+        "message": str(exc),
+        "remote_mutations": "none",
+    }
+    code = getattr(exc, "code", "")
+    if isinstance(code, str) and code:
+        event["code"] = code
+    lane_dir.mkdir(parents=True, exist_ok=True)
+    with (lane_dir / "lane-pipeline-failures.ndjson").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+
+def finalize_one_native_review_lane(
+    *,
+    lane_id: str,
+    prepare_dir: Path,
+    review_root: Path,
+    artifact_dir: Path,
+) -> Path:
+    lane_dir = review_root / "lanes" / lane_id
+    lane_dir.mkdir(parents=True, exist_ok=True)
+    draft_path = lane_dir / "review-lane-draft.v1.json"
+    ledger_path = lane_dir / "evidence-ledger.v1.json"
+    brief_path = prepare_dir / "review-brief.v1.json"
+    diff_path = prepare_dir / "diff.patch"
+    changed_files_path = prepare_dir / "changed-files.v1.json"
+    validation_status_path = prepare_dir / "validation-status.v1.json"
+    context_manifest_path = prepare_dir / "context-manifest.v1.json"
+
+    try:
+        submission_path = lane_contract.resolve_submission_path(
+            lane_id=lane_id,
+            artifact_dir=artifact_dir,
+        )
+        lane_contract.materialize_submission(
+            lane_id=lane_id,
+            submission_path=submission_path,
+            prepare_dir=prepare_dir,
+            output_path=draft_path,
+        )
+        print("REVIEW_LANE_MATERIALIZE=ok")
+        print(f"REVIEW_LANE={lane_id}")
+        print(f"REVIEW_LANE_SUBMISSION_PATH={submission_path}")
+        print(f"REVIEW_LANE_DRAFT_PATH={draft_path}")
+        print("REVIEW_REMOTE_MUTATIONS=none")
+    except Exception as exc:
+        record_lane_pipeline_failure(
+            lane_dir=lane_dir,
+            lane_id=lane_id,
+            stage="materialize",
+            exc=exc,
+        )
+
+    try:
+        verify_evidence_command(argparse.Namespace(
+            lane=lane_id,
+            draft=str(draft_path),
+            brief=str(brief_path),
+            diff_file=str(diff_path),
+            changed_files=str(changed_files_path),
+            validation_status=str(validation_status_path),
+            context_manifest=str(context_manifest_path),
+            agent_step_metadata="",
+            agent_artifact_dir=str(artifact_dir),
+            output_dir=str(lane_dir),
+        ))
+    except Exception as exc:
+        record_lane_pipeline_failure(
+            lane_dir=lane_dir,
+            lane_id=lane_id,
+            stage="verify-evidence",
+            exc=exc,
+        )
+
+    normalize_lane_result_command(argparse.Namespace(
+        lane=lane_id,
+        draft=str(draft_path),
+        evidence_ledger=str(ledger_path),
+        agent_step_metadata="",
+        agent_artifact_dir=str(artifact_dir),
+        agent_step_status="",
+        agent_step_failure_code="",
+        structured_output_status="",
+        brief=str(brief_path),
+        output_dir=str(lane_dir),
+    ))
+    return lane_dir / f"review-lane-{lane_id}.v1.json"
+
+
+def assert_publishable_final_review(final_review_path: Path) -> None:
+    artifact = load_json(final_review_path)
+    counts = artifact.get("finding_counts") if isinstance(artifact.get("finding_counts"), dict) else {}
+    try:
+        lane_failed = int(counts.get("lane_failed") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ReviewError("final review finding_counts.lane_failed must be an integer") from exc
+    execution_issues = artifact.get("execution_issues") if isinstance(artifact.get("execution_issues"), list) else []
+    if lane_failed or execution_issues:
+        raise ReviewError(
+            "native review infrastructure issue blocks publication: "
+            f"lane_failed={lane_failed} execution_issues={len(execution_issues)}"
+        )
+    print("REVIEW_NATIVE_REVIEW_INFRASTRUCTURE=ok")
+
+
+def assert_publishable_command(args: argparse.Namespace) -> None:
+    assert_publishable_final_review(Path(args.final_review))
+
+
+def validate_native_review_synthesis_artifacts(*, synthesis_dir: Path) -> None:
+    for artifact_path in [
+        synthesis_dir / "review-synthesis.v1.json",
+        synthesis_dir / "final-review.v1.json",
+    ]:
+        value = load_json(artifact_path)
+        validate_artifact(value)
+        print("REVIEW_ARTIFACT_VALID=ok")
+        print(f"REVIEW_SCHEMA_VERSION={value.get('schema_version')}")
+        print(f"REVIEW_ARTIFACT_TYPE={value.get('artifact_type')}")
+
+
+def finalize_lanes_command(args: argparse.Namespace) -> None:
+    prepare_dir = Path(args.prepare_dir)
+    review_root = Path(args.review_root) if str(args.review_root or "").strip() else prepare_dir.parent
+    dirty_tree_dir = Path(args.dirty_tree_dir) if str(args.dirty_tree_dir or "").strip() else review_root / "dirty_tree"
+    synthesis_dir = (
+        Path(args.synthesis_output_dir)
+        if str(args.synthesis_output_dir or "").strip()
+        else review_root / "synthesize_review"
+    )
+    artifact_dir = Path(args.artifact_dir)
+    lanes = list(args.lane) if args.lane else list(SPECIALIST_LANES.keys())
+
+    assert_review_lane_commit_unchanged(dirty_tree_dir)
+    lane_result_paths = [
+        finalize_one_native_review_lane(
+            lane_id=lane_id,
+            prepare_dir=prepare_dir,
+            review_root=review_root,
+            artifact_dir=artifact_dir,
+        )
+        for lane_id in lanes
+    ]
+    synthesize_command(argparse.Namespace(
+        brief=str(prepare_dir / "review-brief.v1.json"),
+        lane_result=[str(path) for path in lane_result_paths],
+        output_dir=str(synthesis_dir),
+    ))
+    validate_native_review_synthesis_artifacts(synthesis_dir=synthesis_dir)
+    assert_publishable_final_review(synthesis_dir / "final-review.v1.json")
+    print("REVIEW_FINALIZE_LANES=ok")
+    print(f"REVIEW_ARTIFACT_DIR={review_root}")
     print("REVIEW_REMOTE_MUTATIONS=none")
 
 
@@ -3883,6 +4176,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="Validation has not run before native review by workflow design.",
         help="Summary to record when validation has not run yet before native review.",
     )
+    prepare_native.add_argument(
+        "--dirty-tree-dir",
+        help="Optional review dirty-tree artifact directory where before-lanes snapshots are recorded.",
+    )
+    prepare_native.add_argument(
+        "--cutover-contract-dir",
+        help="Optional artifact directory where the native-review cutover env-var contract is recorded.",
+    )
     prepare_native.set_defaults(func=prepare_native_command)
 
     verify_evidence = subparsers.add_parser(
@@ -3938,6 +4239,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for synthesis artifacts (default: tmp/scherzo-review-synthesis).",
     )
     synthesize.set_defaults(func=synthesize_command)
+
+    finalize_lanes = subparsers.add_parser(
+        "finalize-lanes",
+        help="Finalize native review lanes by checking workspace immutability, materializing/verifying/normalizing each lane, synthesizing, validating, and enforcing publishability.",
+    )
+    finalize_lanes.add_argument("--prepare-dir", required=True, help="prepare_review artifact directory.")
+    finalize_lanes.add_argument("--review-root", help="Review artifact root containing lanes/, dirty_tree/, and synthesize_review/.")
+    finalize_lanes.add_argument("--dirty-tree-dir", help="Dirty-tree artifact directory containing before-lanes snapshots.")
+    finalize_lanes.add_argument("--artifact-dir", required=True, help="Run artifact directory used to resolve native lane structured outputs.")
+    finalize_lanes.add_argument("--lane", action="append", choices=sorted(SPECIALIST_LANES.keys()), default=[], help="Lane id to finalize. Repeat for each lane; defaults to all specialist lanes.")
+    finalize_lanes.add_argument("--synthesis-output-dir", help="Output directory for synthesize_review artifacts.")
+    finalize_lanes.set_defaults(func=finalize_lanes_command)
+
+    assert_publishable = subparsers.add_parser(
+        "assert-publishable",
+        help="Fail when synthesized final review infrastructure issues block publication.",
+    )
+    assert_publishable.add_argument("--final-review", required=True, help="final-review.v1.json artifact path.")
+    assert_publishable.set_defaults(func=assert_publishable_command)
 
     materialize_disposition_input = subparsers.add_parser(
         "materialize-disposition-input",
