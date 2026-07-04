@@ -132,11 +132,23 @@ pub fn default_validator_runner(
         structured_output_command_validator.run_command_validator(
           validator,
           redacted_payload_json,
-          validator_context,
+          command_validator_context(validator_context),
           secrets,
         )
     }
   }
+}
+
+fn command_validator_context(
+  context: structured_output_validator.ValidatorContext,
+) -> structured_output_validator.ValidatorContext {
+  structured_output_validator.ValidatorContext(
+    ..context,
+    repository_root: validator_repo_root(
+      context.config_dir,
+      context.workspace_path,
+    ),
+  )
 }
 
 pub fn default_validator_context(
@@ -154,7 +166,7 @@ pub fn default_validator_context(
 ) -> structured_output_validator.ValidatorContext {
   structured_output_validator.base_context(
     config_dir,
-    validator_repo_root(config_dir, workspace_path),
+    schema_repo_root(config_dir),
     run_root,
     workflow_id,
     workflow_bundle_dir,
@@ -169,15 +181,58 @@ pub fn default_validator_context(
   )
 }
 
-pub fn validator_repo_root(
-  config_dir: String,
-  workspace_path: String,
-) -> String {
+pub fn schema_repo_root(config_dir: String) -> String {
   let config_parent = case path.dirname(config_dir) {
     Ok(parent) -> parent
     Error(Nil) -> config_dir
   }
-  choose_validator_repo_root([config_parent, workspace_path, "."])
+
+  case is_scherzo_config_dir(config_dir) {
+    True -> config_parent
+    False -> choose_schema_repo_root([config_parent, config_dir, "."])
+  }
+}
+
+fn is_scherzo_config_dir(config_dir: String) -> Bool {
+  config_dir == ".scherzo" || string.ends_with(config_dir, "/.scherzo")
+}
+
+fn choose_schema_repo_root(candidates: List(String)) -> String {
+  case candidates {
+    [] -> "."
+    [candidate, ..rest] ->
+      case has_structured_output_schemas(candidate) {
+        True -> candidate
+        False -> choose_schema_repo_root(rest)
+      }
+  }
+}
+
+fn has_structured_output_schemas(candidate: String) -> Bool {
+  case
+    simplifile.is_directory(path.join(candidate, ".scherzo/workflows/schemas"))
+  {
+    Ok(True) -> True
+    _ -> False
+  }
+}
+
+pub fn validator_repo_root(
+  config_dir: String,
+  workspace_path: String,
+) -> String {
+  let trimmed_workspace = string.trim(workspace_path)
+  case trimmed_workspace {
+    "" | "." -> schema_repo_root(config_dir)
+    _ ->
+      case
+        path.is_absolute(trimmed_workspace)
+        || has_structured_output_schemas(trimmed_workspace)
+      {
+        True -> trimmed_workspace
+        False -> schema_repo_root(config_dir)
+      }
+  }
 }
 
 pub fn error_code(error: StructuredOutputError) -> String {
@@ -584,29 +639,6 @@ fn validate_baseline_schema(
         "schema invalid; top-level JSON value must be an object",
         retryable,
       ))
-  }
-}
-
-fn choose_validator_repo_root(candidates: List(String)) -> String {
-  case candidates {
-    [] -> "."
-    [candidate, ..rest] ->
-      case has_scherzo_review_script(candidate) {
-        True -> candidate
-        False -> choose_validator_repo_root(rest)
-      }
-  }
-}
-
-fn has_scherzo_review_script(candidate: String) -> Bool {
-  case
-    simplifile.is_file(path.join(
-      candidate,
-      ".scherzo/workflows/scripts/scherzo-review",
-    ))
-  {
-    Ok(True) -> True
-    _ -> False
   }
 }
 
