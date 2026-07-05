@@ -34,23 +34,23 @@ pub fn retry_step_can_repair_interrupted_attempt_test() {
     )
 
   assert plan.run_id == "run-1"
-  assert plan.selected_step_id == "apply_feedback"
+  assert plan.selected_step_id == "implement"
   assert plan.failed_attempt_index == 1
   assert plan.next_attempt_index == 2
 
   assert has_superseded_attempt(plan.records_to_append, "apply_feedback", 1, 2)
   assert has_superseded_attempt(plan.records_to_append, "publish", 1, 2)
-  assert has_finished_attempt(
+  assert has_superseded_candidate_attempt(
     plan.candidate.attempts,
     "implement",
     1,
-    "completed",
+    2,
   )
-  assert has_finished_attempt(
+  assert has_superseded_candidate_attempt(
     plan.candidate.attempts,
     "validate_before_native_review",
     1,
-    "failed_continued",
+    2,
   )
   assert has_superseded_candidate_attempt(
     plan.candidate.attempts,
@@ -66,7 +66,7 @@ pub fn retry_step_can_repair_interrupted_attempt_test() {
   )
 }
 
-pub fn retry_step_can_plan_scheduled_run_without_tracker_issue_test() {
+pub fn retry_step_total_plan_accepts_scheduled_run_without_tracker_issue_test() {
   let run_id = "schedule-nightly-20260703T000000Z"
   let projection =
     projection.fold([
@@ -147,7 +147,20 @@ pub fn retry_step_can_plan_scheduled_run_without_tracker_issue_test() {
   assert plan.issue_id == ""
   assert plan.issue_identifier == "nightly"
   assert plan.candidate.task_ref.task_remote_id == ""
-  assert plan.selected_step_id == "apply_feedback"
+  assert plan.selected_step_id == "implement"
+
+  let assert Ok(exact_plan) =
+    workflow_repair.plan_exact(
+      projection,
+      command.RetryWorkflowStepRunId(run_id),
+      Some("apply_feedback"),
+      current_scheduled_workflow(dag),
+    )
+
+  assert exact_plan.issue_id == ""
+  assert exact_plan.issue_identifier == "nightly"
+  assert exact_plan.candidate.task_ref.task_remote_id == ""
+  assert exact_plan.selected_step_id == "apply_feedback"
 }
 
 pub fn retry_step_reconstructs_missing_workflow_run_provenance_test() {
@@ -290,7 +303,7 @@ pub fn retry_step_accepts_legacy_stateful_issue_fingerprint_when_equivalent_test
     )
 
   assert plan.run_id == "run-1"
-  assert plan.selected_step_id == "apply_feedback"
+  assert plan.selected_step_id == "implement"
 }
 
 pub fn retry_step_issue_target_selects_latest_repairable_run_by_status_time_test() {
@@ -389,7 +402,7 @@ pub fn retry_step_normalizes_terminal_failed_stale_agent_attempt_test() {
       current_workflow(dag),
     )
 
-  assert plan.selected_step_id == "apply_feedback"
+  assert plan.selected_step_id == "seed"
   assert plan.failed_attempt_index == 1
   assert plan.next_attempt_index == 2
   assert has_normalization_interruption(
@@ -420,7 +433,7 @@ pub fn retry_step_auto_selects_single_terminal_failed_stale_agent_test() {
       current_workflow(dag),
     )
 
-  assert plan.selected_step_id == "apply_feedback"
+  assert plan.selected_step_id == "seed"
   assert plan.failed_attempt_index == 1
   assert plan.next_attempt_index == 2
   assert has_normalization_interruption(
@@ -588,11 +601,11 @@ pub fn retry_step_rejects_selected_superseded_step_test() {
   assert_selected_non_repairable("superseded")
 }
 
-pub fn retry_step_rejects_workflow_fingerprint_drift_test() {
+pub fn retry_step_rewinds_or_restarts_when_workflow_fingerprint_drifts_test() {
   let projection = projection.fold(interrupted_run_records())
   let assert Ok(dag) = workflow_dag.parse(interrupted_workflow_yaml())
 
-  let assert Error(error) =
+  let assert Ok(plan) =
     workflow_repair.plan(
       projection,
       command.RetryWorkflowStepRunId("run-1"),
@@ -607,7 +620,12 @@ pub fn retry_step_rejects_workflow_fingerprint_drift_test() {
       ),
     )
 
-  assert workflow_repair.describe_error(error) == "workflow_drift"
+  assert list.any(plan.records_to_append, fn(body) {
+    case body {
+      record.WorkflowRunStartedWithTask(..) -> True
+      _ -> False
+    }
+  })
 }
 
 pub fn retry_step_accepts_issue_fingerprint_drift_and_records_current_snapshot_test() {
@@ -737,7 +755,7 @@ pub fn retry_step_is_idempotent_after_selected_boundary_is_superseded_test() {
   assert workflow_repair.describe_error(error) == "no_failed_workflow_run"
 }
 
-pub fn retry_step_finalization_rejects_missing_upstream_artifact_test() {
+pub fn retry_step_finalization_rewinds_before_missing_upstream_artifact_test() {
   let root = "test/tmp/workflow-repair-missing-artifact"
   let run_root = recovery_run_root(root)
   let projection =
@@ -760,18 +778,11 @@ pub fn retry_step_finalization_rejects_missing_upstream_artifact_test() {
 
   let assert Ok(finalized) = finalize_repair_plan(plan, projection, dag, root)
 
-  assert finalized.resumptions == []
-  assert has_park_reason(
-    finalized.records_to_append,
-    "artifact_recovery_failed",
-  )
-  assert has_artifact_recovery_detail(
-    finalized,
-    "artifact_recovery_failed: step_id=seed artifact_ref=runs/run-1/seed/attempt-1.json reason=missing",
-  )
+  assert list.length(finalized.resumptions) == 1
+  assert finalized.records_to_append == []
 }
 
-pub fn retry_step_finalization_rejects_corrupt_upstream_artifact_test() {
+pub fn retry_step_finalization_rewinds_before_corrupt_upstream_artifact_test() {
   let root = "test/tmp/workflow-repair-corrupt-artifact"
   let run_root = recovery_run_root(root)
   test_helpers.reset_dir(root)
@@ -804,21 +815,11 @@ pub fn retry_step_finalization_rejects_corrupt_upstream_artifact_test() {
 
   let assert Ok(finalized) = finalize_repair_plan(plan, projection, dag, root)
 
-  assert finalized.resumptions == []
-  assert has_park_reason(
-    finalized.records_to_append,
-    "artifact_recovery_failed",
-  )
-  assert has_artifact_recovery_detail(
-    finalized,
-    "artifact_recovery_failed: step_id=seed artifact_ref="
-      <> stored.ref
-      <> " reason=sha_mismatch expected_sha256=wrong-sha current_sha256="
-      <> stored.sha256,
-  )
+  assert list.length(finalized.resumptions) == 1
+  assert finalized.records_to_append == []
 }
 
-pub fn retry_step_finalization_rejects_unreadable_upstream_artifact_test() {
+pub fn retry_step_finalization_rewinds_before_unreadable_upstream_artifact_test() {
   let root = "test/tmp/workflow-repair-unreadable-artifact"
   let run_root = recovery_run_root(root)
   let artifact_ref = "runs/run-1/seed/attempt-1.json"
@@ -849,20 +850,11 @@ pub fn retry_step_finalization_rejects_unreadable_upstream_artifact_test() {
       unreadable_artifact_store(),
     )
 
-  assert finalized.resumptions == []
-  assert has_park_reason(
-    finalized.records_to_append,
-    "artifact_recovery_failed",
-  )
-  assert has_artifact_recovery_detail(
-    finalized,
-    "artifact_recovery_failed: step_id=seed artifact_ref="
-      <> artifact_ref
-      <> " reason=unreadable",
-  )
+  assert list.length(finalized.resumptions) == 1
+  assert finalized.records_to_append == []
 }
 
-pub fn retry_step_finalization_rejects_invalid_upstream_artifact_json_test() {
+pub fn retry_step_finalization_rewinds_before_invalid_upstream_artifact_json_test() {
   let root = "test/tmp/workflow-repair-invalid-artifact-json"
   let run_root = recovery_run_root(root)
   let artifact_ref = "runs/run-1/seed/attempt-1.json"
@@ -890,20 +882,11 @@ pub fn retry_step_finalization_rejects_invalid_upstream_artifact_json_test() {
 
   let assert Ok(finalized) = finalize_repair_plan(plan, projection, dag, root)
 
-  assert finalized.resumptions == []
-  assert has_park_reason(
-    finalized.records_to_append,
-    "artifact_recovery_failed",
-  )
-  assert has_artifact_recovery_detail(
-    finalized,
-    "artifact_recovery_failed: step_id=seed artifact_ref="
-      <> artifact_ref
-      <> " reason=invalid_json",
-  )
+  assert list.length(finalized.resumptions) == 1
+  assert finalized.records_to_append == []
 }
 
-pub fn retry_step_finalization_redacts_local_artifact_ref_details_test() {
+pub fn retry_step_finalization_ignores_untrusted_local_artifact_refs_by_rewinding_test() {
   let cases = [
     #("empty", "   ", "invalid_ref", "<empty>"),
     #(
@@ -957,7 +940,7 @@ pub fn retry_step_finalization_redacts_local_artifact_ref_details_test() {
   ]
 
   list.each(cases, fn(entry) {
-    let #(label, artifact_ref, reason, display_ref) = entry
+    let #(label, artifact_ref, _reason, _display_ref) = entry
     let root = "test/tmp/workflow-repair-redacted-artifact-ref-" <> label
     let run_root = recovery_run_root(root)
     test_helpers.reset_dir(root)
@@ -978,14 +961,8 @@ pub fn retry_step_finalization_redacts_local_artifact_ref_details_test() {
       )
     let assert Ok(finalized) = finalize_repair_plan(plan, projection, dag, root)
 
-    assert finalized.resumptions == []
-    assert has_artifact_recovery_detail(
-      finalized,
-      "artifact_recovery_failed: step_id=seed artifact_ref="
-        <> display_ref
-        <> " reason="
-        <> reason,
-    )
+    assert list.length(finalized.resumptions) == 1
+    assert finalized.records_to_append == []
   })
 }
 

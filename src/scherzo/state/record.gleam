@@ -129,6 +129,14 @@ pub type RecordBody {
     artifact_sha256: String,
     artifact_bytes: Int,
   )
+  WorkflowInterfaceSnapshotRecorded(
+    run_id: String,
+    workflow_id: String,
+    workflow_fingerprint: String,
+    artifact_ref: String,
+    artifact_sha256: String,
+    artifact_bytes: Int,
+  )
   WorkflowRunOutputsRecorded(
     run_id: String,
     workflow_id: String,
@@ -811,6 +819,8 @@ pub fn kind(body: RecordBody) -> String {
     WorkflowRunFinished(..) -> "workflow_run_finished"
     WorkflowRunFinishedWithTask(..) -> "workflow_run_finished"
     WorkflowRunInputsRecorded(..) -> "workflow_run_inputs_recorded"
+    WorkflowInterfaceSnapshotRecorded(..) ->
+      "workflow_interface_snapshot_recorded"
     WorkflowRunOutputsRecorded(..) -> "workflow_run_outputs_recorded"
     PublicationAttemptRecorded(..) -> "publication_attempt_recorded"
     WorkflowRunDiagnostic(..) -> "workflow_run_diagnostic"
@@ -1043,6 +1053,22 @@ fn body_entries(body: RecordBody) -> List(#(String, json.Json)) {
         turns,
       )
     WorkflowRunInputsRecorded(
+      run_id,
+      workflow_id,
+      workflow_fingerprint,
+      artifact_ref,
+      artifact_sha256,
+      artifact_bytes,
+    ) ->
+      workflow_contract_record_entries(
+        run_id,
+        workflow_id,
+        workflow_fingerprint,
+        artifact_ref,
+        artifact_sha256,
+        artifact_bytes,
+      )
+    WorkflowInterfaceSnapshotRecorded(
       run_id,
       workflow_id,
       workflow_fingerprint,
@@ -2258,6 +2284,8 @@ fn body_from_fields(fields: RecordFields) -> Result(RecordBody, DecodeError) {
     }
     "workflow_run_inputs_recorded" ->
       decode_workflow_contract_record(fields, WorkflowRunInputsRecorded)
+    "workflow_interface_snapshot_recorded" ->
+      decode_workflow_contract_record(fields, WorkflowInterfaceSnapshotRecorded)
     "workflow_run_outputs_recorded" ->
       decode_workflow_contract_record(fields, WorkflowRunOutputsRecorded)
     "publication_attempt_recorded" -> {

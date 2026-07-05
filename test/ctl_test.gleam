@@ -1629,16 +1629,46 @@ pub fn parse_operator_commands_test() {
       False,
       command.RetryIssue(command.IssueIdentifier("ABC-123")),
     ))
+  assert ctl.parse(["retry", "all", "ABC-123"])
+    == Ok(ctl.TaskRetryStartFresh(
+      None,
+      False,
+      command.IssueIdentifier("ABC-123"),
+      "operator_forced_from_scratch",
+    ))
+  assert ctl.parse([
+      "task",
+      "retry",
+      "ABC-123",
+      "--from-scratch",
+      "--reason",
+      "workflow drift",
+    ])
+    == Ok(ctl.TaskRetryStartFresh(
+      None,
+      False,
+      command.IssueIdentifier("ABC-123"),
+      "workflow drift",
+    ))
   assert ctl.parse(["run", "retry-step", "run-1", "--step", "build"])
     == Ok(ctl.Operator(
       None,
       False,
-      command.RetryWorkflowStep(
+      command.RetryWorkflowStepExact(
         command.RetryWorkflowStepRunId("run-1"),
         Some("build"),
       ),
     ))
   assert ctl.parse(["retry-step", "ABC-123", "--step", "build"])
+    == Ok(ctl.Operator(
+      None,
+      False,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepAutoTarget("ABC-123"),
+        Some("build"),
+      ),
+    ))
+  assert ctl.parse(["retry", "step", "ABC-123", "--step", "build"])
     == Ok(ctl.Operator(
       None,
       False,
@@ -1828,11 +1858,11 @@ pub fn deprecated_ctl_json_alias_keeps_stdout_machine_readable_test() {
 pub fn deprecated_recovery_aliases_print_resource_first_hints_test() {
   assert command_registry.deprecated_alias_hint(["retry", "ABC-123"])
     == Some(
-      "Deprecated: scherzo ctl retry ABC-123 will be removed after one release; use scherzo ctl task retry <task|id:<id>> [--start-fresh --reason <text>].",
+      "Deprecated: scherzo ctl retry ABC-123 will be removed after one release; use scherzo ctl task retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>].",
     )
   assert command_registry.deprecated_alias_hint(["retry-step", "run:run-1"])
     == Some(
-      "Deprecated: scherzo ctl retry-step run:run-1 will be removed after one release; use scherzo ctl run retry-step <run-id> --step <step-id>.",
+      "Deprecated: scherzo ctl retry-step run:run-1 will be removed after one release; use scherzo ctl retry step <target> [--step <step-id>] for the common retry path, or scherzo ctl run retry-step <run-id> --step <step-id> for the exact expert override.",
     )
   assert command_registry.deprecated_alias_hint([
       "recollect-outputs",
@@ -2016,9 +2046,17 @@ pub fn parse_rejects_usage_errors_test() {
   assert ctl.parse(["recollect-outputs", "ABC-123"])
     == Error(ctl.UsageError("recollect-outputs requires run:<run-id>"))
   assert ctl.parse(["task", "retry", "ABC-123", "--start-fresh"])
-    == Error(ctl.UsageError("task retry --start-fresh requires --reason <text>"))
+    == Error(ctl.UsageError(
+      "task retry --start-fresh/--from-scratch requires --reason <text>",
+    ))
+  assert ctl.parse(["task", "retry", "ABC-123", "--from-scratch"])
+    == Error(ctl.UsageError(
+      "task retry --start-fresh/--from-scratch requires --reason <text>",
+    ))
   assert ctl.parse(["task", "retry", "ABC-123", "--reason", "manual"])
-    == Error(ctl.UsageError("task retry --reason <text> requires --start-fresh"))
+    == Error(ctl.UsageError(
+      "task retry --reason <text> requires --start-fresh or --from-scratch",
+    ))
   assert ctl.parse(["run", "retry-step", "run-1"])
     == Error(ctl.UsageError("run retry-step requires --step <step-id>"))
   assert ctl.parse(["run", "finalize", "run-1"])
@@ -2175,7 +2213,7 @@ pub fn usage_mentions_daemon_only_commands_and_options_test() {
   assert string.contains(usage, "pause")
   assert string.contains(
     usage,
-    "task retry <task|id:<id>> [--start-fresh --reason <text>]",
+    "task retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]",
   )
   assert string.contains(usage, "run retry-step <run-id> --step <step-id>")
   assert string.contains(

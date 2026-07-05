@@ -79,7 +79,7 @@ pub fn apply(
         context,
         context.retry_issue(context.state, operator_command, issue_ref),
       )
-    command.RetryWorkflowStep(_, _) -> {
+    command.RetryWorkflowStep(_, _) | command.RetryWorkflowStepExact(_, _) -> {
       let result =
         command.rejected(
           operator_command,

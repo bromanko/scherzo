@@ -413,6 +413,12 @@ pub fn output_manifest_ref(run_id: String) -> String {
   output_manifest_ref_for_generation(run_id, 0)
 }
 
+pub fn workflow_interface_snapshot_ref(run_id: String) -> String {
+  "runs/"
+  <> workflow_identity.safe_component(run_id, "run")
+  <> "/workflow-interface.v1.json"
+}
+
 pub fn output_manifest_ref_for_generation(
   run_id: String,
   repair_generation: Int,
@@ -480,6 +486,14 @@ pub fn write_input_manifest(
   contents: String,
 ) -> Result(ArtifactRef, ArtifactError) {
   write_ref(store, input_manifest_ref(run_id), contents)
+}
+
+pub fn write_workflow_interface_snapshot(
+  store: Store,
+  run_id: String,
+  contents: String,
+) -> Result(ArtifactRef, ArtifactError) {
+  write_ref(store, workflow_interface_snapshot_ref(run_id), contents)
 }
 
 pub fn output_blob_ref_for_recollection(

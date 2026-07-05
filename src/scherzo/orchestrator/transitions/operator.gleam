@@ -78,6 +78,7 @@ pub fn handle_submitted(
         callbacks,
       )
     command.RetryWorkflowStep(_, _)
+    | command.RetryWorkflowStepExact(_, _)
     | command.RecollectWorkflowOutputs(_)
     | command.RunFinalize(..)
     | command.RetryArtifactPublication(_, _) -> shell_command(state, request)

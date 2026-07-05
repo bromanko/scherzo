@@ -1354,6 +1354,7 @@ fn replay_incomplete_control_operations(
 ) -> Nil {
   [
     "retry_step",
+    "retry_step_exact",
     "artifact_publication_retry",
     "recollect_outputs",
     "run_finalize",
@@ -3333,7 +3334,7 @@ fn queue_retry_step_operation_for_operator(
   let queued_body =
     record.ControlOperationQueued(
       operation_id: operation_id,
-      operation_kind: "retry_step",
+      operation_kind: retry_step_operation_kind(operator_command),
       command_name: command.command_name(operator_command),
       target: option.unwrap(command.command_target(operator_command), ""),
       run_id: Some(run_id),
@@ -4012,12 +4013,34 @@ fn make_retry_step_operation_id(
   <> int.to_string(state.dependencies.now_ms())
 }
 
+fn retry_step_operation_kind(
+  operator_command: command.OperatorCommand,
+) -> String {
+  case operator_command {
+    command.RetryWorkflowStepExact(_, _) -> "retry_step_exact"
+    _ -> "retry_step"
+  }
+}
+
+fn retry_step_operator_command_for_operation(
+  operation: projection.ControlOperationStatus,
+) -> command.OperatorCommand {
+  let target =
+    command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, ""))
+  case operation.operation_kind {
+    "retry_step_exact" ->
+      command.RetryWorkflowStepExact(target, operation.requested_step_id)
+    _ -> command.RetryWorkflowStep(target, operation.requested_step_id)
+  }
+}
+
 fn execute_queued_control_operation(
   state: State,
   operation: projection.ControlOperationStatus,
 ) -> QueuedControlOperationResult {
   case operation.operation_kind {
-    "retry_step" -> execute_retry_step_operation(state, operation)
+    "retry_step" | "retry_step_exact" ->
+      execute_retry_step_operation(state, operation)
     "recollect_outputs" -> execute_recollect_outputs_operation(state, operation)
     "run_finalize" -> execute_run_finalize_operation(state, operation)
     "artifact_publication_retry" -> {
@@ -4050,11 +4073,7 @@ fn execute_retry_step_operation(
   state: State,
   operation: projection.ControlOperationStatus,
 ) -> QueuedControlOperationResult {
-  let operator_command =
-    command.RetryWorkflowStep(
-      command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, "")),
-      operation.requested_step_id,
-    )
+  let operator_command = retry_step_operator_command_for_operation(operation)
   let run_id = option.unwrap(operation.run_id, "")
   case option.unwrap(operation.issue_id, "") {
     "" ->
@@ -4091,11 +4110,7 @@ fn continue_scheduled_retry_step_operation(
   state: State,
   operation: projection.ControlOperationStatus,
 ) -> QueuedControlOperationResult {
-  let operator_command =
-    command.RetryWorkflowStep(
-      command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, "")),
-      operation.requested_step_id,
-    )
+  let operator_command = retry_step_operator_command_for_operation(operation)
   case
     scheduled_retry_step_observation(
       state,
@@ -4112,6 +4127,20 @@ fn continue_scheduled_retry_step_operation(
         observation,
         None,
       )
+  }
+}
+
+fn retry_step_repair_plan_for_operation(
+  operation: projection.ControlOperationStatus,
+  projection_state: projection.Projection,
+  target: command.RetryWorkflowStepTarget,
+  step_id: Option(String),
+  observation: recovery.CurrentWorkflowObservation,
+) -> Result(workflow_repair.RepairPlan, workflow_repair.RepairError) {
+  case operation.operation_kind {
+    "retry_step_exact" ->
+      workflow_repair.plan_exact(projection_state, target, step_id, observation)
+    _ -> workflow_repair.plan(projection_state, target, step_id, observation)
   }
 }
 
@@ -4141,7 +4170,15 @@ fn continue_retry_step_operation_with_observation(
   let target =
     command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, ""))
   let step_id = operation.requested_step_id
-  case workflow_repair.plan(projection_state, target, step_id, observation) {
+  case
+    retry_step_repair_plan_for_operation(
+      operation,
+      projection_state,
+      target,
+      step_id,
+      observation,
+    )
+  {
     Error(error) -> {
       let reason = workflow_repair.describe_error(error)
       QueuedControlOperationFailed(

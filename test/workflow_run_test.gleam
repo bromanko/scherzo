@@ -5555,10 +5555,11 @@ pub fn contracted_command_run_records_inputs_before_steps_and_outputs_test() {
 
   assert success.run_root != ""
   let records = ledger_records(root)
-  let assert [first, second, third, ..] = records
+  let assert [first, second, third, fourth, ..] = records
   assert record.kind(first.body) == "workflow_run_started"
-  assert record.kind(second.body) == "workflow_run_inputs_recorded"
-  assert record.kind(third.body) == "step_attempt_prepared"
+  assert record.kind(second.body) == "workflow_interface_snapshot_recorded"
+  assert record.kind(third.body) == "workflow_run_inputs_recorded"
+  assert record.kind(fourth.body) == "step_attempt_prepared"
 
   let assert Ok(input_manifest_text) =
     simplifile.read(

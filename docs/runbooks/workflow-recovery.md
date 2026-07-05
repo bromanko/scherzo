@@ -63,9 +63,12 @@ If a parked task exists because of retry caps, inspect recent events and handoff
 
 ## Repair interrupted retained workflow runs
 
-Use `run retry-step` when a retained workflow run has durable completed upstream artifacts and a failed or interrupted repair boundary that you want to rerun in place instead of redispatching the full task:
+Common retry now has three operator-facing entry points. Use `retry step <target>` for the common lattice path that picks the deepest safe retained boundary Scherzo can prove, use `retry all <task>` or `task retry <task> --from-scratch --reason <text>` when you want to force a fresh superseding run, and keep `run retry-step <run-id> --step <step-id>` as the exact fail-closed expert override.
+
+Use `retry step` or `run retry-step` when a retained workflow run has durable completed upstream artifacts and a failed or interrupted repair boundary that you want to rerun in place instead of redispatching the full task:
 
 ```sh
+scripts/scherzoctl retry step <task|run:run-id> --step <step-id> --json
 scripts/scherzoctl run retry-step <run-id> --step <step-id> --json
 scripts/scherzoctl query operation-status <operation-id> --json
 ```
@@ -78,9 +81,9 @@ Mutating controls now treat the admission boundary as the idempotency boundary. 
 
 Timeout diagnostics intentionally reuse existing operator-visible surfaces rather than adding provider-live state. The new CLI-local timeout branches are observable through structured JSON/human output and through tests that cover `control_file_discovery`, `daemon_connect`, `request_round_trip`, `daemon_actor_query`, `operation_admission`, and `operation_wait`. No provider-live behavior, remote-provider cache behavior, cache TTL, or invalidation policy changes in this rollout; read commands return the policy timeout error when no safe stale projection is available instead of inventing stale data.
 
-This path is fail-closed. Scherzo accepts it only when workflow identity, issue identity, task identity, run root, retained artifacts, and required source workspaces still match the current world. Stable rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, and `workspace_recovery_failed`.
+Common `retry step` is total for non-held, non-terminal, non-paused, non-duplicate retained runs: when exact repair is no longer provable, Scherzo rewinds to the deepest verified prefix or supersedes the retained run and starts fresh. The exact `run retry-step` expert override remains fail-closed and is accepted only when workflow identity, issue identity, task identity, run root, retained artifacts, and required source workspaces still match the current world. Stable exact-override rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, and `workspace_recovery_failed`.
 
-When `retry-step` rejects with `artifact_recovery_failed`, the result message names the step, retained artifact ref, and failure reason. A hash mismatch also includes the ledger sha and current file sha, for example:
+When the exact override rejects with `artifact_recovery_failed`, the result message names the step, retained artifact ref, and failure reason. A hash mismatch also includes the ledger sha and current file sha, for example:
 
 ```json
 {
@@ -131,9 +134,11 @@ scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --yes
 
 Dry run is the default. `--yes` is the only mutating mode, and rerunning either form is expected to be idempotent.
 
-Use `task retry --start-fresh --reason <text>` when retained drift blocked the old run and you need Scherzo to start a fresh run from the current task payload and current workflow definition instead of repairing the retained run:
+Use `retry all`, `task retry --from-scratch`, or the older explicit `--start-fresh` spelling when retained drift blocked the old run and you need Scherzo to start a fresh run from the current task payload and current workflow definition instead of repairing the retained run:
 
 ```sh
+scripts/scherzoctl retry all <task> --json
+scripts/scherzoctl task retry <task> --from-scratch --reason "workflow drift" --json
 scripts/scherzoctl task retry <task> --start-fresh --reason "workflow drift" --json
 ```
 

@@ -491,6 +491,22 @@ fn ledger_examples() -> List(LedgerExample) {
       ),
     ),
     LedgerExample(
+      "WorkflowInterfaceSnapshotRecorded",
+      "workflow_interface_snapshot_recorded",
+      record.with_id(
+        "record-workflow-interface-snapshot-recorded",
+        1004,
+        record.WorkflowInterfaceSnapshotRecorded(
+          run_id: "workflow-run-1",
+          workflow_id: "research",
+          workflow_fingerprint: "fp",
+          artifact_ref: "runs/workflow-run-1/workflow-interface.v1.json",
+          artifact_sha256: "bcd",
+          artifact_bytes: 234,
+        ),
+      ),
+    ),
+    LedgerExample(
       "WorkflowRunOutputsRecorded",
       "workflow_run_outputs_recorded",
       record.with_id(
@@ -1656,6 +1672,15 @@ fn request_examples() -> List(RequestExample) {
       ),
     ),
     RequestExample(
+      "RetryWorkflowStepExact",
+      protocol.RetryWorkflowStepExact(
+        "req-retry-step-exact",
+        "secret",
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("build"),
+      ),
+    ),
+    RequestExample(
       "RecollectWorkflowOutputs",
       protocol.RecollectWorkflowOutputs(
         "req-recollect-outputs",
@@ -1832,6 +1857,7 @@ fn projection_fixture_projection() -> projection.Projection {
       ),
     ]),
     workflow_input_manifests: dict.new(),
+    workflow_interface_snapshots: dict.new(),
     workflow_output_manifests: dict.new(),
     publication_attempts: dict.new(),
     publication_latest_by_series: dict.new(),

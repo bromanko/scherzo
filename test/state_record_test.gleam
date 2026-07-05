@@ -94,6 +94,21 @@ pub fn encodes_and_decodes_retry_and_park_records_test() {
   ))
 }
 
+pub fn workflow_interface_snapshot_record_roundtrip_test() {
+  assert_roundtrip(record.with_id(
+    "workflow-interface-snapshot-1",
+    9050,
+    record.WorkflowInterfaceSnapshotRecorded(
+      run_id: "run-1",
+      workflow_id: "workflow-a",
+      workflow_fingerprint: "fingerprint-1",
+      artifact_ref: "runs/run-1/workflow-interface.v1.json",
+      artifact_sha256: "sha-1",
+      artifact_bytes: 123,
+    ),
+  ))
+}
+
 pub fn encodes_and_decodes_recovery_records_test() {
   assert_roundtrip(record.with_id(
     "counter-1",

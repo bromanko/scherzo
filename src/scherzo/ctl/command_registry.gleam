@@ -184,7 +184,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     command_spec.CommandSpec(
       handler: RetryKey,
       path: ["task", "retry"],
-      usage: "task retry <task|id:<id>> [--start-fresh --reason <text>]",
+      usage: "task retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]",
       summary: "Retry a tracker task now, or start a fresh run when explicitly requested.",
       positionals: [command_spec.Required("task_ref")],
       options: [
@@ -193,11 +193,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         timeout_option(),
         wait_option(),
         start_fresh_option(),
+        from_scratch_option(),
         reason_option(),
       ],
       help_lines: [
         line(
-          "task retry <task|id:<id>> [--start-fresh --reason <text>]",
+          "task retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]",
           "Retry a tracker task now, or start a fresh run when explicitly requested.",
         ),
       ],
@@ -325,7 +326,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     command_spec.CommandSpec(
       handler: RetryKey,
       path: ["retry"],
-      usage: "retry <task|id:<id>> [--start-fresh --reason <text>]",
+      usage: "retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]",
       summary: "Retry a task now.",
       positionals: [command_spec.Required("task_ref")],
       options: [
@@ -334,11 +335,12 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         timeout_option(),
         wait_option(),
         start_fresh_option(),
+        from_scratch_option(),
         reason_option(),
       ],
       help_lines: [
         line(
-          "retry <task|id:<id>> [--start-fresh --reason <text>]",
+          "retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]",
           "Retry a task now.",
         ),
       ],
@@ -1152,9 +1154,9 @@ fn deprecated_alias_tail(
     SchedulesRunKey, ["schedules", "run"] ->
       " will be removed after one release; use scherzo ctl run-schedule <job> --now."
     RetryKey, ["retry"] ->
-      " will be removed after one release; use scherzo ctl task retry <task|id:<id>> [--start-fresh --reason <text>]."
+      " will be removed after one release; use scherzo ctl task retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]."
     RetryStepKey, ["retry-step"] ->
-      " will be removed after one release; use scherzo ctl run retry-step <run-id> --step <step-id>."
+      " will be removed after one release; use scherzo ctl retry step <target> [--step <step-id>] for the common retry path, or scherzo ctl run retry-step <run-id> --step <step-id> for the exact expert override."
     RecollectOutputsKey, ["recollect-outputs"] ->
       " will be removed after one release; use scherzo ctl run recollect-outputs <run-id>."
     _, _ ->
@@ -1426,6 +1428,13 @@ fn start_fresh_option() -> command_spec.OptionSpec {
   command_spec.flag_option(
     "--start-fresh",
     "Start a fresh run from the current task payload and workflow definition.",
+  )
+}
+
+fn from_scratch_option() -> command_spec.OptionSpec {
+  command_spec.flag_option(
+    "--from-scratch",
+    "Alias for --start-fresh with operator-forced fresh supersession semantics.",
   )
 }
 
