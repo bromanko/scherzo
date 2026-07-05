@@ -15,7 +15,7 @@ set -euo pipefail
 #   lint                glinter + scherzo custom lint
 #   workflow-contracts  structured-output + review-lane offline contracts
 #   unit                gleam unit suite
-#   review-tools        Python review helper unit suite
+#   review-tools        Python script lint + review helper unit suite
 #   contract            gleam contract suites (runtime/orchestrator/tracker/workflow/repository)
 #   nix                 nix flake check
 #   package             nix build path:<repo-root>#scherzo
@@ -69,6 +69,27 @@ ci_lint() {
   run_step "scherzo custom lint" direnv exec . gleam run -m scherzo_lint
 }
 
+ci_python_script_lint() {
+  run_step "python script syntax" \
+    direnv exec . python3 -c '
+from pathlib import Path
+
+for path in (
+    "scripts/scherzo_execplan_review.py",
+    "scripts/scherzo-workspace-jj",
+    "scripts/scherzo-workspace-noop",
+):
+    compile(Path(path).read_text(encoding="utf-8"), path, "exec")
+'
+  run_step "python script lint" \
+    direnv exec . bash -c '
+      set -euo pipefail
+      ruff check --select F,E9 scripts/scherzo_execplan_review.py
+      ruff check --select F,E9 --stdin-filename scripts/scherzo-workspace-jj - < scripts/scherzo-workspace-jj
+      ruff check --select F,E9 --stdin-filename scripts/scherzo-workspace-noop - < scripts/scherzo-workspace-noop
+    '
+}
+
 ci_workflow_contracts() {
   run_step "structured output contract" \
     direnv exec . scripts/scherzo-structured-output-contract check-workflows \
@@ -90,6 +111,7 @@ ci_unit() {
 }
 
 ci_review_tools() {
+  ci_python_script_lint
   run_step "python review helper unit tests" \
     direnv exec . python3 -m unittest test/scherzo_execplan_review_test.py
 }

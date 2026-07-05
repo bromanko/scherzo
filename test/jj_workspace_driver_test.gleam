@@ -335,7 +335,7 @@ fn run_jj(
   args: String,
   env: List(#(String, String)),
 ) -> step_artifact.StepArtifact {
-  run_jj_command(step_id, "sh ", args, env)
+  run_jj_command(step_id, "", args, env)
 }
 
 fn run_jj_with_exact_path(
@@ -343,7 +343,7 @@ fn run_jj_with_exact_path(
   args: String,
   env: List(#(String, String)),
 ) -> step_artifact.StepArtifact {
-  run_jj_command(step_id, "/bin/sh ", args, env)
+  run_jj_command(step_id, "", args, env)
 }
 
 fn run_jj_without_inherited_workspace(
@@ -351,7 +351,7 @@ fn run_jj_without_inherited_workspace(
   args: String,
   env: List(#(String, String)),
 ) -> step_artifact.StepArtifact {
-  run_jj_command(step_id, "env -u SCHERZO_WORKSPACE_PATH sh ", args, env)
+  run_jj_command(step_id, "env -u SCHERZO_WORKSPACE_PATH ", args, env)
 }
 
 fn run_jj_command(
