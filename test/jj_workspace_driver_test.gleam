@@ -536,7 +536,6 @@ pub fn jj_driver_lifecycle_create_implements_root_workspace_creation_test() {
     resolve_line,
     add_line,
     "root",
-    "root",
     "status --color=never",
   ] = log_lines(log)
   assert fetch_line
@@ -776,7 +775,7 @@ pub fn jj_driver_lifecycle_create_bridges_portable_scherzo_symlinks_test() {
       <> "/.scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json",
     )
     == Ok(True)
-  let assert [_, _, "root", "root", "status --color=never"] = log_lines(log)
+  let assert [_, _, "root", "status --color=never"] = log_lines(log)
 
   let lane = absolute(dir <> "/workspaces/correctness")
   let lane_artifact =
@@ -2384,7 +2383,7 @@ pub fn jj_driver_lifecycle_before_step_verifies_workspace_test() {
     )
 
   assert_exit(artifact, 0)
-  assert log_lines(log) == ["root", "root", "status --color=never"]
+  assert log_lines(log) == ["root", "status --color=never"]
 }
 
 pub fn jj_driver_lifecycle_before_step_reports_broken_portable_symlink_test() {
@@ -2405,7 +2404,7 @@ pub fn jj_driver_lifecycle_before_step_reports_broken_portable_symlink_test() {
   assert string.contains(artifact.stderr, "portable symlink preflight failed")
   assert string.contains(artifact.stderr, "scripts")
   assert string.contains(artifact.stderr, "before review lanes")
-  assert log_lines(log) == ["root", "root"]
+  assert log_lines(log) == ["root"]
 }
 
 pub fn jj_driver_lifecycle_remove_skips_portable_scherzo_bridge_test() {
