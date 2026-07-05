@@ -102,6 +102,7 @@ task_routing:
 workflows:
   research: workflows/research.yaml
   implementation: workflows/implementation.yaml
+  one-shot: workflows/one-shot.yaml
   execplan: workflows/execplan.yaml
   execplan-revision: workflows/execplan-revision.yaml
   execplan-implementation: workflows/execplan-implementation.yaml

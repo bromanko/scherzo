@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=../../schemas/scherzo.workflow.v1.schema.json
+version: 1
+id: one-shot
+description: Implement a small, well-specified task directly from ticket context in a single agent pass with self-directed validation, gate on one deterministic validation run, publish a PR, and report the PR URL.
+# The implement step is the only agent pass before the deterministic gate, so pin
+# a strong model here instead of inheriting the launcher's machine-specific default.
+model: openai-codex/gpt-5.5
+thinking: xhigh
+workspace:
+  driver: dogfood-jj
+  requires: [status, diff, changed-files, baseline, refresh-base, publish-commit-stack]
+concurrency: 1
+recovery:
+  attempts: 1
+  prompt: prompts/one-shot-recover-failed-step.md
+contract:
+  version: 1
+  outputs:
+    commit_stack:
+      kind: commit_stack
+      media_type: application/vnd.scherzo.git-commit-stack+json
+      artifact_type: scherzo.git_commit_stack.v1
+      source:
+        step: materialize_commit_stack
+        path: state/implementation/scherzo-implementation-commit-stack.json
+artifacts:
+  publications:
+    - id: one_shot_commit_stack
+      repository: github.code
+      required: true
+      mode: commit_stack
+      commit_stack:
+        select:
+          output: commit_stack
+      target:
+        kind: stable_branch
+steps:
+  - id: prepare_context
+    kind: command
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" prepare --source ticket'
+    timeout: 5m
+    run_in: main
+
+  - id: refresh_base_before_implementation
+    kind: command
+    depends_on: [prepare_context]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" refresh-base --stage before-implementation'
+    timeout: 5m
+    run_in: main
+
+  - id: implement
+    kind: agent
+    depends_on: [refresh_base_before_implementation]
+    prompt: prompts/one-shot-implement.md
+    run_in: main
+
+  # Deterministic gate: the implement agent chooses its own in-flight validation,
+  # but publication is blocked unless the repository validation suite passes here.
+  - id: final_validate
+    kind: command
+    depends_on: [implement]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
+    timeout: 20m
+    run_in: main
+
+  - id: materialize_commit_stack
+    kind: command
+    depends_on: [final_validate]
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" publish'
+    timeout: 20m
+    run_in: main
+    recovery:
+      enabled: false
