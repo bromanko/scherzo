@@ -1339,7 +1339,8 @@ def refresh_base(root: Path, args: list[str]) -> None:
     })
 
 
-def parse_publish_args(args: list[str], operation: str) -> dict[str, str]:
+def parse_publish_args(args: list[str]) -> dict[str, str]:
+    command = "publish-commit-stack"
     values: dict[str, str] = {"allow-no-changes": "false"}
     saw_json = False
     with_value = {
@@ -1363,24 +1364,17 @@ def parse_publish_args(args: list[str], operation: str) -> dict[str, str]:
             values[arg[2:]] = args[index + 1]
             index += 2
         else:
-            usage_error(f"unsupported {operation} argument: {arg}")
+            usage_error(f"unsupported {command} argument: {arg}")
     for key in ["kind", "title-file", "body-file", "branch-prefix", "base"]:
         if not values.get(key):
-            usage_error(f"{operation} requires --{key}")
+            usage_error(f"{command} requires --{key}")
     if not saw_json:
-        usage_error(f"{operation} requires --json")
+        usage_error(f"{command} requires --json")
     if values.get("allow-no-changes") not in {"true", "false"}:
         usage_error("--allow-no-changes must be true or false")
     if not PUBLISH_KIND_RE.match(values["kind"]):
-        usage_error(f"{operation} --kind must be a lowercase token containing letters, numbers, and hyphens")
+        usage_error(f"{command} --kind must be a lowercase token containing letters, numbers, and hyphens")
     return values
-
-
-def sanitize_ref_part(value: str) -> str:
-    value = value.lower()
-    value = re.sub(r"[^a-z0-9._-]+", "-", value)
-    value = re.sub(r"-+", "-", value).strip("-._")
-    return value or "change"
 
 
 def read_required_file(path: str, label: str) -> str:
@@ -1547,29 +1541,20 @@ def validate_expected_selected_head(root: Path, expected: str) -> str:
     return expected
 
 
-def publish_needs_repo(operation: str, values: dict[str, str]) -> bool:
+def publish_needs_repo(values: dict[str, str]) -> bool:
     if values.get("target-pr"):
         return True
-    if operation == "publish-commit-stack" and values.get("target-branch"):
-        return False
-    return True
+    return not bool(values.get("target-branch"))
 
 
-def uses_stable_commit_stack_branch(operation: str, values: dict[str, str]) -> bool:
-    return operation == "publish-commit-stack" and not bool(values.get("target-branch"))
+def uses_stable_commit_stack_branch(values: dict[str, str]) -> bool:
+    return not bool(values.get("target-branch"))
 
 
-def publication_branch(
-    operation: str,
-    values: dict[str, str],
-    title_text: str,
-    change_id: str,
-) -> str:
+def publication_branch(values: dict[str, str]) -> str:
     if values.get("target-branch"):
         return values["target-branch"]
-    if uses_stable_commit_stack_branch(operation, values):
-        return values["branch-prefix"]
-    return f"{values['branch-prefix'].rstrip('/')}/{sanitize_ref_part(title_text)[:60]}-{change_id}"
+    return values["branch-prefix"]
 
 
 def base_branch_name(driver_ref: str) -> str:
@@ -1796,12 +1781,12 @@ def fail_pr_url_unavailable(
     )
 
 
-def publish_change(root: Path, args: list[str], *, operation: str = "publish-commit-stack") -> None:
-    values = parse_publish_args(args, operation)
+def publish_commit_stack(root: Path, args: list[str]) -> None:
+    values = parse_publish_args(args)
     reject_legacy_publication_remote_without_canonical()
     draft = pr_draft_setting()
     base = values["base"]
-    stable_commit_stack_branch = uses_stable_commit_stack_branch(operation, values)
+    stable_commit_stack_branch = uses_stable_commit_stack_branch(values)
     if stable_commit_stack_branch:
         reject_unsafe_stable_commit_stack_branch(values["branch-prefix"], base)
     title = read_required_file(values["title-file"], "title-file").strip().splitlines()
@@ -1812,16 +1797,16 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-com
     expected_selected_head = ""
     if values.get("target-branch") and values.get("expected-head"):
         validate_expected_target_head(root, remote, values["target-branch"], values["expected-head"])
-    elif operation == "publish-commit-stack" and values.get("expected-head"):
+    elif values.get("expected-head"):
         expected_selected_head = validate_expected_selected_head(root, values["expected-head"])
     ignore_working_copy = bool(expected_selected_head)
     publish_revision = expected_selected_head or "@"
-    repo = default_repo(root, remote, ignore_working_copy=ignore_working_copy) if publish_needs_repo(operation, values) else ""
+    repo = default_repo(root, remote, ignore_working_copy=ignore_working_copy) if publish_needs_repo(values) else ""
 
     if not ignore_working_copy:
         records = changed_file_records(root)
         if not records and allow_no_changes:
-            branch = values.get("target-branch") or (values["branch-prefix"] if stable_commit_stack_branch else "")
+            branch = publication_branch(values)
             url = ""
             if values.get("target-pr"):
                 url = view_pull_request_url(root, repo, values["target-pr"])
@@ -1843,12 +1828,11 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-com
         if not records:
             json_failure(status="nothing_to_publish", failure_code="nothing_to_publish", message="no changed files to publish")
 
-    if operation == "publish-commit-stack":
-        require_commit_stack_head_description(
-            root,
-            publish_revision,
-            ignore_working_copy=ignore_working_copy,
-        )
+    require_commit_stack_head_description(
+        root,
+        publish_revision,
+        ignore_working_copy=ignore_working_copy,
+    )
 
     change_id = revision_value(
         root,
@@ -1857,7 +1841,7 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-com
         default="change",
         ignore_working_copy=ignore_working_copy,
     )
-    branch = publication_branch(operation, values, title_text, change_id)
+    branch = publication_branch(values)
     # publish-commit-stack receives an already-selected commit_stack head;
     # describing it here would rewrite the commit object and break head checks.
     bookmark_args = ["bookmark", "set"]
@@ -1920,7 +1904,7 @@ def publish_change(root: Path, args: list[str], *, operation: str = "publish-com
     pr_url = ""
     created = False
     updated = bool(values.get("target-branch") or values.get("target-pr"))
-    branch_only_commit_stack = operation == "publish-commit-stack" and bool(values.get("target-branch")) and not values.get("target-pr")
+    branch_only_commit_stack = bool(values.get("target-branch")) and not values.get("target-pr")
     lookup: PullRequestLookupResult | None = None
     create: subprocess.CompletedProcess[str] | None = None
     if values.get("target-pr"):
@@ -2058,7 +2042,7 @@ def main(argv: list[str]) -> None:
         return
 
     if command == "publish-commit-stack":
-        publish_change(root, rest, operation="publish-commit-stack")
+        publish_commit_stack(root, rest)
         return
 
     if command == "assert-only":
