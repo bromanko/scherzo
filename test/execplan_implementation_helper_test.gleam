@@ -1,9 +1,7 @@
-import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
 import scherzo/command_step
-import scherzo/hash
 import scherzo/path as scherzo_path
 import scherzo/step_artifact
 import simplifile
@@ -47,18 +45,6 @@ fn metadata_cache_path(dir: String) -> String {
 
 fn metadata_canonical_path(dir: String) -> String {
   dir <> "/run-root/state/implementation/metadata.json"
-}
-
-fn canonical_execplan_plan_path(dir: String) -> String {
-  dir <> "/run-root/state/implementation/execplan-review-doc.md"
-}
-
-fn canonical_execplan_pack_path(dir: String) -> String {
-  dir <> "/run-root/state/implementation/execplan-implementation-pack.json"
-}
-
-fn canonical_execplan_bundle_path(dir: String) -> String {
-  dir <> "/run-root/state/implementation/execplan-bundle.json"
 }
 
 fn run_root_env() -> String {
@@ -403,74 +389,6 @@ pub fn metadata_backfills_run_root_from_tmp_cache_with_diagnostic_test() {
   let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
   assert cache == canonical
   assert string.contains(canonical, "\"base_change_id\": \"tmp-start\"")
-}
-
-pub fn restore_execplan_artifacts_restores_tmp_cache_from_run_root_test() {
-  let dir = "test/tmp/implementation-helper-restore-execplan-artifacts"
-  test_helpers.reset_dir(dir)
-  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
-  let assert Ok(Nil) =
-    simplifile.create_directory_all(dir <> "/run-root/state/implementation")
-  let plan =
-    "# Canonical Plan\n\n## Progress\n\n- [ ] Implementation pending.\n"
-  let pack = "{\"pack\":\"canonical\"}\n"
-  let bundle = "{\"bundle\":\"canonical\"}\n"
-  let assert Ok(Nil) = simplifile.write(canonical_execplan_plan_path(dir), plan)
-  let assert Ok(Nil) = simplifile.write(canonical_execplan_pack_path(dir), pack)
-  let assert Ok(Nil) =
-    simplifile.write(canonical_execplan_bundle_path(dir), bundle)
-  let metadata =
-    "{\n"
-    <> "  \"source_kind\": \"execplan\",\n"
-    <> "  \"plan_path\": \"tmp/execplan-review-doc.md\",\n"
-    <> "  \"plan_sha256\": \""
-    <> hash.sha256_hex(plan)
-    <> "\",\n"
-    <> "  \"plan_bytes\": "
-    <> int.to_string(string.length(plan))
-    <> ",\n"
-    <> "  \"base_change_id\": \"canonical-start\",\n"
-    <> "  \"canonical_plan_path\": \"run-root/state/implementation/execplan-review-doc.md\",\n"
-    <> "  \"execplan_v2_implementation_pack_path\": \"tmp/execplan-implementation-pack.json\",\n"
-    <> "  \"execplan_v2_bundle_path\": \"tmp/execplan-bundle.json\",\n"
-    <> "  \"canonical_execplan_v2_implementation_pack_path\": \"run-root/state/implementation/execplan-implementation-pack.json\",\n"
-    <> "  \"canonical_execplan_v2_bundle_path\": \"run-root/state/implementation/execplan-bundle.json\"\n"
-    <> "}\n"
-  let assert Ok(Nil) = simplifile.write(metadata_canonical_path(dir), metadata)
-  let assert Ok(Nil) =
-    simplifile.write(dir <> "/tmp/execplan-review-doc.md", "# Fixture\n")
-  let assert Ok(Nil) =
-    simplifile.write(
-      dir <> "/tmp/execplan-implementation-pack.json",
-      "fixture\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(dir <> "/tmp/execplan-bundle.json", "fixture\n")
-
-  let artifact =
-    run_helper_in(
-      dir,
-      clean_workflow_env()
-        <> " "
-        <> run_root_env()
-        <> " ../../../.scherzo/workflows/scripts/scherzo-implementation restore-execplan-artifacts",
-    )
-
-  assert artifact.status == step_artifact.StepSucceeded
-  assert artifact.exit_code == Some(0)
-  assert string.contains(
-    artifact.stdout,
-    "EXECPLAN_ARTIFACT_RESTORE_STATUS=restored",
-  )
-  let assert Ok(restored_plan) =
-    simplifile.read(dir <> "/tmp/execplan-review-doc.md")
-  let assert Ok(restored_pack) =
-    simplifile.read(dir <> "/tmp/execplan-implementation-pack.json")
-  let assert Ok(restored_bundle) =
-    simplifile.read(dir <> "/tmp/execplan-bundle.json")
-  assert restored_plan == plan
-  assert restored_pack == pack
-  assert restored_bundle == bundle
 }
 
 pub fn analyze_uses_canonical_metadata_when_tmp_cache_is_deleted_test() {
@@ -2119,6 +2037,8 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     ".scherzo/workflows/prompts/execplan-implementation-repair-base-drift.md",
     ".scherzo/workflows/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
     ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
+    ".scherzo/workflows/prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
+    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-final-repair.md",
     ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
   ]
 
@@ -2143,6 +2063,8 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
       ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
       ".scherzo/workflows/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
       ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
+      ".scherzo/workflows/prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-final-repair.md",
       ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
     ],
     fn(path) {
@@ -2162,16 +2084,20 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     },
   )
 
+  let deleted_restore_subcommand = "restore-" <> "execplan-artifacts"
+  let deleted_restore_instruction = "Run the " <> "restore" <> " command"
   list.each(
     [
       ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
       ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
       ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
+      ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-final-repair.md",
       ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
     ],
     fn(path) {
       let assert Ok(prompt) = simplifile.read(path)
-      assert string.contains(prompt, "restore-execplan-artifacts")
+      assert !string.contains(prompt, deleted_restore_subcommand)
+      assert !string.contains(prompt, deleted_restore_instruction)
       assert string.contains(prompt, "Treat unchecked Progress checklist items")
       assert string.contains(prompt, "deferred_manual_verification")
       assert string.contains(
@@ -2288,24 +2214,27 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
 pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   let assert Ok(workflow) =
     simplifile.read(".scherzo/workflows/execplan-implementation.yaml")
+  let deleted_restore_command = "restore-" <> "execplan-artifacts"
+  let deleted_restore_step_prefix = "restore_" <> "execplan_artifacts"
 
-  assert string.contains(
-    workflow,
-    "- id: restore_execplan_artifacts_before_plan_completion",
-  )
-  assert string.contains(workflow, "depends_on: [analyze_changes]")
-  assert string.contains(workflow, "restore-execplan-artifacts")
+  assert !string.contains(workflow, deleted_restore_command)
+  assert !string.contains(workflow, deleted_restore_step_prefix)
   assert string.contains(workflow, "- id: verify_plan_completion")
-  assert string.contains(
-    workflow,
-    "depends_on: [restore_execplan_artifacts_before_plan_completion]",
-  )
+  assert string.contains(workflow, "depends_on: [analyze_changes]")
   assert string.contains(
     workflow,
     "prompts/execplan-implementation-verify-completion.md",
   )
-  assert string.contains(workflow, "- id: apply_plan_completion_feedback")
+  assert string.contains(
+    workflow,
+    "- id: checkpoint_initial_plan_completion_verdict",
+  )
   assert string.contains(workflow, "depends_on: [verify_plan_completion]")
+  assert string.contains(workflow, "- id: apply_plan_completion_feedback")
+  assert string.contains(
+    workflow,
+    "depends_on: [checkpoint_initial_plan_completion_verdict]",
+  )
   assert string.contains(workflow, "- id: analyze_changes_after_plan_feedback")
   assert string.contains(
     workflow,
@@ -2313,7 +2242,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "- id: restore_execplan_artifacts_after_plan_feedback",
+    "- id: verify_plan_completion_after_feedback",
   )
   assert string.contains(
     workflow,
@@ -2321,16 +2250,16 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "- id: verify_plan_completion_after_feedback",
+    "- id: checkpoint_plan_completion_verdict_after_feedback",
   )
   assert string.contains(
     workflow,
-    "depends_on: [restore_execplan_artifacts_after_plan_feedback]",
+    "depends_on: [verify_plan_completion_after_feedback]",
   )
   assert string.contains(workflow, "- id: gate_plan_completion")
   assert string.contains(
     workflow,
-    "depends_on: [verify_plan_completion_after_feedback]",
+    "depends_on: [checkpoint_plan_completion_verdict_after_feedback]",
   )
   assert string.contains(workflow, "gate-plan-completion")
   assert string.contains(workflow, "- id: classify_plan_completion_gate")
@@ -2358,7 +2287,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "- id: restore_execplan_artifacts_after_late_plan_feedback",
+    "- id: verify_plan_completion_after_late_repair",
   )
   assert string.contains(
     workflow,
@@ -2366,15 +2295,15 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "- id: verify_plan_completion_after_late_repair",
-  )
-  assert string.contains(
-    workflow,
-    "depends_on: [restore_execplan_artifacts_after_late_plan_feedback]",
-  )
-  assert string.contains(
-    workflow,
     "prompts/execplan-implementation-verify-completion-after-late-repair.md",
+  )
+  assert string.contains(
+    workflow,
+    "- id: checkpoint_plan_completion_verdict_after_late_repair",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [verify_plan_completion_after_late_repair]",
   )
   assert string.contains(
     workflow,
@@ -2382,7 +2311,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "depends_on: [verify_plan_completion_after_late_repair]",
+    "depends_on: [checkpoint_plan_completion_verdict_after_late_repair]",
   )
   assert string.contains(
     workflow,
@@ -2415,7 +2344,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "- id: restore_execplan_artifacts_after_final_plan_feedback",
+    "- id: verify_plan_completion_after_final_repair",
   )
   assert string.contains(
     workflow,
@@ -2423,15 +2352,15 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "- id: verify_plan_completion_after_final_repair",
-  )
-  assert string.contains(
-    workflow,
-    "depends_on: [restore_execplan_artifacts_after_final_plan_feedback]",
-  )
-  assert string.contains(
-    workflow,
     "prompts/execplan-implementation-verify-completion-after-final-repair.md",
+  )
+  assert string.contains(
+    workflow,
+    "- id: checkpoint_plan_completion_verdict_after_final_repair",
+  )
+  assert string.contains(
+    workflow,
+    "depends_on: [verify_plan_completion_after_final_repair]",
   )
   assert string.contains(
     workflow,
@@ -2439,7 +2368,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert string.contains(
     workflow,
-    "depends_on: [verify_plan_completion_after_final_repair]",
+    "depends_on: [checkpoint_plan_completion_verdict_after_final_repair]",
   )
   assert string.contains(
     workflow,
@@ -2454,28 +2383,21 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
     "plan-completion-recovery --phase after-final-repair --attempt 3 --max-attempts 3",
   )
   assert !string.contains(workflow, "- id: review_changes")
-  assert string.contains(workflow, "- id: apply_review_feedback")
-  assert string.contains(workflow, "depends_on: [finalize_lanes]")
+  assert string.contains(workflow, "- id: validate_before_native_review")
   assert string.contains(
     workflow,
     "depends_on: [finalize_plan_completion_gate_recovery]",
   )
+  assert string.contains(workflow, "- id: apply_review_feedback")
+  assert string.contains(workflow, "depends_on: [finalize_lanes]")
   assert string.contains(workflow, "- id: assert_base_drift_repair")
   assert string.contains(workflow, "depends_on: [repair_base_drift]")
   assert string.contains(workflow, "assert-base-drift-repair")
   assert string.contains(
     workflow,
-    "- id: restore_execplan_artifacts_before_final_verification",
-  )
-  assert string.contains(workflow, "depends_on: [assert_base_drift_repair]")
-  assert string.contains(
-    workflow,
     "- id: verify_plan_completion_before_final_validation",
   )
-  assert string.contains(
-    workflow,
-    "depends_on: [restore_execplan_artifacts_before_final_verification]",
-  )
+  assert string.contains(workflow, "depends_on: [assert_base_drift_repair]")
   assert string.contains(
     workflow,
     "prompts/execplan-implementation-verify-completion-before-final-validation.md",
@@ -2753,7 +2675,7 @@ fn write_plan_completion_verdict_with_deferred_manual_verification(
   Nil
 }
 
-pub fn checkpointed_plan_completion_verdict_survives_tmp_clobber_test() {
+pub fn checkpointed_plan_completion_verdict_ignores_tmp_execplan_bundle_clobber_test() {
   let dir = "test/tmp/implementation-helper-verdict-checkpoint"
   let fingerprint = setup_plan_completion_gate_fixture(dir)
   let assert Ok(Nil) =
@@ -2783,6 +2705,8 @@ pub fn checkpointed_plan_completion_verdict_survives_tmp_clobber_test() {
       dir <> "/tmp/scherzo-plan-completion-verdict.json",
       "{\"verdict\":\"pass\"}\n",
     )
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/tmp/execplan-bundle.json", "not-json\n")
 
   let gate =
     run_helper_in(
@@ -2792,11 +2716,14 @@ pub fn checkpointed_plan_completion_verdict_survives_tmp_clobber_test() {
 
   assert gate.status == step_artifact.StepSucceeded
   assert gate.exit_code == Some(0)
-  assert string.contains(
+  assert !string.contains(
     gate.stdout,
-    "PLAN_COMPLETION_VERDICT_RESTORE_STATUS=restored",
+    "PLAN_COMPLETION_VERDICT_" <> "RESTORE_STATUS",
   )
   assert string.contains(gate.stdout, "PLAN_COMPLETION_GATE=passed")
+  let assert Ok(clobbered_bundle) =
+    simplifile.read(dir <> "/tmp/execplan-bundle.json")
+  assert clobbered_bundle == "not-json\n"
 }
 
 fn write_publish_fixture_metadata(dir: String) -> Nil {
