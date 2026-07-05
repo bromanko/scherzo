@@ -129,9 +129,20 @@ fn write_fake_jj(path: String) -> Nil {
         <> "    for arg in \"$@\"; do if [ \"$arg\" = @- ]; then echo 'ambiguous @-' >&2; exit 1; fi; done\n"
         <> "  fi\n"
         <> "  name_only=0\n"
-        <> "  for arg in \"$@\"; do if [ \"$arg\" = --name-only ]; then name_only=1; fi; done\n"
+        <> "  summary=0\n"
+        <> "  for arg in \"$@\"; do\n"
+        <> "    if [ \"$arg\" = --name-only ]; then name_only=1; fi\n"
+        <> "    if [ \"$arg\" = --summary ]; then summary=1; fi\n"
+        <> "  done\n"
         <> "  if [ \"$name_only\" = 1 ]; then\n"
         <> "    printf '%s' \"${SCHERZO_FAKE_JJ_CHANGED_FILES:-}\"\n"
+        <> "  elif [ \"$summary\" = 1 ]; then\n"
+        <> "    if [ \"${SCHERZO_FAKE_JJ_SUMMARY_FAIL:-}\" = 1 ]; then printf '%s\\n' \"${SCHERZO_FAKE_JJ_SUMMARY_FAIL_MESSAGE:-simulated summary failure}\" >&2; exit 1; fi\n"
+        <> "    if [ -n \"${SCHERZO_FAKE_JJ_SUMMARY+x}\" ]; then\n"
+        <> "      printf '%s' \"$SCHERZO_FAKE_JJ_SUMMARY\"\n"
+        <> "    else\n"
+        <> "      printf '%s\\n' \"${SCHERZO_FAKE_JJ_CHANGED_FILES:-}\" | while IFS= read -r path; do if [ -n \"$path\" ]; then printf 'M %s\\n' \"$path\"; fi; done\n"
+        <> "    fi\n"
         <> "  else\n"
         <> "    printf '%s' \"${SCHERZO_FAKE_JJ_DIFF:-}\"\n"
         <> "  fi\n"
@@ -1987,17 +1998,58 @@ pub fn jj_driver_changed_files_json_is_sorted_and_deduplicated_test() {
       "jj_driver_changed_sorted",
       "changed-files --json",
       fake_env(workspace, bin, log, [
-        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "zeta.md\nalpha.md\nzeta.md\n\n"),
+        #("SCHERZO_FAKE_JJ_SUMMARY", "Z zeta.md\nM alpha.md\nZ zeta.md\n\n"),
       ]),
     )
 
   assert_exit(artifact, 0)
-  assert string.contains(artifact.stdout, "\"version\":1")
-  assert string.contains(artifact.stdout, "\"path\":\"alpha.md\"")
-  assert string.contains(artifact.stdout, "\"status\":\"modified\"")
-  assert string.contains(artifact.stdout, "\"path\":\"zeta.md\"")
+  assert artifact.stdout
+    == "{\"version\":1,\"files\":[{\"path\":\"alpha.md\",\"status\":\"modified\"},{\"path\":\"zeta.md\",\"status\":\"modified\"}]}\n"
+  assert log_lines(log) == ["diff --summary --color=never"]
+}
+
+pub fn jj_driver_changed_files_falls_back_to_name_only_when_summary_fails_test() {
+  let dir = "test/tmp/jj-workspace-driver-changed-files-summary-fallback"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_changed_summary_fallback",
+      "changed-files --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "zeta.md\nalpha.md\nzeta.md\n\n"),
+        #("SCHERZO_FAKE_JJ_SUMMARY_FAIL", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert artifact.stdout
+    == "{\"version\":1,\"files\":[{\"path\":\"alpha.md\",\"status\":\"modified\"},{\"path\":\"zeta.md\",\"status\":\"modified\"}]}\n"
   assert log_lines(log)
-    == ["diff --name-only --color=never", "diff --summary --color=never"]
+    == ["diff --summary --color=never", "diff --name-only --color=never"]
+}
+
+pub fn jj_driver_changed_files_rejects_unparsed_successful_summary_test() {
+  let dir = "test/tmp/jj-workspace-driver-changed-files-unparsed-summary"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_changed_unparsed_summary",
+      "changed-files --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_SUMMARY", "M alpha.md\nR path-without-arrow\n"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stderr,
+    "unrecognized jj diff --summary output: R path-without-arrow",
+  )
+  assert log_lines(log) == ["diff --summary --color=never"]
 }
 
 pub fn jj_driver_changed_files_normalizes_jj_brace_rename_summaries_test() {
@@ -2011,13 +2063,7 @@ pub fn jj_driver_changed_files_normalizes_jj_brace_rename_summaries_test() {
       "changed-files --json",
       fake_env(workspace, bin, log, [
         #(
-          "SCHERZO_FAKE_JJ_CHANGED_FILES",
-          "workflows/dogfood/execplan.yaml\n"
-            <> "workflows/dogfood/prompts/new.md\n"
-            <> "workflows/dogfood/scripts/scherzo-review\n",
-        ),
-        #(
-          "SCHERZO_FAKE_JJ_DIFF",
+          "SCHERZO_FAKE_JJ_SUMMARY",
           "R {.scherzo/workflows => workflows/dogfood}/execplan.yaml\n"
             <> "R {.scherzo/workflows/prompts/old.md => workflows/dogfood/prompts/new.md}\n"
             <> "R {scripts => workflows/dogfood/scripts}/scherzo-review\n",
@@ -2032,10 +2078,13 @@ pub fn jj_driver_changed_files_normalizes_jj_brace_rename_summaries_test() {
       "workflows/dogfood/prompts/new.md",
       "workflows/dogfood/scripts/scherzo-review",
     ]
+  assert string.contains(
+    artifact.stdout,
+    "\"old_path\":\".scherzo/workflows/execplan.yaml\"",
+  )
   assert !string.contains(artifact.stdout, "dogfood}")
   assert !string.contains(artifact.stdout, "scripts}")
-  assert log_lines(log)
-    == ["diff --name-only --color=never", "diff --summary --color=never"]
+  assert log_lines(log) == ["diff --summary --color=never"]
 }
 
 pub fn jj_driver_changed_files_uses_default_current_change_diff_for_merge_revisions_test() {
@@ -2056,8 +2105,7 @@ pub fn jj_driver_changed_files_uses_default_current_change_diff_for_merge_revisi
   assert_exit(artifact, 0)
   assert decode_paths(artifact.stdout) == ["src/merged.gleam"]
   assert artifact.stderr == ""
-  assert log_lines(log)
-    == ["diff --name-only --color=never", "diff --summary --color=never"]
+  assert log_lines(log) == ["diff --summary --color=never"]
 }
 
 pub fn jj_driver_changed_files_json_escapes_special_path_names_test() {
@@ -2083,6 +2131,32 @@ pub fn jj_driver_changed_files_json_escapes_special_path_names_test() {
       "backslash\\name.md",
       "quote\"name.md",
       "space name.md",
+    ]
+  assert log_lines(log) == ["diff --summary --color=never"]
+}
+
+pub fn jj_driver_baseline_uses_summary_changed_records_test() {
+  let dir = "test/tmp/jj-workspace-driver-baseline-summary"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_baseline_summary",
+      "baseline --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "dirty.txt\n"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(artifact.stdout, "\"dirty\":true")
+  assert log_lines(log)
+    == [
+      "diff --summary --color=never",
+      "log -r @- --no-graph -T change_id --color=never",
+      "log -r @ --no-graph -T commit_id --color=never",
+      "log -r @ --no-graph -T change_id.short() --color=never",
     ]
 }
 
@@ -2275,6 +2349,8 @@ pub fn jj_driver_assert_only_accepts_exact_file_and_rejects_extra_file_test() {
   assert string.contains(failure.stderr, "docs/plans/example.md")
   assert string.contains(failure.stderr, "notes.md")
   assert !string.contains(failure.stderr, workspace)
+  assert count_log_lines_containing(log, "diff --summary --color=never") == 2
+  assert !string.contains(log_text(log), "diff --name-only")
 }
 
 pub fn jj_driver_assert_only_rejects_unsafe_paths_without_invoking_jj_test() {

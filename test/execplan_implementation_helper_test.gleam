@@ -2245,10 +2245,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert !string.contains(workflow, "- id: review_changes")
   assert string.contains(workflow, "- id: apply_review_feedback")
-  assert string.contains(
-    workflow,
-    "depends_on: [validate_native_review_artifacts]",
-  )
+  assert string.contains(workflow, "depends_on: [finalize_lanes]")
   assert string.contains(
     workflow,
     "depends_on: [finalize_plan_completion_gate_recovery]",
@@ -2631,7 +2628,12 @@ fn write_fake_jj(path: String) -> Nil {
         <> "if [ \"$1\" = git ] && [ \"$2\" = remote ]; then if [ -n \"${SCHERZO_FAKE_JJ_REMOTES+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_JJ_REMOTES\"; else printf '%s\\n' 'origin https://github.com/example/repo.git' 'fork git@github-scherzo-agent:example/repo.git'; fi; exit 0; fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then exit 0; fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = diff ]; then echo '.scherzo/workflows/scripts/scherzo-implementation'; exit 0; fi\n"
+        <> "if [ \"$1\" = diff ]; then\n"
+        <> "  summary=0\n"
+        <> "  for arg in \"$@\"; do if [ \"$arg\" = --summary ]; then summary=1; fi; done\n"
+        <> "  if [ \"$summary\" = 1 ]; then echo 'M .scherzo/workflows/scripts/scherzo-implementation'; else echo '.scherzo/workflows/scripts/scherzo-implementation'; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "if [ \"$1\" = rebase ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_JJ_REBASE_FAIL:-}\" = 1 ]; then echo 'simulated rebase conflict' >&2; exit 1; fi\n"
         <> "  exit 0\n"
@@ -2675,7 +2677,12 @@ fn write_fake_refresh_jj(path: String) -> Nil {
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = diff ]; then echo '.scherzo/workflows/scripts/scherzo-implementation'; exit 0; fi\n"
+        <> "if [ \"$1\" = diff ]; then\n"
+        <> "  summary=0\n"
+        <> "  for arg in \"$@\"; do if [ \"$arg\" = --summary ]; then summary=1; fi; done\n"
+        <> "  if [ \"$summary\" = 1 ]; then echo 'M .scherzo/workflows/scripts/scherzo-implementation'; else echo '.scherzo/workflows/scripts/scherzo-implementation'; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "if [ \"$1\" = rebase ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE:-}\" = 1 ]; then touch .fake-conflict; echo 'simulated conflict' >&2; exit 1; fi\n"
         <> "  if [ \"${SCHERZO_FAKE_REFRESH_REBASE_FAIL:-}\" = 1 ]; then echo 'simulated rebase infrastructure failure' >&2; exit 1; fi\n"

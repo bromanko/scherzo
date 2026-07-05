@@ -243,25 +243,35 @@ fn command_step_run(dag: workflow_dag.WorkflowDag, step_id: String) -> String {
 fn assert_native_review_downstream_steps_resolve_attempts(
   dag: workflow_dag.WorkflowDag,
 ) -> Nil {
-  let lanes = [
-    "correctness",
-    "test_quality",
-    "idioms_maintainability",
-    "security_performance",
-  ]
-  list.each(lanes, fn(lane) {
-    let materialize_run = command_step_run(dag, "materialize_" <> lane)
-    assert_contains(materialize_run, "--artifact-dir")
-    assert_not_contains(materialize_run, "attempt-1/structured")
-    assert_not_contains(materialize_run, "--submission \"$submission_path\"")
+  let finalize_run = command_step_run(dag, "finalize_lanes")
+  assert_contains(finalize_run, "finalize-lanes")
+  assert_contains(finalize_run, "--artifact-dir")
+  assert_contains(finalize_run, "--prepare-dir")
+  assert_contains(finalize_run, "artifacts/review/prepare_review")
+  assert_contains(finalize_run, "--review-root")
+  assert_contains(finalize_run, "$SCHERZO_RUN_ROOT/artifacts/review")
+  assert_contains(finalize_run, "--dirty-tree-dir")
+  assert_contains(finalize_run, "artifacts/review/dirty_tree")
+  assert_contains(finalize_run, "--synthesis-output-dir")
+  assert_contains(finalize_run, "artifacts/review/synthesize_review")
+  assert_not_contains(finalize_run, "attempt-1/structured")
+  assert_not_contains(finalize_run, "attempt-1.json")
 
-    let normalize_run = command_step_run(dag, "normalize_" <> lane)
-    assert_contains(normalize_run, "--agent-artifact-dir")
-    assert_not_contains(normalize_run, "attempt-1.json")
-    assert_not_contains(
-      normalize_run,
-      "--agent-step-metadata \"$step_artifact\"",
-    )
+  let lane_ids = [
+    #("correctness", "correctness"),
+    #("test-quality", "test_quality"),
+    #("idioms-maintainability", "idioms_maintainability"),
+    #("security-performance", "security_performance"),
+  ]
+  list.each(lane_ids, fn(lane) {
+    let #(lane_id, step_suffix) = lane
+    assert_contains(finalize_run, "--lane " <> lane_id)
+    assert workflow_dag.step_by_id(dag, "materialize_" <> step_suffix)
+      == Error(Nil)
+    assert workflow_dag.step_by_id(dag, "verify_" <> step_suffix <> "_evidence")
+      == Error(Nil)
+    assert workflow_dag.step_by_id(dag, "normalize_" <> step_suffix)
+      == Error(Nil)
   })
 }
 
@@ -429,32 +439,33 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
 
   let cutover_step_id = "assert_native" <> "_review_cutover"
   assert workflow_dag.step_by_id(dag, cutover_step_id) == Error(Nil)
+  assert workflow_dag.step_by_id(dag, "assert_clean_after_lanes") == Error(Nil)
+  assert workflow_dag.step_by_id(dag, "synthesize_review") == Error(Nil)
+  assert workflow_dag.step_by_id(dag, "validate_native_review_artifacts")
+    == Error(Nil)
 
   let assert Ok(prepare_step) = workflow_dag.step_by_id(dag, "prepare_review")
   assert prepare_step.depends_on == ["validate_before_native_review"]
   let assert workflow_dag.CommandStep(prepare_run, _) = prepare_step.kind
   assert_contains(prepare_run, "prepare-native")
+  assert_contains(prepare_run, "--dirty-tree-dir")
+  assert_contains(prepare_run, "artifacts/review/dirty_tree")
+  assert_contains(prepare_run, "--cutover-contract-dir")
+  assert_contains(prepare_run, "artifacts/review/cutover_contract")
   assert_not_contains(prepare_run, "--native" <> "-review-scenario")
   assert_not_contains(prepare_run, "--agent" <> "-backend")
 
-  let assert Ok(mutation_check) =
-    workflow_dag.step_by_id(dag, "assert_clean_after_lanes")
-  assert mutation_check.on_failure == workflow_dag.FailWorkflow
-
-  let assert Ok(validate_step) =
-    workflow_dag.step_by_id(dag, "validate_native_review_artifacts")
-  let assert workflow_dag.CommandStep(validate_run, _) = validate_step.kind
-  assert_contains(
-    validate_run,
-    "native review infrastructure issue blocks publication",
-  )
-  assert_contains(validate_run, "lane_failed")
-  assert_contains(validate_run, "execution_issues")
+  let assert Ok(finalize_step) = workflow_dag.step_by_id(dag, "finalize_lanes")
+  assert finalize_step.on_failure == workflow_dag.FailWorkflow
+  let assert workflow_dag.CommandStep(finalize_run, _) = finalize_step.kind
+  assert_contains(finalize_run, "finalize-lanes")
+  assert_contains(finalize_run, "--synthesis-output-dir")
+  assert_not_contains(finalize_run, "repo_root=")
 
   let assert Error(_) = workflow_dag.step_by_id(dag, "code_review")
   let assert Ok(apply_feedback_step) =
     workflow_dag.step_by_id(dag, "apply_feedback")
-  assert apply_feedback_step.depends_on == ["validate_native_review_artifacts"]
+  assert apply_feedback_step.depends_on == ["finalize_lanes"]
 
   assert_disposition_structured_output(dag, "apply_feedback")
   let materialize_run = command_step_run(dag, "materialize_review_dispositions")
@@ -478,8 +489,7 @@ pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_te
   let assert Error(_) = workflow_dag.step_by_id(dag, "review_changes")
   let assert Ok(apply_review_feedback_step) =
     workflow_dag.step_by_id(dag, "apply_review_feedback")
-  assert apply_review_feedback_step.depends_on
-    == ["validate_native_review_artifacts"]
+  assert apply_review_feedback_step.depends_on == ["finalize_lanes"]
   assert_disposition_structured_output(dag, "apply_review_feedback")
   let materialize_run = command_step_run(dag, "materialize_review_dispositions")
   assert_contains(materialize_run, "materialize-disposition-input")

@@ -189,9 +189,11 @@ pub fn daemon_poll_emits_work_item_invalidation_for_candidate_test() {
   let handoff_subject = process.new_subject()
   let log_subject = process.new_subject()
   let invalidation_subject = process.new_subject()
+  let agent_started_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
   let base_deps =
     dependencies(handoff_subject, log_subject, fn(_, _, _, _, _, _, _, _) {
+      process.send(agent_started_subject, Nil)
       test_async.block_until_released(worker_barrier)
       Error(agent_types.WorkerFailure(
         reason: error.PiFailed(error.PiProtocolError("released")),
@@ -208,14 +210,20 @@ pub fn daemon_poll_emits_work_item_invalidation_for_candidate_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 5000)
 
   process.send(started.data, daemon.PollTick(1))
 
-  let assert Ok(event) = process.receive(invalidation_subject, within: 5000)
-  assert event.source == work_item_invalidation.PollRefresh
+  let assert Ok(Nil) = process.receive(agent_started_subject, within: 5000)
+  test_async.release_barrier(worker_barrier)
+  let assert Ok(event) =
+    wait_for_invalidation_source(
+      invalidation_subject,
+      work_item_invalidation.PollRefresh,
+      20,
+    )
   assert_fake_task_invalidation(event)
 
-  test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
