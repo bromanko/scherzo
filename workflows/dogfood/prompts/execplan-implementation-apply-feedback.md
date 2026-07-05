@@ -16,17 +16,14 @@ Bundle preparation output:
 Implementation summary:
 {{ steps.implement_plan.final_response }}
 
-Post-plan-feedback change analysis output:
-{{ steps.analyze_changes_after_plan_feedback.stdout }}
+Change analysis output:
+{{ steps.analyze_changes.stdout }}
 
-Plan-completion gate output:
-{{ steps.gate_plan_completion.stdout }}
+Initial plan-completion verifier response:
+{{ steps.verify_plan_completion.final_response }}
 
-Late recovery finalizer output:
-{{ steps.finalize_plan_completion_gate_recovery.stdout }}
-
-Latest plan-completion verifier response:
-{{ steps.verify_plan_completion_after_late_repair.final_response }}
+Validation before native review output:
+{{ steps.validate_before_native_review.stdout }}
 
 Native review preparation output:
 {{ steps.prepare_review.stdout }}
@@ -55,6 +52,7 @@ Security / performance structured output error: {{ steps.lane_security_performan
 
 Native lane finalization, synthesis, evidence verification, and final review artifact output:
 {{ steps.finalize_lanes.stdout }}
+
 
 Targeted remediation contract:
 

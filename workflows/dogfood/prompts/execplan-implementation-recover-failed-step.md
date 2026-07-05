@@ -6,7 +6,7 @@ Inspect relevant local evidence before changing files:
 - the failed step summary and command diagnostics appended below;
 - `$SCHERZO_WORKSPACE_DRIVER status --human` and, when needed, `$SCHERZO_WORKSPACE_DRIVER diff --human`;
 - `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json`, and `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json` for the authoritative handoff inputs;
-- `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json`, `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-context.json`, and `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-recovery.json` when the failure mentions plan completion;
+- `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json` and `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-context.json` when the failure mentions plan completion;
 - `$SCHERZO_RUN_ROOT/state/implementation/scherzo-implementation-validation.json` and `.scherzo/command-step-diagnostics/<failed-step>.txt` when the failure is validation-related;
 - `tmp/review-finding-dispositions.v1.json`, `artifacts/review/synthesize_review/final-review.v1.json`, and retained structured-output validation messages when the failure mentions review dispositions or structured output;
 - `tmp/scherzo-implementation-refresh-base-latest.json`, `tmp/scherzo-implementation-base-drift-repair.md`, and `tmp/scherzo-implementation-base-drift-failure.md` when the failure follows base refresh or base-drift repair.
@@ -32,7 +32,7 @@ Rules:
 - Do not create, forget, finish, switch, push, bookmark, commit, squash, abandon, or otherwise manage workflow workspaces, branches, bookmarks, pushes, or pull requests.
 - Do not create or update PRs, branches, Linear issues, or remote resources from recovery.
 - Do not change the active workflow retry policy, original step prompt, structured-output contract, ExecPlan handoff inputs, or helper scripts merely to bypass the failure.
-- If the failure is the `assert_base_drift_repair` command reporting `tmp/scherzo-implementation-base-drift-failure.md`, inspect the marker and validation diagnostics. If you make a safe local repair and choose `recheck`, remove that stale failure marker before submitting recovery; keep it when choosing `gave_up`.
+- If the failure follows `refresh_and_validate_after_review` and `tmp/scherzo-implementation-base-drift-failure.md` exists, inspect the marker and validation diagnostics. If you make a safe local repair and choose `recheck`, remove that stale failure marker before submitting recovery; keep it when choosing `gave_up`.
 - If the ExecPlan task legitimately changed workflow YAML, prompts, schemas, scripts, or tests, edit those files only when the edit is the smallest safe fix for the requested implementation and validation failure.
 - Do not broaden product scope, rewrite the implementation, or perform unrelated cleanup.
 - When you have repaired the cause and the original failed step should pass if rerun unchanged, call `submit_workflow_step_recovery_result` exactly once with `decision: "recheck"`.

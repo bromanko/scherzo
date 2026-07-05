@@ -150,19 +150,12 @@ fn authoring_prompt_paths() -> List(String) {
     ".scherzo/workflows/prompts/execplan-incorporate-review.md",
     ".scherzo/workflows/prompts/execplan-revision.md",
     ".scherzo/workflows/prompts/execplan-implementation-implement.md",
-    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
   ]
 }
 
 fn completion_verifier_prompt_paths() -> List(String) {
   [
     ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-final-repair.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
   ]
 }
 
@@ -175,18 +168,11 @@ fn execplan_prompt_paths() -> List(String) {
     ".scherzo/workflows/prompts/execplan-review.md",
     ".scherzo/workflows/prompts/execplan-revision.md",
     ".scherzo/workflows/prompts/execplan-implementation-apply-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-apply-final-plan-completion-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-apply-late-plan-completion-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-apply-plan-completion-feedback.md",
     ".scherzo/workflows/prompts/execplan-implementation-implement.md",
     ".scherzo/workflows/prompts/execplan-implementation-recover-failed-step.md",
+    ".scherzo/workflows/prompts/execplan-implementation-recover-plan-completion.md",
     ".scherzo/workflows/prompts/execplan-implementation-repair-base-drift.md",
-    ".scherzo/workflows/prompts/execplan-implementation-review.md",
     ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-final-repair.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
   ]
 }
 

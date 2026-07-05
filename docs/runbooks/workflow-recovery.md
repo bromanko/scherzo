@@ -234,18 +234,18 @@ Discard is not reversible. It deletes unsupported active ledger state. It refuse
 
 ## Execplan plan-completion recovery
 
-`workflow:execplan-implementation` can stop with `plan_completion_recovery_exhausted` either after the bounded automatic late repair budget is spent at the pre-review gate or when the final pre-publish diagnostic gate still reports unmet promised plan behavior.
-
-When that happens, inspect these retained-workspace artifacts first:
+`workflow:execplan-implementation` now routes plan-completion failures through step recovery on the verifier step itself. When a run ends after plan-completion recovery, inspect these retained-workspace surfaces first:
 
 ```sh
-tmp/scherzo-plan-completion-recovery.md
-tmp/scherzo-plan-completion-verdict.json
+scripts/scherzoctl session <session-ref>
+$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json
 ```
 
-The recovery summary names the failure phase, blocking findings, retention status, and the recommended full-workflow retry command. Inspect or salvage the retained workspace manually if needed, then use the retry command shown in the artifact — normally `scherzoctl task retry <issue>` — when it is safe to rerun the full workflow.
+The human session output appends `workflow_step_recovery_history`, which shows the failed verifier attempt, the nested recovery decision, any recheck attempt, and the terminal workflow outcome. The stamped verdict artifact records the blocking findings the recovery worker was trying to address.
 
-Missing, malformed, or stale plan-completion verdict failures are not repairable through this path; they remain terminal verifier or workflow-state failures. Same-run resume from exhausted plan-completion recovery is intentionally out of scope for this MVP.
+If the recovery result is `gave_up` or the recovery budget is exhausted, inspect or salvage the retained workspace manually and then retry the full workflow when safe — normally with `scherzoctl task retry <issue>`.
+
+Missing, malformed, or stale plan-completion verdict failures remain terminal verifier or workflow-state failures. Same-run resume from exhausted plan-completion recovery is intentionally out of scope for this MVP.
 
 For the earlier ExecPlan structural checks that run before implementation starts, see `docs/runbooks/execplan-completion-preflight.md`.
 

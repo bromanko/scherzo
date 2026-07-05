@@ -40,6 +40,7 @@ Security / performance structured output error: {{ steps.lane_security_performan
 Native lane finalization, synthesis, evidence verification, and final review artifact output:
 {{ steps.finalize_lanes.stdout }}
 
+
 Targeted remediation contract:
 
 - This step replaces the old post-synthesis broad review pass. It is targeted remediation and disposition over synthesized native review findings, not a fresh review of the whole diff.

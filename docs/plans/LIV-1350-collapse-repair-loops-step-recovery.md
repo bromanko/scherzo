@@ -54,14 +54,17 @@ Milestone 5 validates and records acceptance evidence. At the end, workflow conf
 
 - [x] (2026-07-05) Read the repo-local ExecPlan guidance and prepared this split review document with mechanical details reserved for the structured implementation pack.
 - [x] (2026-07-05) Inspected the current dogfood workflow YAML, step-recovery runbook, plan-completion schemas, helper script, prompts, and workflow tests.
-- [ ] Implement the collapsed workflow topology and supporting prompts/helpers.
-- [ ] Run validation, record before/after counts, and update this living document during implementation.
+- [x] (2026-07-05) Collapsed `execplan-implementation` plan-completion verification onto two recoverable verifier steps with same-step command validation and a dedicated plan-completion recovery prompt.
+- [x] (2026-07-05) Collapsed base refresh plus validation onto one recoverable command step in both implementation workflows and rewrote the base-drift prompts for step recovery.
+- [x] (2026-07-05) Updated workflow/helper/prompt/runbook tests and ran the required validation suite, including step and agent recounts.
 
 ## Surprises & Discoveries
 
-The current tree already includes the review-lane pipeline collapse expected from LIV-1351. The measured current counts are 51 steps and 15 agent steps for `execplan-implementation`, and 20 steps and 7 agent steps for `implementation`, so the older 66-step and 38-step issue baseline is stale even though the repair-loop problem remains.
+The current tree already includes the review-lane pipeline collapse expected from LIV-1351. The measured starting counts were 51 steps and 15 agent steps for `execplan-implementation`, and 20 steps and 7 agent steps for `implementation`, so the older 66-step and 38-step issue baseline was already stale before this slice.
 
-The current helper script already has `gate-plan-completion --from-submission`, and the provider/canonical plan-completion verdict schemas already describe semantic agent submissions without machine-stamped fields. The implementation should harden and use that existing surface rather than creating a duplicate tool contract.
+The helper script already had the key `gate-plan-completion --from-submission` surface, so the implementation only needed to route workflow YAML through structured-output command validation instead of inventing a new verdict contract.
+
+Workflow portability in this workspace needed an explicit portable Scherzo wrapper that preserved the direnv-provided runtime `PATH`; the staged portability bundle otherwise lacked `erl`. That was a validation-environment detail, not a workflow-design blocker.
 
 ## Decision Log
 
@@ -79,7 +82,13 @@ The current helper script already has `gate-plan-completion --from-submission`, 
 
 ## Outcomes & Retrospective
 
-Not yet implemented. During implementation, update this section with the final topology, measured step and agent-session counts, validation evidence, and any accepted behavior differences from the old hand-unrolled loops.
+The checked workflows now use engine step recovery instead of hand-unrolled repair DAGs for both plan completion and base drift. `workflows/dogfood/execplan-implementation.yaml` now has 23 steps and 8 agent steps, down from 51 and 15. `workflows/dogfood/implementation.yaml` now has 16 steps and 6 agent steps, down from 20 and 7. The removed happy-path cost is exactly the intended one: no unconditional plan-completion repair agents and no always-on base-drift repair agent.
+
+The final topology keeps two plan-completion verifier agents in `execplan-implementation`, one before review and one before final validation/publish, both using the same prompt, `validation_retries: 0`, a same-step `gate-plan-completion --from-submission` command validator, and bounded step recovery. Both implementation workflows now use `refresh-base-and-validate --stage before-validation` as the only post-review base gate, with recovery prompts that submit `recheck` or `gave_up` through the native step-recovery protocol.
+
+Validation evidence for this implementation was: workflow-config doctor passed; `scripts/scherzo-ci workflow-contracts` passed; workflow portability passed with a wrapper that preserved the direnv runtime path; `direnv exec . gleam test` passed; `direnv exec . gleam format --check src test` passed; `direnv exec . gleam run -m glinter` passed with the repository's existing warning inventory; `direnv exec . gleam run -m scherzo_lint` passed; and `python3 .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-1350-collapse-repair-loops-step-recovery.md` reported `REVIEW_DOC_VALID=ok`.
+
+The main accepted behavior difference from the old topology is visibility: operators now inspect plan-completion and base-drift recovery through `workflow_step_recovery_history` plus the stamped verdict/validation artifacts instead of through hand-written plan-completion recovery summaries or base-drift assert steps.
 
 ## Validation and Acceptance
 
