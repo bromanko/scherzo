@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from typing import NoReturn
 
 USAGE = """Usage:
   scherzo-workspace-jj describe --json
@@ -26,6 +27,7 @@ USAGE = """Usage:
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 REFRESH_STAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 PUBLISH_KIND_RE = re.compile(r"^[a-z][a-z0-9-]*$")
+EXPECTED_HEAD_RE = re.compile(r"[0-9a-f]{40}")
 STATUS_MAP = {
     "A": "added",
     "M": "modified",
@@ -45,16 +47,19 @@ PORTABLE_SCHERZO_LINKS = [
     (".scherzo/workflows", ".scherzo/workflows"),
 ]
 DEFAULT_BASE_CANDIDATES = ["main@origin", "main", "@"]
+OUTPUT_TEXT_LIMIT = 4000
+ERROR_CHANNEL_HUMAN = "human"
+ERROR_CHANNEL_JSON = "json"
 
 
-def usage_error(message: str | None = None) -> None:
+def usage_error(message: str | None = None) -> NoReturn:
     if message:
         print(f"scherzo-workspace-jj: {message}", file=sys.stderr)
     print(USAGE, file=sys.stderr, end="")
     raise SystemExit(2)
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     print(f"scherzo-workspace-jj: {message}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -85,7 +90,7 @@ def json_failure(
     message: str,
     exit_code: int = 1,
     **extra: object,
-) -> None:
+) -> NoReturn:
     payload: dict[str, object] = {
         "version": 1,
         "status": status,
@@ -95,6 +100,16 @@ def json_failure(
     payload.update(extra)
     json_dump(payload)
     raise SystemExit(exit_code)
+
+
+def invalid_configuration(message: str, *, error_channel: str) -> NoReturn:
+    if error_channel == ERROR_CHANNEL_JSON:
+        json_failure(
+            status="invalid_request",
+            failure_code="invalid_configuration",
+            message=message,
+        )
+    fail(message)
 
 
 def legacy_publish_change_command(args: list[str]) -> None:
@@ -162,13 +177,16 @@ def base_selection_was_configured() -> bool:
     )
 
 
-def fetch_base_enabled() -> bool:
+def fetch_base_enabled(*, error_channel: str) -> bool:
     value = env_value("SCHERZO_JJ_WORKSPACE_FETCH_BASE")
     if value is None or value == "true":
         return True
     if value == "false":
         return False
-    usage_error("SCHERZO_JJ_WORKSPACE_FETCH_BASE must be true or false")
+    invalid_configuration(
+        "SCHERZO_JJ_WORKSPACE_FETCH_BASE must be true or false",
+        error_channel=error_channel,
+    )
 
 
 def pr_draft_setting() -> bool:
@@ -179,10 +197,9 @@ def pr_draft_setting() -> bool:
         return True
     if value == "false":
         return False
-    json_failure(
-        status="invalid_request",
-        failure_code="invalid_configuration",
-        message="SCHERZO_PR_DRAFT must be true or false",
+    invalid_configuration(
+        "SCHERZO_PR_DRAFT must be true or false",
+        error_channel=ERROR_CHANNEL_JSON,
     )
 
 
@@ -324,35 +341,96 @@ def lifecycle_workspace_name(workspace_path: Path) -> str:
     return f"scherzo-{workflow}-{issue_key}-{run_key}-{logical_key}"
 
 
-def run_backend_proc(
+def timeout_output_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def missing_command(args: list[str], *, error_channel: str, human_message: str | None = None) -> NoReturn:
+    message = human_message or f"required command not found: {args[0]}"
+    if error_channel == ERROR_CHANNEL_JSON:
+        json_failure(
+            status="invalid_request",
+            failure_code="command_not_found",
+            message=f"required command not found: {args[0]}",
+        )
+    fail(message)
+
+
+def run_command(
     args: list[str],
     *,
     cwd: Path | None = None,
+    capture: bool = True,
+    timeout: float | None = None,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+    missing_command_message: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             args,
             cwd=str(cwd) if cwd is not None else None,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
             check=False,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as exc:
+        stdout = timeout_output_text(exc.stdout)
+        stderr = timeout_output_text(exc.stderr)
+        timeout_detail = (
+            f"{args[0]} timed out after {timeout:g} seconds"
+            if timeout is not None
+            else f"{args[0]} timed out"
+        )
+        stderr = f"{stderr}\n{timeout_detail}" if stderr else timeout_detail
+        return subprocess.CompletedProcess(args, 124, stdout, stderr)
     except FileNotFoundError:
-        fail(f"required command not found: {args[0]}")
+        missing_command(
+            args,
+            error_channel=error_channel,
+            human_message=missing_command_message,
+        )
 
 
-def run_backend_stream(args: list[str], *, cwd: Path | None = None) -> int:
-    try:
-        return subprocess.call(args, cwd=str(cwd) if cwd is not None else None)
-    except FileNotFoundError:
-        fail(f"required command not found: {args[0]}")
+def run_jj(
+    root: Path,
+    args: list[str],
+    *,
+    capture: bool = True,
+    ignore_working_copy: bool = False,
+    repository: bool = False,
+    timeout: float | None = None,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> subprocess.CompletedProcess[str]:
+    command = ["jj"]
+    cwd: Path | None = root
+    if repository:
+        command.extend(["--repository", str(root)])
+        cwd = None
+    else:
+        ensure_workspace(root)
+    if ignore_working_copy:
+        command.append("--ignore-working-copy")
+    command.extend(args)
+    return run_command(
+        command,
+        cwd=cwd,
+        capture=capture,
+        timeout=timeout,
+        error_channel=error_channel,
+        missing_command_message="jj executable not found",
+    )
 
 
 def write_bounded_backend_output(proc: subprocess.CompletedProcess[str]) -> None:
     text = proc.stderr or proc.stdout
     if text:
-        sys.stderr.write(text[:4000])
+        sys.stderr.write(text[:OUTPUT_TEXT_LIMIT])
         if not text.endswith("\n"):
             sys.stderr.write("\n")
 
@@ -360,49 +438,6 @@ def write_bounded_backend_output(proc: subprocess.CompletedProcess[str]) -> None
 def require_jj_repo_root(repo_root: Path) -> None:
     if not (repo_root / ".jj").is_dir():
         fail(f"repo root is not a jj repository: {repo_root}")
-
-
-def revision_exists(repo_root: Path, revision: str) -> bool:
-    proc = run_backend_proc(
-        [
-            "jj",
-            "--repository",
-            str(repo_root),
-            "log",
-            "-r",
-            revision,
-            "--no-graph",
-            "-T",
-            "commit_id",
-            "--color=never",
-        ]
-    )
-    return proc.returncode == 0
-
-
-def fetch_workspace_base(repo_root: Path, branch: str, remote: str) -> None:
-    proc = run_backend_proc(
-        [
-            "jj",
-            "--repository",
-            str(repo_root),
-            "git",
-            "fetch",
-            "--remote",
-            remote,
-            "--branch",
-            branch,
-        ]
-    )
-    if proc.returncode != 0:
-        write_bounded_backend_output(proc)
-        fail(
-            f"could not fetch workspace base '{branch}' from remote "
-            f"'{remote}' before creating root workspace; for local-only use set "
-            "SCHERZO_JJ_WORKSPACE_BASE=@ or SCHERZO_JJ_WORKSPACE_FETCH_BASE=false, "
-            "for non-main branches set SCHERZO_JJ_WORKSPACE_BASE_BRANCH, and for "
-            "alternate remotes set SCHERZO_JJ_WORKSPACE_REMOTE."
-        )
 
 
 def configured_base_candidates(branch: str, remote: str) -> list[str]:
@@ -635,7 +670,7 @@ def ensure_portable_scherzo_bridge(workspace_path: Path) -> None:
 
 def first_existing_revision(repo_root: Path, candidates: list[str]) -> str | None:
     for candidate in candidates:
-        if revision_exists(repo_root, candidate):
+        if revision_commit_ids(repo_root, candidate, repository=True) is not None:
             return candidate
     return None
 
@@ -643,7 +678,7 @@ def first_existing_revision(repo_root: Path, candidates: list[str]) -> str | Non
 def workspace_base_revision(repo_root: Path) -> str:
     explicit_base = env_value("SCHERZO_JJ_WORKSPACE_BASE")
     if explicit_base is not None:
-        if not revision_exists(repo_root, explicit_base):
+        if revision_commit_ids(repo_root, explicit_base, repository=True) is None:
             fail(f"SCHERZO_JJ_WORKSPACE_BASE does not resolve in repo: {explicit_base}")
         return explicit_base
 
@@ -688,7 +723,7 @@ def prepare_destination_for_workspace_add(workspace_path: Path) -> Path:
 
 
 def run_jj_root(workspace_path: Path) -> str:
-    proc = run_backend_proc(["jj", "root"], cwd=workspace_path)
+    proc = run_jj(workspace_path, ["root"])
     if proc.returncode != 0:
         write_bounded_backend_output(proc)
         fail("jj root failed")
@@ -704,8 +739,8 @@ def verify_current_workspace(workspace_path: Path) -> None:
 
     ensure_portable_scherzo_bridge(workspace_path)
 
-    status = run_backend_stream(["jj", "status", "--color=never"], cwd=workspace_path)
-    if status != 0:
+    status = run_jj(workspace_path, ["status", "--color=never"], capture=False)
+    if status.returncode != 0:
         fail("jj status failed")
 
 
@@ -714,7 +749,7 @@ def allow_trusted_envrc_after_create(workspace_path: Path) -> None:
         return
     if shutil.which("direnv") is None:
         fail(".envrc exists but direnv is not installed in workspace setup environment")
-    proc = run_backend_proc(["direnv", "allow", "."], cwd=workspace_path)
+    proc = run_command(["direnv", "allow", "."], cwd=workspace_path)
     if proc.returncode != 0:
         write_bounded_backend_output(proc)
         print(
@@ -724,8 +759,8 @@ def allow_trusted_envrc_after_create(workspace_path: Path) -> None:
 
 
 def add_workspace(args: list[str], workspace_parent: Path) -> None:
-    status = run_backend_stream(args, cwd=workspace_parent)
-    if status != 0:
+    proc = run_command(args, cwd=workspace_parent, capture=False)
+    if proc.returncode != 0:
         fail("jj workspace add failed")
 
 
@@ -743,8 +778,25 @@ def lifecycle_create() -> None:
     if source_workspace is None and explicit_base is None:
         branch = selected_workspace_base_branch()
         remote = selected_workspace_base_remote()
-        if fetch_base_enabled():
-            fetch_workspace_base(repo_root, branch, remote)
+        if fetch_base_enabled(error_channel=ERROR_CHANNEL_HUMAN):
+            ok, message = fetch_ref(
+                repo_root,
+                branch,
+                remote,
+                repository=True,
+                error_channel=ERROR_CHANNEL_HUMAN,
+            )
+            if not ok:
+                sys.stderr.write(message[:OUTPUT_TEXT_LIMIT])
+                if message and not message.endswith("\n"):
+                    sys.stderr.write("\n")
+                fail(
+                    f"could not fetch workspace base '{branch}' from remote "
+                    f"'{remote}' before creating root workspace; for local-only use set "
+                    "SCHERZO_JJ_WORKSPACE_BASE=@ or SCHERZO_JJ_WORKSPACE_FETCH_BASE=false, "
+                    "for non-main branches set SCHERZO_JJ_WORKSPACE_BASE_BRANCH, and for "
+                    "alternate remotes set SCHERZO_JJ_WORKSPACE_REMOTE."
+                )
 
     workspace_parent = prepare_destination_for_workspace_add(workspace_path)
     workspace_name = lifecycle_workspace_name(workspace_path)
@@ -796,16 +848,19 @@ def lifecycle_create() -> None:
 def forget_workspace_at(target: Path) -> None:
     if not target.is_dir():
         return
-    root_proc = run_backend_proc(["jj", "root"], cwd=target)
+    root_proc = run_command(["jj", "root"], cwd=target, missing_command_message="jj executable not found")
     if root_proc.returncode != 0:
         return
     # Cleanup must be able to forget workspaces left stale by concurrent
     # workflow lanes. We are deleting the workspace tree anyway, so avoid
     # snapshot/update of the working copy during this metadata operation.
-    status = run_backend_stream(
-        ["jj", "--ignore-working-copy", "workspace", "forget"], cwd=target
+    status = run_command(
+        ["jj", "--ignore-working-copy", "workspace", "forget"],
+        cwd=target,
+        capture=False,
+        missing_command_message="jj executable not found",
     )
-    if status != 0:
+    if status.returncode != 0:
         fail(f"could not forget jj workspace: {target}")
 
 
@@ -880,18 +935,9 @@ def write_process_output(completed: subprocess.CompletedProcess[str]) -> None:
         sys.stderr.write(completed.stderr)
 
 
-def run_jj_stream(root: Path, args: list[str]) -> None:
-    ensure_workspace(root)
-    try:
-        status = subprocess.call(["jj", *args], cwd=str(root))
-    except FileNotFoundError:
-        fail("jj executable not found")
-    raise SystemExit(0 if status == 0 else 1)
-
-
 def run_jj_status_human(root: Path) -> None:
     status_args = ["status", "--color=never"]
-    completed = run_jj_proc(root, status_args)
+    completed = run_jj(root, status_args)
     if completed.returncode == 0:
         write_process_output(completed)
         raise SystemExit(0)
@@ -905,63 +951,27 @@ def run_jj_status_human(root: Path) -> None:
         "scherzo-workspace-jj: running "
         "`jj workspace update-stale` before retrying status\n"
     )
-    update = run_jj_proc(root, ["workspace", "update-stale"])
+    update = run_jj(root, ["workspace", "update-stale"])
     if update.returncode != 0:
         write_process_output(completed)
         write_process_output(update)
         raise SystemExit(1)
 
-    retried = run_jj_proc(root, status_args)
+    retried = run_jj(root, status_args)
     write_process_output(retried)
     raise SystemExit(0 if retried.returncode == 0 else 1)
 
 
-def run_jj_proc(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    ensure_workspace(root)
-    try:
-        return subprocess.run(
-            ["jj", *args],
-            cwd=str(root),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-    except FileNotFoundError:
-        fail("jj executable not found")
-
-
-def run_jj_proc_no_snapshot(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    ensure_workspace(root)
-    try:
-        return subprocess.run(
-            ["jj", "--ignore-working-copy", *args],
-            cwd=str(root),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-    except FileNotFoundError:
-        fail("jj executable not found")
-
-
-def run_jj_proc_for_publication(
+def run_jj_capture(
     root: Path,
     args: list[str],
     *,
-    ignore_working_copy: bool,
-) -> subprocess.CompletedProcess[str]:
-    if ignore_working_copy:
-        return run_jj_proc_no_snapshot(root, args)
-    return run_jj_proc(root, args)
-
-
-def run_jj_capture(root: Path, args: list[str]) -> str:
-    completed = run_jj_proc(root, args)
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> str:
+    completed = run_jj(root, args, error_channel=error_channel)
     if completed.returncode != 0:
         if completed.stderr:
-            sys.stderr.write(completed.stderr[:4000])
+            sys.stderr.write(completed.stderr[:OUTPUT_TEXT_LIMIT])
             if not completed.stderr.endswith("\n"):
                 sys.stderr.write("\n")
         fail("jj command failed")
@@ -969,13 +979,13 @@ def run_jj_capture(root: Path, args: list[str]) -> str:
 
 
 def run_jj_capture_json(root: Path, args: list[str], failure_code: str) -> str:
-    completed = run_jj_proc(root, args)
+    completed = run_jj(root, args, error_channel=ERROR_CHANNEL_JSON)
     if completed.returncode != 0:
         message = (completed.stderr or completed.stdout or "jj command failed").strip()
         json_failure(
             status="command_failed",
             failure_code=failure_code,
-            message=message[:4000] or "jj command failed",
+            message=message[:OUTPUT_TEXT_LIMIT] or "jj command failed",
         )
     return completed.stdout
 
@@ -991,11 +1001,19 @@ def clean_lines(output: str) -> list[str]:
     return values
 
 
-def changed_paths(root: Path) -> list[str]:
+def changed_paths(
+    root: Path,
+    *,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> list[str]:
     # Fallback path list: use jj's current-change diff instead of an explicit
     # @-..@ range. Merge resolution workspaces have two parents, so @- is
     # ambiguous there.
-    output = run_jj_capture(root, ["diff", "--name-only", "--color=never"])
+    output = run_jj_capture(
+        root,
+        ["diff", "--name-only", "--color=never"],
+        error_channel=error_channel,
+    )
     return sorted(clean_lines(output))
 
 
@@ -1060,8 +1078,16 @@ def parse_summary_records(summary: str) -> tuple[dict[str, dict[str, str]], list
     return records, unparsed_lines
 
 
-def changed_file_records(root: Path) -> list[dict[str, str]]:
-    summary_proc = run_jj_proc(root, ["diff", "--summary", "--color=never"])
+def changed_file_records(
+    root: Path,
+    *,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> list[dict[str, str]]:
+    summary_proc = run_jj(
+        root,
+        ["diff", "--summary", "--color=never"],
+        error_channel=error_channel,
+    )
     if summary_proc.returncode == 0:
         summary_records, unparsed_lines = parse_summary_records(summary_proc.stdout)
         # A successful but unrecognized human summary must not make safety
@@ -1077,14 +1103,17 @@ def changed_file_records(root: Path) -> list[dict[str, str]]:
     else:
         records = [
             {"path": path, "status": "modified"}
-            for path in changed_paths(root)
+            for path in changed_paths(root, error_channel=error_channel)
         ]
     records.sort(key=lambda record: record.get("path", ""))
     return records
 
 
 def print_changed_files_json(root: Path) -> None:
-    json_dump({"version": 1, "files": changed_file_records(root)})
+    json_dump({
+        "version": 1,
+        "files": changed_file_records(root, error_channel=ERROR_CHANNEL_JSON),
+    })
 
 
 def assert_only(root: Path, target: str) -> None:
@@ -1106,33 +1135,55 @@ def revision_value(
     *,
     default: str = "",
     ignore_working_copy: bool = False,
+    repository: bool = False,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
 ) -> str:
-    proc = run_jj_proc_for_publication(
+    proc = run_jj(
         root,
         ["log", "-r", revision, "--no-graph", "-T", template, "--color=never"],
         ignore_working_copy=ignore_working_copy,
+        repository=repository,
+        error_channel=error_channel,
     )
     if proc.returncode != 0:
         return default
     return proc.stdout.strip() or default
 
 
-def revision_commit_ids(root: Path, revision: str) -> list[str] | None:
-    proc = run_jj_proc(
+def revision_commit_ids(
+    root: Path,
+    revision: str,
+    *,
+    repository: bool = False,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> list[str] | None:
+    template = "commit_id" if repository else "commit_id ++ \"\\n\""
+    proc = run_jj(
         root,
-        ["log", "-r", revision, "--no-graph", "-T", "commit_id ++ \"\\n\"", "--color=never"],
+        ["log", "-r", revision, "--no-graph", "-T", template, "--color=never"],
+        repository=repository,
+        error_channel=error_channel,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     return clean_lines(proc.stdout)
 
 
-def current_parent_commit_ids(root: Path) -> list[str]:
-    return revision_commit_ids(root, "@-") or []
+def current_parent_commit_ids(
+    root: Path,
+    *,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> list[str]:
+    return revision_commit_ids(root, "@-", error_channel=error_channel) or []
 
 
-def has_unresolved_conflicts(root: Path, revision: str = "@") -> bool:
-    proc = run_jj_proc(
+def has_unresolved_conflicts(
+    root: Path,
+    revision: str = "@",
+    *,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> bool:
+    proc = run_jj(
         root,
         [
             "log",
@@ -1143,6 +1194,7 @@ def has_unresolved_conflicts(root: Path, revision: str = "@") -> bool:
             "change_id.short()",
             "--color=never",
         ],
+        error_channel=error_channel,
     )
     return proc.returncode == 0 and bool(proc.stdout.strip())
 
@@ -1151,8 +1203,16 @@ def normalize_conflict_file_path(value: str) -> str:
     return re.sub(r"\s+\d+-sided conflict(?:\s+.*)?$", "", value.strip())
 
 
-def conflict_files(root: Path) -> list[str]:
-    proc = run_jj_proc(root, ["resolve", "--list", "--color=never"])
+def conflict_files(
+    root: Path,
+    *,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> list[str]:
+    proc = run_jj(
+        root,
+        ["resolve", "--list", "--color=never"],
+        error_channel=error_channel,
+    )
     if proc.returncode == 0:
         return sorted(
             path
@@ -1165,12 +1225,30 @@ def conflict_files(root: Path) -> list[str]:
 
 
 def baseline_json(root: Path) -> None:
-    records = changed_file_records(root)
+    records = changed_file_records(root, error_channel=ERROR_CHANNEL_JSON)
     json_dump({
         "version": 1,
-        "baseline_id": revision_value(root, "@-", "change_id", default="unknown-baseline"),
-        "workspace_revision_id": revision_value(root, "@", "commit_id", default="unknown-revision"),
-        "change_id": revision_value(root, "@", "change_id.short()", default="unknown-change"),
+        "baseline_id": revision_value(
+            root,
+            "@-",
+            "change_id",
+            default="unknown-baseline",
+            error_channel=ERROR_CHANNEL_JSON,
+        ),
+        "workspace_revision_id": revision_value(
+            root,
+            "@",
+            "commit_id",
+            default="unknown-revision",
+            error_channel=ERROR_CHANNEL_JSON,
+        ),
+        "change_id": revision_value(
+            root,
+            "@",
+            "change_id.short()",
+            default="unknown-change",
+            error_channel=ERROR_CHANNEL_JSON,
+        ),
         "dirty": bool(records),
     })
 
@@ -1217,19 +1295,37 @@ def parse_refresh_args(args: list[str]) -> tuple[str, str | None]:
     return stage, target
 
 
-def fetch_ref(root: Path, base: str, remote: str) -> tuple[bool, str]:
-    proc = run_jj_proc(root, ["git", "fetch", "--remote", remote, "--branch", base])
+def fetch_ref(
+    root: Path,
+    base: str,
+    remote: str,
+    *,
+    repository: bool = False,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> tuple[bool, str]:
+    proc = run_jj(
+        root,
+        ["git", "fetch", "--remote", remote, "--branch", base],
+        repository=repository,
+        error_channel=error_channel,
+    )
     text = (proc.stderr or proc.stdout or "").strip()
     return proc.returncode == 0, text
 
 
 def refresh_base(root: Path, args: list[str]) -> None:
     stage, target = parse_refresh_args(args)
-    fetch_enabled = fetch_base_enabled()
+    fetch_enabled = fetch_base_enabled(error_channel=ERROR_CHANNEL_JSON)
     base, remote, remote_base = configured_base_ref()
     base_ref = base
     base_revision = remote_base
-    before_revision = revision_value(root, "@", "commit_id", default="unknown-before")
+    before_revision = revision_value(
+        root,
+        "@",
+        "commit_id",
+        default="unknown-before",
+        error_channel=ERROR_CHANNEL_JSON,
+    )
 
     if target:
         base_ref = target
@@ -1237,7 +1333,12 @@ def refresh_base(root: Path, args: list[str]) -> None:
         if fetch_enabled and "@" in target:
             branch, target_remote = target.rsplit("@", 1)
             if branch and target_remote:
-                ok, message = fetch_ref(root, branch, target_remote)
+                ok, message = fetch_ref(
+                    root,
+                    branch,
+                    target_remote,
+                    error_channel=ERROR_CHANNEL_JSON,
+                )
                 if not ok:
                     json_failure(
                         status="fetch_failed",
@@ -1252,7 +1353,12 @@ def refresh_base(root: Path, args: list[str]) -> None:
                     )
     else:
         if fetch_enabled:
-            ok, message = fetch_ref(root, base, remote)
+            ok, message = fetch_ref(
+                root,
+                base,
+                remote,
+                error_channel=ERROR_CHANNEL_JSON,
+            )
             if not ok:
                 json_failure(
                     status="fetch_failed",
@@ -1263,10 +1369,10 @@ def refresh_base(root: Path, args: list[str]) -> None:
                     base_revision=base_revision,
                     before_revision=before_revision,
                     after_revision=before_revision,
-                    conflict_files=conflict_files(root),
+                    conflict_files=conflict_files(root, error_channel=ERROR_CHANNEL_JSON),
                 )
-        if revision_commit_ids(root, remote_base) is None:
-            if revision_commit_ids(root, base) is None:
+        if revision_commit_ids(root, remote_base, error_channel=ERROR_CHANNEL_JSON) is None:
+            if revision_commit_ids(root, base, error_channel=ERROR_CHANNEL_JSON) is None:
                 json_failure(
                     status="base_not_found",
                     failure_code="base_not_found",
@@ -1276,11 +1382,15 @@ def refresh_base(root: Path, args: list[str]) -> None:
                     base_revision=remote_base,
                     before_revision=before_revision,
                     after_revision=before_revision,
-                    conflict_files=conflict_files(root),
+                    conflict_files=conflict_files(root, error_channel=ERROR_CHANNEL_JSON),
                 )
             base_revision = base
 
-    base_commits = revision_commit_ids(root, base_revision)
+    base_commits = revision_commit_ids(
+        root,
+        base_revision,
+        error_channel=ERROR_CHANNEL_JSON,
+    )
     if base_commits is None:
         json_failure(
             status="base_not_found",
@@ -1291,10 +1401,10 @@ def refresh_base(root: Path, args: list[str]) -> None:
             base_revision=base_revision,
             before_revision=before_revision,
             after_revision=before_revision,
-            conflict_files=conflict_files(root),
+            conflict_files=conflict_files(root, error_channel=ERROR_CHANNEL_JSON),
         )
 
-    parent_commits = current_parent_commit_ids(root)
+    parent_commits = current_parent_commit_ids(root, error_channel=ERROR_CHANNEL_JSON)
     if len(base_commits) == 1 and parent_commits == base_commits:
         json_dump({
             "version": 1,
@@ -1303,14 +1413,34 @@ def refresh_base(root: Path, args: list[str]) -> None:
             "base_ref": base_ref,
             "base_revision": base_revision,
             "before_revision": before_revision,
-            "after_revision": revision_value(root, "@", "commit_id", default=before_revision),
+            "after_revision": revision_value(
+                root,
+                "@",
+                "commit_id",
+                default=before_revision,
+                error_channel=ERROR_CHANNEL_JSON,
+            ),
             "conflict_files": [],
         })
         return
 
-    proc = run_jj_proc(root, ["rebase", "-r", "@", "-d", base_revision, "--color=never"])
-    files = conflict_files(root) if has_unresolved_conflicts(root) else []
-    after_revision = revision_value(root, "@", "commit_id", default=before_revision)
+    proc = run_jj(
+        root,
+        ["rebase", "-r", "@", "-d", base_revision, "--color=never"],
+        error_channel=ERROR_CHANNEL_JSON,
+    )
+    files = (
+        conflict_files(root, error_channel=ERROR_CHANNEL_JSON)
+        if has_unresolved_conflicts(root, error_channel=ERROR_CHANNEL_JSON)
+        else []
+    )
+    after_revision = revision_value(
+        root,
+        "@",
+        "commit_id",
+        default=before_revision,
+        error_channel=ERROR_CHANNEL_JSON,
+    )
     if files:
         json_failure(
             status="conflicts",
@@ -1329,7 +1459,7 @@ def refresh_base(root: Path, args: list[str]) -> None:
         json_failure(
             status="rebase_failed",
             failure_code="rebase_failed",
-            message=message[:4000],
+            message=message[:OUTPUT_TEXT_LIMIT],
             stage=stage,
             base_ref=base_ref,
             base_revision=base_revision,
@@ -1397,10 +1527,11 @@ def read_required_file(path: str, label: str) -> str:
 
 
 def remote_url(root: Path, remote: str, *, ignore_working_copy: bool = False) -> str | None:
-    proc = run_jj_proc_for_publication(
+    proc = run_jj(
         root,
         ["git", "remote", "list", "--color=never"],
         ignore_working_copy=ignore_working_copy,
+        error_channel=ERROR_CHANNEL_JSON,
     )
     if proc.returncode != 0:
         return None
@@ -1470,49 +1601,34 @@ def default_repo(root: Path, remote: str, *, ignore_working_copy: bool = False) 
     json_failure(status="invalid_request", failure_code="repo_not_found", message=f"could not infer GitHub owner/repo from remote URL: {url}")
 
 
-def timeout_output_text(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
 
-
-def run_capture(args: list[str], root: Path, *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            args,
-            cwd=str(root),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = timeout_output_text(exc.stdout)
-        stderr = timeout_output_text(exc.stderr)
-        timeout_detail = f"{args[0]} timed out after {timeout:g} seconds" if timeout is not None else f"{args[0]} timed out"
-        stderr = f"{stderr}\n{timeout_detail}" if stderr else timeout_detail
-        return subprocess.CompletedProcess(args, 124, stdout, stderr)
-    except FileNotFoundError:
-        json_failure(status="invalid_request", failure_code="command_not_found", message=f"required command not found: {args[0]}")
+def normalize_expected_head(expected: str) -> str:
+    normalized = expected.strip().lower()
+    if not EXPECTED_HEAD_RE.fullmatch(normalized):
+        usage_error("--expected-head must be a 40-character Git object ID")
+    return normalized
 
 
 def validate_expected_target_head(root: Path, remote: str, branch: str, expected: str) -> None:
-    expected = expected.strip().lower()
-    if not expected:
-        return
-    if not re.fullmatch(r"[0-9a-f]{40}", expected):
-        usage_error("--expected-head must be a 40-character Git object ID")
-    fetch = run_jj_proc(root, ["git", "fetch", "--remote", remote, "--branch", branch])
+    expected = normalize_expected_head(expected)
+    fetch = run_jj(
+        root,
+        ["git", "fetch", "--remote", remote, "--branch", branch],
+        error_channel=ERROR_CHANNEL_JSON,
+    )
     if fetch.returncode != 0:
         json_failure(
             status="publication_failed",
             failure_code="target_fetch_failed",
             message=(fetch.stderr or fetch.stdout or "jj git fetch failed").strip(),
         )
-    actual = revision_value(root, f"{branch}@{remote}", "commit_id", default="").lower()
+    actual = revision_value(
+        root,
+        f"{branch}@{remote}",
+        "commit_id",
+        default="",
+        error_channel=ERROR_CHANNEL_JSON,
+    ).lower()
     if actual != expected:
         json_failure(
             status="stale_existing_branch",
@@ -1525,15 +1641,14 @@ def validate_expected_target_head(root: Path, remote: str, branch: str, expected
 
 
 def validate_expected_selected_head(root: Path, expected: str) -> str:
-    expected = expected.strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{40}", expected):
-        usage_error("--expected-head must be a 40-character Git object ID")
+    expected = normalize_expected_head(expected)
     actual = revision_value(
         root,
         "@",
         "commit_id",
         default="",
         ignore_working_copy=True,
+        error_channel=ERROR_CHANNEL_JSON,
     ).lower()
     if actual != expected:
         json_failure(
@@ -1604,6 +1719,7 @@ def require_commit_stack_head_description(
         "description",
         default="",
         ignore_working_copy=ignore_working_copy,
+        error_channel=ERROR_CHANNEL_JSON,
     )
     if description.strip():
         return
@@ -1641,7 +1757,6 @@ def stable_commit_stack_push_needs_reconcile(message: str) -> bool:
 
 PR_LOOKUP_ATTEMPTS = 3
 PR_LOOKUP_TIMEOUT_SECONDS = 60.0
-DIAGNOSTIC_TEXT_LIMIT = 800
 
 
 class PullRequestLookupResult:
@@ -1663,9 +1778,9 @@ class PullRequestLookupResult:
 
 def truncate_diagnostic_text(value: str) -> str:
     text = value.strip()
-    if len(text) <= DIAGNOSTIC_TEXT_LIMIT:
+    if len(text) <= OUTPUT_TEXT_LIMIT:
         return text
-    return text[: DIAGNOSTIC_TEXT_LIMIT - 3] + "..."
+    return text[: OUTPUT_TEXT_LIMIT - 3] + "..."
 
 
 def command_diagnostics(label: str, proc: subprocess.CompletedProcess[str]) -> str:
@@ -1697,16 +1812,14 @@ def pr_lookup_timeout_seconds() -> float:
     try:
         seconds = float(value)
     except ValueError:
-        json_failure(
-            status="invalid_request",
-            failure_code="invalid_configuration",
-            message="SCHERZO_PR_LOOKUP_TIMEOUT_SECONDS must be a positive number",
+        invalid_configuration(
+            "SCHERZO_PR_LOOKUP_TIMEOUT_SECONDS must be a positive number",
+            error_channel=ERROR_CHANNEL_JSON,
         )
     if not math.isfinite(seconds) or seconds <= 0:
-        json_failure(
-            status="invalid_request",
-            failure_code="invalid_configuration",
-            message="SCHERZO_PR_LOOKUP_TIMEOUT_SECONDS must be a positive number",
+        invalid_configuration(
+            "SCHERZO_PR_LOOKUP_TIMEOUT_SECONDS must be a positive number",
+            error_channel=ERROR_CHANNEL_JSON,
         )
     return seconds
 
@@ -1721,10 +1834,11 @@ def lookup_pull_request_url(
     results: list[subprocess.CompletedProcess[str]] = []
     timeout = pr_lookup_timeout_seconds()
     for _ in range(max(1, attempts)):
-        proc = run_capture(
+        proc = run_command(
             ["gh", "pr", "view", selector, "--repo", repo, "--json", "url", "--jq", ".url"],
-            root,
+            cwd=root,
             timeout=timeout,
+            error_channel=ERROR_CHANNEL_JSON,
         )
         results.append(proc)
         if proc.returncode == 0 and proc.stdout.strip():
@@ -1805,16 +1919,17 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
     allow_no_changes = values["allow-no-changes"] == "true"
     remote = selected_publication_remote()
     expected_selected_head = ""
-    if values.get("target-branch") and values.get("expected-head"):
+    has_expected_head = "expected-head" in values
+    if values.get("target-branch") and has_expected_head:
         validate_expected_target_head(root, remote, values["target-branch"], values["expected-head"])
-    elif values.get("expected-head"):
+    elif has_expected_head:
         expected_selected_head = validate_expected_selected_head(root, values["expected-head"])
     ignore_working_copy = bool(expected_selected_head)
     publish_revision = expected_selected_head or "@"
     repo = default_repo(root, remote, ignore_working_copy=ignore_working_copy) if publish_needs_repo(values) else ""
 
     if not ignore_working_copy:
-        records = changed_file_records(root)
+        records = changed_file_records(root, error_channel=ERROR_CHANNEL_JSON)
         if not records and allow_no_changes:
             branch = publication_branch(values)
             url = ""
@@ -1829,8 +1944,20 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
                 "branch": branch,
                 "base_ref": base,
                 "base_revision": base,
-                "head_revision": revision_value(root, "@", "commit_id", default=""),
-                "change_id": revision_value(root, "@", "change_id.short()", default=""),
+                "head_revision": revision_value(
+                    root,
+                    "@",
+                    "commit_id",
+                    default="",
+                    error_channel=ERROR_CHANNEL_JSON,
+                ),
+                "change_id": revision_value(
+                    root,
+                    "@",
+                    "change_id.short()",
+                    default="",
+                    error_channel=ERROR_CHANNEL_JSON,
+                ),
                 "created": False,
                 "updated": False,
             })
@@ -1850,6 +1977,7 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
         "change_id.short()",
         default="change",
         ignore_working_copy=ignore_working_copy,
+        error_channel=ERROR_CHANNEL_JSON,
     )
     branch = publication_branch(values)
     # publish-commit-stack receives an already-selected commit_stack head;
@@ -1860,10 +1988,11 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
         # PR/head branch. Ensure jj treats the selected remote bookmark as the
         # tracking source, then allow replacing stale local resolver bookmarks.
         # The subsequent git push remains non-force and remote fast-forward-safe.
-        track = run_jj_proc_for_publication(
+        track = run_jj(
             root,
             ["bookmark", "track", branch, f"--remote={remote}"],
             ignore_working_copy=ignore_working_copy,
+            error_channel=ERROR_CHANNEL_JSON,
         )
         if track.returncode != 0:
             json_failure(
@@ -1878,20 +2007,22 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
         # non-force git push remains the remote safety check.
         bookmark_args.append("--allow-backwards")
     bookmark_args.extend([branch, "--revision", publish_revision])
-    bookmark = run_jj_proc_for_publication(
+    bookmark = run_jj(
         root,
         bookmark_args,
         ignore_working_copy=ignore_working_copy,
+        error_channel=ERROR_CHANNEL_JSON,
     )
     if bookmark.returncode != 0:
         json_failure(status="publication_failed", failure_code="bookmark_failed", message=(bookmark.stderr or bookmark.stdout or "jj bookmark failed").strip())
     push_args = ["git", "push", "--remote", remote, "--bookmark", branch]
     if not values.get("target-branch"):
         push_args.append("--allow-new")
-    push = run_jj_proc_for_publication(
+    push = run_jj(
         root,
         push_args,
         ignore_working_copy=ignore_working_copy,
+        error_channel=ERROR_CHANNEL_JSON,
     )
     if push.returncode != 0:
         push_message = (push.stderr or push.stdout or "jj git push failed").strip()
@@ -1942,9 +2073,10 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
         ]
         if draft:
             create_args.append("--draft")
-        create = run_capture(
+        create = run_command(
             create_args,
-            root,
+            cwd=root,
+            error_channel=ERROR_CHANNEL_JSON,
         )
         if create.returncode == 0:
             pr_url = create.stdout.strip()
@@ -1963,7 +2095,7 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
     if not pr_url and not branch_only_commit_stack:
         fail_pr_url_unavailable(branch=branch, create=create, lookup=lookup)
     if pr_url and not created and not values.get("target-pr") and not values.get("target-branch") and not branch_only_commit_stack:
-        edit = run_capture(
+        edit = run_command(
             [
                 "gh",
                 "pr",
@@ -1976,7 +2108,8 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
                 "--body-file",
                 values["body-file"],
             ],
-            root,
+            cwd=root,
+            error_channel=ERROR_CHANNEL_JSON,
         )
         if edit.returncode != 0:
             json_failure(
@@ -1993,7 +2126,13 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
         "branch": branch,
         "base_ref": base,
         "base_revision": base,
-        "head_revision": expected_selected_head or revision_value(root, "@", "commit_id", default=""),
+        "head_revision": expected_selected_head or revision_value(
+            root,
+            "@",
+            "commit_id",
+            default="",
+            error_channel=ERROR_CHANNEL_JSON,
+        ),
         "change_id": change_id,
         "created": created,
         "updated": updated,
@@ -2024,8 +2163,8 @@ def main(argv: list[str]) -> None:
 
     if command == "diff":
         if rest == ["--human"]:
-            run_jj_stream(root, ["diff", "--color=never"])
-            return
+            completed = run_jj(root, ["diff", "--color=never"], capture=False)
+            raise SystemExit(0 if completed.returncode == 0 else 1)
         if rest == ["--json"]:
             diff_json(root)
             return

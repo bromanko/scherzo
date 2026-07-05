@@ -412,7 +412,7 @@ Optional arguments:
 | --- | --- |
 | `--target-branch` | Existing branch/bookmark to update instead of creating a new one. |
 | `--target-pr` | Existing hosted-review identifier to update or inspect. |
-| `--expected-head` | Optional expected head Git SHA for commit-stack publication safety checks. |
+| `--expected-head` | Optional expected head Git SHA for commit-stack publication safety checks. When present, it MUST be a non-empty 40-character hexadecimal Git object ID after trimming surrounding whitespace; empty or whitespace-only values are malformed arguments. |
 | `--allow-no-changes` | Literal `true` or `false`; missing defaults to `false`. |
 
 `--title-file` and `--body-file` MUST be validated as safe workspace-root-relative paths before reading. Drivers MUST NOT read arbitrary absolute paths or paths containing `..` segments for these arguments. Drivers that create GitHub PRs MUST honor `SCHERZO_PR_DRAFT=true|false` when present: `true` creates a draft PR, `false` creates a ready-for-review PR, and unset preserves the driver's current default PR draft behavior. Any other non-empty value MUST fail before publication with a clear configuration diagnostic.
@@ -461,6 +461,8 @@ Drivers SHOULD use these exit-code categories unless a command-specific status a
 | `0` | The requested operation succeeded. |
 | `1` | The request was syntactically valid, but the operation failed or an assertion did not hold. Examples: `assert-only` found extra files, the workspace directory did not exist, a backend command failed, or there was nothing to publish when `--allow-no-changes false`. |
 | `2` | Usage error, unsupported operation, unsupported flag, malformed argument, unsafe path argument, or refused destructive target. |
+
+Invalid non-empty driver environment configuration values, such as malformed boolean policy variables, are operation failures rather than command usage errors. Bundled drivers exit 1 for these configuration failures; commands with `--json` report a version 1 JSON failure object with `failure_code: "invalid_configuration"`.
 
 Diagnostics MUST be bounded. Driver-authored diagnostics SHOULD name workspace-root-relative paths. They SHOULD NOT include local absolute workspace roots, run roots, token values, credential material, or unbounded backend output. It is acceptable to relay a bounded excerpt of an underlying tool failure when that excerpt is necessary to diagnose the failure.
 
