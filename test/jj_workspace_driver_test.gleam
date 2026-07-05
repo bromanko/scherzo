@@ -646,7 +646,7 @@ pub fn jj_driver_fetch_base_false_skips_network_test() {
   assert string.contains(logged, "--revision trunk@upstream")
 }
 
-pub fn jj_driver_invalid_fetch_policy_exits_usage_error_test() {
+pub fn jj_driver_invalid_fetch_policy_exits_configuration_error_test() {
   let dir = "test/tmp/jj-workspace-driver-invalid-fetch"
   let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
 
@@ -660,12 +660,40 @@ pub fn jj_driver_invalid_fetch_policy_exits_usage_error_test() {
       ]),
     )
 
-  assert_exit(artifact, 2)
+  assert_exit(artifact, 1)
   assert string.contains(
     artifact.stderr,
     "SCHERZO_JJ_WORKSPACE_FETCH_BASE must be true or false",
   )
+  assert !string.contains(artifact.stderr, "Usage:")
   assert !string.contains(log_text(log), "workspace add")
+}
+
+pub fn jj_driver_refresh_invalid_fetch_policy_reports_json_configuration_error_test() {
+  let dir = "test/tmp/jj-workspace-driver-refresh-invalid-fetch"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_refresh_invalid_fetch",
+      "refresh-base --stage pre-validation --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_JJ_WORKSPACE_FETCH_BASE", "maybe"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert artifact.stderr == ""
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"invalid_configuration\"",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "SCHERZO_JJ_WORKSPACE_FETCH_BASE must be true or false",
+  )
+  assert log_lines(log) == []
 }
 
 pub fn jj_driver_stale_canonical_base_fails_without_fallback_test() {
@@ -1193,6 +1221,31 @@ pub fn jj_driver_publish_commit_stack_target_branch_does_not_create_pr_test() {
   )
   assert !string.contains(logged, "pr create")
   assert !string.contains(logged, "pr view")
+}
+
+pub fn jj_driver_publish_commit_stack_rejects_blank_expected_target_head_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-blank-expected-target-head"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+
+  let artifact =
+    run_jj(
+      "jj_driver_publish_blank_expected_target_head",
+      "publish-commit-stack --kind merge-conflict --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main --target-branch feature/head --expected-head '   ' --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+      ]),
+    )
+
+  assert_exit(artifact, 2)
+  assert string.contains(
+    artifact.stderr,
+    "--expected-head must be a 40-character Git object ID",
+  )
+  assert log_lines(log) == []
 }
 
 pub fn jj_driver_publish_commit_stack_pr_create_preserves_head_test() {
