@@ -396,6 +396,21 @@ fn interrupted(
   )
 }
 
+fn interrupted_before_start(
+  step_id: String,
+  attempt_index: Int,
+) -> planner.StepAttemptFacts {
+  planner.StepAttemptFacts(
+    run_id: "run-1",
+    workflow_id: "review-flow",
+    step_id: step_id,
+    attempt_index: attempt_index,
+    status: planner.AttemptInterrupted(planner.interruption_reason_to_string(
+      planner.DaemonRestartBeforeStepStart,
+    )),
+  )
+}
+
 fn superseded(step_id: String, attempt_index: Int) -> planner.StepAttemptFacts {
   planner.StepAttemptFacts(
     run_id: "run-1",
@@ -565,7 +580,7 @@ pub fn failed_fatal_preserves_artifact_and_blocks_starts_test() {
     ]
 }
 
-pub fn prepared_attempt_gets_idempotent_interruption_intent_test() {
+pub fn prepared_attempt_gets_interruption_intent_and_restarts_test() {
   let dag = fan_in_dag()
   let recovery = plan(dag, base_run([prepared("implement", 1)]), current_ok())
 
@@ -588,7 +603,9 @@ pub fn prepared_attempt_gets_idempotent_interruption_intent_test() {
       planner.DaemonRestartBeforeStepStart,
     )
     == "daemon_restart_before_step_start"
-  assert_no_start_steps(recovery)
+  assert start_ids(recovery) == ["implement"]
+  assert recovery.inspection_requests == []
+  assert recovery.park_requests == []
 }
 
 pub fn started_command_attempt_gets_interruption_inspection_and_park_test() {
@@ -624,11 +641,10 @@ pub fn started_command_attempt_gets_interruption_inspection_and_park_test() {
     == "daemon_restart_during_step"
   assert list.length(recovery.inspection_requests) == 1
   assert list.length(recovery.park_requests) == 1
-  assert recovery.session_recovery_candidates == []
   assert_no_start_steps(recovery)
 }
 
-pub fn started_agent_attempt_adds_session_candidate_but_no_start_test() {
+pub fn started_agent_attempt_rewinds_without_inspection_and_restarts_test() {
   let dag = fan_in_dag()
   let recovery =
     plan(
@@ -640,19 +656,20 @@ pub fn started_agent_attempt_adds_session_candidate_but_no_start_test() {
       current_ok(),
     )
 
-  assert recovery.session_recovery_candidates
+  assert recovery.interruption_records
     == [
-      planner.SessionRecoveryCandidate(
+      planner.InterruptionRecordIntent(
+        run_id: "run-1",
+        workflow_id: "review-flow",
         step_id: "code_review",
         attempt_index: 1,
-        operator_session_id: "session-code_review-1",
-        external_session_ref: Some("pi-session"),
-        workspace_path: workspace_path("code_review", 1),
+        reason: planner.DaemonRestartDuringStep,
       ),
     ]
-  assert list.length(recovery.inspection_requests) == 1
-  assert list.length(recovery.park_requests) == 1
-  assert_no_start_steps(recovery)
+  assert recovery.inspection_requests == []
+  assert recovery.park_requests == []
+  assert start_ids(recovery)
+    == ["test_after_implement", "code_review", "security_review"]
 }
 
 pub fn already_interrupted_attempt_does_not_duplicate_interruption_test() {
@@ -667,8 +684,34 @@ pub fn already_interrupted_attempt_does_not_duplicate_interruption_test() {
   let assert planner.StepAlreadyInterrupted("code_review", 1, _) =
     state_for(recovery, "code_review")
   assert recovery.interruption_records == []
-  assert list.length(recovery.inspection_requests) == 1
-  assert_no_start_steps(recovery)
+  assert recovery.inspection_requests == []
+  assert recovery.park_requests == []
+  assert start_ids(recovery)
+    == ["test_after_implement", "code_review", "security_review"]
+}
+
+pub fn already_interrupted_command_before_start_restarts_test() {
+  let dag = fan_in_dag()
+  let recovery =
+    plan(
+      dag,
+      base_run([
+        completed("implement", 1),
+        interrupted_before_start("test_after_implement", 1),
+      ]),
+      current_ok(),
+    )
+
+  let assert planner.StepAlreadyInterrupted(
+    "test_after_implement",
+    1,
+    "daemon_restart_before_step_start",
+  ) = state_for(recovery, "test_after_implement")
+  assert recovery.interruption_records == []
+  assert recovery.inspection_requests == []
+  assert recovery.park_requests == []
+  assert start_ids(recovery)
+    == ["test_after_implement", "code_review", "security_review"]
 }
 
 pub fn superseded_attempt_blocks_dependencies_test() {
@@ -780,7 +823,7 @@ pub fn issue_fingerprint_drift_blocks_ready_start_and_cleanup_test() {
   assert recovery.cleanup_run_roots == []
 }
 
-pub fn issue_fingerprint_drift_blocks_agent_session_candidates_test() {
+pub fn issue_fingerprint_drift_blocks_agent_restart_test() {
   let dag = fan_in_dag()
   let current =
     planner.CurrentWorkflowObservation(
@@ -799,7 +842,6 @@ pub fn issue_fingerprint_drift_blocks_agent_session_candidates_test() {
     )
 
   assert_no_start_steps(recovery)
-  assert recovery.session_recovery_candidates == []
 }
 
 pub fn issue_unavailable_blocks_ready_start_and_cleanup_test() {
@@ -927,6 +969,23 @@ pub fn latest_attempt_index_wins_over_older_failure_test() {
     == ["test_after_implement", "code_review", "security_review"]
 }
 
+pub fn older_superseded_attempt_does_not_block_newer_completed_attempt_test() {
+  let dag = fan_in_dag()
+  let recovery =
+    plan(
+      dag,
+      base_run([superseded("implement", 1), completed("implement", 2)]),
+      current_ok(),
+    )
+
+  let assert planner.StepCompleted("implement", 2, _) =
+    state_for(recovery, "implement")
+  assert recovery.inspection_requests == []
+  assert recovery.park_requests == []
+  assert start_ids(recovery)
+    == ["test_after_implement", "code_review", "security_review"]
+}
+
 pub fn latest_started_attempt_overrides_older_completed_artifact_test() {
   let dag = fan_in_dag()
   let recovery =
@@ -939,7 +998,7 @@ pub fn latest_started_attempt_overrides_older_completed_artifact_test() {
   let assert planner.StepNeedsInterruptionAfterStart("implement", 2, _, _, _) =
     state_for(recovery, "implement")
   assert dict.get(recovery.preserved_artifacts, "implement") == Error(Nil)
-  assert_no_start_steps(recovery)
+  assert start_ids(recovery) == ["implement"]
   let blocked = blocked_for(recovery, "code_review")
   assert list.contains(blocked.blockers, "implement")
 }
@@ -1153,7 +1212,7 @@ pub fn run_interrupted_and_superseded_are_terminal_for_planner_but_not_cleaned_t
   assert superseded_recovery.start_steps == []
 }
 
-pub fn durable_finished_run_does_not_expose_session_candidates_test() {
+pub fn durable_finished_run_does_not_start_recovery_test() {
   let dag = parse_dag(single_step_yaml())
   let run =
     planner.WorkflowRunFacts(
@@ -1163,7 +1222,6 @@ pub fn durable_finished_run_does_not_expose_session_candidates_test() {
   let recovery = plan(dag, run, current_ok())
 
   assert recovery.outcome == planner.TerminalSucceeded
-  assert recovery.session_recovery_candidates == []
   assert list.length(recovery.cleanup_run_roots) == 1
 }
 
