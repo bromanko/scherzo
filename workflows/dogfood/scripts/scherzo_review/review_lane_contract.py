@@ -907,6 +907,12 @@ def check_workflow_migration(workflow_path: Path) -> dict[str, Any]:
     text = workflow_path.read_text(encoding="utf-8")
     lane_results: dict[str, Any] = {}
     errors: list[dict[str, str]] = []
+    try:
+        finalize_block = workflow_step_block(text, "finalize_lanes")
+    except ContractError as exc:
+        finalize_block = ""
+        errors.append({"lane": "all", "code": exc.code, "message": exc.message})
+
     for lane_id, metadata in LANES.items():
         try:
             block = workflow_step_block(text, metadata["step_id"])
@@ -927,37 +933,42 @@ def check_workflow_migration(workflow_path: Path) -> dict[str, Any]:
                     "review_lane_workflow_raw_validator_targets_canonical_draft",
                     f"{metadata['step_id']} still validates raw provider submission as canonical ReviewLaneDraft",
                 )
-            materialize_id = "materialize_" + lane_id.replace("-", "_")
-            materialize_block = workflow_step_block(text, materialize_id)
-            if f"--lane {lane_id}" not in materialize_block and f"- {lane_id}" not in materialize_block:
+            if "finalize-lanes" not in finalize_block:
+                raise ContractError(
+                    "review_lane_workflow_missing_finalization",
+                    "workflow must finalize native review lanes with scherzo-review finalize-lanes",
+                )
+            if f"--lane {lane_id}" not in finalize_block and f"- {lane_id}" not in finalize_block:
                 raise ContractError(
                     "review_lane_workflow_missing_materialization",
-                    f"{materialize_id} must call materialize for lane {lane_id}",
+                    f"finalize_lanes must include lane {lane_id}",
                 )
-            if "review-lane-draft.v1.json" not in materialize_block:
+            if "--artifact-dir" not in finalize_block or "attempt-1/structured" in finalize_block or "attempt-1.json" in finalize_block:
+                raise ContractError(
+                    "review_lane_workflow_hardcodes_first_attempt",
+                    "finalize_lanes must resolve successful lane attempts from the run artifact directory",
+                )
+            if "--prepare-dir" not in finalize_block or "artifacts/review/prepare_review" not in finalize_block:
                 raise ContractError(
                     "review_lane_workflow_missing_materialization",
-                    f"{materialize_id} must write review-lane-draft.v1.json",
+                    "finalize_lanes must consume the prepare_review artifacts",
                 )
-            if "--artifact-dir" not in materialize_block or "attempt-1/structured" in materialize_block:
-                raise ContractError(
-                    "review_lane_workflow_hardcodes_first_attempt",
-                    f"{materialize_id} must resolve the successful lane attempt from the run artifact directory",
-                )
-            normalize_id = "normalize_" + lane_id.replace("-", "_")
-            normalize_block = workflow_step_block(text, normalize_id)
-            if "--agent-artifact-dir" not in normalize_block or "attempt-1.json" in normalize_block:
-                raise ContractError(
-                    "review_lane_workflow_hardcodes_first_attempt",
-                    f"{normalize_id} must resolve the successful lane step artifact from the run artifact directory",
-                )
-            lane_dir_text = f"artifacts/review/lanes/{lane_id}"
-            if lane_dir_text not in text:
+            if "--review-root" not in finalize_block or "$SCHERZO_RUN_ROOT/artifacts/review" not in finalize_block:
                 raise ContractError(
                     "review_lane_workflow_materialized_draft_not_consumed",
-                    f"workflow must consume materialized lane dir {lane_dir_text}",
+                    "finalize_lanes must preserve artifacts under artifacts/review",
                 )
-            lane_results[lane_id] = {"status": "passed", "provider_schema": expected_schema, "materialize_step": materialize_id}
+            if "--dirty-tree-dir" not in finalize_block or "artifacts/review/dirty_tree" not in finalize_block:
+                raise ContractError(
+                    "review_lane_workflow_dirty_tree_artifacts_missing",
+                    "finalize_lanes must consume retained dirty_tree snapshots under artifacts/review",
+                )
+            if "--synthesis-output-dir" not in finalize_block or "artifacts/review/synthesize_review" not in finalize_block:
+                raise ContractError(
+                    "review_lane_workflow_synthesis_artifacts_missing",
+                    "finalize_lanes must retain synthesis artifacts under artifacts/review/synthesize_review",
+                )
+            lane_results[lane_id] = {"status": "passed", "provider_schema": expected_schema, "materialize_step": "finalize_lanes"}
         except ContractError as exc:
             lane_results[lane_id] = {"status": "failed", "code": exc.code, "message": exc.message}
             errors.append({"lane": lane_id, "code": exc.code, "message": exc.message})

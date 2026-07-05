@@ -476,15 +476,83 @@ fn materialization_status(
     None -> "not_required"
     Some(lane_id) ->
       case
-        string.contains(
-          workflow_text,
-          "materialize_" <> string.replace(lane_id, "-", "_"),
-        )
-        && string.contains(workflow_text, "review-lane-draft.v1.json")
-        && string.contains(workflow_text, "artifacts/review/lanes/" <> lane_id)
+        legacy_lane_materialization_present(workflow_text, lane_id)
+        || finalize_lanes_materialization_present(workflow_text, lane_id)
       {
         True -> "passed"
         False -> "missing_materialization"
+      }
+  }
+}
+
+fn legacy_lane_materialization_present(
+  workflow_text: String,
+  lane_id: String,
+) -> Bool {
+  string.contains(
+    workflow_text,
+    "materialize_" <> string.replace(lane_id, "-", "_"),
+  )
+  && string.contains(workflow_text, "review-lane-draft.v1.json")
+  && string.contains(workflow_text, "artifacts/review/lanes/" <> lane_id)
+}
+
+fn finalize_lanes_materialization_present(
+  workflow_text: String,
+  lane_id: String,
+) -> Bool {
+  let finalize_block = workflow_step_block(workflow_text, "finalize_lanes")
+  !string.is_empty(finalize_block)
+  && string.contains(finalize_block, "scripts/scherzo-review")
+  && string.contains(finalize_block, "finalize-lanes")
+  && lane_is_declared_in_finalize_block(finalize_block, lane_id)
+  && string.contains(finalize_block, "--artifact-dir")
+  && string.contains(finalize_block, "--prepare-dir")
+  && string.contains(finalize_block, "artifacts/review/prepare_review")
+  && string.contains(finalize_block, "--review-root")
+  && string.contains(finalize_block, "$SCHERZO_RUN_ROOT/artifacts/review")
+  && string.contains(finalize_block, "--dirty-tree-dir")
+  && string.contains(finalize_block, "artifacts/review/dirty_tree")
+  && string.contains(finalize_block, "--synthesis-output-dir")
+  && string.contains(finalize_block, "artifacts/review/synthesize_review")
+  && !string.contains(finalize_block, "attempt-1/structured")
+  && !string.contains(finalize_block, "attempt-1.json")
+}
+
+fn lane_is_declared_in_finalize_block(
+  finalize_block: String,
+  lane_id: String,
+) -> Bool {
+  string.contains(finalize_block, "--lane " <> lane_id)
+  || string.contains(finalize_block, "- " <> lane_id)
+}
+
+fn workflow_step_block(workflow_text: String, step_id: String) -> String {
+  workflow_step_block_from_lines(string.split(workflow_text, on: "\n"), step_id)
+}
+
+fn workflow_step_block_from_lines(
+  lines: List(String),
+  step_id: String,
+) -> String {
+  case lines {
+    [] -> ""
+    [line, ..rest] ->
+      case string.trim(line) == "- id: " <> step_id {
+        True ->
+          string.join([line, ..workflow_step_block_tail(rest)], with: "\n")
+        False -> workflow_step_block_from_lines(rest, step_id)
+      }
+  }
+}
+
+fn workflow_step_block_tail(lines: List(String)) -> List(String) {
+  case lines {
+    [] -> []
+    [line, ..rest] ->
+      case string.starts_with(line, "  - id: ") {
+        True -> []
+        False -> [line, ..workflow_step_block_tail(rest)]
       }
   }
 }

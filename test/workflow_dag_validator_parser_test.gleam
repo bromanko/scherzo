@@ -326,8 +326,7 @@ pub fn canonical_execplan_workflows_parse_before_routing_test() {
       "lane_test_quality",
       "lane_idioms_maintainability",
       "lane_security_performance",
-      "synthesize_review",
-      "validate_native_review_artifacts",
+      "finalize_lanes",
       "apply_review_feedback",
     ],
     fn(step_id) {

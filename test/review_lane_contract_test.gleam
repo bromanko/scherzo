@@ -527,8 +527,10 @@ pub fn review_lane_contract_offline_accepts_routed_review_workflows_test() {
       workflow,
       ".scherzo/workflows/schemas/provider/review-lane-draft.correctness.v1.schema.json",
     )
-    assert string.contains(workflow, "materialize_correctness")
-    assert string.contains(workflow, "artifacts/review/lanes/correctness")
+    assert string.contains(workflow, "finalize_lanes")
+    assert string.contains(workflow, "finalize-lanes")
+    assert string.contains(workflow, "--lane correctness")
+    assert string.contains(workflow, "$SCHERZO_RUN_ROOT/artifacts/review")
   })
 }
 

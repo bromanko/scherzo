@@ -2202,10 +2202,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   )
   assert !string.contains(workflow, "- id: review_changes")
   assert string.contains(workflow, "- id: apply_review_feedback")
-  assert string.contains(
-    workflow,
-    "depends_on: [validate_native_review_artifacts]",
-  )
+  assert string.contains(workflow, "depends_on: [finalize_lanes]")
   assert string.contains(
     workflow,
     "depends_on: [finalize_plan_completion_gate_recovery]",
