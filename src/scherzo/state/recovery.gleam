@@ -26,6 +26,10 @@ import scherzo/workflow_outcome
 import scherzo/workspace
 import simplifile
 
+const daemon_restart_before_step_start_reason = "daemon_restart_before_step_start"
+
+const daemon_restart_during_step_reason = "daemon_restart_during_step"
+
 pub type RecoveredRetry {
   RecoveredRetry(
     issue_id: String,
@@ -1382,7 +1386,7 @@ fn recover_attempts_loop(
           )
         }
         projection.StepAttemptPending(workflow_id: workflow_id, ..) ->
-          case interrupted_step_is_safe_to_retry(dag, step_id) {
+          case prepared_step_is_safe_to_retry(dag, step_id) {
             Error(reason) ->
               Error(
                 UnsafeWorkflowRecovery(unsafe_recovery_reason_to_string(reason)),
@@ -1405,7 +1409,7 @@ fn recover_attempts_loop(
                     workflow_id,
                     step_id,
                     attempt_index,
-                    "daemon_restart",
+                    daemon_restart_before_step_start_reason,
                   ),
                   ..bodies
                 ],
@@ -1431,7 +1435,7 @@ fn recover_attempts_loop(
             workflow_id,
             step_id,
             attempt_index,
-            "daemon_restart",
+            daemon_restart_during_step_reason,
           )
         projection.StepAttemptInterruptedStatus(
           workflow_id: workflow_id,
@@ -1524,7 +1528,7 @@ fn recover_running_or_interrupted_attempt(
       )
     }
     False ->
-      case interrupted_step_is_safe_to_retry(dag, step_id) {
+      case interrupted_step_is_safe_to_retry(dag, step_id, interrupt_reason) {
         Error(reason) ->
           Error(
             UnsafeWorkflowRecovery(unsafe_recovery_reason_to_string(reason)),
@@ -1541,19 +1545,42 @@ fn recover_running_or_interrupted_attempt(
             workspaces,
             next_indexes,
             continuations,
-            [
-              record.StepAttemptInterrupted(
-                run_id,
-                workflow_id,
-                step_id,
-                attempt_index,
-                interrupt_reason,
-              ),
-              ..bodies
-            ],
+            interruption_record_if_needed(
+              attempt,
+              bodies,
+              run_id,
+              workflow_id,
+              step_id,
+              attempt_index,
+              interrupt_reason,
+            ),
             session_recovery,
           )
       }
+  }
+}
+
+fn interruption_record_if_needed(
+  attempt: projection.StepAttemptStatus,
+  bodies: List(record.RecordBody),
+  run_id: String,
+  workflow_id: String,
+  step_id: String,
+  attempt_index: Int,
+  reason: String,
+) -> List(record.RecordBody) {
+  case attempt {
+    projection.StepAttemptInterruptedStatus(..) -> bodies
+    _ -> [
+      record.StepAttemptInterrupted(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        reason,
+      ),
+      ..bodies
+    ]
   }
 }
 
@@ -1800,17 +1827,34 @@ fn is_agent_step(dag: workflow_dag.WorkflowDag, step_id: String) -> Bool {
   }
 }
 
-fn interrupted_step_is_safe_to_retry(
+fn prepared_step_is_safe_to_retry(
   dag: workflow_dag.WorkflowDag,
   step_id: String,
 ) -> Result(Nil, UnsafeRecoveryReason) {
   case workflow_dag.step_by_id(dag, step_id) {
     Error(Nil) -> Error(UnknownInterruptedStep(step_id))
+    Ok(_) -> Ok(Nil)
+  }
+}
+
+// Started command steps remain conservative because the run string can perform
+// external side effects and the workflow schema has no idempotency marker.
+fn interrupted_step_is_safe_to_retry(
+  dag: workflow_dag.WorkflowDag,
+  step_id: String,
+  reason: String,
+) -> Result(Nil, UnsafeRecoveryReason) {
+  case workflow_dag.step_by_id(dag, step_id) {
+    Error(Nil) -> Error(UnknownInterruptedStep(step_id))
     Ok(step) ->
-      case step.kind {
-        workflow_dag.CommandStep(_, _) ->
-          Error(UnsafeInterruptedCommandStep(step_id))
-        workflow_dag.AgentStep(_, _) -> Ok(Nil)
+      case reason == daemon_restart_before_step_start_reason {
+        True -> Ok(Nil)
+        False ->
+          case step.kind {
+            workflow_dag.CommandStep(_, _) ->
+              Error(UnsafeInterruptedCommandStep(step_id))
+            workflow_dag.AgentStep(_, _) -> Ok(Nil)
+          }
       }
   }
 }

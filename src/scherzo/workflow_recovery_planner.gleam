@@ -173,7 +173,6 @@ pub type RecoveryPlan {
     inspection_requests: List(InspectionRequest),
     park_requests: List(ParkRequest),
     cleanup_run_roots: List(CleanupRunRoot),
-    session_recovery_candidates: List(SessionRecoveryCandidate),
     drift_errors: List(DriftError),
     warnings: List(String),
   )
@@ -248,16 +247,6 @@ pub type CleanupRunRoot {
   CleanupRunRoot(run_id: String, issue_id: String, run_root: String)
 }
 
-pub type SessionRecoveryCandidate {
-  SessionRecoveryCandidate(
-    step_id: String,
-    attempt_index: Int,
-    operator_session_id: String,
-    external_session_ref: Option(String),
-    workspace_path: String,
-  )
-}
-
 pub type DriftError {
   WorkflowIdMismatch(recorded: String, current: String)
   WorkflowFingerprintDrift(recorded: String, current: String)
@@ -306,6 +295,11 @@ type FinishDecision {
     outcome: RunRecoveryOutcome,
     records: List(WorkflowFinishRecordIntent),
   )
+}
+
+type RestartInterruptionPolicy {
+  RewindLocalStep
+  InspectExternalSideEffect
 }
 
 pub fn default_policy() -> RecoveryPolicy {
@@ -369,8 +363,6 @@ pub fn plan_run(input: PlannerInput) -> RecoveryPlan {
   let preserved_artifacts = preserve_artifacts(step_states)
   let interruption_records =
     interruption_intents(workflow_dag.steps(input.dag), input.run, step_states)
-  let session_recovery_candidates =
-    session_candidates(input, step_states, drift_errors)
   let inspection_requests =
     inspection_requests(input, step_states, drift_errors)
   let park_requests = park_requests(input, step_states, drift_errors)
@@ -399,7 +391,6 @@ pub fn plan_run(input: PlannerInput) -> RecoveryPlan {
     inspection_requests: inspection_requests,
     park_requests: park_requests,
     cleanup_run_roots: cleanup_run_roots,
-    session_recovery_candidates: session_recovery_candidates,
     drift_errors: drift_errors,
     warnings: warnings,
   )
@@ -695,45 +686,6 @@ fn interruption_intents(
   }
 }
 
-fn session_candidates(
-  input: PlannerInput,
-  states: Dict(String, StepRecoveryState),
-  drift_errors: List(DriftError),
-) -> List(SessionRecoveryCandidate) {
-  case
-    input.run.run_status,
-    list.is_empty(drift_errors),
-    workflow_definition_matches(input.run, input.current)
-  {
-    RunActive, True, True ->
-      workflow_dag.steps(input.dag)
-      |> list.filter_map(fn(step) {
-        case step_state(states, step.id) {
-          StepNeedsInterruptionAfterStart(
-            step_id,
-            attempt_index,
-            workspace_path,
-            operator_session_id,
-            external_session_ref,
-          ) ->
-            case is_agent_step(input.dag, step_id) {
-              True ->
-                Ok(SessionRecoveryCandidate(
-                  step_id: step_id,
-                  attempt_index: attempt_index,
-                  operator_session_id: operator_session_id,
-                  external_session_ref: external_session_ref,
-                  workspace_path: workspace_path,
-                ))
-              False -> Error(Nil)
-            }
-          _ -> Error(Nil)
-        }
-      })
-    _, _, _ -> []
-  }
-}
-
 fn inspection_requests(
   input: PlannerInput,
   states: Dict(String, StepRecoveryState),
@@ -748,28 +700,40 @@ fn inspection_requests(
       let step_requests =
         workflow_dag.steps(input.dag)
         |> list.filter_map(fn(step) {
-          case step_state(states, step.id) {
-            StepNeedsInterruptionAfterStart(step_id, attempt_index, _, _, _) ->
-              Ok(inspection_request(
-                input.run,
-                StepInterruptedAfterStart(step_id, attempt_index),
-              ))
-            StepAlreadyInterrupted(step_id, attempt_index, _) ->
-              Ok(inspection_request(
-                input.run,
-                StepAlreadyInterruptedNeedsInspection(step_id, attempt_index),
-              ))
-            StepSuperseded(step_id, attempt_index, _) ->
-              Ok(inspection_request(
-                input.run,
-                StepSupersededNeedsInspection(step_id, attempt_index),
-              ))
-            _ -> Error(Nil)
-          }
+          step_inspection_request(input.run, step, step_state(states, step.id))
         })
       list.append(drift_requests, step_requests)
     }
     _ -> []
+  }
+}
+
+fn step_inspection_request(
+  run: WorkflowRunFacts,
+  step: workflow_dag.WorkflowStep,
+  state: StepRecoveryState,
+) -> Result(InspectionRequest, Nil) {
+  case state_requires_interruption_inspection(step, state) {
+    False -> Error(Nil)
+    True ->
+      case state {
+        StepNeedsInterruptionAfterStart(step_id, attempt_index, _, _, _) ->
+          Ok(inspection_request(
+            run,
+            StepInterruptedAfterStart(step_id, attempt_index),
+          ))
+        StepAlreadyInterrupted(step_id, attempt_index, _) ->
+          Ok(inspection_request(
+            run,
+            StepAlreadyInterruptedNeedsInspection(step_id, attempt_index),
+          ))
+        StepSuperseded(step_id, attempt_index, _) ->
+          Ok(inspection_request(
+            run,
+            StepSupersededNeedsInspection(step_id, attempt_index),
+          ))
+        _ -> Error(Nil)
+      }
   }
 }
 
@@ -800,31 +764,49 @@ fn park_requests(
       let step_requests =
         workflow_dag.steps(input.dag)
         |> list.filter_map(fn(step) {
-          case step_state(states, step.id) {
-            StepNeedsInterruptionAfterStart(step_id, attempt_index, _, _, _) ->
-              Ok(park_request(
-                input.run,
-                ParkStepInterruptedAfterStart(step_id, attempt_index),
-                fingerprint,
-              ))
-            StepAlreadyInterrupted(step_id, attempt_index, _) ->
-              Ok(park_request(
-                input.run,
-                ParkStepAlreadyInterrupted(step_id, attempt_index),
-                fingerprint,
-              ))
-            StepSuperseded(step_id, attempt_index, _) ->
-              Ok(park_request(
-                input.run,
-                ParkStepSuperseded(step_id, attempt_index),
-                fingerprint,
-              ))
-            _ -> Error(Nil)
-          }
+          step_park_request(
+            input.run,
+            step,
+            step_state(states, step.id),
+            fingerprint,
+          )
         })
       list.append(drift_requests, step_requests)
     }
     _, _ -> []
+  }
+}
+
+fn step_park_request(
+  run: WorkflowRunFacts,
+  step: workflow_dag.WorkflowStep,
+  state: StepRecoveryState,
+  issue_fingerprint: Option(String),
+) -> Result(ParkRequest, Nil) {
+  case state_requires_interruption_inspection(step, state) {
+    False -> Error(Nil)
+    True ->
+      case state {
+        StepNeedsInterruptionAfterStart(step_id, attempt_index, _, _, _) ->
+          Ok(park_request(
+            run,
+            ParkStepInterruptedAfterStart(step_id, attempt_index),
+            issue_fingerprint,
+          ))
+        StepAlreadyInterrupted(step_id, attempt_index, _) ->
+          Ok(park_request(
+            run,
+            ParkStepAlreadyInterrupted(step_id, attempt_index),
+            issue_fingerprint,
+          ))
+        StepSuperseded(step_id, attempt_index, _) ->
+          Ok(park_request(
+            run,
+            ParkStepSuperseded(step_id, attempt_index),
+            issue_fingerprint,
+          ))
+        _ -> Error(Nil)
+      }
   }
 }
 
@@ -851,7 +833,7 @@ fn start_steps(
     input.run.run_status,
     input.policy.allow_starting_ready_pending_steps,
     list.is_empty(drift_errors),
-    !has_unresolved_state(states),
+    !has_unresolved_state(input.dag, states),
     !has_fatal_state(states)
   {
     RunActive, True, True, True, True -> {
@@ -948,7 +930,7 @@ fn finish_decision(
                     ),
                   ])
                 False ->
-                  case has_unresolved_state(states) {
+                  case has_unresolved_state(dag, states) {
                     True -> FinishDecision(NeedsInspection, [])
                     False ->
                       case list.is_empty(start_steps) {
@@ -1020,7 +1002,7 @@ fn blockers_for_step(
     |> list.filter(fn(dep_id) {
       !dependency_complete(step_state(states, dep_id))
     })
-  let state_blockers = self_blockers(step_state(states, step.id))
+  let state_blockers = self_blockers(step_state(states, step.id), step)
   let drift_blockers = case list.is_empty(drift_errors) {
     True -> []
     False -> ["run_drift"]
@@ -1038,17 +1020,59 @@ fn blockers_for_step(
   |> list.append(fatal_blockers)
 }
 
-fn self_blockers(state: StepRecoveryState) -> List(String) {
+fn self_blockers(
+  state: StepRecoveryState,
+  step: workflow_dag.WorkflowStep,
+) -> List(String) {
+  case state_requires_interruption_inspection(step, state) {
+    False -> []
+    True ->
+      case state {
+        StepNeedsInterruptionAfterStart(step_id, _, _, _, _) -> [
+          "step_needs_interruption:" <> step_id,
+        ]
+        StepAlreadyInterrupted(step_id, _, _) -> [
+          "step_interrupted:" <> step_id,
+        ]
+        StepSuperseded(step_id, _, _) -> ["step_superseded:" <> step_id]
+        _ -> []
+      }
+  }
+}
+
+fn state_requires_interruption_inspection(
+  step: workflow_dag.WorkflowStep,
+  state: StepRecoveryState,
+) -> Bool {
   case state {
-    StepNeedsInterruptionBeforeStart(step_id, _, _) -> [
-      "step_needs_interruption:" <> step_id,
-    ]
-    StepNeedsInterruptionAfterStart(step_id, _, _, _, _) -> [
-      "step_needs_interruption:" <> step_id,
-    ]
-    StepAlreadyInterrupted(step_id, _, _) -> ["step_interrupted:" <> step_id]
-    StepSuperseded(step_id, _, _) -> ["step_superseded:" <> step_id]
-    _ -> []
+    StepNeedsInterruptionBeforeStart(..) -> False
+    StepNeedsInterruptionAfterStart(..) ->
+      case restart_interruption_policy(step) {
+        RewindLocalStep -> False
+        InspectExternalSideEffect -> True
+      }
+    StepAlreadyInterrupted(reason: reason, ..) ->
+      case
+        reason == interruption_reason_to_string(DaemonRestartBeforeStepStart)
+      {
+        True -> False
+        False ->
+          case restart_interruption_policy(step) {
+            RewindLocalStep -> False
+            InspectExternalSideEffect -> True
+          }
+      }
+    StepSuperseded(..) -> True
+    _ -> False
+  }
+}
+
+fn restart_interruption_policy(
+  step: workflow_dag.WorkflowStep,
+) -> RestartInterruptionPolicy {
+  case step.kind {
+    workflow_dag.AgentStep(_, _) -> RewindLocalStep
+    workflow_dag.CommandStep(_, _) -> InspectExternalSideEffect
   }
 }
 
@@ -1074,17 +1098,13 @@ fn all_steps_dependency_complete(
   |> list.all(fn(step) { dependency_complete(step_state(states, step.id)) })
 }
 
-fn has_unresolved_state(states: Dict(String, StepRecoveryState)) -> Bool {
-  states
-  |> dict.values
-  |> list.any(fn(state) {
-    case state {
-      StepNeedsInterruptionBeforeStart(..)
-      | StepNeedsInterruptionAfterStart(..)
-      | StepAlreadyInterrupted(..)
-      | StepSuperseded(..) -> True
-      _ -> False
-    }
+fn has_unresolved_state(
+  dag: workflow_dag.WorkflowDag,
+  states: Dict(String, StepRecoveryState),
+) -> Bool {
+  workflow_dag.steps(dag)
+  |> list.any(fn(step) {
+    state_requires_interruption_inspection(step, step_state(states, step.id))
   })
 }
 
@@ -1105,26 +1125,6 @@ fn step_state(
 ) -> StepRecoveryState {
   dict.get(states, step_id)
   |> result.unwrap(StepUnattempted(step_id))
-}
-
-fn is_agent_step(dag: workflow_dag.WorkflowDag, step_id: String) -> Bool {
-  case workflow_dag.step_by_id(dag, step_id) {
-    Ok(workflow_dag.WorkflowStep(kind: workflow_dag.AgentStep(_, _), ..)) ->
-      True
-    _ -> False
-  }
-}
-
-fn workflow_definition_matches(
-  run: WorkflowRunFacts,
-  current: CurrentWorkflowObservation,
-) -> Bool {
-  case current {
-    CurrentWorkflowObservation(workflow_id, workflow_fingerprint, _) ->
-      run.workflow_id == workflow_id
-      && run.workflow_fingerprint == workflow_fingerprint
-    _ -> False
-  }
 }
 
 fn current_issue_fingerprint(
