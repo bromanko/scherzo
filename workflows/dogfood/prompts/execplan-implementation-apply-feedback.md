@@ -37,43 +37,24 @@ Correctness lane status: {{ steps.lane_correctness.status }}
 Correctness structured output status: {{ steps.lane_correctness.structured_output.status }}
 Correctness structured output path: {{ steps.lane_correctness.structured_output.path }}
 Correctness structured output error: {{ steps.lane_correctness.structured_output.error }}
-Correctness evidence verification output:
-{{ steps.verify_correctness_evidence.stdout }}
-Correctness normalization output:
-{{ steps.normalize_correctness.stdout }}
 
 Test-quality lane status: {{ steps.lane_test_quality.status }}
 Test-quality structured output status: {{ steps.lane_test_quality.structured_output.status }}
 Test-quality structured output path: {{ steps.lane_test_quality.structured_output.path }}
 Test-quality structured output error: {{ steps.lane_test_quality.structured_output.error }}
-Test-quality evidence verification output:
-{{ steps.verify_test_quality_evidence.stdout }}
-Test-quality normalization output:
-{{ steps.normalize_test_quality.stdout }}
 
 Idioms / maintainability lane status: {{ steps.lane_idioms_maintainability.status }}
 Idioms / maintainability structured output status: {{ steps.lane_idioms_maintainability.structured_output.status }}
 Idioms / maintainability structured output path: {{ steps.lane_idioms_maintainability.structured_output.path }}
 Idioms / maintainability structured output error: {{ steps.lane_idioms_maintainability.structured_output.error }}
-Idioms / maintainability evidence verification output:
-{{ steps.verify_idioms_maintainability_evidence.stdout }}
-Idioms / maintainability normalization output:
-{{ steps.normalize_idioms_maintainability.stdout }}
 
 Security / performance lane status: {{ steps.lane_security_performance.status }}
 Security / performance structured output status: {{ steps.lane_security_performance.structured_output.status }}
 Security / performance structured output path: {{ steps.lane_security_performance.structured_output.path }}
 Security / performance structured output error: {{ steps.lane_security_performance.structured_output.error }}
-Security / performance evidence verification output:
-{{ steps.verify_security_performance_evidence.stdout }}
-Security / performance normalization output:
-{{ steps.normalize_security_performance.stdout }}
 
-Native synthesis and final review artifact output:
-{{ steps.synthesize_review.stdout }}
-
-Native review artifact validation output:
-{{ steps.validate_native_review_artifacts.stdout }}
+Native lane finalization, synthesis, evidence verification, and final review artifact output:
+{{ steps.finalize_lanes.stdout }}
 
 Targeted remediation contract:
 
