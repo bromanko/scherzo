@@ -1,5 +1,4 @@
-#!/bin/sh
-exec python3 - "$@" <<'PY'
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import json
@@ -215,4 +214,3 @@ def main(argv: list[str]) -> None:
 
 if __name__ == "__main__":
     main(sys.argv[1:])
-PY

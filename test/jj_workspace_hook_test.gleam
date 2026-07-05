@@ -88,7 +88,7 @@ fn run_driver_create(
       <> repo
       <> "\" SCHERZO_WORKSPACE_PATH=\""
       <> workspace_path
-      <> "\" SCHERZO_WORKFLOW_ID=implementation sh \""
+      <> "\" SCHERZO_WORKFLOW_ID=implementation \""
       <> script
       <> "\" lifecycle create",
     ".",

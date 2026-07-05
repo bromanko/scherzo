@@ -30,7 +30,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import urllib.parse
 import uuid
 import webbrowser

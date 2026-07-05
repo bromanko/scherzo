@@ -29,7 +29,7 @@ fn run_noop(
   let script = absolute("scripts/scherzo-workspace-noop")
   command_step.run_with_env(
     step_id,
-    "sh " <> test_helpers.shell_quote(script) <> " " <> args,
+    test_helpers.shell_quote(script) <> " " <> args,
     ".",
     5000,
     env,

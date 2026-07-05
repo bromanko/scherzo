@@ -1,10 +1,4 @@
-#!/bin/sh
-case "$0" in
-  */*) SCHERZO_DRIVER_SCRIPT=$0 ;;
-  *) SCHERZO_DRIVER_SCRIPT=$(command -v "$0" 2>/dev/null || printf '%s\n' "$0") ;;
-esac
-export SCHERZO_DRIVER_SCRIPT
-exec python3 - "$@" <<'PY'
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import json
@@ -493,23 +487,41 @@ def core_candidates_from_repo_links() -> list[Path]:
     return candidates
 
 
+def current_script_path_candidates() -> list[str]:
+    candidates: list[str] = []
+    for raw in [sys.argv[0], globals().get("__file__")]:
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if value and value != "-":
+            candidates.append(value)
+    return unique_values(candidates)
+
+
+def append_core_candidate_from_script_path(candidates: list[Path], raw: str) -> None:
+    candidate = candidate_core_from_script_path(raw)
+    if candidate is not None:
+        append_valid_core_candidate(candidates, candidate)
+
+
 def scherzo_core_checkout_for_bridge() -> Path:
     candidates: list[Path] = []
-    for env_name in ["SCHERZO_DRIVER_SCRIPT", "SCHERZO_WORKSPACE_DRIVER"]:
-        raw = env_value(env_name)
-        if raw is None:
-            continue
-        candidate = candidate_core_from_script_path(raw)
-        if candidate is not None:
-            append_valid_core_candidate(candidates, candidate)
+    raw_driver_script = env_value("SCHERZO_DRIVER_SCRIPT")
+    if raw_driver_script is not None:
+        append_core_candidate_from_script_path(candidates, raw_driver_script)
+    for raw in current_script_path_candidates():
+        append_core_candidate_from_script_path(candidates, raw)
+    raw_workspace_driver = env_value("SCHERZO_WORKSPACE_DRIVER")
+    if raw_workspace_driver is not None:
+        append_core_candidate_from_script_path(candidates, raw_workspace_driver)
     for candidate in core_candidates_from_repo_links():
         append_valid_core_candidate(candidates, candidate)
     if candidates:
         return candidates[0]
     fail(
         "portable symlink bridge needed but could not locate a Scherzo core "
-        "checkout from SCHERZO_DRIVER_SCRIPT, SCHERZO_WORKSPACE_DRIVER, or "
-        "SCHERZO_REPO_ROOT"
+        "checkout from SCHERZO_DRIVER_SCRIPT, the running driver script, "
+        "SCHERZO_WORKSPACE_DRIVER, or SCHERZO_REPO_ROOT"
     )
 
 
@@ -2053,4 +2065,3 @@ def main(argv: list[str]) -> None:
 
 if __name__ == "__main__":
     main(sys.argv[1:])
-PY
