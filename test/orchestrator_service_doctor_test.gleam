@@ -11,6 +11,8 @@ import scherzo/orchestrator/service
 import scherzo/path
 import scherzo/runtime_bundle
 import scherzo/smoke
+import scherzo/state/ledger
+import scherzo/state/record
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workspace
@@ -116,6 +118,27 @@ fn write_config_with_tracker_and_linear_fields(
     simplifile.write(
       dir <> "/workflows/prompts/implementation.md",
       "Implement the issue.",
+    )
+  config_path
+}
+
+fn write_retained_publication_config(dir: String) -> String {
+  let config_path =
+    write_config(
+      dir,
+      "artifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/templates")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/templates/publication.md",
+      "Published by Scherzo.",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    review_doc:\n      type: document.markdown\n      source:\n        step: main\n        field: stdout\nartifacts:\n  publications:\n    - id: review_doc_pub\n      repository: github.docs\n      required: true\n      pull_request:\n        title: '{{ work.identifier }} publication'\n        body_template: templates/publication.md\n      files:\n        - select:\n            output: review_doc\n          path: docs/{{ work.identifier }}.md\nsteps:\n  - id: main\n    kind: command\n    run: ignored\n",
     )
   config_path
 }
@@ -266,6 +289,61 @@ fn contract_client(
   linear.ContractClient(fetch_remote_contract: fn() { result })
 }
 
+fn seed_retained_materialized_unpublished_run(root: String) -> Nil {
+  let run_root = root <> "/runs/run-1"
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      workspace_run.cleanup_retention_marker(run_root),
+      "manual recovery retained workspace",
+    )
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started-run-1",
+          10,
+          record.WorkflowRunStarted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            workflow_fingerprint: "workflow-fingerprint",
+            issue_id: "issue-1",
+            issue_identifier: "LIV-1407",
+            issue_fingerprint: "issue-fingerprint",
+            observed_updated_at_ms: 9,
+            run_root: run_root,
+          ),
+        ),
+        record.with_id(
+          "outputs-recorded-run-1",
+          20,
+          record.WorkflowRunOutputsRecorded(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            workflow_fingerprint: "workflow-fingerprint",
+            artifact_ref: "runs/run-1/outputs.v1.json",
+            artifact_sha256: "sha256",
+            artifact_bytes: 123,
+          ),
+        ),
+        record.with_id(
+          "workflow-interrupted-run-1",
+          30,
+          record.WorkflowRunInterrupted(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            issue_id: "issue-1",
+            reason: "manual_recovery_after_materialization",
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
+}
+
 fn contract_board(states: List(String)) -> linear_contract.RemoteBoard {
   linear_contract.RemoteBoard(
     project_id: "project-id",
@@ -364,6 +442,42 @@ pub fn doctor_workflow_config_success_prints_human_summary_test() {
     "Summary: 1 passed, 0 warnings, 0 failed, 0 skipped",
   )
   assert string.contains(output, "Selected checks passed.")
+}
+
+pub fn doctor_retained_publications_warns_with_pending_route_test() {
+  let config_path =
+    write_retained_publication_config("test/tmp/doctor-retained-publications")
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  seed_retained_materialized_unpublished_run(bundle.effective.workspace.root)
+  let subject = process.new_subject()
+  let deps = successful_deps(subject)
+  let options =
+    doctor.Options(
+      path: Some(config_path),
+      checks: ["retained-publications"],
+      list_checks: False,
+      output: doctor.Human,
+    )
+
+  let assert Ok(report) =
+    service.build_doctor_report_with_dependencies(options, deps)
+  let assert Some(result) = result_for(report, doctor.RetainedPublications)
+  assert result.status == doctor.Warn
+  assert result.code == "retained_publications_unpublished"
+  assert string.contains(result.message, "run-1 review_doc_pub=pending")
+  assert field_value(result.fields, "unpublished_run_count") == Some("1")
+  assert field_value(result.fields, "unpublished_route_count") == Some("1")
+  assert field_value(result.fields, "unpublished_route_1_run_id")
+    == Some("run-1")
+  assert field_value(result.fields, "unpublished_route_1_publication_id")
+    == Some("review_doc_pub")
+  assert field_value(result.fields, "unpublished_route_1_status")
+    == Some("pending")
+
+  assert service.start_doctor_with_dependencies(options, deps) == Ok(Nil)
+  let assert Ok(ListWritten(output)) = process.receive(subject, within: 1000)
+  assert string.contains(output, "! Retained publications")
+  assert string.contains(output, "run-1 review_doc_pub=pending")
 }
 
 pub fn doctor_tracker_scope_reports_explicit_canonical_summary_test() {

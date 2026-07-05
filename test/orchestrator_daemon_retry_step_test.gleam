@@ -3765,6 +3765,23 @@ fn run_finalize_command(
     update_tracker: True,
     dry_run: dry_run,
     reason: "operator salvage",
+    allow_unpublished: False,
+  )
+}
+
+fn run_finalize_command_allow_unpublished(
+  run_id: String,
+  dry_run dry_run: Bool,
+) -> command.OperatorCommand {
+  command.RunFinalize(
+    run_id: run_id,
+    validate: True,
+    outputs: command.RunFinalizeOutputsAuto,
+    publish: True,
+    update_tracker: True,
+    dry_run: dry_run,
+    reason: "operator salvage",
+    allow_unpublished: True,
   )
 }
 
@@ -3911,6 +3928,7 @@ pub fn run_finalize_dry_run_reports_plan_without_queueing_test() {
         update_tracker: True,
         dry_run: True,
         reason: "operator salvage",
+        allow_unpublished: False,
       ),
       1000,
     )
@@ -4125,7 +4143,6 @@ pub fn run_finalize_queues_operation_updates_tracker_and_is_idempotent_test() {
   )
   let log_subject = process.new_subject()
   let worker_subject = process.new_subject()
-  let publish_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies_with_adapter(
@@ -4145,7 +4162,7 @@ pub fn run_finalize_queues_operation_updates_tracker_and_is_idempotent_test() {
           final_issue: None,
         ))
       },
-      blocking_publication_retry_runner(log_subject, publish_barrier),
+      publication_retry_runner(),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
@@ -4159,30 +4176,20 @@ pub fn run_finalize_queues_operation_updates_tracker_and_is_idempotent_test() {
       update_tracker: True,
       dry_run: False,
       reason: "operator salvage",
+      allow_unpublished: True,
     )
   let assert Ok(first) =
     daemon.apply_operator_command(started.data, operator_command, 1000)
   assert command.status_to_string(first.status) == "queued"
   let assert Some(operation_id) = first.operation_id
   assert string.starts_with(operation_id, "run-finalize:run-1:")
-  assert wait_for_log(log_subject, "publication_driver_started", 100)
-
-  let assert Ok(second) =
-    daemon.apply_operator_command(started.data, operator_command, 1000)
-  assert command.status_to_string(second.status) == "queued"
-  assert second.operation_id == Some(operation_id)
-  assert second.message
-    == Some(
-      "run finalize already queued/running; poll query operation-status for completion",
-    )
   assert count_kind(root, "control_operation_queued") == 1
 
-  test_async.release_barrier(publish_barrier)
   let assert Ok(completed_operation) =
     wait_for_operation_status(root, operation_id, "completed", 20)
   assert completed_operation.message
     == Some("run finalize completed without starting a worker")
-  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
   assert count_kind(root, "workflow_run_finished") == 1
   assert wait_for_log(log_subject, "state_transition:Done", 100)
   test_async.assert_no_extra_message(worker_subject)
@@ -4231,7 +4238,7 @@ pub fn run_finalize_rejects_queue_append_failure_without_async_work_test() {
   let assert Ok(result) =
     daemon.apply_operator_command(
       started.data,
-      run_finalize_command("run-1", dry_run: False),
+      run_finalize_command_allow_unpublished("run-1", dry_run: False),
       1000,
     )
 
@@ -4292,6 +4299,7 @@ pub fn run_finalize_dry_run_rejects_issue_drift_test() {
         update_tracker: True,
         dry_run: True,
         reason: "operator salvage",
+        allow_unpublished: False,
       ),
       1000,
     )
@@ -4351,6 +4359,7 @@ pub fn run_finalize_dry_run_rejects_output_recovery_failure_test() {
         update_tracker: True,
         dry_run: True,
         reason: "operator salvage",
+        allow_unpublished: False,
       ),
       1000,
     )
@@ -4364,8 +4373,8 @@ pub fn run_finalize_dry_run_rejects_output_recovery_failure_test() {
   hub.stop(hub_subject)
 }
 
-pub fn run_finalize_async_publication_failure_records_failed_operation_test() {
-  let dir = "test/tmp/daemon-run-finalize-publication-failure"
+pub fn run_finalize_rejects_unpublished_required_publication_without_async_work_test() {
+  let dir = "test/tmp/daemon-run-finalize-publication-pending"
   let issue = issue("issue-1", "LIV-1336", "Todo")
   let #(workflow_path, root) = write_retry_publication_workflow(dir)
   seed_interrupted_publication_retry_run(
@@ -4394,7 +4403,7 @@ pub fn run_finalize_async_publication_failure_records_failed_operation_test() {
           final_issue: None,
         ))
       },
-      failing_publication_retry_runner(),
+      publication_retry_runner(),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
@@ -4410,13 +4419,14 @@ pub fn run_finalize_async_publication_failure_records_failed_operation_test() {
         update_tracker: True,
         dry_run: False,
         reason: "operator salvage",
+        allow_unpublished: False,
       ),
       1000,
     )
-  let assert Some(operation_id) = result.operation_id
-  let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 20)
-  assert failed_operation.reason == Some("publication_retry_attempt_failed")
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status) == Some("publication_pending")
+  assert result.operation_id == None
+  assert count_kind(root, "control_operation_queued") == 0
   assert count_kind(root, "workflow_run_finished") == 0
   assert !wait_for_log(log_subject, "state_transition:Done", 5)
 
@@ -4470,6 +4480,7 @@ pub fn run_finalize_async_tracker_update_failure_records_failed_operation_test()
         update_tracker: True,
         dry_run: False,
         reason: "operator salvage",
+        allow_unpublished: True,
       ),
       1000,
     )
@@ -4503,7 +4514,7 @@ pub fn run_finalize_startup_replay_replays_queued_operation_test() {
       record.ControlOperationQueued(
         operation_id: operation_id,
         operation_kind: "run_finalize",
-        command_name: "run_finalize",
+        command_name: "run_finalize_allow_unpublished",
         target: "run:run-1",
         run_id: Some("run-1"),
         issue_id: Some(issue.id),
@@ -4514,7 +4525,6 @@ pub fn run_finalize_startup_replay_replays_queued_operation_test() {
     ),
   ])
   let log_subject = process.new_subject()
-  let publish_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies_with_adapter(
@@ -4533,13 +4543,11 @@ pub fn run_finalize_startup_replay_replays_queued_operation_test() {
           final_issue: None,
         ))
       },
-      blocking_publication_retry_runner(log_subject, publish_barrier),
+      publication_retry_runner(),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
-  assert wait_for_log(log_subject, "publication_driver_started", 100)
-  test_async.release_barrier(publish_barrier)
   let assert Ok(completed_operation) =
     wait_for_operation_status(root, operation_id, "completed", 20)
   assert completed_operation.message

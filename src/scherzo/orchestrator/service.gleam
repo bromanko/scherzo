@@ -18,6 +18,7 @@ import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/managed_launch/status as managed_launch_status
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
+import scherzo/orchestrator/retained_publication_doctor
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/runtime_bundle
@@ -396,6 +397,7 @@ fn run_loaded_doctor_checks(
   |> maybe_linear_contract_result(selected, bundle, dependencies)
   |> maybe_linear_smoke_result(selected, bundle, dependencies)
   |> maybe_local_probe_results(selected, bundle, dependencies)
+  |> retained_publication_doctor.maybe_append(selected, bundle)
   |> doctor.Report
 }
 

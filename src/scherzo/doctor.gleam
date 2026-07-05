@@ -17,6 +17,7 @@ pub type CheckName {
   InstanceLock
   WorkspaceHooks
   PiProbe
+  RetainedPublications
 }
 
 pub type CheckStatus {
@@ -68,6 +69,7 @@ pub fn default_checks() -> List(CheckName) {
     InstanceLock,
     WorkspaceHooks,
     PiProbe,
+    RetainedPublications,
   ]
 }
 
@@ -86,6 +88,7 @@ pub fn check_name_to_string(check: CheckName) -> String {
     InstanceLock -> "instance-lock"
     WorkspaceHooks -> "workspace-hooks"
     PiProbe -> "pi-probe"
+    RetainedPublications -> "retained-publications"
   }
 }
 
@@ -99,6 +102,7 @@ pub fn parse_check_name(name: String) -> Result(CheckName, String) {
     "instance-lock" -> Ok(InstanceLock)
     "workspace-hooks" -> Ok(WorkspaceHooks)
     "pi-probe" -> Ok(PiProbe)
+    "retained-publications" -> Ok(RetainedPublications)
     _ -> Error(name)
   }
 }
@@ -353,6 +357,10 @@ fn human_pass_body(result: CheckResult) -> String {
         "Profile: " <> field_or(result.fields, "workspace_profile", "?") <> ".",
       ])
     PiProbe -> indent(["pi RPC launched successfully and no prompt was sent."])
+    RetainedPublications ->
+      indent([
+        "No retained materialized runs have unpublished required publication routes.",
+      ])
   }
 }
 
@@ -497,6 +505,7 @@ fn check_title(check: CheckName) -> String {
     InstanceLock -> "Instance lock"
     WorkspaceHooks -> "Workspace driver"
     PiProbe -> "Pi probe"
+    RetainedPublications -> "Retained publications"
   }
 }
 
@@ -518,6 +527,8 @@ fn impact(check: CheckName) -> String {
       "The default workspace driver cannot safely prepare and clean up a scratch workspace."
     PiProbe ->
       "Scherzo may not be able to launch pi RPC in prepared workspaces."
+    RetainedPublications ->
+      "A retained run may have materialized outputs but no published PR/route evidence; closing the tracker task would hide unpublished work."
   }
 }
 
@@ -562,6 +573,11 @@ fn remediation(check: CheckName, code: String) -> List(String) {
     PiProbe -> [
       "- Confirm pi is installed and the configured pi.command supports --mode rpc.",
       "- Run: gleam run -- doctor --check pi-probe <path-to-scherzo.yaml>",
+    ]
+    RetainedPublications -> [
+      "- Inspect the run with: scherzoctl artifact publication list --run <run-id> --root <workspace-root>.",
+      "- Publish with: scherzoctl publication retry <run-id> --publication <publication-id>.",
+      "- Rerun run finalize only after publication status is published, unless using --allow-unpublished with an explicit reason.",
     ]
   }
   |> append_code_specific_remediation(code)

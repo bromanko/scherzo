@@ -77,6 +77,7 @@ type PublicationSummary {
   PublicationSummary(
     publication_id: String,
     series_id: String,
+    publication_status: String,
     latest_status: String,
     latest_attempt_id: String,
     attempt_count: Int,
@@ -175,6 +176,7 @@ fn publication_summaries_loop(
             PublicationSummary(
               publication_id: publication_id,
               series_id: latest.series_id,
+              publication_status: publication_contract_status(latest.status),
               latest_status: latest.status,
               latest_attempt_id: latest.attempt_id,
               attempt_count: list.length(attempts),
@@ -201,6 +203,14 @@ fn publication_summaries_loop(
   }
 }
 
+fn publication_contract_status(latest_status: String) -> String {
+  case latest_status {
+    "published" | "unchanged" -> "published"
+    "failed" -> "failed"
+    _ -> "pending"
+  }
+}
+
 fn print_list(
   run_id: String,
   summaries: List(PublicationSummary),
@@ -214,6 +224,8 @@ fn print_list(
         output_line(
           summary.publication_id
           <> ": status="
+          <> summary.publication_status
+          <> " latest_status="
           <> summary.latest_status
           <> " attempts="
           <> int.to_string(summary.attempt_count)
@@ -257,6 +269,7 @@ fn print_show(
   output_line("run_id: " <> run_id)
   output_line("publication_id: " <> publication_id)
   output_line("series_id: " <> latest.series_id)
+  output_line("status: " <> publication_contract_status(latest.status))
   output_line("latest_status: " <> latest.status)
   output_line("latest_attempt_id: " <> latest.attempt_id)
   output_line("attempt_count: " <> int.to_string(list.length(attempts)))
@@ -319,6 +332,7 @@ fn publication_summary_to_json(
   json.object([
     #("publication_id", json.string(summary.publication_id)),
     #("series_id", json.string(summary.series_id)),
+    #("status", json.string(summary.publication_status)),
     #("latest_status", json.string(summary.latest_status)),
     #("latest_attempt_id", json.string(summary.latest_attempt_id)),
     #("attempt_count", json.int(summary.attempt_count)),
