@@ -50,6 +50,7 @@ PORTABLE_SCHERZO_LINKS = [
     ("scripts", "scripts"),
     (".scherzo/workflows", ".scherzo/workflows"),
 ]
+DEFAULT_BASE_CANDIDATES = ["main@origin", "main", "@"]
 
 
 def usage_error(message: str | None = None) -> None:
@@ -176,10 +177,10 @@ def fetch_base_enabled() -> bool:
     usage_error("SCHERZO_JJ_WORKSPACE_FETCH_BASE must be true or false")
 
 
-def pr_draft_setting() -> bool | None:
+def pr_draft_setting() -> bool:
     value = env_value("SCHERZO_PR_DRAFT")
     if value is None:
-        return None
+        return False
     if value == "true":
         return True
     if value == "false":
@@ -414,10 +415,6 @@ def configured_base_candidates(branch: str, remote: str) -> list[str]:
     return unique_values([f"{branch}@{remote}", branch])
 
 
-def default_base_candidates(branch: str, remote: str) -> list[str]:
-    return unique_values([f"{branch}@{remote}", branch, "main@origin", "main", "@"])
-
-
 def lexical_absolute(path: Path) -> Path:
     return Path(os.path.abspath(os.path.normpath(str(path))))
 
@@ -641,7 +638,11 @@ def workspace_base_revision(repo_root: Path) -> str:
     branch = selected_workspace_base_branch()
     remote = selected_workspace_base_remote()
     configured = base_selection_was_configured()
-    candidates = configured_base_candidates(branch, remote) if configured else default_base_candidates(branch, remote)
+    candidates = (
+        configured_base_candidates(branch, remote)
+        if configured
+        else DEFAULT_BASE_CANDIDATES
+    )
     revision = first_existing_revision(repo_root, candidates)
     if revision is not None:
         return revision
@@ -654,7 +655,10 @@ def workspace_base_revision(repo_root: Path) -> str:
             "SCHERZO_JJ_WORKSPACE_BASE_BRANCH and SCHERZO_JJ_WORKSPACE_REMOTE "
             "for jj workspace base policy."
         )
-    fail("could not resolve any default workspace base candidate: main@origin, main, @")
+    fail(
+        "could not resolve any default workspace base candidate: "
+        f"{', '.join(DEFAULT_BASE_CANDIDATES)}"
+    )
 
 
 def prepare_destination_for_workspace_add(workspace_path: Path) -> Path:
@@ -682,9 +686,6 @@ def run_jj_root(workspace_path: Path) -> str:
 def verify_current_workspace(workspace_path: Path) -> None:
     if not (workspace_path / ".jj").exists():
         fail(f"workspace is missing .jj: {workspace_path}")
-    if run_jj_root(workspace_path) != str(workspace_path):
-        fail("jj root does not match workspace path")
-
     current_root = run_jj_root(workspace_path)
     if current_root != str(workspace_path):
         fail(f"jj root does not match workspace path: expected {workspace_path}, got {current_root}")
@@ -884,10 +885,7 @@ def run_jj_status_human(root: Path) -> None:
         raise SystemExit(0)
 
     combined_output = f"{completed.stdout}{completed.stderr}"
-    if (
-        "jj workspace update-stale" not in combined_output
-        and "workspace update-stale" not in combined_output
-    ):
+    if "workspace update-stale" not in combined_output:
         write_process_output(completed)
         raise SystemExit(1)
 
@@ -1930,7 +1928,7 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
             "--body-file",
             values["body-file"],
         ]
-        if draft is True:
+        if draft:
             create_args.append("--draft")
         create = run_capture(
             create_args,

@@ -120,7 +120,6 @@ pub fn root_workspace_fetches_configured_jj_base_before_add_test() {
     resolve_line,
     add_line,
     "root",
-    "root",
     "status --color=never",
   ] = lines
   assert fetch_line

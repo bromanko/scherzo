@@ -94,6 +94,7 @@ pub fn checked_in_github_pr_conflict_scout_schedule_loads_test() {
       "execplan-revision",
       "implementation",
       "merge-conflict-resolution",
+      "one-shot",
       "research",
     ]
 
