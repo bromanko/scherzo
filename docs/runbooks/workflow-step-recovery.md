@@ -1,8 +1,8 @@
 # Workflow step recovery
 
-This page documents the active repair-and-recheck step-recovery path in Scherzo. When a step has effective `recover` configuration and its failure would otherwise be fatal, `workflow_run` records the failed attempt, writes a structured recovery-input artifact, starts one bounded nested recovery worker in the same workspace for that failed attempt, and rechecks the original step unchanged when the recovery result is `recheck`. If the recheck fails and the step still has remaining recovery budget, the next failed attempt starts a fresh nested recovery worker.
+This page documents the active repair-and-recheck step-recovery path in Scherzo. When a step has effective `recovery` configuration and its failure would otherwise be fatal, `workflow_run` records the failed attempt, writes a structured recovery-input artifact, starts one bounded nested recovery worker in the same workspace for that failed attempt, and rechecks the original step unchanged when the recovery result is `recheck`. If the recheck fails and the step still has remaining recovery budget, the next failed attempt starts a fresh nested recovery worker.
 
-Recovery remains a no-op for steps without effective recovery, for `recover.enabled: false`, and for `on_failure: continue`. A workflow run emits `succeeded_after_recovery` or `failed_after_recovery` only when the same run has durable `workflow_step_recovery_started` or `workflow_step_recovery_finished` evidence; daemon startup resume by itself does not relabel a clean run.
+Recovery remains a no-op for steps without effective recovery, for `recovery.enabled: false`, and for `on_failure: continue`. A workflow run emits `succeeded_after_recovery` or `failed_after_recovery` only when the same run has durable `workflow_step_recovery_started` or `workflow_step_recovery_finished` evidence; daemon startup resume by itself does not relabel a clean run.
 
 ## Agent-step recheck semantics
 
@@ -14,7 +14,7 @@ The recheck renders the original step prompt/template again from the workflow st
 
 Required structured-output validation is part of the agent step attempt. If the agent result is missing required structured output, fails the baseline object schema, fails a `json_schema` validator, or is rejected by a `command` validator, Scherzo first consumes the step's `structured_output.validation_retries` budget when the failure is retryable. That retry is an in-session `StructuredOutputRetryPrompt` to the same agent step; recovery has not started yet. Workflows that want a validator rejection to hand off immediately to step recovery should set `structured_output.validation_retries: 0`.
 
-When there is no retry budget, the retry worker fails, the retry result still fails validation, or the validation error is non-retryable, the agent step attempt is recorded as failed with a `structured_output_*` failure code. From that point it follows the normal fatal-step path: if `on_failure` is fatal and the step has effective `recover` configuration, `workflow_run` records the failed attempt, starts the bounded step-recovery worker, and on a `recheck` decision reruns the original agent step unchanged in the next attempt. A recovery `gave_up` decision preserves the original structured-output failure and fails the workflow as `failed_after_recovery`.
+When there is no retry budget, the retry worker fails, the retry result still fails validation, or the validation error is non-retryable, the agent step attempt is recorded as failed with a `structured_output_*` failure code. From that point it follows the normal fatal-step path: if `on_failure` is fatal and the step has effective `recovery` configuration, `workflow_run` records the failed attempt, starts the bounded step-recovery worker, and on a `recheck` decision reruns the original agent step unchanged in the next attempt. A recovery `gave_up` decision preserves the original structured-output failure and fails the workflow as `failed_after_recovery`.
 
 Command validators used as same-step gates follow the same ordering. The validator receives the captured structured-output submission on stdin, runs in the configured working directory for that same step workspace, and can write run-local stamped artifacts under `SCHERZO_RUN_ROOT` before it exits. For a plan-completion verifier, set `validation_retries: 0` when `verdict: fail` should hand control directly to step recovery; otherwise command-validator exit status `1` first triggers the normal structured-output retry prompt. A recovery `recheck` reruns the original verifier step, captures a fresh submission, and reruns the validator so workspace fingerprints are recomputed rather than reused from the failed attempt.
 
@@ -22,8 +22,8 @@ Command validators used as same-step gates follow the same ordering. The validat
 
 Implemented in this slice:
 
-- workflow-level and step-level `recover` parsing;
-- shallow merge semantics and `recover.enabled: false` disablement;
+- workflow-level and step-level `recovery` parsing;
+- shallow merge semantics and `recovery.enabled: false` disablement;
 - recovery prompt bundling in runtime bundles;
 - recovery decision protocol parsing for `recheck` and `gave_up`;
 - recording the failed original attempt before recovery starts;
@@ -173,3 +173,5 @@ Self-healing recovery may edit the normal retained workspace under `StepContext.
 If a recovery worker changes or deletes one of those protected files, Scherzo restores the original bytes before the recovery result is accepted and appends the `protected_checkpoint_restored` diagnostic to recovery history. If Scherzo cannot read, hash, or restore a protected checkpoint, recovery stops early with `recovery_artifact_restore_failed` instead of proceeding to a later recheck failure.
 
 Workflow terminal outcomes remain `completed` and `failed_fatal` for clean runs. When same-run step-recovery evidence exists, terminal workflow outcomes may instead be `succeeded_after_recovery` or `failed_after_recovery`.
+
+The older `recover` spelling is removed. Use `recovery` everywhere.

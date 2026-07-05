@@ -94,11 +94,12 @@ steps:
     structured_output:
       format: json
       artifact_name: plan_completion_verdict_submission
+      required: true
+      validation_retries: 0
       source:
         type: pi_tool_call
         tool_name: submit_plan_completion_verdict
         parameters_schema_path: .scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json
-      required: true
       validators:
         - name: plan_completion_verdict_submission_provider_shape
           type: json_schema
@@ -108,6 +109,15 @@ steps:
           type: json_schema
           path: .scherzo/workflows/schemas/plan-completion-verdict-submission.v1.schema.json
           draft: "2020-12"
+        - name: plan_completion_gate_from_submission
+          type: command
+          argv:
+            - python3
+            - .scherzo/workflows/scripts/scherzo-implementation
+            - gate-plan-completion
+            - --from-submission
+          working_directory: workspace
+          timeout: 30s
       schema:
         type: object
         required:
@@ -116,211 +126,15 @@ steps:
           - evidence
           - checked_acceptance_criteria
           - deferred_manual_verification
-    run_in: main
-
-  - id: checkpoint_initial_plan_completion_verdict
-    kind: command
-    depends_on: [verify_plan_completion]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" checkpoint-plan-completion-verdict --submission-step verify_plan_completion'
-    run_in: main
-
-  - id: apply_plan_completion_feedback
-    kind: agent
-    depends_on: [checkpoint_initial_plan_completion_verdict]
-    prompt: prompts/execplan-implementation-apply-plan-completion-feedback.md
-    model: openai-codex/gpt-5.4
-    thinking: medium
-    run_in: main
-
-  - id: analyze_changes_after_plan_feedback
-    kind: command
-    depends_on: [apply_plan_completion_feedback]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
-    run_in: main
-
-  - id: verify_plan_completion_after_feedback
-    kind: agent
-    depends_on: [analyze_changes_after_plan_feedback]
-    prompt: prompts/execplan-implementation-verify-completion-after-feedback.md
-    structured_output:
-      format: json
-      artifact_name: plan_completion_verdict_submission
-      source:
-        type: pi_tool_call
-        tool_name: submit_plan_completion_verdict
-        parameters_schema_path: .scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json
-      required: true
-      validators:
-        - name: plan_completion_verdict_submission_provider_shape
-          type: json_schema
-          path: .scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json
-          draft: "2020-12"
-        - name: plan_completion_verdict_submission_schema
-          type: json_schema
-          path: .scherzo/workflows/schemas/plan-completion-verdict-submission.v1.schema.json
-          draft: "2020-12"
-      schema:
-        type: object
-        required:
-          - verdict
-          - blocking_findings
-          - evidence
-          - checked_acceptance_criteria
-          - deferred_manual_verification
-    run_in: main
-
-  - id: checkpoint_plan_completion_verdict_after_feedback
-    kind: command
-    depends_on: [verify_plan_completion_after_feedback]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" checkpoint-plan-completion-verdict --submission-step verify_plan_completion_after_feedback'
-    run_in: main
-
-  - id: gate_plan_completion
-    kind: command
-    depends_on: [checkpoint_plan_completion_verdict_after_feedback]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" gate-plan-completion'
-    on_failure: continue
-    run_in: main
-
-  - id: classify_plan_completion_gate
-    kind: command
-    depends_on: [gate_plan_completion]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase before-late-repair --attempt 2 --max-attempts 3'
-    run_in: main
-
-  - id: apply_late_plan_completion_feedback
-    kind: agent
-    depends_on: [classify_plan_completion_gate]
-    prompt: prompts/execplan-implementation-apply-late-plan-completion-feedback.md
-    model: openai-codex/gpt-5.4
-    thinking: medium
-    run_in: main
-
-  - id: analyze_changes_after_late_plan_feedback
-    kind: command
-    depends_on: [apply_late_plan_completion_feedback]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
-    run_in: main
-
-  - id: verify_plan_completion_after_late_repair
-    kind: agent
-    depends_on: [analyze_changes_after_late_plan_feedback]
-    prompt: prompts/execplan-implementation-verify-completion-after-late-repair.md
-    structured_output:
-      format: json
-      artifact_name: plan_completion_verdict_submission
-      source:
-        type: pi_tool_call
-        tool_name: submit_plan_completion_verdict
-        parameters_schema_path: .scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json
-      required: true
-      validators:
-        - name: plan_completion_verdict_submission_provider_shape
-          type: json_schema
-          path: .scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json
-          draft: "2020-12"
-        - name: plan_completion_verdict_submission_schema
-          type: json_schema
-          path: .scherzo/workflows/schemas/plan-completion-verdict-submission.v1.schema.json
-          draft: "2020-12"
-      schema:
-        type: object
-        required:
-          - verdict
-          - blocking_findings
-          - evidence
-          - checked_acceptance_criteria
-          - deferred_manual_verification
-    run_in: main
-
-  - id: checkpoint_plan_completion_verdict_after_late_repair
-    kind: command
-    depends_on: [verify_plan_completion_after_late_repair]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" checkpoint-plan-completion-verdict --submission-step verify_plan_completion_after_late_repair'
-    run_in: main
-
-  - id: gate_plan_completion_after_late_repair
-    kind: command
-    depends_on: [checkpoint_plan_completion_verdict_after_late_repair]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" gate-plan-completion'
-    on_failure: continue
-    run_in: main
-
-  - id: classify_plan_completion_gate_after_late_repair
-    kind: command
-    depends_on: [gate_plan_completion_after_late_repair]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase before-final-repair --attempt 3 --max-attempts 3'
-    run_in: main
-
-  - id: apply_final_plan_completion_feedback
-    kind: agent
-    depends_on: [classify_plan_completion_gate_after_late_repair]
-    prompt: prompts/execplan-implementation-apply-final-plan-completion-feedback.md
-    model: openai-codex/gpt-5.4
-    thinking: medium
-    run_in: main
-
-  - id: analyze_changes_after_final_plan_feedback
-    kind: command
-    depends_on: [apply_final_plan_completion_feedback]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
-    run_in: main
-
-  - id: verify_plan_completion_after_final_repair
-    kind: agent
-    depends_on: [analyze_changes_after_final_plan_feedback]
-    prompt: prompts/execplan-implementation-verify-completion-after-final-repair.md
-    structured_output:
-      format: json
-      artifact_name: plan_completion_verdict_submission
-      source:
-        type: pi_tool_call
-        tool_name: submit_plan_completion_verdict
-        parameters_schema_path: .scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json
-      required: true
-      validators:
-        - name: plan_completion_verdict_submission_provider_shape
-          type: json_schema
-          path: .scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json
-          draft: "2020-12"
-        - name: plan_completion_verdict_submission_schema
-          type: json_schema
-          path: .scherzo/workflows/schemas/plan-completion-verdict-submission.v1.schema.json
-          draft: "2020-12"
-      schema:
-        type: object
-        required:
-          - verdict
-          - blocking_findings
-          - evidence
-          - checked_acceptance_criteria
-          - deferred_manual_verification
-    run_in: main
-
-  - id: checkpoint_plan_completion_verdict_after_final_repair
-    kind: command
-    depends_on: [verify_plan_completion_after_final_repair]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" checkpoint-plan-completion-verdict --submission-step verify_plan_completion_after_final_repair'
-    run_in: main
-
-  - id: gate_plan_completion_after_final_repair
-    kind: command
-    depends_on: [checkpoint_plan_completion_verdict_after_final_repair]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" gate-plan-completion'
-    on_failure: continue
-    run_in: main
-
-  - id: finalize_plan_completion_gate_recovery
-    kind: command
-    depends_on: [gate_plan_completion_after_final_repair]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase after-final-repair --attempt 3 --max-attempts 3'
     run_in: main
     recovery:
-      enabled: false
+      attempts: 2
+      prompt: prompts/execplan-implementation-recover-plan-completion.md
 
   - id: validate_before_native_review
     kind: command
-    depends_on: [finalize_plan_completion_gate_recovery]
+    depends_on: [verify_plan_completion]
+
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
     timeout: 20m
     on_failure: continue
@@ -508,46 +322,30 @@ steps:
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; "$bundle_dir/scripts/scherzo-review" materialize-disposition-input --artifact-dir "$artifact_dir" --submission-step apply_review_feedback --submission-artifact review_finding_disposition_input --output tmp/review-finding-dispositions.v1.json'
     run_in: main
 
-  - id: refresh_base_before_validation
+  - id: refresh_and_validate_after_review
     kind: command
     depends_on: [materialize_review_dispositions]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" refresh-base --stage before-validation'
-    timeout: 5m
-    on_failure: continue
-    run_in: main
-
-  - id: validate_after_refresh
-    kind: command
-    depends_on: [refresh_base_before_validation]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
+    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" refresh-base-and-validate --stage before-validation'
     timeout: 20m
-    on_failure: continue
     run_in: main
-
-  - id: repair_base_drift
-    kind: agent
-    depends_on: [validate_after_refresh]
-    prompt: prompts/execplan-implementation-repair-base-drift.md
-    run_in: main
-
-  - id: assert_base_drift_repair
-    kind: command
-    depends_on: [repair_base_drift]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" assert-base-drift-repair'
-    run_in: main
+    recovery:
+      attempts: 1
+      prompt: prompts/execplan-implementation-repair-base-drift.md
 
   - id: verify_plan_completion_before_final_validation
     kind: agent
-    depends_on: [assert_base_drift_repair]
-    prompt: prompts/execplan-implementation-verify-completion-before-final-validation.md
+    depends_on: [refresh_and_validate_after_review]
+    prompt: prompts/execplan-implementation-verify-completion.md
+
     structured_output:
       format: json
       artifact_name: plan_completion_verdict_submission
+      required: true
+      validation_retries: 0
       source:
         type: pi_tool_call
         tool_name: submit_plan_completion_verdict
         parameters_schema_path: .scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json
-      required: true
       validators:
         - name: plan_completion_verdict_submission_provider_shape
           type: json_schema
@@ -557,6 +355,15 @@ steps:
           type: json_schema
           path: .scherzo/workflows/schemas/plan-completion-verdict-submission.v1.schema.json
           draft: "2020-12"
+        - name: plan_completion_gate_from_submission
+          type: command
+          argv:
+            - python3
+            - .scherzo/workflows/scripts/scherzo-implementation
+            - gate-plan-completion
+            - --from-submission
+          working_directory: workspace
+          timeout: 30s
       schema:
         type: object
         required:
@@ -566,34 +373,16 @@ steps:
           - checked_acceptance_criteria
           - deferred_manual_verification
     run_in: main
-
-  - id: checkpoint_final_plan_completion_verdict
-    kind: command
-    depends_on: [verify_plan_completion_before_final_validation]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" checkpoint-plan-completion-verdict --submission-step verify_plan_completion_before_final_validation'
-    run_in: main
+    recovery:
+      attempts: 2
+      prompt: prompts/execplan-implementation-recover-plan-completion.md
 
   - id: final_validate
     kind: command
-    depends_on: [checkpoint_final_plan_completion_verdict]
+    depends_on: [verify_plan_completion_before_final_validation]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
     timeout: 20m
     run_in: main
-
-  - id: final_plan_completion_gate
-    kind: command
-    depends_on: [final_validate]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" gate-plan-completion --final'
-    on_failure: continue
-    run_in: main
-
-  - id: finalize_final_plan_completion_gate
-    kind: command
-    depends_on: [final_plan_completion_gate]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-recovery --phase final --attempt 3 --max-attempts 3'
-    run_in: main
-    recovery:
-      enabled: false
 
   - id: finalize_review_dispositions
     kind: command
@@ -603,7 +392,7 @@ steps:
 
   - id: materialize_commit_stack
     kind: command
-    depends_on: [finalize_final_plan_completion_gate, finalize_review_dispositions]
+    depends_on: [finalize_review_dispositions]
     run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" publish'
     timeout: 20m
     run_in: main
