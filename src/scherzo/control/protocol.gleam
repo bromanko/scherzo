@@ -62,6 +62,7 @@ pub type Request {
     update_tracker: Bool,
     dry_run: Bool,
     reason: String,
+    allow_unpublished: Bool,
   )
   RetryArtifactPublication(
     id: String,
@@ -140,6 +141,7 @@ type RequestFields {
     outputs: Option(String),
     publish: Option(Bool),
     update_tracker: Option(Bool),
+    allow_unpublished: Option(Bool),
     action_id: Option(String),
     action_instance_id: Option(String),
     target_kind: Option(String),
@@ -167,7 +169,7 @@ pub fn request_id(request: Request) -> String {
     RetryWorkflowStep(id, _, _, _) -> id
     RetryWorkflowStepExact(id, _, _, _) -> id
     RecollectWorkflowOutputs(id, _, _) -> id
-    RunFinalize(id, _, _, _, _, _, _, _, _) -> id
+    RunFinalize(id, _, _, _, _, _, _, _, _, _) -> id
     RetryArtifactPublication(id, _, _, _) -> id
     ParkIssue(id, _, _, _) -> id
     UnparkIssue(id, _, _) -> id
@@ -198,7 +200,7 @@ pub fn request_token(request: Request) -> String {
     RetryWorkflowStep(_, token, _, _) -> token
     RetryWorkflowStepExact(_, token, _, _) -> token
     RecollectWorkflowOutputs(_, token, _) -> token
-    RunFinalize(_, token, _, _, _, _, _, _, _) -> token
+    RunFinalize(_, token, _, _, _, _, _, _, _, _) -> token
     RetryArtifactPublication(_, token, _, _) -> token
     ParkIssue(_, token, _, _) -> token
     UnparkIssue(_, token, _) -> token
@@ -294,6 +296,7 @@ pub fn request_to_json(request: Request) -> json.Json {
       update_tracker,
       dry_run,
       reason,
+      allow_unpublished,
     ) ->
       [
         #("run_id", json.string(run_id)),
@@ -303,6 +306,7 @@ pub fn request_to_json(request: Request) -> json.Json {
         #("update_tracker", json.bool(update_tracker)),
         #("dry_run", json.bool(dry_run)),
         #("reason", json.string(reason)),
+        #("allow_unpublished", json.bool(allow_unpublished)),
         ..base_request_entries(id, token, "run_finalize")
       ]
       |> json.object
@@ -600,6 +604,7 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
             update_tracker,
             request_dry_run(fields),
             reason,
+            request_allow_unpublished(fields),
           ))
         Error(err), _, _, _, _, _
         | _, Error(err), _, _, _, _
@@ -1007,6 +1012,13 @@ fn request_dry_run(fields: RequestFields) -> Bool {
   }
 }
 
+fn request_allow_unpublished(fields: RequestFields) -> Bool {
+  case fields.allow_unpublished {
+    Some(value) -> value
+    None -> False
+  }
+}
+
 fn required_ui_response(
   fields: RequestFields,
 ) -> Result(command.UiResponse, RequestError) {
@@ -1135,6 +1147,11 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     None,
     decode.optional(decode.bool),
   )
+  use allow_unpublished <- decode.optional_field(
+    "allow_unpublished",
+    None,
+    decode.optional(decode.bool),
+  )
   use action_id <- decode.optional_field(
     "action_id",
     None,
@@ -1201,6 +1218,7 @@ fn request_fields_decoder() -> decode.Decoder(RequestFields) {
     outputs: outputs,
     publish: publish,
     update_tracker: update_tracker,
+    allow_unpublished: allow_unpublished,
     action_id: action_id,
     action_instance_id: action_instance_id,
     target_kind: target_kind,
@@ -1346,6 +1364,7 @@ pub fn command_request(
       update_tracker: update_tracker,
       dry_run: dry_run,
       reason: reason,
+      allow_unpublished: allow_unpublished,
     ) ->
       RunFinalize(
         id,
@@ -1357,6 +1376,7 @@ pub fn command_request(
         update_tracker,
         dry_run,
         reason,
+        allow_unpublished,
       )
     command.RetryArtifactPublication(run_id, publication_id) ->
       RetryArtifactPublication(id, token, run_id, publication_id)
@@ -1412,6 +1432,7 @@ pub fn request_operator_command(
       update_tracker,
       dry_run,
       reason,
+      allow_unpublished,
     ) ->
       Some(command.RunFinalize(
         run_id: run_id,
@@ -1421,6 +1442,7 @@ pub fn request_operator_command(
         update_tracker: update_tracker,
         dry_run: dry_run,
         reason: reason,
+        allow_unpublished: allow_unpublished,
       ))
     RetryArtifactPublication(_, _, run_id, publication_id) ->
       Some(command.RetryArtifactPublication(run_id, publication_id))

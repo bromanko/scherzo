@@ -438,7 +438,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     command_spec.CommandSpec(
       handler: RunFinalizeKey,
       path: ["run", "finalize"],
-      usage: "run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason <text> (--dry-run|--yes)",
+      usage: "run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason <text> [--allow-unpublished] (--dry-run|--yes)",
       summary: "Plan or perform manual run finalization without starting a new workflow.",
       positionals: [command_spec.Required("run_id")],
       options: [
@@ -451,12 +451,13 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
         publish_option(),
         update_tracker_option(),
         reason_option(),
+        allow_unpublished_option(),
         dry_run_option(),
         yes_option(),
       ],
       help_lines: [
         line(
-          "run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason <text> (--dry-run|--yes)",
+          "run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason <text> [--allow-unpublished] (--dry-run|--yes)",
           "Plan or perform manual run finalization without starting a new workflow.",
         ),
       ],
@@ -1473,7 +1474,14 @@ fn outputs_option() -> command_spec.OptionSpec {
 fn publish_option() -> command_spec.OptionSpec {
   command_spec.flag_option(
     "--publish",
-    "Required for run finalize to retry publication after outputs are ready.",
+    "Required for run finalize to verify publication after outputs are ready.",
+  )
+}
+
+fn allow_unpublished_option() -> command_spec.OptionSpec {
+  command_spec.flag_option(
+    "--allow-unpublished",
+    "Allow run finalize to close a run even when required publication routes are not published; requires --reason.",
   )
 }
 

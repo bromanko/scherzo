@@ -59,6 +59,7 @@ pub type OperatorCommand {
     update_tracker: Bool,
     dry_run: Bool,
     reason: String,
+    allow_unpublished: Bool,
   )
   RetryArtifactPublication(run_id: String, publication_id: Option(String))
   ParkIssue(IssueRef, reason: String)
@@ -116,6 +117,7 @@ type CommandFields {
     outputs: Option(String),
     publish: Option(Bool),
     update_tracker: Option(Bool),
+    allow_unpublished: Option(Bool),
     action_id: Option(String),
     action_instance_id: Option(String),
     target_kind: Option(String),
@@ -287,6 +289,7 @@ pub fn operator_command_to_json(
       update_tracker,
       dry_run,
       reason,
+      allow_unpublished,
     ) ->
       [
         #("run_id", json.string(run_id)),
@@ -296,6 +299,7 @@ pub fn operator_command_to_json(
         #("update_tracker", json.bool(update_tracker)),
         #("dry_run", json.bool(dry_run)),
         #("reason", json.string(reason)),
+        #("allow_unpublished", json.bool(allow_unpublished)),
         ..base_command_entries("run_finalize")
       ]
       |> json.object
@@ -654,6 +658,11 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
     None,
     decode.optional(decode.bool),
   )
+  use allow_unpublished <- decode.optional_field(
+    "allow_unpublished",
+    None,
+    decode.optional(decode.bool),
+  )
   use action_id <- decode.optional_field(
     "action_id",
     None,
@@ -714,6 +723,7 @@ fn command_fields_decoder() -> decode.Decoder(CommandFields) {
     outputs: outputs,
     publish: publish,
     update_tracker: update_tracker,
+    allow_unpublished: allow_unpublished,
     action_id: action_id,
     action_instance_id: action_instance_id,
     target_kind: target_kind,
@@ -777,6 +787,7 @@ fn operator_command_from_fields(
             update_tracker: update_tracker,
             dry_run: command_dry_run(fields),
             reason: reason,
+            allow_unpublished: command_allow_unpublished(fields),
           ))
         }
         "retry_artifact_publication" -> {
@@ -1040,6 +1051,13 @@ fn command_dry_run(fields: CommandFields) -> Bool {
   case fields.dry_run {
     Some(value) -> value
     None -> True
+  }
+}
+
+fn command_allow_unpublished(fields: CommandFields) -> Bool {
+  case fields.allow_unpublished {
+    Some(value) -> value
+    None -> False
   }
 }
 

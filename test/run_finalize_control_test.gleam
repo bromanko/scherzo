@@ -27,7 +27,52 @@ pub fn run_finalize_dry_run_reports_recollect_outputs_and_publication_test() {
   assert plan.publication_ids == ["execplan_review_doc"]
   assert !plan.already_finalized
   assert run_finalize_control.dry_run_message(plan)
-    == "dry run: run is not finalized yet; would validate retained evidence, recollect outputs, retry publication for 1 target(s), update tracker, and append workflow_run_finished without starting a worker"
+    == "dry run: run is not finalized yet; would validate retained evidence, recollect materialized outputs, verify publication status for 1 target(s): execplan_review_doc=failed(required), update tracker, and append workflow_run_finished without starting a worker"
+}
+
+pub fn run_finalize_queue_decision_rejects_unpublished_required_publication_test() {
+  let operator_command = operator_command()
+  let projected = projection.fold(interrupted_run_records("run-1", True))
+
+  assert run_finalize_control.queue_decision(
+      projected,
+      operator_command,
+      "run-1",
+      42,
+      allow_unpublished: False,
+    )
+    == Error(#(
+      "publication_pending",
+      "run finalize blocked: required publication route(s) are not published for run run-1: execplan_review_doc=failed(required). Next: scherzoctl publication retry run-1 --publication execplan_review_doc --json, then rerun run finalize. Override only with --allow-unpublished --reason <text>.",
+    ))
+}
+
+pub fn run_finalize_queue_decision_queues_after_required_publication_published_test() {
+  let operator_command = operator_command()
+  let projected =
+    projection.fold(interrupted_run_records_with_publication_status(
+      "run-1",
+      True,
+      "published",
+    ))
+
+  let assert Ok(run_finalize_control.NewOperation(operation_id, queued_body)) =
+    run_finalize_control.queue_decision(
+      projected,
+      operator_command,
+      "run-1",
+      42,
+      allow_unpublished: False,
+    )
+  assert operation_id == "run-finalize:run-1:42"
+  let assert record.ControlOperationQueued(
+    operation_id: "run-finalize:run-1:42",
+    operation_kind: "run_finalize",
+    run_id: Some("run-1"),
+    issue_id: Some("issue-1"),
+    issue_identifier: Some("LIV-1336"),
+    ..,
+  ) = queued_body
 }
 
 pub fn run_finalize_queue_decision_returns_already_finalized_for_finished_run_test() {
@@ -41,6 +86,7 @@ pub fn run_finalize_queue_decision_returns_already_finalized_for_finished_run_te
       update_tracker: True,
       dry_run: False,
       reason: "operator salvage",
+      allow_unpublished: False,
     )
 
   let assert Ok(run_finalize_control.AlreadyFinalized(message)) =
@@ -49,6 +95,7 @@ pub fn run_finalize_queue_decision_returns_already_finalized_for_finished_run_te
       operator_command,
       "run-1",
       42,
+      allow_unpublished: False,
     )
   assert message == "run run-1 is already finalized"
 }
@@ -82,6 +129,7 @@ pub fn run_finalize_queue_decision_reuses_incomplete_operation_test() {
       operator_command,
       "run-1",
       42,
+      allow_unpublished: False,
     )
   assert operation_id == "run-finalize:run-1:20"
 }
@@ -125,6 +173,7 @@ pub fn run_finalize_queue_decision_rejects_overlapping_publication_retry_test() 
       operator_command,
       "run-1",
       42,
+      allow_unpublished: False,
     )
   assert operation_id == "artifact-publication-retry:run-1:all:20"
   assert kind == "artifact_publication_retry"
@@ -139,6 +188,7 @@ fn operator_command() -> command.OperatorCommand {
     update_tracker: True,
     dry_run: False,
     reason: "operator salvage",
+    allow_unpublished: False,
   )
 }
 
@@ -149,6 +199,18 @@ fn active_run_records(run_id: String) -> List(record.LedgerRecord) {
 fn interrupted_run_records(
   run_id: String,
   include_output_manifest: Bool,
+) -> List(record.LedgerRecord) {
+  interrupted_run_records_with_publication_status(
+    run_id,
+    include_output_manifest,
+    "failed",
+  )
+}
+
+fn interrupted_run_records_with_publication_status(
+  run_id: String,
+  include_output_manifest: Bool,
+  publication_status: String,
 ) -> List(record.LedgerRecord) {
   let output_records = case include_output_manifest {
     True -> [output_manifest_record(run_id)]
@@ -167,7 +229,7 @@ fn interrupted_run_records(
           reason: "operator_stop",
         ),
       ),
-      publication_record(run_id),
+      publication_record_with_status(run_id, publication_status),
     ]),
   )
 }
@@ -246,6 +308,21 @@ fn output_manifest_record(run_id: String) -> record.LedgerRecord {
 }
 
 fn publication_record(run_id: String) -> record.LedgerRecord {
+  publication_record_with_status(run_id, "failed")
+}
+
+fn publication_record_with_status(
+  run_id: String,
+  status: String,
+) -> record.LedgerRecord {
+  let error_code = case status {
+    "published" -> None
+    _ -> Some("git_push_failed")
+  }
+  let error_message = case status {
+    "published" -> None
+    _ -> Some("push failed")
+  }
   record.with_id(
     "publication-" <> run_id,
     25,
@@ -255,16 +332,16 @@ fn publication_record(run_id: String) -> record.LedgerRecord {
       publication_id: "execplan_review_doc",
       series_id: "series-1",
       attempt_id: "attempt-1",
-      status: "failed",
+      status: status,
       required: True,
-      retryable: True,
-      retry_execution_available: True,
+      retryable: status != "published",
+      retry_execution_available: status != "published",
       version_id: None,
       manifest_ref: None,
       manifest_sha256: None,
       manifest_bytes: None,
-      error_code: Some("git_push_failed"),
-      error_message: Some("push failed"),
+      error_code: error_code,
+      error_message: error_message,
     ),
   )
 }

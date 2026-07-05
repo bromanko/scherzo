@@ -23,7 +23,6 @@ Verification contract:
 
 - This is a plan-completion verification, not a code review. Do not critique style, formatting, architecture, or optional polish unless it blocks promised behavior.
 - Do not edit tracked source, tests, workflows, docs, the ExecPlan review doc, or plan-completion verdict files. Submit the semantic verdict with the `submit_plan_completion_verdict` structured-output tool instead of writing JSON by hand.
-- Before reading prepared ExecPlan files, run `: "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" restore-execplan-artifacts` from the repository root. This restores `tmp/` compatibility copies from run-root canonical state if tests or helper fixtures clobbered them.
 - Read `$SCHERZO_RUN_ROOT/state/implementation/metadata.json`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`, and `$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json`.
 - Treat `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md` as the authoritative canonical plan prepared from the descriptor `plan` entry in `exec_plan_bundle.entries`; metadata `plan_path` points at that local copy.
 - Treat the implementation pack as the authoritative mechanical handoff only when it does not conflict with canonical-plan intent, scope, acceptance, safety, or source-plan provenance beyond the expected handoff/source identity split.
@@ -61,7 +60,7 @@ Use `"verdict": "fail"` when promised behavior is incomplete. In that case, put 
 
 Process:
 
-1. Run the restore command above, then read `$SCHERZO_RUN_ROOT/state/implementation/metadata.json`, the canonical plan at `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json`, and `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json`.
+1. Read `$SCHERZO_RUN_ROOT/state/implementation/metadata.json`, the canonical plan at `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json`, and `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json`.
 2. Read the implementation response and change analysis above.
 3. Inspect changed files/tests only as needed to verify promised behavior and acceptance criteria.
 4. Call `submit_plan_completion_verdict` with the semantic verdict payload. Do not write or edit verdict JSON files.

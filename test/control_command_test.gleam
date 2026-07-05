@@ -41,6 +41,7 @@ pub fn command_names_and_targets_are_stable_test() {
       update_tracker: True,
       dry_run: True,
       reason: "operator salvage",
+      allow_unpublished: False,
     ))
     == "run_finalize"
   assert command.command_target(command.RunFinalize(
@@ -51,6 +52,7 @@ pub fn command_names_and_targets_are_stable_test() {
       update_tracker: True,
       dry_run: True,
       reason: "operator salvage",
+      allow_unpublished: False,
     ))
     == Some("run:run-1")
   assert command.command_name(command.RetryArtifactPublication(
@@ -146,6 +148,7 @@ pub fn operator_command_codec_roundtrips_all_variants_test() {
     update_tracker: True,
     dry_run: False,
     reason: "operator salvage",
+    allow_unpublished: False,
   ))
   assert_command_roundtrip(command.RetryArtifactPublication("run-1", None))
   assert_command_roundtrip(command.RetryArtifactPublication(

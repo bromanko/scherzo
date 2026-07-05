@@ -44,7 +44,7 @@ import scherzo/orchestrator/remote_command_runtime as remote
 import scherzo/orchestrator/retry_scheduler
 import scherzo/orchestrator/retry_step_operation
 import scherzo/orchestrator/retry_step_resumption
-import scherzo/orchestrator/run_finalize_control
+import scherzo/orchestrator/run_finalize_control as finalize
 import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/session_metrics
@@ -3185,6 +3185,7 @@ fn apply_shell_operator_command(
         update_tracker,
         dry_run,
         reason,
+        allow_unpublished,
       ) {
         let #(state, result) =
           run_finalize_for_operator(
@@ -3197,6 +3198,7 @@ fn apply_shell_operator_command(
             update_tracker,
             dry_run,
             reason,
+            allow_unpublished,
           )
         #(state, result, [])
       },
@@ -3521,6 +3523,7 @@ fn run_finalize_for_operator(
   update_tracker: Bool,
   dry_run: Bool,
   reason: String,
+  allow_unpublished: Bool,
 ) -> #(State, command.CommandResult) {
   let _ = validate
   let _ = outputs
@@ -3532,18 +3535,9 @@ fn run_finalize_for_operator(
       command.rejected(operator_command, "ledger_read_failed", Some(message)),
     )
     Ok(projected) ->
-      case run_finalize_control.dry_run(projected, run_id) {
+      case finalize.dry_run(projected, run_id) {
         Error(#(code, message)) ->
-          case code {
-            "run_not_found" -> #(
-              state,
-              command.not_found(operator_command, Some(message)),
-            )
-            _ -> #(
-              state,
-              command.rejected(operator_command, code, Some(message)),
-            )
-          }
+          run_finalize_command_error(state, operator_command, code, message)
         Ok(plan) ->
           case plan.already_finalized {
             True ->
@@ -3552,14 +3546,14 @@ fn run_finalize_for_operator(
                   state,
                   command.applied(
                     operator_command,
-                    Some(run_finalize_control.dry_run_message(plan)),
+                    Some(finalize.dry_run_message(plan)),
                   ),
                 )
                 False -> #(
                   state,
                   command.applied(
                     operator_command,
-                    Some(run_finalize_control.already_finalized_message(run_id)),
+                    Some(finalize.already_finalized_message(run_id)),
                   ),
                 )
               }
@@ -3580,7 +3574,7 @@ fn run_finalize_for_operator(
                       issue,
                     )
                   case
-                    run_finalize_control.validated_dry_run(
+                    finalize.validated_dry_run(
                       projected,
                       run_id,
                       current,
@@ -3588,138 +3582,146 @@ fn run_finalize_for_operator(
                     )
                   {
                     Error(#(code, message)) ->
-                      case code {
-                        "run_not_found" -> #(
-                          state,
-                          command.not_found(operator_command, Some(message)),
-                        )
-                        _ -> #(
-                          state,
-                          command.rejected(
-                            operator_command,
-                            code,
-                            Some(message),
-                          ),
-                        )
-                      }
+                      run_finalize_command_error(
+                        state,
+                        operator_command,
+                        code,
+                        message,
+                      )
                     Ok(plan) ->
-                      case dry_run {
-                        True -> #(
-                          state,
-                          command.applied(
-                            operator_command,
-                            Some(run_finalize_control.dry_run_message(plan)),
-                          ),
-                        )
-                        False ->
-                          case
-                            run_finalize_control.queue_decision(
-                              projected,
-                              operator_command,
-                              run_id,
-                              state.dependencies.now_ms(),
-                            )
-                          {
-                            Error(#(code, message)) ->
-                              case code {
-                                "run_not_found" -> #(
-                                  state,
-                                  command.not_found(
-                                    operator_command,
-                                    Some(message),
-                                  ),
-                                )
-                                _ -> #(
-                                  state,
-                                  command.rejected(
-                                    operator_command,
-                                    code,
-                                    Some(message),
-                                  ),
-                                )
-                              }
-                            Ok(run_finalize_control.AlreadyFinalized(message)) -> #(
-                              state,
-                              command.applied(operator_command, Some(message)),
-                            )
-                            Ok(run_finalize_control.ExistingOperation(
-                              operation_id,
-                            )) -> #(
-                              state,
-                              command.queued_operation(
-                                operator_command,
-                                operation_id,
-                                Some(
-                                  "run finalize already queued/running; poll query operation-status for completion",
-                                ),
-                              ),
-                            )
-                            Ok(run_finalize_control.ConflictingOperation(
-                              _,
-                              _,
-                              message,
-                            )) -> #(
-                              state,
-                              command.rejected(
-                                operator_command,
-                                "control_operation_already_running",
-                                Some(message),
-                              ),
-                            )
-                            Ok(run_finalize_control.NewOperation(
-                              operation_id,
-                              queued_body,
-                            )) -> {
-                              let plan_bodies = [
-                                record.WorkflowRunDiagnostic(
-                                  run_id,
-                                  plan.workflow_id,
-                                  plan.issue_id,
-                                  "run_finalize_requested:" <> reason,
-                                ),
-                                queued_body,
-                              ]
-                              let #(state, appended) =
-                                append_ledger_bodies(
-                                  state,
-                                  plan_bodies,
-                                  "run_finalize_queue_append_failed",
-                                )
-                              case appended {
-                                False -> #(
-                                  state,
-                                  command.rejected(
-                                    operator_command,
-                                    "ledger_append_failed",
-                                    Some(
-                                      "failed to append run finalize operation",
-                                    ),
-                                  ),
-                                )
-                                True -> {
-                                  process.send(
-                                    state.subject,
-                                    RunQueuedControlOperation(operation_id),
-                                  )
-                                  #(
-                                    state,
-                                    command.queued_operation(
-                                      operator_command,
-                                      operation_id,
-                                      Some(
-                                        "run finalize accepted; poll query operation-status for completion",
-                                      ),
-                                    ),
-                                  )
-                                }
-                              }
-                            }
-                          }
-                      }
+                      run_finalize_plan_with_publication_status(
+                        state,
+                        operator_command,
+                        reason,
+                        dry_run,
+                        allow_unpublished,
+                        projected,
+                        plan,
+                      )
                   }
                 }
               }
           }
+      }
+  }
+}
+
+fn run_finalize_command_error(
+  state: State,
+  operator_command: command.OperatorCommand,
+  code: String,
+  message: String,
+) -> #(State, command.CommandResult) {
+  case code {
+    "run_not_found" -> #(
+      state,
+      command.not_found(operator_command, Some(message)),
+    )
+    _ -> #(state, command.rejected(operator_command, code, Some(message)))
+  }
+}
+
+fn run_finalize_plan_with_publication_status(
+  state: State,
+  operator_command: command.OperatorCommand,
+  reason: String,
+  dry_run: Bool,
+  allow_unpublished: Bool,
+  projected: projection.Projection,
+  plan: finalize.FinalizePlan,
+) -> #(State, command.CommandResult) {
+  case
+    finalize.plan_with_bundle_publication_statuses(
+      projected,
+      state.workflow.bundle,
+      plan.run_id,
+      plan,
+    )
+  {
+    Error(#(code, message)) -> #(
+      state,
+      command.rejected(operator_command, code, Some(message)),
+    )
+    Ok(plan) ->
+      case dry_run {
+        True -> #(
+          state,
+          command.applied(
+            operator_command,
+            Some(finalize.dry_run_message(plan)),
+          ),
+        )
+        False ->
+          case
+            finalize.verify_publications_for_finalize(
+              plan.run_id,
+              plan.publication_statuses,
+              allow_unpublished: allow_unpublished,
+            )
+          {
+            Error(#(code, message)) -> #(
+              state,
+              command.rejected(operator_command, code, Some(message)),
+            )
+            Ok(Nil) ->
+              queue_verified_run_finalize(
+                state,
+                operator_command,
+                reason,
+                allow_unpublished,
+                projected,
+                plan,
+              )
+          }
+      }
+  }
+}
+
+fn queue_verified_run_finalize(
+  state: State,
+  operator_command: command.OperatorCommand,
+  reason: String,
+  allow_unpublished: Bool,
+  projected: projection.Projection,
+  plan: finalize.FinalizePlan,
+) -> #(State, command.CommandResult) {
+  case
+    finalize.queue_decision(
+      projected,
+      operator_command,
+      plan.run_id,
+      state.dependencies.now_ms(),
+      allow_unpublished: allow_unpublished,
+    )
+  {
+    Error(#(code, message)) ->
+      run_finalize_command_error(state, operator_command, code, message)
+    Ok(decision) ->
+      case finalize.queue_decision_outcome(operator_command, decision) {
+        finalize.QueueImmediate(result) -> #(state, result)
+        finalize.QueueAppend(operation_id, queued_body) -> {
+          let plan_bodies =
+            finalize.queue_bodies(plan, queued_body, reason, allow_unpublished)
+          let #(state, appended) =
+            append_ledger_bodies(
+              state,
+              plan_bodies,
+              "run_finalize_queue_append_failed",
+            )
+          case appended {
+            False -> #(
+              state,
+              finalize.queue_append_failed_result(operator_command),
+            )
+            True -> {
+              process.send(
+                state.subject,
+                RunQueuedControlOperation(operation_id),
+              )
+              #(state, finalize.accepted_result(operator_command, operation_id))
+            }
+          }
+        }
       }
   }
 }
@@ -4334,7 +4336,7 @@ fn execute_run_finalize_operation(
     Error(message) ->
       QueuedControlOperationFailed("ledger_read_failed", Some(message))
     Ok(projected) ->
-      case run_finalize_control.dry_run(projected, run_id) {
+      case finalize.dry_run(projected, run_id) {
         Error(#(code, message)) ->
           QueuedControlOperationFailed(code, Some(message))
         Ok(plan) ->
@@ -4343,7 +4345,7 @@ fn execute_run_finalize_operation(
               QueuedControlOperationCompleted([
                 record.ControlOperationCompleted(
                   operation.operation_id,
-                  Some(run_finalize_control.already_finalized_message(run_id)),
+                  Some(finalize.already_finalized_message(run_id)),
                 ),
               ])
             False ->
@@ -4358,6 +4360,9 @@ fn execute_run_finalize_operation(
                     update_tracker: True,
                     dry_run: False,
                     reason: "queued execution",
+                    allow_unpublished: finalize.operation_allows_unpublished(
+                      operation.command_name,
+                    ),
                   ),
                   run_id,
                   plan.issue_id,
@@ -4371,7 +4376,7 @@ fn execute_run_finalize_operation(
                       issue,
                     )
                   case
-                    run_finalize_control.validated_dry_run(
+                    finalize.validated_dry_run(
                       projected,
                       run_id,
                       current,
@@ -4400,12 +4405,12 @@ fn continue_run_finalize_operation(
   state: State,
   operation: projection.ControlOperationStatus,
   projected: projection.Projection,
-  plan: run_finalize_control.FinalizePlan,
+  plan: finalize.FinalizePlan,
   issue: tracker_issue.Issue,
 ) -> QueuedControlOperationResult {
   let output_bodies = case plan.output_action {
     "recollect_outputs" ->
-      collect_run_finalize_output_bodies(
+      finalize.collect_output_bodies(
         recollect_outputs_control.execute_operation(
           state.workflow.effective.workspace.root,
           operation,
@@ -4427,60 +4432,50 @@ fn continue_run_finalize_operation(
           ledger_records_for_bodies(state.dependencies.now_ms(), output_bodies),
         )
       case
-        artifact_publication_retry_control.retry_all_attempts_with_projection(
-          state.workflow.effective.workspace.root,
+        finalize.publication_statuses_for_bundle(
           publication_projection,
-          plan.run_id,
           state.workflow.bundle,
-          state.dependencies.publication_command_runner,
+          plan.run_id,
         )
       {
         Error(#(reason, message)) ->
           QueuedControlOperationFailed(reason, Some(message))
-        Ok(_) ->
-          case run_finalize_transition_tracker(state, issue, plan.workflow_id) {
-            Error(message) ->
-              QueuedControlOperationFailed(
-                "tracker_update_failed",
-                Some(message),
-              )
+        Ok(publication_statuses) -> {
+          let allow_unpublished =
+            finalize.operation_allows_unpublished(operation.command_name)
+          case
+            finalize.verify_publications_for_finalize(
+              plan.run_id,
+              publication_statuses,
+              allow_unpublished: allow_unpublished,
+            )
+          {
+            Error(#(reason, message)) ->
+              QueuedControlOperationFailed(reason, Some(message))
             Ok(Nil) ->
-              QueuedControlOperationCompleted(
-                list.append(output_bodies, [
-                  record.WorkflowRunDiagnostic(
-                    plan.run_id,
-                    plan.workflow_id,
-                    plan.issue_id,
-                    "run_finalize_completed",
-                  ),
-                  run_finalize_control.finish_record(plan),
-                  record.ControlOperationCompleted(
-                    operation.operation_id,
-                    Some("run finalize completed without starting a worker"),
-                  ),
-                ]),
-              )
+              case
+                run_finalize_transition_tracker(state, issue, plan.workflow_id)
+              {
+                Error(message) ->
+                  QueuedControlOperationFailed(
+                    "tracker_update_failed",
+                    Some(message),
+                  )
+                Ok(Nil) ->
+                  QueuedControlOperationCompleted(list.append(
+                    output_bodies,
+                    finalize.completion_bodies(
+                      plan,
+                      operation.operation_id,
+                      publication_statuses,
+                      allow_unpublished,
+                    ),
+                  ))
+              }
           }
+        }
       }
     }
-  }
-}
-
-fn collect_run_finalize_output_bodies(
-  outcome: recollect_outputs_control.ExecutionOutcome,
-) -> Result(List(record.RecordBody), #(String, String)) {
-  case outcome {
-    recollect_outputs_control.ExecutionCompleted(bodies) ->
-      Ok(
-        list.filter(bodies, fn(body) {
-          case body {
-            record.ControlOperationCompleted(_, _) -> False
-            _ -> True
-          }
-        }),
-      )
-    recollect_outputs_control.ExecutionFailed(reason, message) ->
-      Error(#(reason, option.unwrap(message, reason)))
   }
 }
 

@@ -1702,7 +1702,7 @@ pub fn parse_operator_commands_test() {
       "operator salvage",
       "--dry-run",
     ])
-    == Ok(ctl.RunFinalize(None, False, "run-1", "operator salvage", True))
+    == Ok(ctl.RunFinalize(None, False, "run-1", "operator salvage", True, False))
   assert ctl.parse([
       "run",
       "finalize",
@@ -1717,7 +1717,29 @@ pub fn parse_operator_commands_test() {
       "--yes",
       "--json",
     ])
-    == Ok(ctl.RunFinalize(None, True, "run-1", "operator salvage", False))
+    == Ok(ctl.RunFinalize(None, True, "run-1", "operator salvage", False, False))
+  assert ctl.parse([
+      "run",
+      "finalize",
+      "run-1",
+      "--validate",
+      "--outputs",
+      "auto",
+      "--publish",
+      "--update-tracker",
+      "--reason",
+      "operator exception",
+      "--allow-unpublished",
+      "--yes",
+    ])
+    == Ok(ctl.RunFinalize(
+      None,
+      False,
+      "run-1",
+      "operator exception",
+      False,
+      True,
+    ))
   assert ctl.parse([
       "publication",
       "retry",
@@ -2223,7 +2245,7 @@ pub fn usage_mentions_daemon_only_commands_and_options_test() {
   assert string.contains(usage, "run recollect-outputs <run-id>")
   assert string.contains(
     usage,
-    "run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason <text> (--dry-run|--yes)",
+    "run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason <text> [--allow-unpublished] (--dry-run|--yes)",
   )
   assert string.contains(
     usage,

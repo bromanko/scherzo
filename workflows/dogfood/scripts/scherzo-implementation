@@ -33,9 +33,6 @@ TMP_DIR = Path("tmp")
 METADATA_PATH = TMP_DIR / "scherzo-implementation.json"
 CANONICAL_METADATA_RELATIVE_PATH = Path("state") / "implementation" / "metadata.json"
 CANONICAL_IMPLEMENTATION_STATE_RELATIVE_DIR = Path("state") / "implementation"
-CANONICAL_EXECPLAN_REVIEW_DOC_NAME = "execplan-review-doc.md"
-CANONICAL_EXECPLAN_PACK_NAME = "execplan-implementation-pack.json"
-CANONICAL_EXECPLAN_BUNDLE_NAME = "execplan-bundle.json"
 CANONICAL_PLAN_COMPLETION_CONTEXT_NAME = "scherzo-plan-completion-context.json"
 CANONICAL_PLAN_COMPLETION_VERDICT_NAME = "scherzo-plan-completion-verdict.json"
 CANONICAL_PLAN_COMPLETION_RECOVERY_NAME = "scherzo-plan-completion-recovery.json"
@@ -54,7 +51,6 @@ COMMIT_STACK_CARRIER_NAME = "commit_stack.bundle"
 TICKET_BRIEF_PATH = TMP_DIR / "scherzo-implementation-brief.md"
 PLAN_BRIEF_PATH = TMP_DIR / "scherzo-execplan-brief.md"
 PLAN_INDEX_PATH = TMP_DIR / "scherzo-execplan-index.json"
-PREPARED_EXECPLAN_PATH = TMP_DIR / "execplan-review-doc.md"
 PR_BODY_PATH = TMP_DIR / "scherzo-implementation-pr-body.md"
 BASE_REFRESH_LATEST_PATH = TMP_DIR / "scherzo-implementation-refresh-base-latest.json"
 BASE_DRIFT_REPAIR_SUMMARY_PATH = TMP_DIR / "scherzo-implementation-base-drift-repair.md"
@@ -70,7 +66,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 def usage() -> None:
     print(
-        """Usage: scherzo-implementation <prepare|refresh-base|analyze|restore-execplan-artifacts|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|languages|ticket-brief>
+        """Usage: scherzo-implementation <prepare|refresh-base|analyze|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|languages|ticket-brief>
 
 Run from a Scherzo jj workflow workspace root.
 
@@ -80,9 +76,6 @@ prepare --source ticket
               retention until a PR is safely published.
 analyze       Diff from the recorded starting parent to @, detect review-
               relevant languages/files, and print review metadata.
-restore-execplan-artifacts
-              Refresh best-effort tmp/ ExecPlan compatibility files from
-              run-root canonical state after tests or helper fixtures clobber tmp/.
 plan-completion-context
               Write and print the current ExecPlan implementation patch
               context for diagnostics. Checkpoint/gate commands stamp these
@@ -90,8 +83,7 @@ plan-completion-context
 checkpoint-plan-completion-verdict [--submission PATH | --submission-step STEP [--submission-artifact ARTIFACT] [--artifact-dir DIR]]
               Materialize a structured-output plan-completion semantic
               submission by stamping current workspace context, or validate the
-              existing run-root canonical plan-completion verdict and refresh
-              the best-effort tmp/ compatibility copy.
+              existing run-root canonical plan-completion verdict.
 plan-brief [--check|--refresh-if-stale]
               Regenerate, check, or refresh the derived ExecPlan brief and JSON
               index recorded in run-root implementation metadata.
@@ -595,13 +587,6 @@ def load_state_backed_json(tmp_path: Path, state_name: str, *, missing_message: 
     fail(missing_message)
 
 
-def metadata_path_field(metadata: dict[str, Any], key: str) -> Path | None:
-    value = str(metadata.get(key) or "").strip()
-    if not value:
-        return None
-    return resolve_run_root_relative_path(Path(value))
-
-
 def metadata_missing_message(canonical_path: Path) -> str:
     return (
         "unrecoverable workflow-state loss: missing implementation metadata in "
@@ -656,137 +641,6 @@ def write_implementation_metadata(metadata: dict[str, Any]) -> None:
         except OSError:
             pass
     write_json(METADATA_PATH, metadata)
-
-
-def canonical_execplan_artifact_path(
-    metadata: dict[str, Any],
-    *,
-    metadata_key: str,
-    state_name: str,
-) -> Path | None:
-    explicit = metadata_path_field(metadata, metadata_key)
-    if explicit is not None:
-        return explicit
-    return canonical_implementation_state_path(state_name)
-
-
-def copy_execplan_artifact(source: Path, destination: Path, *, label: str) -> None:
-    if not source.exists():
-        fail(
-            f"missing canonical ExecPlan {label} artifact at {source}; "
-            "run implementation-prepare again or recover the retained run state",
-            failure_code="execplan_artifacts_missing",
-        )
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if source.resolve() != destination.resolve():
-        destination.write_bytes(source.read_bytes())
-
-
-def validate_restored_plan(metadata: dict[str, Any], plan_path: Path) -> None:
-    expected_sha = str(metadata.get("plan_sha256") or "").strip()
-    expected_bytes_raw = metadata.get("plan_bytes")
-    data = plan_path.read_bytes()
-    if expected_sha:
-        actual_sha = hashlib.sha256(data).hexdigest()
-        if actual_sha != expected_sha:
-            fail(
-                f"restored ExecPlan review doc hash mismatch for {plan_path}: "
-                f"expected {expected_sha}, got {actual_sha}",
-                failure_code="execplan_artifacts_mismatch",
-            )
-    if isinstance(expected_bytes_raw, int) and len(data) != expected_bytes_raw:
-        fail(
-            f"restored ExecPlan review doc byte length mismatch for {plan_path}: "
-            f"expected {expected_bytes_raw}, got {len(data)}",
-            failure_code="execplan_artifacts_mismatch",
-        )
-
-
-def restore_execplan_artifacts() -> str:
-    canonical_metadata = canonical_metadata_path()
-    if canonical_metadata is None:
-        if not METADATA_PATH.exists():
-            return "skipped_no_metadata"
-    elif not canonical_metadata.exists() and not METADATA_PATH.exists():
-        return "skipped_no_metadata"
-    metadata = load_implementation_metadata()
-    if metadata.get("source_kind") != "execplan":
-        return "skipped_non_execplan"
-
-    plan_source = canonical_execplan_artifact_path(
-        metadata,
-        metadata_key="canonical_plan_path",
-        state_name=CANONICAL_EXECPLAN_REVIEW_DOC_NAME,
-    )
-    pack_source = canonical_execplan_artifact_path(
-        metadata,
-        metadata_key="canonical_execplan_v2_implementation_pack_path",
-        state_name=CANONICAL_EXECPLAN_PACK_NAME,
-    )
-    bundle_source = canonical_execplan_artifact_path(
-        metadata,
-        metadata_key="canonical_execplan_v2_bundle_path",
-        state_name=CANONICAL_EXECPLAN_BUNDLE_NAME,
-    )
-    if plan_source is None or pack_source is None or bundle_source is None:
-        return "skipped_no_run_root"
-
-    explicit_canonical_paths = [
-        metadata_path_field(metadata, "canonical_plan_path"),
-        metadata_path_field(metadata, "canonical_execplan_v2_implementation_pack_path"),
-        metadata_path_field(metadata, "canonical_execplan_v2_bundle_path"),
-    ]
-    missing_sources = [
-        source
-        for source in [plan_source, pack_source, bundle_source]
-        if not source.exists()
-    ]
-    if missing_sources:
-        if any(path is not None for path in explicit_canonical_paths):
-            fail(
-                "missing canonical ExecPlan artifact(s): "
-                + ", ".join(str(source) for source in missing_sources)
-                + "; run implementation-prepare again or recover the retained run state",
-                failure_code="execplan_artifacts_missing",
-            )
-        return "skipped_no_canonical_state"
-
-    copy_execplan_artifact(
-        plan_source,
-        PREPARED_EXECPLAN_PATH,
-        label="review doc",
-    )
-    copy_execplan_artifact(
-        pack_source,
-        Path(
-            str(
-                metadata.get("tmp_execplan_v2_implementation_pack_path")
-                or "tmp/execplan-implementation-pack.json"
-            )
-        ),
-        label="implementation pack",
-    )
-    copy_execplan_artifact(
-        bundle_source,
-        Path(
-            str(metadata.get("tmp_execplan_v2_bundle_path") or "tmp/execplan-bundle.json")
-        ),
-        label="bundle",
-    )
-    validate_restored_plan(metadata, PREPARED_EXECPLAN_PATH)
-    write_implementation_metadata(metadata)
-    return "restored"
-
-
-def restore_execplan_artifacts_command(args: list[str]) -> None:
-    if args:
-        usage()
-        sys.exit(2)
-    status = restore_execplan_artifacts()
-    print(f"EXECPLAN_ARTIFACT_RESTORE_STATUS={status}")
-    print(f"PLAN={PREPARED_EXECPLAN_PATH}")
-    print("IMPLEMENTATION_PACK=tmp/execplan-implementation-pack.json")
-    print("BUNDLE=tmp/execplan-bundle.json")
 
 
 def infer_issue_identifier() -> str:
@@ -2027,11 +1881,9 @@ def plan_completion_context_command(args: list[str]) -> None:
         sys.exit(2)
     if not workspace_driver_available():
         require_command("jj")
-    restore_status = restore_execplan_artifacts()
     metadata = load_implementation_metadata()
     context = plan_completion_snapshot(metadata)
     write_state_backed_json(PLAN_COMPLETION_CONTEXT_PATH, CANONICAL_PLAN_COMPLETION_CONTEXT_NAME, context)
-    print(f"EXECPLAN_ARTIFACT_RESTORE_STATUS={restore_status}")
     print(f"PLAN_COMPLETION_CONTEXT_PATH={display_path(state_backed_path(PLAN_COMPLETION_CONTEXT_PATH, CANONICAL_PLAN_COMPLETION_CONTEXT_NAME))}")
     print(f"PLAN_COMPLETION_VERDICT_PATH={plan_completion_verdict_display_path()}")
     print(f"PLAN_COMPLETION_PLAN_PATH={context['plan_path']}")
@@ -2474,16 +2326,6 @@ def plan_completion_verdict_path() -> Path:
 
 def plan_completion_verdict_display_path() -> str:
     return display_path(plan_completion_verdict_path())
-
-
-def restore_plan_completion_verdict() -> str:
-    canonical_path = canonical_plan_completion_verdict_path()
-    if canonical_path is None:
-        return "skipped_no_run_root"
-    if not canonical_path.exists():
-        return "skipped_missing"
-    copy_best_effort(canonical_path, PLAN_COMPLETION_VERDICT_PATH)
-    return "restored"
 
 
 def maybe_load_json_object(path: Path) -> dict[str, Any] | None:
@@ -3249,12 +3091,10 @@ def gate_plan_completion_command(args: list[str]) -> None:
         gate_plan_completion_from_submission_command(submission_path)
         return
     gate_label = "final plan-completion gate" if final_gate else "plan-completion gate"
-    verdict_restore_status = restore_plan_completion_verdict() if final_gate else "not_needed"
     metadata = load_implementation_metadata()
     verdict, current = current_plan_completion_verdict(metadata, gate_label=gate_label)
 
     print(f"PLAN_COMPLETION_GATE_MODE={'final' if final_gate else 'pre_review'}")
-    print(f"PLAN_COMPLETION_VERDICT_RESTORE_STATUS={verdict_restore_status}")
     print(f"PLAN_COMPLETION_VERDICT={verdict['verdict']}")
     print(f"PLAN_COMPLETION_VERDICT_PATH={plan_completion_verdict_display_path()}")
     print_list(
@@ -3546,8 +3386,6 @@ def validate_command(*, failure_code: str | None = None) -> None:
             fingerprint=fingerprint,
             cached=True,
         )
-        restore_status = restore_execplan_artifacts()
-        verdict_restore_status = restore_plan_completion_verdict()
         short = fingerprint[:12] if fingerprint else ""
         print(
             "scherzo-ci validation skipped: working tree unchanged since the last "
@@ -3556,8 +3394,6 @@ def validate_command(*, failure_code: str | None = None) -> None:
         )
         print("FINAL_VALIDATION=passed")
         print("VALIDATION_CACHED=1")
-        print(f"EXECPLAN_ARTIFACT_RESTORE_STATUS={restore_status}")
-        print(f"PLAN_COMPLETION_VERDICT_RESTORE_STATUS={verdict_restore_status}")
         return
     env = validation_env()
     for command in setup_commands:
@@ -3576,12 +3412,8 @@ def validate_command(*, failure_code: str | None = None) -> None:
             stderr=proc.stderr,
             fingerprint=fingerprint,
         )
-        restore_status = restore_execplan_artifacts()
-        verdict_restore_status = restore_plan_completion_verdict()
         print("FINAL_VALIDATION=failed")
         print(f"VALIDATION_RESULT_PATH={display_path(state_backed_path(VALIDATION_PATH, CANONICAL_VALIDATION_NAME))}")
-        print(f"EXECPLAN_ARTIFACT_RESTORE_STATUS={restore_status}")
-        print(f"PLAN_COMPLETION_VERDICT_RESTORE_STATUS={verdict_restore_status}")
         summary = validation_failure_summary(proc.stdout, proc.stderr)
         fail(
             f"command failed with exit code {proc.returncode}: {' '.join(validation_command)}"
@@ -3596,11 +3428,7 @@ def validate_command(*, failure_code: str | None = None) -> None:
         status="passed",
         fingerprint=fingerprint,
     )
-    restore_status = restore_execplan_artifacts()
-    verdict_restore_status = restore_plan_completion_verdict()
     print("FINAL_VALIDATION=passed")
-    print(f"EXECPLAN_ARTIFACT_RESTORE_STATUS={restore_status}")
-    print(f"PLAN_COMPLETION_VERDICT_RESTORE_STATUS={verdict_restore_status}")
 
 
 def ensure_validation_passed() -> None:
@@ -3993,8 +3821,6 @@ def main(argv: list[str]) -> None:
         refresh_base_command(args)
     elif command == "analyze" and not args:
         analyze_command()
-    elif command == "restore-execplan-artifacts":
-        restore_execplan_artifacts_command(args)
     elif command == "plan-completion-context":
         plan_completion_context_command(args)
     elif command == "checkpoint-plan-completion-verdict":

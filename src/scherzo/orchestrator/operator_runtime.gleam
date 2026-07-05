@@ -52,6 +52,7 @@ pub opaque type ShellHandlers(state) {
       Bool,
       Bool,
       String,
+      Bool,
     ) -> #(state, command.CommandResult, List(transition_types.Message)),
     retry_artifact_publication_for_operator: fn(
       state,
@@ -114,6 +115,7 @@ pub fn shell_handlers(
     Bool,
     Bool,
     String,
+    Bool,
   ) -> #(state, command.CommandResult, List(transition_types.Message)),
   retry_artifact_publication_for_operator retry_artifact_publication_for_operator: fn(
     state,
@@ -275,6 +277,7 @@ pub fn apply_shell_operator_command(
       update_tracker: update_tracker,
       dry_run: dry_run,
       reason: reason,
+      allow_unpublished: allow_unpublished,
     ) ->
       handlers.run_finalize_for_operator(
         state,
@@ -286,6 +289,7 @@ pub fn apply_shell_operator_command(
         update_tracker,
         dry_run,
         reason,
+        allow_unpublished,
       )
     command.RetryArtifactPublication(run_id, publication_id) ->
       handlers.retry_artifact_publication_for_operator(

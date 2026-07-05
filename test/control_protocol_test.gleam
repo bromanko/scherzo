@@ -117,6 +117,7 @@ pub fn mutating_command_requests_roundtrip_to_operator_commands_test() {
       update_tracker: True,
       dry_run: True,
       reason: "operator salvage",
+      allow_unpublished: False,
     ),
   )
   assert_command_roundtrip(

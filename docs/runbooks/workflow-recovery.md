@@ -151,7 +151,9 @@ scripts/scherzoctl run finalize <run-id> --validate --outputs auto --publish --u
 scripts/scherzoctl run finalize <run-id> --validate --outputs auto --publish --update-tracker --reason "operator salvage" --yes --json
 ```
 
-`--dry-run` is immediate and read-only. `--yes` queues durable daemon-owned retained-run finalization work and returns an `operation_id` for `query operation-status` polling.
+`--dry-run` is immediate and read-only. `--yes` queues durable daemon-owned retained-run finalization work and returns an `operation_id` for `query operation-status` polling. Non-dry-run finalization refuses materialized-but-unpublished required routes and points to `scripts/scherzoctl publication retry <run-id> --publication <publication-id> --json`; use `--allow-unpublished --reason <text>` only for an explicit operator exception.
+
+Before posting any “manual recovery completed” handoff or moving the task to a terminal state, record publication evidence: the required publication route id(s), the `publication list`/`publication show` status, and the PR URL or equivalent published artifact reference. Materialized outputs alone are not completion evidence.
 
 If drift or retained artifact recovery cannot be proven safe, fall back to manual salvage or a full task retry with `scripts/scherzoctl task retry <task>`.
 
