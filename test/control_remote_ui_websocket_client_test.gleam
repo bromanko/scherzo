@@ -446,11 +446,11 @@ pub fn ui_websocket_client_reconnects_with_managed_runtime_credential_test() {
   assert first_credential == "launch_secret_1"
   expect_initial_outbound(fixture.outbound)
 
-  append_inbound_line(
+  append_inbound_block(
     fixture.inbound_path,
-    "{\"type\":\"server_hello\",\"runtimeCredential\":\"runtime_secret_1\"}",
+    "{\"type\":\"server_hello\",\"runtimeCredential\":\"runtime_secret_1\"}\n"
+      <> "FAIL:down\n",
   )
-  append_inbound_line(fixture.inbound_path, "FAIL:down")
 
   let _ = expect_log_contains(fixture.logs, "ui_websocket_recv_failed")
   let ConnectRequest(_, reconnect_credential) =
@@ -497,13 +497,10 @@ pub fn ui_websocket_client_reports_managed_permanent_auth_rejection_test() {
   let _ = test_async.expect_message(fixture.connects)
   expect_initial_outbound(fixture.outbound)
 
-  append_inbound_line(
+  append_inbound_block(
     fixture.inbound_path,
-    "{\"type\":\"server_hello\",\"runtimeCredential\":\"runtime_secret_1\"}",
-  )
-  append_inbound_line(
-    fixture.inbound_path,
-    "FAIL:websocket_close:1008:credential-invalid runtime_secret_1",
+    "{\"type\":\"server_hello\",\"runtimeCredential\":\"runtime_secret_1\"}\n"
+      <> "FAIL:websocket_close:1008:credential-invalid runtime_secret_1\n",
   )
 
   let log_entry = expect_log_contains(fixture.logs, "ui_websocket_recv_failed")
