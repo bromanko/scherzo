@@ -8,6 +8,6 @@ concurrency: 1
 steps:
   - id: sync_origin
     kind: command
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-jj-origin-sync"'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-jj-origin-sync"'
     timeout: 5m
     run_in: main

@@ -3314,6 +3314,7 @@ def validation_env() -> dict[str, str]:
         "SCHERZO_PR_REMOTE",
         "SCHERZO_PR_REPO",
         "SCHERZO_REPO_ROOT",
+        "SCHERZO_RUN_ARTIFACT_DIR",
         "SCHERZO_RUN_ID",
         "SCHERZO_RUN_ROOT",
         "SCHERZO_SOURCE_WORKSPACE_PATH",

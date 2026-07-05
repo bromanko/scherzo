@@ -802,6 +802,7 @@ pub fn default_command_step_receives_profile_driver_env_test() {
       workflow_id: "workflow",
       run_id: "run",
       run_root: root <> "/run",
+      run_artifact_dir: root <> "/.scherzo-state/artifacts/runs/run",
       workflow_bundle_dir: ".scherzo/workflows",
       step_id: "step",
       attempt_index: 0,
@@ -830,7 +831,7 @@ pub fn default_command_step_receives_profile_driver_env_test() {
   let artifact =
     dependencies.command_step(
       context,
-      "printf '%s\\n' \"$SCHERZO_JJ_WORKSPACE_BASE\"; if command -v ls >/dev/null 2>&1; then echo unexpected-system-path; exit 1; fi; if command -v profile-helper >/dev/null 2>&1; then echo helper-found; else exit 1; fi",
+      "printf '%s\\n' \"$SCHERZO_JJ_WORKSPACE_BASE\"; printf '%s\\n' \"$SCHERZO_RUN_ARTIFACT_DIR\"; if command -v ls >/dev/null 2>&1; then echo unexpected-system-path; exit 1; fi; if command -v profile-helper >/dev/null 2>&1; then echo helper-found; else exit 1; fi",
       1000,
       [],
       test_helpers.default_artifact_limits(),
@@ -838,6 +839,10 @@ pub fn default_command_step_receives_profile_driver_env_test() {
 
   assert artifact.status == step_artifact.StepSucceeded
   assert string.contains(artifact.stdout, "profile-base")
+  assert string.contains(
+    artifact.stdout,
+    root <> "/.scherzo-state/artifacts/runs/run",
+  )
   assert string.contains(artifact.stdout, "helper-found")
   assert !string.contains(artifact.stdout, "unexpected-system-path")
 }
@@ -1969,6 +1974,7 @@ pub fn default_agent_step_receives_workspace_driver_environment_test() {
   assert string.contains(log, "PATH=" <> profile_path)
   assert string.contains(log, "SCHERZO_WORKSPACE_NAME=main")
   assert string.contains(log, "SCHERZO_WORKSPACE_PATH=")
+  assert string.contains(log, "SCHERZO_RUN_ARTIFACT_DIR=")
 }
 
 fn agent_driver_env_step_context(
@@ -1979,6 +1985,7 @@ fn agent_driver_env_step_context(
     workflow_id: "workflow",
     run_id: "run-1",
     run_root: root <> "/run",
+    run_artifact_dir: root <> "/.scherzo-state/artifacts/runs/run-1",
     workflow_bundle_dir: ".scherzo/workflows",
     step_id: "implement",
     attempt_index: 0,

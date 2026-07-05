@@ -23,15 +23,11 @@ The repo `.gitignore` intentionally ignores runtime `.scherzo/*` state while all
 
 Bundle-based ExecPlan workflows must not depend on a consuming repository's personal or repo-local Pi skill installation. The draft, review, review-incorporation, revision, and implementation prompts embed the required ExecPlan authoring, adversarial review, living-document, and implementation guidance directly in workflow prompt files reachable under `.scherzo/workflows/prompts/`. Review-lane JSON Schemas live under `.scherzo/workflows/schemas/`, so consuming repositories can use the workflows without copying a separate schema directory. A clean consuming repository that points `.scherzo/scherzo.yaml` at this workflow bundle can therefore prepare those prompts without committing local ExecPlan skill files.
 
-Command steps that need Scherzo helpers should resolve the configured repository root before invoking scripts, for example:
+Command steps receive `SCHERZO_WORKFLOW_BUNDLE_DIR` and `SCHERZO_RUN_ARTIFACT_DIR` from the Scherzo harness. Treat both as required contract variables and fail loudly instead of guessing paths, for example:
 
 ```sh
-bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
-if [ -z "$bundle_dir" ]; then
-  bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"
-fi
-repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
-"$bundle_dir/scripts/scherzo-execplan" validate-review-doc --path docs/plans/example.md
+: "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"
+"$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" validate-review-doc --path docs/plans/example.md
 ```
 
 When updating workflow-packaged guidance or helper invocations, run the workflow portability validation through the packaged CLI and positive runtime environment:

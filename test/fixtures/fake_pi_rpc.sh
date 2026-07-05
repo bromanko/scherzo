@@ -48,6 +48,7 @@ if [[ -n "${FAKE_PI_ENV_LOG:-}" ]]; then
     printf 'PATH=%s\n' "${PATH:-}"
     printf 'SCHERZO_WORKSPACE_NAME=%s\n' "${SCHERZO_WORKSPACE_NAME:-}"
     printf 'SCHERZO_WORKSPACE_PATH=%s\n' "${SCHERZO_WORKSPACE_PATH:-}"
+    printf 'SCHERZO_RUN_ARTIFACT_DIR=%s\n' "${SCHERZO_RUN_ARTIFACT_DIR:-}"
   } >> "$FAKE_PI_ENV_LOG"
 fi
 

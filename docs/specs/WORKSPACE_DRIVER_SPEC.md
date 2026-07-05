@@ -164,8 +164,10 @@ Scherzo-provided driver environments may include:
 | `SCHERZO_WORKSPACE_CAPABILITIES` | Space-separated discovered capability names in canonical order. |
 | `SCHERZO_RUN_KIND` | `issue` for issue workflows or `scheduled` for scheduled workflows. |
 | `SCHERZO_WORKFLOW_ID` | Workflow DAG id for issue workflow runs. |
+| `SCHERZO_WORKFLOW_BUNDLE_DIR` | Directory containing the resolved workflow bundle; command and agent steps can invoke bundle-local helpers through this path. |
 | `SCHERZO_RUN_ID` | Scherzo run id. |
 | `SCHERZO_RUN_ROOT` | Per-run directory containing logical workspaces. |
+| `SCHERZO_RUN_ARTIFACT_DIR` | Filesystem directory for the current run's retained artifacts in the configured artifact store. |
 | `SCHERZO_ISSUE_ID` | Tracker-internal issue id for issue workflows. |
 | `SCHERZO_ISSUE_IDENTIFIER` | Human-readable issue key, such as `LIV-231`, for issue workflows. |
 | `SCHERZO_STEP_ID` | Current workflow step id. |
@@ -183,7 +185,7 @@ Scherzo-provided driver environments may include:
 | `SCHERZO_SCHEDULE_STARTED_AT` | Scheduled start timestamp for scheduled runs. |
 | `SCHERZO_RUN_ATTEMPT` | Scheduled-run attempt number. |
 
-Drivers MUST tolerate absent optional variables. Driver `env` is not a secret store. Its values are visible to discovery, lifecycle, command-step, and agent-step subprocesses, may be printed by those subprocesses, and are included in execution fingerprints only as key names plus SHA-256 value digests under `value_sha256`. Prompt templates do not receive a `workspace.env` map. Scherzo applies limited redaction to Scherzo-owned diagnostics and artifacts only for likely-sensitive driver env keys such as `SECRET`, `TOKEN`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`, or `SESSION_KEY`, and only for non-empty values of at least eight characters. Drivers MUST NOT print secrets. Driver-authored output SHOULD avoid local absolute workspace roots unless it is relaying bounded output from an underlying tool failure.
+Command-step and agent-step subprocesses always receive non-empty `SCHERZO_WORKFLOW_BUNDLE_DIR` and `SCHERZO_RUN_ARTIFACT_DIR`; workflow shell code should treat absence as a harness contract failure and exit nonzero rather than guessing a path. Drivers MUST tolerate absent optional variables. Driver `env` is not a secret store. Its values are visible to discovery, lifecycle, command-step, and agent-step subprocesses, may be printed by those subprocesses, and are included in execution fingerprints only as key names plus SHA-256 value digests under `value_sha256`. Prompt templates do not receive a `workspace.env` map. Scherzo applies limited redaction to Scherzo-owned diagnostics and artifacts only for likely-sensitive driver env keys such as `SECRET`, `TOKEN`, `PASSWORD`, `API_KEY`, `ACCESS_KEY`, `PRIVATE_KEY`, or `SESSION_KEY`, and only for non-empty values of at least eight characters. Drivers MUST NOT print secrets. Driver-authored output SHOULD avoid local absolute workspace roots unless it is relaying bounded output from an underlying tool failure.
 
 ## 6. Metadata command: `describe --json`
 

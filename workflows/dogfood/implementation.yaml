@@ -33,14 +33,14 @@ artifacts:
 steps:
   - id: prepare_context
     kind: command
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" prepare --source ticket'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" prepare --source ticket'
     timeout: 5m
     run_in: main
 
   - id: refresh_base_before_implementation
     kind: command
     depends_on: [prepare_context]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" refresh-base --stage before-implementation'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" refresh-base --stage before-implementation'
     timeout: 5m
     run_in: main
 
@@ -53,13 +53,13 @@ steps:
   - id: analyze_changes
     kind: command
     depends_on: [implement]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" analyze'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" analyze'
     run_in: main
 
   - id: validate_before_native_review
     kind: command
     depends_on: [analyze_changes]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" validate'
     timeout: 20m
     on_failure: continue
     run_in: main
@@ -67,7 +67,7 @@ steps:
   - id: prepare_review
     kind: command
     depends_on: [validate_before_native_review]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; output_dir="$SCHERZO_RUN_ROOT/artifacts/review/prepare_review"; dirty_tree_dir="$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; cutover_contract_dir="$SCHERZO_RUN_ROOT/artifacts/review/cutover_contract"; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then "$bundle_dir/scripts/scherzo-review" prepare-native --diff-file "$SCHERZO_RUN_ROOT/input.diff" --output-dir "$output_dir" --source-label "implementation-native" --validation-result state/implementation/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt --dirty-tree-dir "$dirty_tree_dir" --cutover-contract-dir "$cutover_contract_dir"; else "$bundle_dir/scripts/scherzo-review" prepare-native --from "${SCHERZO_REVIEW_FROM:-@-}" --to "${SCHERZO_REVIEW_TO:-@}" --output-dir "$output_dir" --source-label "implementation-native" --validation-result state/implementation/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt --dirty-tree-dir "$dirty_tree_dir" --cutover-contract-dir "$cutover_contract_dir"; fi'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; output_dir="$SCHERZO_RUN_ROOT/artifacts/review/prepare_review"; dirty_tree_dir="$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree"; cutover_contract_dir="$SCHERZO_RUN_ROOT/artifacts/review/cutover_contract"; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-review" prepare-native --diff-file "$SCHERZO_RUN_ROOT/input.diff" --output-dir "$output_dir" --source-label "implementation-native" --validation-result state/implementation/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt --dirty-tree-dir "$dirty_tree_dir" --cutover-contract-dir "$cutover_contract_dir"; else "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-review" prepare-native --from "${SCHERZO_REVIEW_FROM:-@-}" --to "${SCHERZO_REVIEW_TO:-@}" --output-dir "$output_dir" --source-label "implementation-native" --validation-result state/implementation/scherzo-implementation-validation.json --validation-log-ref .scherzo/command-step-diagnostics/validate_before_native_review.txt --dirty-tree-dir "$dirty_tree_dir" --cutover-contract-dir "$cutover_contract_dir"; fi'
     timeout: 5m
     run_in: main
 
@@ -195,7 +195,7 @@ steps:
   - id: finalize_lanes
     kind: command
     depends_on: [lane_correctness, lane_test_quality, lane_idioms_maintainability, lane_security_performance]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; "$bundle_dir/scripts/scherzo-review" finalize-lanes --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --review-root "$SCHERZO_RUN_ROOT/artifacts/review" --dirty-tree-dir "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree" --artifact-dir "$artifact_dir" --synthesis-output-dir "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review" --lane correctness --lane test-quality --lane idioms-maintainability --lane security-performance'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; : "${SCHERZO_RUN_ARTIFACT_DIR:?Scherzo command-step contract missing SCHERZO_RUN_ARTIFACT_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-review" finalize-lanes --prepare-dir "$SCHERZO_RUN_ROOT/artifacts/review/prepare_review" --review-root "$SCHERZO_RUN_ROOT/artifacts/review" --dirty-tree-dir "$SCHERZO_RUN_ROOT/artifacts/review/dirty_tree" --artifact-dir "$SCHERZO_RUN_ARTIFACT_DIR" --synthesis-output-dir "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review" --lane correctness --lane test-quality --lane idioms-maintainability --lane security-performance'
     run_in: main
 
   # Targeted remediation consumes synthesized native review findings; this is not a second broad review pass.
@@ -241,13 +241,13 @@ steps:
   - id: materialize_review_dispositions
     kind: command
     depends_on: [apply_feedback]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; "$bundle_dir/scripts/scherzo-review" materialize-disposition-input --artifact-dir "$artifact_dir" --submission-step apply_feedback --submission-artifact review_finding_disposition_input --output tmp/review-finding-dispositions.v1.json'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; : "${SCHERZO_RUN_ARTIFACT_DIR:?Scherzo command-step contract missing SCHERZO_RUN_ARTIFACT_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-review" materialize-disposition-input --artifact-dir "$SCHERZO_RUN_ARTIFACT_DIR" --submission-step apply_feedback --submission-artifact review_finding_disposition_input --output tmp/review-finding-dispositions.v1.json'
     run_in: main
 
   - id: refresh_base_before_validation
     kind: command
     depends_on: [materialize_review_dispositions]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" refresh-base --stage before-validation'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" refresh-base --stage before-validation'
     timeout: 5m
     on_failure: continue
     run_in: main
@@ -255,7 +255,7 @@ steps:
   - id: validate_after_refresh
     kind: command
     depends_on: [refresh_base_before_validation]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" validate'
     timeout: 20m
     on_failure: continue
     run_in: main
@@ -269,27 +269,27 @@ steps:
   - id: assert_base_drift_repair
     kind: command
     depends_on: [repair_base_drift]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" assert-base-drift-repair'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" assert-base-drift-repair'
     timeout: 5m
     run_in: main
 
   - id: final_validate
     kind: command
     depends_on: [assert_base_drift_repair]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" validate'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" validate'
     timeout: 20m
     run_in: main
 
   - id: finalize_review_dispositions
     kind: command
     depends_on: [final_validate]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; diff_path=""; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then diff_path=" --diff-file $SCHERZO_RUN_ROOT/input.diff"; fi; "$bundle_dir/scripts/scherzo-review" finalize-dispositions --final-review "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json" --disposition-input tmp/review-finding-dispositions.v1.json --validation-artifact state/implementation/scherzo-implementation-validation.json --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/final_dispositions" --require-publishable${diff_path}'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; diff_path=""; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then diff_path=" --diff-file $SCHERZO_RUN_ROOT/input.diff"; fi; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-review" finalize-dispositions --final-review "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json" --disposition-input tmp/review-finding-dispositions.v1.json --validation-artifact state/implementation/scherzo-implementation-validation.json --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/final_dispositions" --require-publishable${diff_path}'
     run_in: main
 
   - id: materialize_commit_stack
     kind: command
     depends_on: [finalize_review_dispositions]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" publish'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" publish'
     timeout: 20m
     run_in: main
     recovery:

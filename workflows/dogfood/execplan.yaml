@@ -89,7 +89,7 @@ workstream_phase:
 steps:
   - id: prepare_review_doc_target
     kind: command
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" prepare-review-doc-target --from-issue-context --write-target tmp/execplan-review-doc-target.json'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" prepare-review-doc-target --from-issue-context --write-target tmp/execplan-review-doc-target.json'
     run_in: main
 
   - id: draft_review_doc_and_pack
@@ -118,7 +118,7 @@ steps:
   - id: validate_review_doc
     kind: command
     depends_on: [draft_review_doc_and_pack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" validate-review-doc --discover-changed-review-doc --target-file tmp/execplan-review-doc-target.json --write-path tmp/execplan-review-doc.path'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" validate-review-doc --discover-changed-review-doc --target-file tmp/execplan-review-doc-target.json --write-path tmp/execplan-review-doc.path'
     run_in: main
 
   - id: review_plan
@@ -153,26 +153,26 @@ steps:
   - id: validate_review_doc_after_review
     kind: command
     depends_on: [incorporate_review]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; review_doc_path=$(cat tmp/execplan-review-doc.path); "$bundle_dir/scripts/scherzo-execplan" validate-review-doc --path "$review_doc_path"'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; review_doc_path=$(cat tmp/execplan-review-doc.path); "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" validate-review-doc --path "$review_doc_path"'
     run_in: main
 
   - id: materialize_pack
     kind: command
     depends_on: [validate_review_doc_after_review]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$bundle_dir/scripts/scherzo-execplan" materialize-pack --review-doc-path-file tmp/execplan-review-doc.path --submission-step incorporate_review --submission-artifact implementation_pack_submission --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json"'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; : "${SCHERZO_RUN_ARTIFACT_DIR:?Scherzo command-step contract missing SCHERZO_RUN_ARTIFACT_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" materialize-pack --review-doc-path-file tmp/execplan-review-doc.path --submission-step incorporate_review --submission-artifact implementation_pack_submission --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json"'
     run_in: main
 
   - id: materialize_commit_stack
     kind: command
     depends_on: [materialize_pack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$bundle_dir/scripts/scherzo-execplan" materialize-commit-stack --review-doc-path-file tmp/execplan-review-doc.path --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-commit-stack.json"'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; : "${SCHERZO_RUN_ARTIFACT_DIR:?Scherzo command-step contract missing SCHERZO_RUN_ARTIFACT_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" materialize-commit-stack --review-doc-path-file tmp/execplan-review-doc.path --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-commit-stack.json"'
     timeout: 5m
     run_in: main
 
   - id: materialize_bundle
     kind: command
     depends_on: [materialize_commit_stack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" materialize-bundle --review-doc-path-file tmp/execplan-review-doc.path --pack "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json" --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json"'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" materialize-bundle --review-doc-path-file tmp/execplan-review-doc.path --pack "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json" --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json"'
     timeout: 5m
     run_in: main
     recovery:

@@ -2,6 +2,7 @@ import gleam/int
 import gleam/list
 import scherzo/config/types as config_types
 import scherzo/orchestrator/schedule_core
+import scherzo/path
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 import scherzo/workflow_identity
@@ -13,6 +14,7 @@ pub type StepContext {
     workflow_id: String,
     run_id: String,
     run_root: String,
+    run_artifact_dir: String,
     workflow_bundle_dir: String,
     step_id: String,
     attempt_index: Int,
@@ -42,6 +44,10 @@ pub fn from_prepared(
     workflow_id: workspace.workflow_id,
     run_id: workspace.run_id,
     run_root: workspace.run_root,
+    run_artifact_dir: run_artifact_dir(
+      orchestrator.effective.workspace.root,
+      workspace.run_id,
+    ),
     workflow_bundle_dir: workspace.workflow_bundle_dir,
     step_id: step.id,
     attempt_index: workspace.attempt_index,
@@ -76,6 +82,13 @@ pub fn scheduled(
   )
 }
 
+fn run_artifact_dir(workspace_root: String, run_id: String) -> String {
+  path.join(
+    path.join(path.join(workspace_root, ".scherzo-state"), "artifacts"),
+    "runs/" <> run_id,
+  )
+}
+
 pub fn command_env(context: StepContext) -> List(#(String, String)) {
   let generated = [
     #("SCHERZO_CONFIG_DIR", context.config_dir),
@@ -83,6 +96,7 @@ pub fn command_env(context: StepContext) -> List(#(String, String)) {
     #("SCHERZO_WORKFLOW_BUNDLE_DIR", context.workflow_bundle_dir),
     #("SCHERZO_RUN_ID", context.run_id),
     #("SCHERZO_RUN_ROOT", context.run_root),
+    #("SCHERZO_RUN_ARTIFACT_DIR", context.run_artifact_dir),
     #("SCHERZO_RUN_KIND", context.run_kind),
     #("SCHERZO_ISSUE_ID", context.issue_id),
     #("SCHERZO_ISSUE_IDENTIFIER", context.issue_identifier),
