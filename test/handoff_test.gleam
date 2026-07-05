@@ -466,20 +466,23 @@ pub fn workflow_command_failure_handoff_renders_plan_completion_recovery_action_
   let detail =
     "workflow_command_failed:plan_completion_recovery_exhausted\n"
     <> "blocking finding: Acceptance criterion remains unchecked.\n"
-    <> "artifact: tmp/scherzo-plan-completion-recovery.md\n"
-    <> "verdict: tmp/scherzo-plan-completion-verdict.json"
+    <> "verdict: state/implementation/scherzo-plan-completion-verdict.json\n"
+    <> "inspect: workflow_step_recovery_history"
   let failure =
     worker_failure(
       error.WorkflowCommandFailed(
         code: "plan_completion_recovery_exhausted",
-        step_id: "finalize_plan_completion_gate_recovery",
+        step_id: "verify_plan_completion_before_final_validation",
         detail: detail,
       ),
       Some(absolute_workspace),
     )
 
   let failure_comment =
-    capture_failure_comment(failure, "run-plan-completion-recovery")
+    capture_failure_comment(
+      failure,
+      "run-verify-plan-completion-before-final-validation",
+    )
 
   assert string.contains(
     failure_comment,
@@ -487,7 +490,7 @@ pub fn workflow_command_failure_handoff_renders_plan_completion_recovery_action_
   )
   assert string.contains(
     failure_comment,
-    "| Step | `finalize_plan_completion_gate_recovery` |",
+    "| Step | `verify_plan_completion_before_final_validation` |",
   )
   assert string.contains(failure_comment, "| Retained workspace | `yes` |")
   assert string.contains(
@@ -496,16 +499,10 @@ pub fn workflow_command_failure_handoff_renders_plan_completion_recovery_action_
   )
   assert string.contains(
     failure_comment,
-    "tmp/scherzo-plan-completion-recovery.md",
+    "state/implementation/scherzo-plan-completion-verdict.json",
   )
-  assert string.contains(
-    failure_comment,
-    "tmp/scherzo-plan-completion-verdict.json",
-  )
-  assert string.contains(
-    failure_comment,
-    "inspect or salvage the retained work",
-  )
+  assert string.contains(failure_comment, "workflow_step_recovery_history")
+  assert string.contains(failure_comment, "salvage the retained work if needed")
   assert string.contains(failure_comment, "scherzoctl retry <issue>")
 }
 

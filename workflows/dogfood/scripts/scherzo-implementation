@@ -35,6 +35,8 @@ CANONICAL_METADATA_RELATIVE_PATH = Path("state") / "implementation" / "metadata.
 CANONICAL_IMPLEMENTATION_STATE_RELATIVE_DIR = Path("state") / "implementation"
 CANONICAL_PLAN_COMPLETION_CONTEXT_NAME = "scherzo-plan-completion-context.json"
 CANONICAL_PLAN_COMPLETION_VERDICT_NAME = "scherzo-plan-completion-verdict.json"
+# Legacy compatibility surface for retained workspaces from the pre-step-recovery
+# topology. Checked-in workflows no longer call the old helper directly.
 CANONICAL_PLAN_COMPLETION_RECOVERY_NAME = "scherzo-plan-completion-recovery.json"
 CANONICAL_VALIDATION_NAME = "scherzo-implementation-validation.json"
 CANONICAL_PUBLISH_NAME = "scherzo-implementation-publish.json"
@@ -66,7 +68,8 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 def usage() -> None:
     print(
-        """Usage: scherzo-implementation <prepare|refresh-base|analyze|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|languages|ticket-brief>
+        """Usage: scherzo-implementation <prepare|refresh-base|refresh-base-and-validate|analyze|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|languages|ticket-brief>
+
 
 Run from a Scherzo jj workflow workspace root.
 
@@ -98,14 +101,20 @@ gate-plan-completion --from-submission [--submission PATH]
               canonical verdict artifact, and fail only for a fail verdict or
               workspace mismatch.
 plan-completion-recovery --phase before-late-repair|before-final-repair|after-late-repair|after-final-repair|final --attempt INT --max-attempts INT
-              Classify the current plan-completion verdict for bounded recovery,
-              write tmp/scherzo-plan-completion-recovery.{json,md}, and either
+              Legacy compatibility helper for retained pre-step-recovery runs.
+              Classify the current plan-completion verdict, write
+              tmp/scherzo-plan-completion-recovery.{json,md}, and either
               authorize one bounded repair pass or fail with retained
               workspace diagnostics.
 refresh-base --stage <stage>
               Fetch the canonical jj workspace base, rebase @ when needed,
               and write structured base-refresh JSON under tmp/.
+refresh-base-and-validate --stage <stage>
+              Run refresh-base, then run final validation only when the
+              refresh result is fresh or rebased_clean. Write the same refresh
+              and validation artifacts used by recovery prompts.
 assert-base-drift-repair
+              Legacy compatibility helper for retained pre-step-recovery runs.
               Fail closed when the bounded base-drift repair worker wrote a
               nonrepairable failure marker; otherwise report that final
               validation may proceed.
@@ -1357,8 +1366,7 @@ def write_refresh_base_result(result: dict[str, Any]) -> Path:
     return path
 
 
-def refresh_base_command(args: list[str]) -> None:
-    stage = parse_refresh_base_args(args)
+def refresh_base_result_for_stage(stage: str) -> dict[str, Any]:
     if workspace_driver_available():
         result = driver_refresh_result(stage)
     else:
@@ -1366,12 +1374,36 @@ def refresh_base_command(args: list[str]) -> None:
         result = refresh_base(stage)
     update_start_refresh_metadata(result)
     write_refresh_base_result(result)
+    return result
+
+
+def refresh_base_command(args: list[str]) -> None:
+    stage = parse_refresh_base_args(args)
+    result = refresh_base_result_for_stage(stage)
     status = result["status"]
     if status in {"fresh", "rebased_clean"}:
         sys.exit(0)
     if status == "conflicts":
         sys.exit(20)
     sys.exit(1)
+
+
+def refresh_base_and_validate_command(args: list[str]) -> None:
+    stage = parse_refresh_base_args(args)
+    result = refresh_base_result_for_stage(stage)
+    status = str(result.get("status") or "")
+    print(f"REFRESH_AND_VALIDATE_STATUS={status}")
+    print(f"REFRESH_AND_VALIDATE_REPAIRABLE={str(bool(result.get('repairable'))).lower()}")
+    print(f"REFRESH_AND_VALIDATE_JSON={display_path(refresh_base_json_path(stage))}")
+    if status == "conflicts":
+        print("VALIDATION_STATUS=not_run")
+        sys.exit(20)
+    if status not in {"fresh", "rebased_clean"}:
+        print("VALIDATION_STATUS=not_run")
+        sys.exit(1)
+    validate_command(failure_code="base_refresh_validation_failed")
+    print("VALIDATION_STATUS=passed")
+    print(f"VALIDATION_RESULT_PATH={display_path(state_backed_path(VALIDATION_PATH, CANONICAL_VALIDATION_NAME))}")
 
 
 def append_base_drift_repair_summary(body: str) -> tuple[str, bool]:
@@ -2833,6 +2865,10 @@ def parse_plan_completion_recovery_args(args: list[str]) -> tuple[str, int, int]
     return str(parsed.phase), int(parsed.attempt), int(parsed.max_attempts)
 
 
+# Legacy compatibility for retained workspaces created before plan-completion
+# recovery moved onto verifier-step recovery. Checked-in workflows no longer
+# dispatch this helper, but older retained runs and operator evidence can still
+# reference its artifacts and failure code.
 def plan_completion_recovery_command(args: list[str]) -> None:
     phase, attempt, max_attempts = parse_plan_completion_recovery_args(args)
     metadata = load_implementation_metadata()
@@ -3292,6 +3328,9 @@ def previous_validation_failure_details() -> str:
     return "\n".join(lines)
 
 
+# Legacy compatibility for retained workspaces created before base-drift repair
+# moved onto command-step recovery. Checked-in workflows no longer dispatch this
+# helper, but older retained runs can still surface its failure marker.
 def assert_base_drift_repair_command(args: list[str]) -> None:
     if args:
         usage()
@@ -3819,6 +3858,8 @@ def main(argv: list[str]) -> None:
         prepare_command(args)
     elif command == "refresh-base":
         refresh_base_command(args)
+    elif command == "refresh-base-and-validate":
+        refresh_base_and_validate_command(args)
     elif command == "analyze" and not args:
         analyze_command()
     elif command == "plan-completion-context":

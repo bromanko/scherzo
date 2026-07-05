@@ -244,45 +244,19 @@ steps:
     run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; : "${SCHERZO_RUN_ARTIFACT_DIR:?Scherzo command-step contract missing SCHERZO_RUN_ARTIFACT_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-review" materialize-disposition-input --artifact-dir "$SCHERZO_RUN_ARTIFACT_DIR" --submission-step apply_feedback --submission-artifact review_finding_disposition_input --output tmp/review-finding-dispositions.v1.json'
     run_in: main
 
-  - id: refresh_base_before_validation
+  - id: refresh_and_validate_after_review
     kind: command
     depends_on: [materialize_review_dispositions]
-    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" refresh-base --stage before-validation'
-    timeout: 5m
-    on_failure: continue
-    run_in: main
-
-  - id: validate_after_refresh
-    kind: command
-    depends_on: [refresh_base_before_validation]
-    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" validate'
-    timeout: 20m
-    on_failure: continue
-    run_in: main
-
-  - id: repair_base_drift
-    kind: agent
-    depends_on: [validate_after_refresh]
-    prompt: prompts/repair-base-drift.md
-    run_in: main
-
-  - id: assert_base_drift_repair
-    kind: command
-    depends_on: [repair_base_drift]
-    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" assert-base-drift-repair'
-    timeout: 5m
-    run_in: main
-
-  - id: final_validate
-    kind: command
-    depends_on: [assert_base_drift_repair]
-    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" validate'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-implementation" refresh-base-and-validate --stage before-validation'
     timeout: 20m
     run_in: main
+    recovery:
+      attempts: 1
+      prompt: prompts/repair-base-drift.md
 
   - id: finalize_review_dispositions
     kind: command
-    depends_on: [final_validate]
+    depends_on: [refresh_and_validate_after_review]
     run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; diff_path=""; if [ -f "$SCHERZO_RUN_ROOT/input.diff" ]; then diff_path=" --diff-file $SCHERZO_RUN_ROOT/input.diff"; fi; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-review" finalize-dispositions --final-review "$SCHERZO_RUN_ROOT/artifacts/review/synthesize_review/final-review.v1.json" --disposition-input tmp/review-finding-dispositions.v1.json --validation-artifact state/implementation/scherzo-implementation-validation.json --output-dir "$SCHERZO_RUN_ROOT/artifacts/review/final_dispositions" --require-publishable${diff_path}'
     run_in: main
 

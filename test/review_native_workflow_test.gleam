@@ -119,6 +119,18 @@ fn expected_plan_completion_validators() -> List(
       path: plan_completion_schema_path,
       draft: Some("2020-12"),
     ),
+    workflow_dag.CommandValidator(
+      name: "plan_completion_gate_from_submission",
+      argv: [
+        "python3",
+        ".scherzo/workflows/scripts/scherzo-implementation",
+        "gate-plan-completion",
+        "--from-submission",
+      ],
+      timeout_ms: 30_000,
+      working_directory: workflow_dag.ValidatorInWorkspace,
+      env: [],
+    ),
   ]
 }
 
@@ -176,6 +188,7 @@ fn assert_plan_completion_structured_output(
   let spec = lane_spec(dag, step_id)
   assert spec.artifact_name == "plan_completion_verdict_submission"
   assert spec.required == True
+  assert spec.validation_retries == 0
   assert spec.schema
     == workflow_dag.StructuredObjectSchema([
       "verdict",
@@ -234,16 +247,6 @@ fn assert_not_contains(contents: String, unexpected: String) -> Nil {
     False -> Nil
     True -> {
       let message = "unexpected text still present: " <> unexpected
-      panic as message
-    }
-  }
-}
-
-fn assert_list_contains(values: List(String), expected: String) -> Nil {
-  case list.contains(values, expected) {
-    True -> Nil
-    False -> {
-      let message = "expected list item not found: " <> expected
       panic as message
     }
   }
@@ -537,13 +540,20 @@ pub fn implementation_workflow_uses_native_agent_lane_steps_test() {
   assert_contains(materialize_run, "materialize-disposition-input")
   assert_contains(materialize_run, "--submission-step apply_feedback")
   assert_contains(materialize_run, "tmp/review-finding-dispositions.v1.json")
-  let assert Ok(refresh_base) =
-    workflow_dag.step_by_id(dag, "refresh_base_before_validation")
-  assert refresh_base.depends_on == ["materialize_review_dispositions"]
+  let assert Ok(refresh_and_validate) =
+    workflow_dag.step_by_id(dag, "refresh_and_validate_after_review")
+  assert refresh_and_validate.depends_on == ["materialize_review_dispositions"]
+  let refresh_and_validate_run =
+    command_step_run(dag, "refresh_and_validate_after_review")
+  assert_contains(
+    refresh_and_validate_run,
+    "refresh-base-and-validate --stage before-validation",
+  )
 
   let assert Ok(finalize_dispositions) =
     workflow_dag.step_by_id(dag, "finalize_review_dispositions")
-  assert finalize_dispositions.depends_on == ["final_validate"]
+  assert finalize_dispositions.depends_on
+    == ["refresh_and_validate_after_review"]
   let assert Ok(materialize_commit_stack) =
     workflow_dag.step_by_id(dag, "materialize_commit_stack")
   assert materialize_commit_stack.depends_on == ["finalize_review_dispositions"]
@@ -560,23 +570,22 @@ pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_te
   assert_contains(materialize_run, "materialize-disposition-input")
   assert_contains(materialize_run, "--submission-step apply_review_feedback")
   assert_contains(materialize_run, "tmp/review-finding-dispositions.v1.json")
-  let assert Ok(refresh_base) =
-    workflow_dag.step_by_id(dag, "refresh_base_before_validation")
-  assert refresh_base.depends_on == ["materialize_review_dispositions"]
+  let assert Ok(refresh_and_validate) =
+    workflow_dag.step_by_id(dag, "refresh_and_validate_after_review")
+  assert refresh_and_validate.depends_on == ["materialize_review_dispositions"]
+  let refresh_and_validate_run =
+    command_step_run(dag, "refresh_and_validate_after_review")
+  assert_contains(
+    refresh_and_validate_run,
+    "refresh-base-and-validate --stage before-validation",
+  )
 
   let assert Ok(finalize_dispositions) =
     workflow_dag.step_by_id(dag, "finalize_review_dispositions")
   assert finalize_dispositions.depends_on == ["final_validate"]
   let assert Ok(materialize_commit_stack) =
     workflow_dag.step_by_id(dag, "materialize_commit_stack")
-  assert_list_contains(
-    materialize_commit_stack.depends_on,
-    "finalize_final_plan_completion_gate",
-  )
-  assert_list_contains(
-    materialize_commit_stack.depends_on,
-    "finalize_review_dispositions",
-  )
+  assert materialize_commit_stack.depends_on == ["finalize_review_dispositions"]
 
   let feedback_prompt_paths = [
     ".scherzo/workflows/prompts/apply-feedback.md",
@@ -587,10 +596,21 @@ pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_te
     assert_contains(prompt, "review-finding-dispositions.v1.json")
     assert_contains(prompt, submit_dispositions_tool)
     assert_contains(prompt, "REVIEW_FINAL_ARTIFACT_PATH")
+    assert_contains(prompt, "steps.finalize_lanes.stdout")
     assert_contains(prompt, "targeted remediation")
     assert_contains(prompt, "not a fresh review of the whole diff")
     assert_not_contains(prompt, "steps.code_review")
     assert_not_contains(prompt, "steps.review_changes")
+    assert_not_contains(prompt, "steps.verify_correctness_evidence")
+    assert_not_contains(prompt, "steps.normalize_correctness")
+    assert_not_contains(prompt, "steps.verify_test_quality_evidence")
+    assert_not_contains(prompt, "steps.normalize_test_quality")
+    assert_not_contains(prompt, "steps.verify_idioms_maintainability_evidence")
+    assert_not_contains(prompt, "steps.normalize_idioms_maintainability")
+    assert_not_contains(prompt, "steps.verify_security_performance_evidence")
+    assert_not_contains(prompt, "steps.normalize_security_performance")
+    assert_not_contains(prompt, "steps.synthesize_review")
+    assert_not_contains(prompt, "steps.validate_native_review_artifacts")
     assert_not_contains(
       prompt,
       "Write `tmp/review-finding-dispositions.v1.json`",
@@ -602,59 +622,22 @@ pub fn execplan_plan_completion_verifiers_use_structured_output_test() {
   let dag = execplan_implementation_dag()
   let verifier_steps = [
     "verify_plan_completion",
-    "verify_plan_completion_after_feedback",
-    "verify_plan_completion_after_late_repair",
-    "verify_plan_completion_after_final_repair",
     "verify_plan_completion_before_final_validation",
   ]
   list.each(verifier_steps, fn(step_id) {
     assert_plan_completion_structured_output(dag, step_id)
+    let assert Ok(step) = workflow_dag.step_by_id(dag, step_id)
+    let assert Ok(Some(workflow_dag.EffectiveRecoveryConfig(
+      attempts: attempts,
+      prompt: prompt,
+      ..,
+    ))) = workflow_dag.effective_recovery_config(dag, step)
+    assert attempts == 2
+    assert prompt
+      == workflow_dag.PromptFile(
+        "prompts/execplan-implementation-recover-plan-completion.md",
+      )
   })
-
-  let checkpoint_steps = [
-    #("checkpoint_initial_plan_completion_verdict", "verify_plan_completion"),
-    #(
-      "checkpoint_plan_completion_verdict_after_feedback",
-      "verify_plan_completion_after_feedback",
-    ),
-    #(
-      "checkpoint_plan_completion_verdict_after_late_repair",
-      "verify_plan_completion_after_late_repair",
-    ),
-    #(
-      "checkpoint_plan_completion_verdict_after_final_repair",
-      "verify_plan_completion_after_final_repair",
-    ),
-    #(
-      "checkpoint_final_plan_completion_verdict",
-      "verify_plan_completion_before_final_validation",
-    ),
-  ]
-  list.each(checkpoint_steps, fn(pair) {
-    let #(checkpoint_step, verifier_step) = pair
-    let assert Ok(step) = workflow_dag.step_by_id(dag, checkpoint_step)
-    assert step.depends_on == [verifier_step]
-    let run = command_step_run(dag, checkpoint_step)
-    assert_contains(run, "checkpoint-plan-completion-verdict")
-    assert_contains(run, "--submission-step " <> verifier_step)
-  })
-
-  let assert Ok(apply_plan_feedback) =
-    workflow_dag.step_by_id(dag, "apply_plan_completion_feedback")
-  assert apply_plan_feedback.depends_on
-    == ["checkpoint_initial_plan_completion_verdict"]
-  let assert Ok(gate_plan_completion) =
-    workflow_dag.step_by_id(dag, "gate_plan_completion")
-  assert gate_plan_completion.depends_on
-    == ["checkpoint_plan_completion_verdict_after_feedback"]
-  let assert Ok(gate_late) =
-    workflow_dag.step_by_id(dag, "gate_plan_completion_after_late_repair")
-  assert gate_late.depends_on
-    == ["checkpoint_plan_completion_verdict_after_late_repair"]
-  let assert Ok(gate_final_repair) =
-    workflow_dag.step_by_id(dag, "gate_plan_completion_after_final_repair")
-  assert gate_final_repair.depends_on
-    == ["checkpoint_plan_completion_verdict_after_final_repair"]
 }
 
 pub fn plan_completion_structured_output_rejects_inconsistent_verdicts_test() {
@@ -706,10 +689,6 @@ pub fn plan_completion_structured_output_rejects_inconsistent_verdicts_test() {
 pub fn plan_completion_verifier_prompts_do_not_transcribe_machine_context_test() {
   let prompt_paths = [
     ".scherzo/workflows/prompts/execplan-implementation-verify-completion.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-feedback.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-late-repair.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-after-final-repair.md",
-    ".scherzo/workflows/prompts/execplan-implementation-verify-completion-before-final-validation.md",
   ]
   list.each(prompt_paths, fn(path) {
     let assert Ok(prompt) = simplifile.read(path)
