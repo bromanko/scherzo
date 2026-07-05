@@ -1,0 +1,51 @@
+{
+  "type": "object",
+  "description": "Provider-facing plan-completion verifier submission. Scherzo stamps workspace context after tool capture; agents must submit only semantic verdict fields.",
+  "required": [
+    "verdict",
+    "blocking_findings",
+    "evidence",
+    "checked_acceptance_criteria",
+    "deferred_manual_verification"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "description": "pass when the implementation satisfies the required ExecPlan behavior, otherwise fail.",
+      "pattern": "^(pass|fail)$"
+    },
+    "blocking_findings": {
+      "type": "array",
+      "description": "Concrete missing required behavior or evidence when verdict is fail; empty when verdict is pass.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Evidence inspected for required behavior, tests, validation, and acceptance criteria.",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "checked_acceptance_criteria": {
+      "type": "array",
+      "description": "Acceptance criteria, milestones, or required plan items checked during verification.",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "deferred_manual_verification": {
+      "type": "array",
+      "description": "Manual/browser/dogfood checks explicitly deferred until after implementation, PR publication, or operator handoff.",
+      "items": {
+        "type": "object",
+        "required": ["check", "reason", "owner", "when"],
+        "properties": {
+          "check": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 },
+          "owner": { "type": "string", "minLength": 1 },
+          "when": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

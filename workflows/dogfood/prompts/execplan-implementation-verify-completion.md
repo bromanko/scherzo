@@ -22,7 +22,7 @@ Change analysis output:
 Verification contract:
 
 - This is a plan-completion verification, not a code review. Do not critique style, formatting, architecture, or optional polish unless it blocks promised behavior.
-- Do not edit tracked source, tests, workflows, docs, or the ExecPlan review doc. Your only allowed write is the verdict artifact at `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json`.
+- Do not edit tracked source, tests, workflows, docs, the ExecPlan review doc, or plan-completion verdict files. Submit the semantic verdict with the `submit_plan_completion_verdict` structured-output tool instead of writing JSON by hand.
 - Before reading prepared ExecPlan files, run `bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; "$bundle_dir/scripts/scherzo-implementation" restore-execplan-artifacts` from the repository root. This restores `tmp/` compatibility copies from run-root canonical state if tests or helper fixtures clobbered them.
 - Read `$SCHERZO_RUN_ROOT/state/implementation/metadata.json`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`, and `$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json`.
 - Treat `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md` as the authoritative canonical plan prepared from the descriptor `plan` entry in `exec_plan_bundle.entries`; metadata `plan_path` points at that local copy.
@@ -33,25 +33,19 @@ Verification contract:
 - Treat unchecked Progress checklist items as evidence requests, not as mandatory source-plan edits. Return `fail` only when the unchecked item corresponds to required behavior, artifacts, tests, validation, or acceptance evidence that is still undelivered or unobservable in the current implementation. Do not fail solely because the immutable source plan still contains historical "implementation pending" or "pack materialization pending" living-status checkboxes when the implementation run provides equivalent evidence.
 - Treat explicitly post-implementation manual/browser/dogfood checks as deferred manual verification, not blocking implementation completion. A manual check is explicitly deferred only when the canonical plan or implementation pack says it is performed after implementation, PR publication, or handoff by a human/operator. Do not fail solely because such deferred manual verification has not been completed; record it in `deferred_manual_verification` instead. If a manual check is required before publish and has no deferred timing/owner, it remains blocking when evidence is missing.
 - Do not fail for imperfect wording, formatting, or optional/stretch work that is clearly marked optional, stretch, deferred, or out of scope.
-- Before writing the verdict, run `bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-context` from the repository root and copy its context values exactly into the JSON artifact.
-- The subsequent command gate will fail closed if the JSON is missing, malformed, has verdict `fail`, or has stale context values.
+- Submit only semantic verdict fields. Do not include `plan_path`, change ids, parent commit ids, diff fingerprints, `changed_files`, or verdict file paths; Scherzo stamps those machine context fields after your tool submission.
+- The subsequent checkpoint/gate commands will fail closed if the structured submission is missing or malformed, if the stamped verdict has verdict `fail`, or if the workspace changes before the gate stamps current context.
 
-Required verdict artifact:
+Required structured submission:
 
-Write valid JSON (no Markdown fences, no comments, no trailing commas) to `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json` with this schema:
+Call `submit_plan_completion_verdict` with this semantic payload:
 
 ```json
 {
-  "schema_version": 1,
   "verdict": "pass",
   "blocking_findings": [],
   "evidence": ["Evidence that required behavior and tests are present."],
   "checked_acceptance_criteria": ["Acceptance criterion or required milestone checked."],
-  "plan_path": "<PLAN_COMPLETION_PLAN_PATH>",
-  "verified_base_change_id": "<PLAN_COMPLETION_BASE_CHANGE_ID>",
-  "verified_change_id": "<PLAN_COMPLETION_CHANGE_ID>",
-  "verified_diff_fingerprint": "<PLAN_COMPLETION_DIFF_FINGERPRINT>",
-  "changed_files": ["<files from PLAN_COMPLETION_CHANGED_FILES>"],
   "deferred_manual_verification": [
     {
       "check": "Manual/browser/dogfood check still to perform after implementation.",
@@ -70,9 +64,8 @@ Process:
 1. Run the restore command above, then read `$SCHERZO_RUN_ROOT/state/implementation/metadata.json`, the canonical plan at `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json`, and `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json`.
 2. Read the implementation response and change analysis above.
 3. Inspect changed files/tests only as needed to verify promised behavior and acceptance criteria.
-4. Run `bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-implementation" plan-completion-context` and copy the context values exactly.
-5. Write `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json`.
-6. Finish with a concise summary of the verdict and the most important evidence/findings.
+4. Call `submit_plan_completion_verdict` with the semantic verdict payload. Do not write or edit verdict JSON files.
+5. Finish with a concise summary of the verdict and the most important evidence/findings.
 
 Final response format:
 
@@ -86,4 +79,4 @@ Final response format:
 - Bullet list of the most important evidence and acceptance criteria checked.
 
 ## Artifact
-- `$SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json` written.
+- `plan_completion_verdict_submission` submitted with `submit_plan_completion_verdict`.
