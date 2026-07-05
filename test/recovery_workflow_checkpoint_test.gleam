@@ -259,6 +259,25 @@ fn given_step_started(
   )
 }
 
+fn given_step_interrupted(
+  scenario: RecoveryScenario,
+  sequence: Int,
+  step_id: String,
+  reason: String,
+) -> record.LedgerRecord {
+  record.new(
+    sequence,
+    sequence,
+    record.StepAttemptInterrupted(
+      scenario.run_id,
+      "workflow-alpha",
+      step_id,
+      1,
+      reason,
+    ),
+  )
+}
+
 fn given_step_finished(
   scenario: RecoveryScenario,
   sequence: Int,
@@ -742,8 +761,79 @@ pub fn workflow_recovery_interrupts_running_attempts_and_advances_indexes_test()
     setup.scenario.run_id,
     "b",
     1,
-    "daemon_restart",
+    "daemon_restart_during_step",
   )
+}
+
+pub fn workflow_recovery_resumes_already_interrupted_agent_without_duplicate_test() {
+  let scenario =
+    recovery_scenario(
+      "test/tmp/recovery-workflow-already-interrupted-agent",
+      "run-interrupted-agent",
+    )
+  let folded =
+    projection.fold([
+      given_workflow_started(scenario, 1),
+      given_step_prepared(scenario, 2, "a", "main", None, None),
+      given_step_started(scenario, 3, "a"),
+      given_step_interrupted(scenario, 4, "a", "daemon_restart"),
+    ])
+
+  let finalized = finalize_resume(scenario, folded, agent_dag())
+  let resumption = expect_single_resumption(finalized)
+
+  expect_next_attempt(resumption, "a", 2)
+  expect_no_appended_records(finalized)
+}
+
+pub fn workflow_recovery_interrupts_pending_command_and_resumes_before_start_test() {
+  let scenario =
+    recovery_scenario(
+      "test/tmp/recovery-workflow-pending-command",
+      "run-pending-command",
+    )
+  let folded =
+    projection.fold([
+      given_workflow_started(scenario, 1),
+      given_step_prepared(scenario, 2, "command", "main", None, None),
+    ])
+
+  let finalized = finalize_resume(scenario, folded, interrupted_command_dag())
+  let resumption = expect_single_resumption(finalized)
+
+  expect_next_attempt(resumption, "command", 2)
+  expect_interrupted_record(
+    finalized,
+    scenario.run_id,
+    "command",
+    1,
+    "daemon_restart_before_step_start",
+  )
+}
+
+pub fn workflow_recovery_resumes_already_interrupted_command_before_start_test() {
+  let scenario =
+    recovery_scenario(
+      "test/tmp/recovery-workflow-interrupted-command-before-start",
+      "run-interrupted-command-before-start",
+    )
+  let folded =
+    projection.fold([
+      given_workflow_started(scenario, 1),
+      given_step_prepared(scenario, 2, "command", "main", None, None),
+      given_step_interrupted(
+        scenario,
+        3,
+        "command",
+        "daemon_restart_before_step_start",
+      ),
+    ])
+
+  let finalized = finalize_resume(scenario, folded, interrupted_command_dag())
+  let resumption = expect_single_resumption(finalized)
+
+  expect_next_attempt(resumption, "command", 2)
+  expect_no_appended_records(finalized)
 }
 
 pub fn workflow_recovery_missing_artifact_parks_without_resumption_test() {
@@ -996,6 +1086,8 @@ pub fn workflow_recovery_parks_workflow_id_drift_with_definition_reason_test() {
 }
 
 pub fn workflow_recovery_parks_interrupted_command_attempts_test() {
+  // Started command steps remain conservative because shell commands can perform
+  // external side effects that are not represented in the run workspace.
   let scenario =
     recovery_scenario(
       "test/tmp/recovery-workflow-interrupted-command",
