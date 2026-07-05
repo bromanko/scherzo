@@ -1700,6 +1700,7 @@ fn request_examples() -> List(RequestExample) {
         True,
         True,
         "operator salvage",
+        False,
       ),
     ),
     RequestExample(

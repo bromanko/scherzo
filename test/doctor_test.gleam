@@ -13,6 +13,7 @@ pub fn default_checks_are_stable_test() {
       doctor.InstanceLock,
       doctor.WorkspaceHooks,
       doctor.PiProbe,
+      doctor.RetainedPublications,
     ]
   assert doctor.list_check_names()
     == [
@@ -24,6 +25,7 @@ pub fn default_checks_are_stable_test() {
       "instance-lock",
       "workspace-hooks",
       "pi-probe",
+      "retained-publications",
     ]
 }
 
@@ -37,6 +39,8 @@ pub fn parse_check_name_accepts_known_names_test() {
   assert doctor.parse_check_name("instance-lock") == Ok(doctor.InstanceLock)
   assert doctor.parse_check_name("workspace-hooks") == Ok(doctor.WorkspaceHooks)
   assert doctor.parse_check_name("pi-probe") == Ok(doctor.PiProbe)
+  assert doctor.parse_check_name("retained-publications")
+    == Ok(doctor.RetainedPublications)
 }
 
 pub fn parse_check_name_rejects_unknown_names_test() {

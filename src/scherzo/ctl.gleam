@@ -110,6 +110,7 @@ pub type Command {
     run_id: String,
     reason: String,
     dry_run: Bool,
+    allow_unpublished: Bool,
   )
   Cleanup(
     control_file: Option(String),
@@ -906,6 +907,7 @@ fn build_run_finalize_command(
 ) -> Result(Command, Error) {
   let dry_run = command_spec.has_flag(parsed, "--dry-run")
   let yes = command_spec.has_flag(parsed, "--yes")
+  let allow_unpublished = command_spec.has_flag(parsed, "--allow-unpublished")
   case dry_run, yes {
     True, True ->
       Error(UsageError(
@@ -938,6 +940,7 @@ fn build_run_finalize_command(
             first_positional(parsed, parsed.usage),
             reason,
             dry_run,
+            allow_unpublished,
           ))
       }
   }
@@ -1696,7 +1699,7 @@ fn run_with_deps_and_env_internal(
           }
       }
     }
-    RunFinalize(control_path, json, run_id, reason, dry_run) -> {
+    RunFinalize(control_path, json, run_id, reason, dry_run, allow_unpublished) -> {
       use target <- try_ctl(load_control_target(control_path, env))
       let operator_command =
         control_command.RunFinalize(
@@ -1707,6 +1710,7 @@ fn run_with_deps_and_env_internal(
           update_tracker: True,
           dry_run: dry_run,
           reason: reason,
+          allow_unpublished: allow_unpublished,
         )
       case json {
         True ->

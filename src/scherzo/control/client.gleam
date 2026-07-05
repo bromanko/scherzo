@@ -451,6 +451,7 @@ fn authenticate(
       update_tracker,
       dry_run,
       reason,
+      allow_unpublished,
     ) ->
       protocol.RunFinalize(
         id,
@@ -462,6 +463,7 @@ fn authenticate(
         update_tracker,
         dry_run,
         reason,
+        allow_unpublished,
       )
     protocol.RetryArtifactPublication(id, _, run_id, publication_id) ->
       protocol.RetryArtifactPublication(
@@ -700,7 +702,7 @@ fn safe_read_command_for_operator(
     command.RetryWorkflowStep(_, _)
     | command.RetryWorkflowStepExact(_, _)
     | command.RecollectWorkflowOutputs(_)
-    | command.RunFinalize(_, _, _, _, _, _, _)
+    | command.RunFinalize(_, _, _, _, _, _, _, _)
     | command.RetryArtifactPublication(_, _)
     | command.CleanupOrphanSteps(_, _)
     | command.RunScheduleNow(_)
