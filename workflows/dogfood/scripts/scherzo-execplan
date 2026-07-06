@@ -18,12 +18,15 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from scherzo_workflow import commit_stack as commit_stack_helper
+sys.dont_write_bytecode = True
 
-try:
-    import jsonschema
-except Exception:  # pragma: no cover - surfaced as a runtime diagnostic.
-    jsonschema = None  # type: ignore[assignment]
+from scherzo_workflow import commit_stack as commit_stack_helper
+from scherzo_workflow import errors as workflow_errors
+from scherzo_workflow import json_io as workflow_json
+from scherzo_workflow import paths as workflow_paths
+from scherzo_workflow import process as workflow_process
+from scherzo_workflow import schema as workflow_schema
+from scherzo_workflow import workspace_driver as workflow_workspace_driver
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_ROOT = Path(os.environ.get("SCHERZO_WORKFLOW_BUNDLE_DIR", "")).resolve() if os.environ.get("SCHERZO_WORKFLOW_BUNDLE_DIR", "").strip() else SCRIPT_ROOT
@@ -148,10 +151,13 @@ Commands:
 
 
 def fail(message: str, *, code: str | None = None, exit_code: int = 2) -> None:
-    if code:
-        print(f"{FAILURE_PREFIX}{code}", file=sys.stderr)
-    print(f"scherzo-execplan: {message}", file=sys.stderr)
-    raise SystemExit(exit_code)
+    workflow_errors.exit_with_failure(
+        "scherzo-execplan",
+        message,
+        code=code,
+        exit_code=exit_code,
+        failure_prefix=FAILURE_PREFIX,
+    )
 
 
 def fail_descriptor_required(reason: str) -> None:
@@ -170,28 +176,19 @@ def fail_descriptor_required(reason: str) -> None:
 
 
 def env_value(name: str, default: str = "", *, legacy: str | None = None) -> str:
-    value = os.environ.get(name, "").strip()
-    if value:
-        return value
-    if legacy:
-        value = os.environ.get(legacy, "").strip()
-        if value:
-            return value
-    return default
+    return workflow_paths.env_value(name, default, legacy=legacy)
 
 
 def env_enabled(name: str, *, legacy: str | None = None) -> bool:
-    return bool(env_value(name, legacy=legacy))
+    return workflow_paths.env_enabled(name, legacy=legacy)
 
 
 def canonical_json(value: Any) -> str:
-    return json.dumps(value, indent=2, sort_keys=True, separators=(",", ": ")) + "\n"
+    return workflow_json.canonical_json(value)
 
 
 def write_json(path: Path, value: Any) -> None:
-    path = resolve_run_root_relative_path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(canonical_json(value), encoding="utf-8")
+    workflow_json.write_json(path, value, resolver=resolve_run_root_relative_path)
 
 
 def descriptor_file_entry(
@@ -290,29 +287,14 @@ def implementation_state_relative_path(name: str) -> Path:
 
 
 def display_path(path: Path) -> str:
-    if not path.is_absolute():
-        return path.as_posix()
-    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
-    if run_root:
-        try:
-            return path.resolve(strict=False).relative_to(Path(run_root).resolve(strict=False)).as_posix()
-        except (OSError, ValueError):
-            pass
-    return path.as_posix()
+    return workflow_paths.display_path(path)
 
 
 def resolve_run_root_relative_path(path: Path) -> Path:
-    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
-    if run_root and not path.is_absolute():
-        if path.parts[:1] == ("state",):
-            return Path(run_root) / path
-        if (
-            len(path.parts) >= 3
-            and path.parts[0] == "workspaces"
-            and path.parts[2] == "state"
-        ):
-            return Path(run_root).joinpath(*path.parts[2:])
-    return path
+    return workflow_paths.resolve_run_root_relative_path(
+        path,
+        support_workspace_state_prefix=True,
+    )
 
 
 def copy_best_effort(source: Path, destination: Path) -> None:
@@ -326,66 +308,43 @@ def copy_best_effort(source: Path, destination: Path) -> None:
 
 
 def load_json(path: Path, *, code: str | None = None) -> Any:
-    path = resolve_run_root_relative_path(path)
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        fail(f"missing JSON file: {path}", code=code)
-    except json.JSONDecodeError as exc:
-        fail(f"invalid JSON in {path}: {exc}", code=code)
+        return workflow_json.load_json(path, resolver=resolve_run_root_relative_path)
+    except workflow_json.JsonIoError as exc:
+        fail(str(exc), code=code)
 
 
 def path_bytes(path: Path, *, code: str | None = None) -> bytes:
-    path = resolve_run_root_relative_path(path)
     try:
-        return path.read_bytes()
-    except FileNotFoundError:
-        fail(f"missing file: {path}", code=code)
-    except OSError as exc:
-        fail(f"could not read {path}: {exc}", code=code)
+        return workflow_json.path_bytes(path, resolver=resolve_run_root_relative_path)
+    except workflow_json.JsonIoError as exc:
+        fail(str(exc), code=code)
 
 
 def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
+    return workflow_json.sha256_bytes(data)
 
 
 def file_meta(path: Path, *, code: str | None = None) -> dict[str, Any]:
-    data = path_bytes(path, code=code)
-    return {"sha256": sha256_bytes(data), "bytes": len(data)}
+    try:
+        return workflow_json.file_meta(path, resolver=resolve_run_root_relative_path)
+    except workflow_json.JsonIoError as exc:
+        fail(str(exc), code=code)
 
 
 def repo_root(default: str | None = None) -> Path:
-    if default:
-        return Path(default)
-    value = os.environ.get("SCHERZO_REPO_ROOT", "").strip()
-    if value:
-        return Path(value)
-    return Path.cwd()
+    return workflow_paths.repo_root(default)
 
 
 def schema_path(path: Path, root: Path | None = None) -> Path:
-    if path.is_absolute():
-        return path
-    base = root or SCRIPT_ROOT
-    parts = path.parts
-    if len(parts) >= 2 and parts[0] == ".scherzo" and parts[1] == "workflows":
-        if (base / ".scherzo").exists():
-            return base / path
-        return base / Path(*parts[2:])
-    return base / path
+    return workflow_schema.schema_path(path, root or SCRIPT_ROOT)
 
 
 def validate_schema(value: Any, schema_rel: Path, *, root: Path | None = None) -> None:
-    if jsonschema is None:
-        fail("python jsonschema package is required")
-    schema_file = schema_path(schema_rel, root or BUNDLE_ROOT)
-    schema = load_json(schema_file)
-    validator = jsonschema.Draft202012Validator(schema)
-    errors = sorted(validator.iter_errors(value), key=lambda e: list(e.path))
-    if errors:
-        first = errors[0]
-        location = "/".join(str(part) for part in first.path) or "<root>"
-        fail(f"schema validation failed for {schema_rel} at {location}: {first.message}")
+    try:
+        workflow_schema.validate_schema(value, schema_rel, root=root or BUNDLE_ROOT)
+    except workflow_schema.SchemaValidationError as exc:
+        fail(str(exc))
 
 
 def normalize_repo_relative_path(value: str, *, label: str) -> str:
@@ -741,23 +700,15 @@ def validate_review_doc_path(path: Path, *, allow_fixture: bool = True, target: 
 
 
 def workspace_driver_command() -> str | None:
-    value = os.environ.get("SCHERZO_WORKSPACE_DRIVER", "").strip()
-    return value or None
+    return workflow_workspace_driver.command()
 
 
 def subprocess_text(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
+    return workflow_process.subprocess_text(value)
 
 
 def format_seconds(value: float) -> str:
-    number = float(value)
-    if number.is_integer():
-        return str(int(number))
-    return str(number)
+    return workflow_process.format_seconds(value)
 
 
 def run_proc(
@@ -766,22 +717,7 @@ def run_proc(
     env: dict[str, str] | None = None,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            args,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=env,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = subprocess_text(exc.stdout)
-        stderr = subprocess_text(exc.stderr).strip()
-        timeout_text = format_seconds(timeout or 0.0)
-        message = f"command timed out after {timeout_text}s"
-        detail = (stderr + "\n" + message).strip() if stderr else message
-        return subprocess.CompletedProcess(args, 124, stdout, detail)
+    return workflow_process.run_proc(args, env=env, timeout=timeout)
 
 
 def run(args: list[str], *, check: bool = True) -> str:
@@ -793,36 +729,19 @@ def run(args: list[str], *, check: bool = True) -> str:
 
 
 def workspace_driver_json(args: list[str]) -> dict[str, Any]:
-    driver = workspace_driver_command()
-    if not driver:
-        fail("SCHERZO_WORKSPACE_DRIVER is required for this operation")
-    proc = run_proc([driver, *args])
     try:
-        payload = json.loads(proc.stdout)
-    except Exception as exc:
-        fail(f"workspace driver returned malformed JSON for {' '.join(args)}: {exc}")
-    if proc.returncode != 0:
-        fail(str(payload.get("message") or proc.stderr or "workspace driver command failed"))
-    if not isinstance(payload, dict) or payload.get("version") != 1:
-        fail(f"workspace driver JSON for {' '.join(args)} must be an object with version=1")
-    return payload
+        payload, _ = workflow_workspace_driver.run_json(args)
+        return payload
+    except workflow_workspace_driver.WorkspaceDriverError as exc:
+        fail(str(exc), code=exc.code)
 
 
 def changed_file_records() -> list[dict[str, str]]:
     payload = workspace_driver_json(["changed-files", "--json"])
-    files = payload.get("files")
-    if not isinstance(files, list):
-        fail("workspace driver changed-files JSON must contain a files list")
-    records: list[dict[str, str]] = []
-    for item in files:
-        if not isinstance(item, dict):
-            fail("workspace driver changed-files entries must be objects")
-        path = item.get("path")
-        status = item.get("status")
-        if not isinstance(path, str) or not isinstance(status, str):
-            fail("workspace driver changed-files entries must include path and status strings")
-        records.append({"path": path, "status": status})
-    return records
+    try:
+        return workflow_workspace_driver.changed_file_records(payload)
+    except workflow_workspace_driver.WorkspaceDriverError as exc:
+        fail(str(exc), code=exc.code)
 
 
 def configured_repo() -> str:

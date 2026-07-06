@@ -15,7 +15,7 @@ set -euo pipefail
 #   lint                glinter + scherzo custom lint
 #   workflow-contracts  structured-output + review-lane offline contracts
 #   unit                gleam unit suite
-#   review-tools        Python script lint + review helper unit suite
+#   review-tools        Python script lint + workflow/review helper unit suites
 #   contract            gleam contract suites (runtime/orchestrator/tracker/workflow/repository)
 #   nix                 nix flake check
 #   package             nix build path:<repo-root>#scherzo
@@ -30,6 +30,9 @@ set -euo pipefail
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 cd "$repo_root"
+
+# Keep Python helper imports from polluting workflow/workspace snapshots.
+export PYTHONDONTWRITEBYTECODE=1
 
 # The devenv shell includes pi from numtide/llm-agents.nix; make Nix use
 # Numtide's binary cache instead of source-building the pi package.
@@ -114,6 +117,11 @@ ci_review_tools() {
   ci_python_script_lint
   run_step "python review helper unit tests" \
     direnv exec . python3 -m unittest test/scherzo_execplan_review_test.py
+  run_step "python workflow helper unit tests" \
+    direnv exec . env PYTHONPATH=.scherzo/workflows/scripts \
+      python3 -m pytest -q -p no:cacheprovider \
+      .scherzo/workflows/scripts/scherzo_workflow \
+      .scherzo/workflows/scripts/scherzo_review/review_lane_contract_test.py
 }
 
 ci_contract() {

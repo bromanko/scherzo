@@ -49,6 +49,7 @@ stdenvNoCC.mkDerivation {
       wrapProgram "$script" \
         --prefix PATH : ${runtimePath} \
         --set-default PYTHONPATH "$out/scripts" \
+        --set-default PYTHONDONTWRITEBYTECODE "1" \
         --set-default SCHERZO_WORKFLOW_BUNDLE_DIR "$out"
     done
 

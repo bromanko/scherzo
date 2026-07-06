@@ -89,11 +89,14 @@ fn write_fake_jj(path: String) -> Nil {
         <> "      *) shift ;;\n"
         <> "    esac\n"
         <> "  done\n"
-        <> "  case \"$revision\" in conflicts*) exit 0 ;; esac\n"
+        <> "  case \"$revision\" in conflicts*) if [ \"${SCHERZO_FAKE_JJ_HAS_CONFLICTS:-}\" = 1 ]; then printf '%s\\n' \"${SCHERZO_FAKE_JJ_CONFLICT_CHANGE:-conflict}\"; fi; exit 0 ;; esac\n"
         <> "  for missing in ${SCHERZO_FAKE_JJ_MISSING_REVISIONS:-}; do\n"
         <> "    if [ \"$revision\" = \"$missing\" ]; then exit 1; fi\n"
         <> "  done\n"
         <> "  if [ \"$template\" = description ] && [ -n \"${SCHERZO_FAKE_JJ_DESCRIPTION_OUTPUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_JJ_DESCRIPTION_OUTPUT\"; exit 0; fi\n"
+        <> "  if [ \"$revision\" = @- ] && [ -n \"${SCHERZO_FAKE_JJ_PARENT_LOG_OUTPUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_JJ_PARENT_LOG_OUTPUT\"; exit 0; fi\n"
+        <> "  if [ \"$revision\" = @ ] && [ -n \"${SCHERZO_FAKE_JJ_CURRENT_LOG_OUTPUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_JJ_CURRENT_LOG_OUTPUT\"; exit 0; fi\n"
+        <> "  if [ \"$revision\" = main@origin ] && [ -n \"${SCHERZO_FAKE_JJ_BASE_LOG_OUTPUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_JJ_BASE_LOG_OUTPUT\"; exit 0; fi\n"
         <> "  printf '%s\\n' \"${SCHERZO_FAKE_JJ_LOG_OUTPUT:-commit}\"\n"
         <> "  exit 0\n"
         <> "fi\n"
@@ -154,8 +157,16 @@ fn write_fake_jj(path: String) -> Nil {
         <> "fi\n"
         <> "if [ \"$1\" = bookmark ] && [ \"$2\" = track ]; then exit 0; fi\n"
         <> "if [ \"$1\" = bookmark ] && [ \"$2\" = set ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = rebase ]; then exit 0; fi\n"
-        <> "if [ \"$1\" = resolve ] && [ \"$2\" = --list ]; then exit 0; fi\n"
+        <> "if [ \"$1\" = rebase ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_REBASE_FAIL:-}\" = 1 ]; then printf '%s\\n' \"${SCHERZO_FAKE_JJ_REBASE_FAIL_MESSAGE:-simulated rebase failure}\" >&2; exit 1; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = resolve ] && [ \"$2\" = --list ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_RESOLVE_LIST_FAIL:-}\" = 1 ]; then printf '%s\\n' \"${SCHERZO_FAKE_JJ_RESOLVE_LIST_FAIL_MESSAGE:-simulated resolve list failure}\" >&2; exit 1; fi\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_RESOLVE_NO_CONFLICTS_NONZERO:-}\" = 1 ]; then printf '%s\\n' 'No conflicts found' >&2; exit 1; fi\n"
+        <> "  printf '%s' \"${SCHERZO_FAKE_JJ_RESOLVE_LIST:-}\"\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "if [ \"$1\" = workspace ] && [ \"$2\" = forget ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_JJ_FORGET_FAIL:-}\" = 1 ]; then echo 'simulated forget failure' >&2; exit 1; fi\n"
         <> "  exit 0\n"
@@ -178,7 +189,9 @@ fn write_fake_gh(path: String, log: String) -> Nil {
         <> test_helpers.shell_quote(log)
         <> " 2>/dev/null || printf '%s' 0)\n"
         <> "  view_after=${SCHERZO_FAKE_GH_VIEW_URL_AFTER:-1}\n"
+        <> "  selector=$3\n"
         <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_SLEEP_SECONDS:-}\" ]; then sleep \"$SCHERZO_FAKE_GH_VIEW_SLEEP_SECONDS\"; fi\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_MATCH_SELECTOR:-}\" ] && [ \"$selector\" = \"$SCHERZO_FAKE_GH_VIEW_MATCH_SELECTOR\" ] && [ -n \"${SCHERZO_FAKE_GH_VIEW_MATCH_URL:-}\" ]; then echo \"$SCHERZO_FAKE_GH_VIEW_MATCH_URL\"; exit 0; fi\n"
         <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_URL:-}\" ] && [ \"$view_count\" -ge \"$view_after\" ]; then echo \"$SCHERZO_FAKE_GH_VIEW_URL\"; exit 0; fi\n"
         <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_STDOUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_GH_VIEW_STDOUT\"; exit \"${SCHERZO_FAKE_GH_VIEW_EXIT_CODE:-0}\"; fi\n"
         <> "  if [ \"${SCHERZO_FAKE_GH_VIEW_EMPTY_SUCCESS:-}\" = 1 ]; then exit 0; fi\n"
@@ -265,7 +278,9 @@ fn scrubbed_driver_env(
   let scrubbed =
     [
       #("GITHUB_REPOSITORY", ""),
+      #("SCHERZO_CONFIG_DIR", ""),
       #("SCHERZO_GITHUB_REPO", ""),
+      #("SCHERZO_REPO_ROOT", ""),
       #("SCHERZO_JJ_WORKSPACE_BASE", ""),
       #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", ""),
       #("SCHERZO_JJ_WORKSPACE_FETCH_BASE", ""),
@@ -548,6 +563,34 @@ pub fn jj_driver_lifecycle_create_implements_root_workspace_creation_test() {
     <> " log -r develop@upstream --no-graph -T commit_id --color=never"
   assert string.contains(add_line, "--repository " <> repo <> " workspace add")
   assert string.contains(add_line, "--revision develop@upstream")
+  assert simplifile.is_directory(workspace <> "/.jj") == Ok(True)
+}
+
+pub fn jj_driver_lifecycle_create_infers_repo_root_from_jj_ancestor_test() {
+  let dir = "test/tmp/jj-workspace-driver-infer-repo-root"
+  test_helpers.reset_dir(dir)
+  let bin = absolute(dir <> "/bin")
+  let repo = absolute(dir <> "/nonstandard/root")
+  let workspace = repo <> "/nested/runs/run-1/workspaces/main"
+  let log = absolute(dir <> "/jj.log")
+  let assert Ok(Nil) = simplifile.create_directory_all(bin)
+  let assert Ok(Nil) = simplifile.create_directory_all(repo <> "/.jj")
+  write_fake_jj(bin <> "/jj")
+  let assert Ok(Nil) = simplifile.write(log, "")
+
+  let artifact =
+    run_jj(
+      "jj_driver_infer_repo_root_from_ancestor",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_JJ_WORKSPACE_FETCH_BASE", "false"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  let logged = log_text(log)
+  assert string.contains(logged, "--repository " <> repo <> " workspace add")
+  assert string.contains(logged, "--revision main@origin")
   assert simplifile.is_directory(workspace <> "/.jj") == Ok(True)
 }
 
@@ -902,6 +945,65 @@ pub fn jj_driver_refresh_base_ignores_legacy_pr_names_test() {
   assert !string.contains(logged, "git fetch --remote fork --branch develop")
 }
 
+pub fn jj_driver_refresh_target_fetch_failure_reports_conflict_files_test() {
+  let dir = "test/tmp/jj-workspace-driver-refresh-target-fetch-conflicts"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_refresh_target_fetch_conflicts",
+      "refresh-base --stage pre-validation --target feature@origin --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_FETCH_FAIL", "1"),
+        #(
+          "SCHERZO_FAKE_JJ_RESOLVE_LIST",
+          "beta.txt 2-sided conflict\nalpha.txt\n",
+        ),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stdout, "\"status\":\"fetch_failed\"")
+  assert string.contains(
+    artifact.stdout,
+    "\"conflict_files\":[\"alpha.txt\",\"beta.txt\"]",
+  )
+  assert string.contains(log_text(log), "resolve --list --color=never")
+}
+
+pub fn jj_driver_refresh_rebase_fails_when_conflict_listing_fails_test() {
+  let dir = "test/tmp/jj-workspace-driver-refresh-conflict-list-fails"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+
+  let artifact =
+    run_jj(
+      "jj_driver_refresh_conflict_list_failure",
+      "refresh-base --stage pre-validation --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_PARENT_LOG_OUTPUT", "parent"),
+        #("SCHERZO_FAKE_JJ_BASE_LOG_OUTPUT", "base"),
+        #("SCHERZO_FAKE_JJ_RESOLVE_LIST_FAIL", "1"),
+        #(
+          "SCHERZO_FAKE_JJ_RESOLVE_LIST_FAIL_MESSAGE",
+          "simulated resolve list failure",
+        ),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stdout, "\"status\":\"rebase_failed\"")
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"conflict_listing_failed\"",
+  )
+  assert string.contains(artifact.stdout, "simulated resolve list failure")
+  let logged = log_text(log)
+  assert string.contains(logged, "rebase -r @ -d main@origin --color=never")
+  assert string.contains(logged, "resolve --list --color=never")
+}
+
 pub fn jj_driver_publish_remote_is_separate_from_base_remote_test() {
   let dir = "test/tmp/jj-workspace-driver-publish-remote"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
@@ -1178,6 +1280,52 @@ pub fn jj_driver_publish_target_branch_allows_stale_local_bookmark_test() {
   )
 }
 
+pub fn jj_driver_publish_target_pr_never_adopts_branch_pr_when_number_lookup_fails_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-target-pr-no-branch-adopt"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "feature/pr"
+  let target_pr = "198"
+  let wrong_url = "https://github.com/example/repo/pull/999"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_target_pr_no_branch_adopt",
+      "publish-commit-stack --kind merge-conflict --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --target-branch "
+        <> branch
+        <> " --target-pr "
+        <> target_pr
+        <> " --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_GH_VIEW_MATCH_SELECTOR", branch),
+        #("SCHERZO_FAKE_GH_VIEW_MATCH_URL", wrong_url),
+        #("SCHERZO_FAKE_GH_VIEW_STDERR", "HTTP 404: PR not found"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"pr_lookup_failed\"",
+  )
+  assert !string.contains(artifact.stdout, wrong_url)
+
+  let logged = log_text(log)
+  assert count_log_lines_containing(
+      log,
+      "gh: pr view " <> target_pr <> " --repo example/repo --json url --jq .url",
+    )
+    == 3
+  assert !string.contains(logged, "gh: pr view " <> branch <> " --repo")
+  assert !string.contains(logged, "gh: pr create")
+}
+
 pub fn jj_driver_publish_commit_stack_target_branch_does_not_create_pr_test() {
   let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-existing-branch"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
@@ -1416,7 +1564,7 @@ pub fn jj_driver_publish_commit_stack_create_failure_reports_gh_diagnostics_test
     "git push --remote origin --bookmark " <> branch <> " --allow-new",
   )
   assert string.contains(logged, "gh: pr create --repo example/repo")
-  assert count_log_lines_containing(log, "gh: pr view") > 1
+  assert count_log_lines_containing(log, "gh: pr view") == 3
 }
 
 pub fn jj_driver_publish_commit_stack_create_empty_url_reports_specific_failure_test() {
@@ -1602,7 +1750,9 @@ pub fn jj_driver_publish_commit_stack_pr_view_timeout_reports_lookup_failure_tes
     "\"failure_code\":\"pr_lookup_failed\"",
   )
   assert string.contains(artifact.stdout, "timed out after 0.1 seconds")
-  assert count_log_lines_containing(log, "gh: pr view") > 1
+  let pr_view_attempts = count_log_lines_containing(log, "gh: pr view")
+  assert pr_view_attempts > 1
+  assert pr_view_attempts <= 3
 }
 
 pub fn jj_driver_publish_commit_stack_retry_reuses_stable_branch_pr_test() {
@@ -2498,6 +2648,25 @@ pub fn jj_driver_lifecycle_remove_forgets_run_workspaces_test() {
 
   assert_exit(artifact, 0)
   assert log_lines(log) == ["root", "--ignore-working-copy workspace forget"]
+}
+
+pub fn jj_driver_lifecycle_remove_without_run_root_does_not_infer_run_root_test() {
+  let dir = "test/tmp/jj-workspace-driver-remove-no-run-root"
+  let #(_, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_no_run_root",
+      "lifecycle remove",
+      fake_env(run_root, bin, log, []),
+    )
+
+  assert_exit(artifact, 0)
+  assert log_lines(log) == []
+  assert simplifile.is_directory(workspace <> "/.jj") == Ok(True)
 }
 
 pub fn jj_driver_lifecycle_remove_surfaces_forget_failure_test() {
