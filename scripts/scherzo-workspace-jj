@@ -1846,6 +1846,24 @@ def lookup_pull_request_url(
     return PullRequestLookupResult(selector, results)
 
 
+def remaining_pull_request_lookup_attempts(lookup: PullRequestLookupResult | None) -> int:
+    used = len(lookup.attempts) if lookup is not None else 0
+    return max(0, PR_LOOKUP_ATTEMPTS - used)
+
+
+def combine_pull_request_lookups(
+    first: PullRequestLookupResult | None,
+    second: PullRequestLookupResult | None,
+) -> PullRequestLookupResult | None:
+    if first is None:
+        return second
+    if second is None:
+        return first
+    if first.selector != second.selector:
+        return second
+    return PullRequestLookupResult(first.selector, first.attempts + second.attempts)
+
+
 def view_pull_request_url(root: Path, repo: str, selector: str) -> str:
     return lookup_pull_request_url(root, repo, selector, attempts=1).url
 
@@ -1857,7 +1875,21 @@ def fail_pr_url_unavailable(
     lookup: PullRequestLookupResult | None,
 ) -> None:
     lookup_detail = lookup_diagnostics(lookup)
-    if create is not None and create.returncode != 0:
+    if create is None:
+        if lookup is not None and lookup.failed:
+            json_failure(
+                status="publication_failed",
+                failure_code="pr_lookup_failed",
+                message=f"gh pr view lookup failed while locating hosted review URL for {branch}. {lookup_detail}",
+                branch=branch,
+            )
+        json_failure(
+            status="publication_failed",
+            failure_code="pr_url_missing",
+            message=f"hosted review URL for {branch} remained unavailable after bounded lookup attempts. {lookup_detail}",
+            branch=branch,
+        )
+    if create.returncode != 0:
         json_failure(
             status="publication_failed",
             failure_code="pr_create_failed",
@@ -1868,39 +1900,25 @@ def fail_pr_url_unavailable(
             ),
             branch=branch,
         )
-    if create is not None:
-        if lookup is not None and lookup.failed:
-            json_failure(
-                status="publication_failed",
-                failure_code="pr_lookup_failed",
-                message=(
-                    f"gh pr create succeeded for {branch} but returned no URL, and follow-up "
-                    f"gh pr view lookup failed after bounded adoption attempts. "
-                    f"{command_diagnostics('gh pr create', create)}; {lookup_detail}"
-                ),
-                branch=branch,
-            )
-        json_failure(
-            status="publication_failed",
-            failure_code="pr_create_url_missing",
-            message=(
-                f"gh pr create succeeded for {branch} but returned no URL, and bounded PR "
-                f"lookup did not recover one. {command_diagnostics('gh pr create', create)}; "
-                f"{lookup_detail}"
-            ),
-            branch=branch,
-        )
     if lookup is not None and lookup.failed:
         json_failure(
             status="publication_failed",
             failure_code="pr_lookup_failed",
-            message=f"gh pr view lookup failed while locating hosted review URL for {branch}. {lookup_detail}",
+            message=(
+                f"gh pr create succeeded for {branch} but returned no URL, and follow-up "
+                f"gh pr view lookup failed after bounded adoption attempts. "
+                f"{command_diagnostics('gh pr create', create)}; {lookup_detail}"
+            ),
             branch=branch,
         )
     json_failure(
         status="publication_failed",
-        failure_code="pr_url_missing",
-        message=f"hosted review URL for {branch} remained unavailable after bounded lookup attempts. {lookup_detail}",
+        failure_code="pr_create_url_missing",
+        message=(
+            f"gh pr create succeeded for {branch} but returned no URL, and bounded PR "
+            f"lookup did not recover one. {command_diagnostics('gh pr create', create)}; "
+            f"{lookup_detail}"
+        ),
         branch=branch,
     )
 
@@ -2044,57 +2062,74 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
 
     pr_url = ""
     created = False
-    updated = bool(values.get("target-branch") or values.get("target-pr"))
-    branch_only_commit_stack = bool(values.get("target-branch")) and not values.get("target-pr")
+    target_pr = values.get("target-pr")
+    target_branch = values.get("target-branch")
+    updated = bool(target_branch or target_pr)
+    branch_only_commit_stack = bool(target_branch) and not target_pr
+    stable_create_or_update = not target_pr and not target_branch
     lookup: PullRequestLookupResult | None = None
     create: subprocess.CompletedProcess[str] | None = None
-    if values.get("target-pr"):
-        lookup = lookup_pull_request_url(root, repo, values["target-pr"], attempts=1)
+
+    if target_pr:
+        # Retargeting an existing PR must only adopt by explicit PR number;
+        # branch-name lookup can adopt an unrelated PR for the same head branch.
+        lookup = lookup_pull_request_url(root, repo, target_pr)
         pr_url = lookup.url
-    if not pr_url and not branch_only_commit_stack:
+        if not pr_url:
+            fail_pr_url_unavailable(branch=branch, create=None, lookup=lookup)
+    elif branch_only_commit_stack:
+        # Target-branch-only publications update a branch without PR interaction.
+        pass
+    else:
+        # Stable commit-stack branches first reuse an existing PR, then create or
+        # recover one while keeping total gh pr view attempts bounded.
         lookup = lookup_pull_request_url(root, repo, branch, attempts=1)
         pr_url = lookup.url
-    if not pr_url and not values.get("target-pr") and not branch_only_commit_stack:
-        gh_base = base.split("@", 1)[0]
-        create_args = [
-            "gh",
-            "pr",
-            "create",
-            "--repo",
-            repo,
-            "--base",
-            gh_base,
-            "--head",
-            branch,
-            "--title",
-            title_text,
-            "--body-file",
-            values["body-file"],
-        ]
-        if draft:
-            create_args.append("--draft")
-        create = run_command(
-            create_args,
-            cwd=root,
-            error_channel=ERROR_CHANNEL_JSON,
-        )
-        if create.returncode == 0:
-            pr_url = create.stdout.strip()
-            created = True
-            updated = False
         if not pr_url:
-            lookup = lookup_pull_request_url(root, repo, branch)
-            pr_url = lookup.url
-            if pr_url and create.returncode != 0:
-                created = False
-                updated = True
-    if not pr_url and create is None and not branch_only_commit_stack:
-        selector = values["target-pr"] if values.get("target-pr") else branch
-        lookup = lookup_pull_request_url(root, repo, selector)
-        pr_url = lookup.url
-    if not pr_url and not branch_only_commit_stack:
-        fail_pr_url_unavailable(branch=branch, create=create, lookup=lookup)
-    if pr_url and not created and not values.get("target-pr") and not values.get("target-branch") and not branch_only_commit_stack:
+            gh_base = base.split("@", 1)[0]
+            create_args = [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                repo,
+                "--base",
+                gh_base,
+                "--head",
+                branch,
+                "--title",
+                title_text,
+                "--body-file",
+                values["body-file"],
+            ]
+            if draft:
+                create_args.append("--draft")
+            create = run_command(
+                create_args,
+                cwd=root,
+                error_channel=ERROR_CHANNEL_JSON,
+            )
+            if create.returncode == 0:
+                pr_url = create.stdout.strip()
+                created = True
+                updated = False
+            if not pr_url:
+                remaining_attempts = remaining_pull_request_lookup_attempts(lookup)
+                if remaining_attempts > 0:
+                    recovery_lookup = lookup_pull_request_url(
+                        root,
+                        repo,
+                        branch,
+                        attempts=remaining_attempts,
+                    )
+                    lookup = combine_pull_request_lookups(lookup, recovery_lookup)
+                    pr_url = lookup.url if lookup is not None else ""
+                if pr_url and create.returncode != 0:
+                    created = False
+                    updated = True
+        if not pr_url:
+            fail_pr_url_unavailable(branch=branch, create=create, lookup=lookup)
+    if pr_url and not created and stable_create_or_update:
         edit = run_command(
             [
                 "gh",
