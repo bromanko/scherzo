@@ -52,6 +52,12 @@ ERROR_CHANNEL_HUMAN = "human"
 ERROR_CHANNEL_JSON = "json"
 
 
+class ConflictFilesListFailed(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 def usage_error(message: str | None = None) -> NoReturn:
     if message:
         print(f"scherzo-workspace-jj: {message}", file=sys.stderr)
@@ -319,11 +325,17 @@ def infer_repo_root(workspace_path: Path) -> Path:
         config_dir = resolve_existing_dir(raw_config, "config directory")
         return resolve_existing_dir(str(config_dir.parent), "repo root")
 
-    try:
-        candidate = workspace_path.parents[6]
-    except IndexError:
-        fail("could not infer repo root from workspace path; set SCHERZO_REPO_ROOT")
-    return resolve_existing_dir(str(candidate), "repo root")
+    candidate = workspace_path
+    while True:
+        try:
+            if (candidate / ".jj").is_dir():
+                return resolve_existing_dir(str(candidate), "repo root")
+        except OSError:
+            pass
+        if candidate.parent == candidate:
+            break
+        candidate = candidate.parent
+    fail("could not infer repo root from workspace path; set SCHERZO_REPO_ROOT")
 
 
 def sanitize_workspace_key(value: str) -> str:
@@ -878,9 +890,10 @@ def forget_run_workspaces(workspace_path: Path, run_root: Path | None) -> None:
     if run_root is not None:
         forget_workspace_children(run_root / "workspaces")
         return
-    if (workspace_path / "workspaces").is_dir():
-        forget_workspace_children(workspace_path / "workspaces")
-        return
+    # Daemon cleanup always passes SCHERZO_RUN_ROOT and forgets every manifest
+    # workspace under that run root. Without SCHERZO_RUN_ROOT, only the explicit
+    # workspace path is supported; do not infer a legacy run root from
+    # SCHERZO_WORKSPACE_PATH/workspaces.
     if (workspace_path / ".jj").is_dir():
         forget_workspace_at(workspace_path)
 
@@ -1177,28 +1190,6 @@ def current_parent_commit_ids(
     return revision_commit_ids(root, "@-", error_channel=error_channel) or []
 
 
-def has_unresolved_conflicts(
-    root: Path,
-    revision: str = "@",
-    *,
-    error_channel: str = ERROR_CHANNEL_HUMAN,
-) -> bool:
-    proc = run_jj(
-        root,
-        [
-            "log",
-            "-r",
-            f"conflicts() & ({revision})",
-            "--no-graph",
-            "-T",
-            "change_id.short()",
-            "--color=never",
-        ],
-        error_channel=error_channel,
-    )
-    return proc.returncode == 0 and bool(proc.stdout.strip())
-
-
 def normalize_conflict_file_path(value: str) -> str:
     return re.sub(r"\s+\d+-sided conflict(?:\s+.*)?$", "", value.strip())
 
@@ -1221,7 +1212,12 @@ def conflict_files(
         )
     if "No conflicts found" in proc.stdout or "No conflicts found" in proc.stderr:
         return []
-    return []
+
+    message = (proc.stderr or proc.stdout or "jj resolve --list failed").strip()
+    message = message[:OUTPUT_TEXT_LIMIT] or "jj resolve --list failed"
+    if error_channel == ERROR_CHANNEL_JSON:
+        raise ConflictFilesListFailed(message)
+    fail(f"could not list conflict files: {message}")
 
 
 def baseline_json(root: Path) -> None:
@@ -1327,6 +1323,62 @@ def refresh_base(root: Path, args: list[str]) -> None:
         error_channel=ERROR_CHANNEL_JSON,
     )
 
+    # Refresh failure payload policy: every failure path uses fail_refresh(),
+    # which reports the best available conflict file list. Listing failures are
+    # not silently converted to an empty list: non-rebase primary failures keep
+    # their original status and include the listing problem in the message,
+    # while a successful rebase whose conflicts cannot be listed fails closed as
+    # rebase_failed/conflict_listing_failed. The public refresh statuses remain
+    # fresh, rebased_clean, conflicts, fetch_failed, base_not_found, and
+    # rebase_failed.
+    def conflict_files_for_failure() -> tuple[list[str], str | None]:
+        try:
+            return conflict_files(root, error_channel=ERROR_CHANNEL_JSON), None
+        except ConflictFilesListFailed as exc:
+            return [], exc.message
+
+    def message_with_conflict_listing_warning(
+        message: str,
+        listing_error: str | None,
+    ) -> str:
+        if listing_error is None:
+            return message
+        warning = f"could not list conflict files: {listing_error}"
+        if message:
+            return f"{message}; {warning}"
+        return warning
+
+    def fail_refresh(
+        *,
+        status: str,
+        failure_code: str,
+        message: str,
+        exit_code: int = 1,
+        base_revision_value: str | None = None,
+        after_revision: str | None = None,
+        conflict_files_value: list[str] | None = None,
+        conflict_listing_error: str | None = None,
+    ) -> NoReturn:
+        files = conflict_files_value
+        listing_error = conflict_listing_error
+        if files is None:
+            files, listing_error = conflict_files_for_failure()
+        json_failure(
+            status=status,
+            failure_code=failure_code,
+            message=message_with_conflict_listing_warning(
+                message,
+                listing_error,
+            )[:OUTPUT_TEXT_LIMIT],
+            exit_code=exit_code,
+            stage=stage,
+            base_ref=base_ref,
+            base_revision=base_revision_value or base_revision,
+            before_revision=before_revision,
+            after_revision=after_revision or before_revision,
+            conflict_files=files,
+        )
+
     if target:
         base_ref = target
         base_revision = target
@@ -1340,16 +1392,10 @@ def refresh_base(root: Path, args: list[str]) -> None:
                     error_channel=ERROR_CHANNEL_JSON,
                 )
                 if not ok:
-                    json_failure(
+                    fail_refresh(
                         status="fetch_failed",
                         failure_code="fetch_failed",
                         message=message or f"could not fetch {target}",
-                        stage=stage,
-                        base_ref=base_ref,
-                        base_revision=base_revision,
-                        before_revision=before_revision,
-                        after_revision=before_revision,
-                        conflict_files=[],
                     )
     else:
         if fetch_enabled:
@@ -1360,29 +1406,18 @@ def refresh_base(root: Path, args: list[str]) -> None:
                 error_channel=ERROR_CHANNEL_JSON,
             )
             if not ok:
-                json_failure(
+                fail_refresh(
                     status="fetch_failed",
                     failure_code="fetch_failed",
                     message=message or f"could not fetch {base} from {remote}",
-                    stage=stage,
-                    base_ref=base_ref,
-                    base_revision=base_revision,
-                    before_revision=before_revision,
-                    after_revision=before_revision,
-                    conflict_files=conflict_files(root, error_channel=ERROR_CHANNEL_JSON),
                 )
         if revision_commit_ids(root, remote_base, error_channel=ERROR_CHANNEL_JSON) is None:
             if revision_commit_ids(root, base, error_channel=ERROR_CHANNEL_JSON) is None:
-                json_failure(
+                fail_refresh(
                     status="base_not_found",
                     failure_code="base_not_found",
                     message=f"could not find base revision {remote_base} or {base}",
-                    stage=stage,
-                    base_ref=base_ref,
-                    base_revision=remote_base,
-                    before_revision=before_revision,
-                    after_revision=before_revision,
-                    conflict_files=conflict_files(root, error_channel=ERROR_CHANNEL_JSON),
+                    base_revision_value=remote_base,
                 )
             base_revision = base
 
@@ -1392,16 +1427,10 @@ def refresh_base(root: Path, args: list[str]) -> None:
         error_channel=ERROR_CHANNEL_JSON,
     )
     if base_commits is None:
-        json_failure(
+        fail_refresh(
             status="base_not_found",
             failure_code="base_not_found",
             message=f"could not find base revision {base_revision}",
-            stage=stage,
-            base_ref=base_ref,
-            base_revision=base_revision,
-            before_revision=before_revision,
-            after_revision=before_revision,
-            conflict_files=conflict_files(root, error_channel=ERROR_CHANNEL_JSON),
         )
 
     parent_commits = current_parent_commit_ids(root, error_channel=ERROR_CHANNEL_JSON)
@@ -1429,11 +1458,6 @@ def refresh_base(root: Path, args: list[str]) -> None:
         ["rebase", "-r", "@", "-d", base_revision, "--color=never"],
         error_channel=ERROR_CHANNEL_JSON,
     )
-    files = (
-        conflict_files(root, error_channel=ERROR_CHANNEL_JSON)
-        if has_unresolved_conflicts(root, error_channel=ERROR_CHANNEL_JSON)
-        else []
-    )
     after_revision = revision_value(
         root,
         "@",
@@ -1441,31 +1465,39 @@ def refresh_base(root: Path, args: list[str]) -> None:
         default=before_revision,
         error_channel=ERROR_CHANNEL_JSON,
     )
+    files: list[str] = []
+    conflict_listing_error: str | None = None
+    try:
+        files = conflict_files(root, error_channel=ERROR_CHANNEL_JSON)
+    except ConflictFilesListFailed as exc:
+        conflict_listing_error = exc.message
+
+    if conflict_listing_error is not None and proc.returncode == 0:
+        fail_refresh(
+            status="rebase_failed",
+            failure_code="conflict_listing_failed",
+            message=f"could not list conflict files after rebase: {conflict_listing_error}",
+            after_revision=after_revision,
+            conflict_files_value=[],
+        )
     if files:
-        json_failure(
+        fail_refresh(
             status="conflicts",
             failure_code="conflicts",
             message="refresh-base left unresolved conflicts",
             exit_code=20,
-            stage=stage,
-            base_ref=base_ref,
-            base_revision=base_revision,
-            before_revision=before_revision,
             after_revision=after_revision,
-            conflict_files=files,
+            conflict_files_value=files,
         )
     if proc.returncode != 0:
         message = (proc.stderr or proc.stdout or "could not rebase workspace").strip()
-        json_failure(
+        fail_refresh(
             status="rebase_failed",
             failure_code="rebase_failed",
             message=message[:OUTPUT_TEXT_LIMIT],
-            stage=stage,
-            base_ref=base_ref,
-            base_revision=base_revision,
-            before_revision=before_revision,
             after_revision=after_revision,
-            conflict_files=[],
+            conflict_files_value=files,
+            conflict_listing_error=conflict_listing_error,
         )
     json_dump({
         "version": 1,
