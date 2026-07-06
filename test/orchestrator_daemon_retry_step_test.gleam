@@ -319,6 +319,7 @@ pub fn retry_step_queues_operation_and_records_lifecycle_before_spawning_recover
   seed_interrupted_retry_step_run(root, issue, include_parked: False)
   let log_subject = process.new_subject()
   let worker_barrier = test_async.new_barrier()
+  let assert Ok(expected_bundle_dir) = path.absolute(dir <> "/workflows")
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
     in_process_dependencies(
@@ -327,6 +328,10 @@ pub fn retry_step_queues_operation_and_records_lifecycle_before_spawning_recover
       hub_subject,
       fn(issue, context, effective) {
         process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        process.send(
+          log_subject,
+          "recovered_bundle_dir:" <> context.workflow_bundle_dir,
+        )
         process.send(
           log_subject,
           recovery_append_state(log_subject, effective.workspace.root),
@@ -368,6 +373,11 @@ pub fn retry_step_queues_operation_and_records_lifecycle_before_spawning_recover
   assert count_kind(root, "control_operation_queued") == 1
 
   assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+  assert wait_for_log(
+    log_subject,
+    "recovered_bundle_dir:" <> expected_bundle_dir,
+    100,
+  )
   assert wait_for_log(log_subject, "retry_step_ledger_ready", 100)
   let assert Ok(completed_operation) =
     wait_for_operation_status(root, operation_id, "completed", 20)

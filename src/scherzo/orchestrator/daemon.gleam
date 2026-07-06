@@ -90,6 +90,7 @@ import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
 import scherzo/workflow_completion_policy.{type LinearStateRef}
 import scherzo/workflow_dag
+import scherzo/workflow_identity
 import scherzo/workflow_repair
 import scherzo/workflow_run
 import scherzo/workspace
@@ -2116,7 +2117,7 @@ fn recovered_contract_manifest(
 fn recovered_workspaces_to_prepared(
   workspaces: Dict(String, recovery.RecoveredWorkspaceSummary),
   profile_name: String,
-  _orchestrator: config_types.OrchestratorConfig,
+  orchestrator: config_types.OrchestratorConfig,
 ) -> Dict(String, workspace_run.PreparedStepWorkspace) {
   workspaces
   |> dict.to_list
@@ -2128,7 +2129,10 @@ fn recovered_workspaces_to_prepared(
         workflow_id: w.workflow_id,
         run_id: w.run_id,
         run_root: w.run_root,
-        workflow_bundle_dir: "",
+        workflow_bundle_dir: workflow_identity.workflow_bundle_dir(
+          orchestrator,
+          w.workflow_id,
+        ),
         attempt_index: w.attempt_index,
         workspace_name: w.workspace_name,
         path: w.path,
