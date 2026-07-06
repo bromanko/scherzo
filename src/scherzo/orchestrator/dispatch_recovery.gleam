@@ -14,6 +14,17 @@ import scherzo/workflow_repair
 
 pub type Outcome {
   FreshDispatch
+  FreshSupersedingDispatch(
+    superseded_run_id: String,
+    workflow_id: String,
+    reason: String,
+    message: String,
+  )
+  SupersedingRunAlreadyExists(
+    superseded_run_id: String,
+    superseded_by_run_id: String,
+  )
+  RequeueRecovery(reason: String, message: String)
   StepRecovery(plan: workflow_repair.RepairPlan)
   PublicationRecovery(run_id: String, workflow_id: String)
   PublicationAlreadyPublished(run_id: String, workflow_id: String)
@@ -80,29 +91,89 @@ fn classify_by_publication_retry(
   run_id: String,
   observation: CurrentWorkflowObservation,
 ) -> Outcome {
-  case
-    validate_publication_recovery_provenance(projected, run_id, observation)
-  {
-    Error(#(reason, message)) -> RejectRecovery(reason, message)
-    Ok(workflow_id) ->
+  case superseding_run_for_existing_run(projected, run_id) {
+    Ok(superseded_by_run_id) ->
+      SupersedingRunAlreadyExists(run_id, superseded_by_run_id)
+    Error(Nil) ->
       case projection.publication_ids_for_run(projected, run_id) {
         [] -> FreshDispatch
         _ ->
-          case
-            artifact_publication_retry.inspect_publication_recovery(
-              projected,
-              run_id,
-            )
-          {
-            Ok(artifact_publication_retry.RetryablePublicationAttempts(_)) ->
-              PublicationRecovery(run_id, workflow_id)
-            Ok(artifact_publication_retry.RequiredPublicationsAlreadyPublished(
-              _,
-            )) -> PublicationAlreadyPublished(run_id, workflow_id)
-            Error(#(publication_reason, publication_message)) ->
-              RejectRecovery(publication_reason, publication_message)
-          }
+          classify_publication_recovery_attempts(projected, run_id, observation)
       }
+  }
+}
+
+fn classify_publication_recovery_attempts(
+  projected: projection.Projection,
+  run_id: String,
+  observation: CurrentWorkflowObservation,
+) -> Outcome {
+  case
+    artifact_publication_retry.inspect_publication_recovery(projected, run_id)
+  {
+    Ok(artifact_publication_retry.RetryablePublicationAttempts(_)) ->
+      classify_validated_publication_recovery(
+        projected,
+        run_id,
+        observation,
+        retried: True,
+      )
+    Ok(artifact_publication_retry.RequiredPublicationsAlreadyPublished(_)) ->
+      classify_validated_publication_recovery(
+        projected,
+        run_id,
+        observation,
+        retried: False,
+      )
+    Error(#(publication_reason, publication_message)) ->
+      RejectRecovery(publication_reason, publication_message)
+  }
+}
+
+fn classify_validated_publication_recovery(
+  projected: projection.Projection,
+  run_id: String,
+  observation: CurrentWorkflowObservation,
+  retried retried: Bool,
+) -> Outcome {
+  case
+    validate_publication_recovery_provenance(projected, run_id, observation)
+  {
+    Ok(workflow_id) ->
+      case retried {
+        True -> PublicationRecovery(run_id, workflow_id)
+        False -> PublicationAlreadyPublished(run_id, workflow_id)
+      }
+    Error(#(reason, message)) ->
+      classify_publication_recovery_validation_failure(
+        projected,
+        run_id,
+        reason,
+        message,
+      )
+  }
+}
+
+fn classify_publication_recovery_validation_failure(
+  projected: projection.Projection,
+  run_id: String,
+  reason: String,
+  message: String,
+) -> Outcome {
+  case reason {
+    "publication_recovery_workflow_drift"
+    | "publication_recovery_issue_drift"
+    | "publication_recovery_provenance_missing" ->
+      case workflow_id_for_run(projected, run_id) {
+        Ok(workflow_id) ->
+          FreshSupersedingDispatch(run_id, workflow_id, reason, message)
+        Error(Nil) -> FreshDispatch
+      }
+    "publication_recovery_issue_unavailable"
+    | "publication_recovery_tracker_refresh_unavailable"
+    | "publication_recovery_workflow_unavailable" ->
+      RequeueRecovery(reason, message)
+    _ -> RejectRecovery(reason, message)
   }
 }
 
@@ -229,6 +300,41 @@ fn latest_run_id(runs: List(#(String, Int))) -> Result(String, Nil) {
         })
       Ok(run_id)
     }
+  }
+}
+
+fn superseding_run_for_existing_run(
+  projected: projection.Projection,
+  run_id: String,
+) -> Result(String, Nil) {
+  case dict.get(projected.workflow_runs, run_id) {
+    Ok(projection.WorkflowRunSuperseded(
+      superseded_by_run_id: superseded_by_run_id,
+      ..,
+    )) ->
+      case projection.has_workflow_run(projected, superseded_by_run_id) {
+        True -> Ok(superseded_by_run_id)
+        False -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+fn workflow_id_for_run(
+  projected: projection.Projection,
+  run_id: String,
+) -> Result(String, Nil) {
+  dict.get(projected.workflow_runs, run_id)
+  |> result.map(workflow_run_workflow_id)
+}
+
+fn workflow_run_workflow_id(status: projection.WorkflowRunStatus) -> String {
+  case status {
+    projection.WorkflowRunActive(workflow_id: workflow_id, ..)
+    | projection.WorkflowRunFinished(workflow_id: workflow_id, ..)
+    | projection.WorkflowRunInterrupted(workflow_id: workflow_id, ..)
+    | projection.WorkflowRunSuperseded(workflow_id: workflow_id, ..) ->
+      workflow_id
   }
 }
 

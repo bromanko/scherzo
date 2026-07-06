@@ -2537,7 +2537,7 @@ pub fn dispatch_recovery_classifier_uses_fresh_dispatch_when_retained_run_has_no
     == dispatch_recovery.FreshDispatch
 }
 
-pub fn dispatch_recovery_classifier_rejects_publication_issue_drift_test() {
+pub fn dispatch_recovery_classifier_supersedes_publication_issue_drift_test() {
   let dir = "test/tmp/dispatch-recovery-classifier-publication-drift"
   let issue = issue("issue-1", "LIV-739", "Todo")
   let changed_issue = tracker_issue.Issue(..issue, title: "Changed title")
@@ -2550,13 +2550,107 @@ pub fn dispatch_recovery_classifier_rejects_publication_issue_drift_test() {
     include_output_manifest: True,
   )
 
-  let assert dispatch_recovery.RejectRecovery(reason, _) =
+  let assert dispatch_recovery.FreshSupersedingDispatch(
+    "run-1",
+    "execplan",
+    reason,
+    _,
+  ) =
     dispatch_recovery.classify(
       load_projection_or_panic(root),
       changed_issue,
       observation_for(workflow_path, changed_issue),
     )
   assert reason == "publication_recovery_issue_drift"
+}
+
+pub fn dispatch_recovery_classifier_supersedes_publication_workflow_drift_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-workflow-drift"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  drift_retry_publication_workflow(workflow_path)
+
+  let assert dispatch_recovery.FreshSupersedingDispatch(
+    "run-1",
+    "execplan",
+    reason,
+    _,
+  ) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+  assert reason == "publication_recovery_workflow_drift"
+}
+
+pub fn dispatch_recovery_classifier_requeues_publication_observation_failures_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-requeue"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(_, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let projected = load_projection_or_panic(root)
+  [
+    #(recovery.IssueUnavailable, "publication_recovery_issue_unavailable"),
+    #(
+      recovery.TrackerRefreshUnavailable,
+      "publication_recovery_tracker_refresh_unavailable",
+    ),
+    #(
+      recovery.WorkflowUnavailable("workflow load failed"),
+      "publication_recovery_workflow_unavailable",
+    ),
+  ]
+  |> list.each(fn(entry) {
+    let #(observation, expected_reason) = entry
+    let assert dispatch_recovery.RequeueRecovery(reason, _) =
+      dispatch_recovery.classify(projected, issue, observation)
+    assert reason == expected_reason
+  })
+}
+
+pub fn dispatch_recovery_classifier_supersedes_missing_publication_provenance_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-provenance"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let projected =
+    projection.Projection(
+      ..load_projection_or_panic(root),
+      workflow_run_provenances: dict.new(),
+    )
+
+  let assert dispatch_recovery.FreshSupersedingDispatch(
+    "run-1",
+    "execplan",
+    reason,
+    _,
+  ) =
+    dispatch_recovery.classify(
+      projected,
+      issue,
+      observation_for(workflow_path, issue),
+    )
+  assert reason == "publication_recovery_provenance_missing"
 }
 
 pub fn dispatch_recovery_classifier_skips_retained_run_with_published_publication_test() {
@@ -2566,6 +2660,69 @@ pub fn dispatch_recovery_classifier_skips_retained_run_with_published_publicatio
   seed_recovered_published_publication_run(root, issue, "run-1", 1000)
 
   let assert dispatch_recovery.PublicationAlreadyPublished("run-1", "execplan") =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+}
+
+pub fn dispatch_recovery_classifier_supersedes_published_publication_issue_drift_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-published-issue-drift"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let changed_issue = tracker_issue.Issue(..issue, title: "Changed title")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_recovered_published_publication_run(root, issue, "run-1", 1000)
+
+  let assert dispatch_recovery.FreshSupersedingDispatch(
+    "run-1",
+    "execplan",
+    reason,
+    _,
+  ) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      changed_issue,
+      observation_for(workflow_path, changed_issue),
+    )
+  assert reason == "publication_recovery_issue_drift"
+}
+
+pub fn dispatch_recovery_classifier_supersedes_published_publication_workflow_drift_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-published-workflow-drift"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_recovered_published_publication_run(root, issue, "run-1", 1000)
+  drift_retry_publication_workflow(workflow_path)
+
+  let assert dispatch_recovery.FreshSupersedingDispatch(
+    "run-1",
+    "execplan",
+    reason,
+    _,
+  ) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+  assert reason == "publication_recovery_workflow_drift"
+}
+
+pub fn dispatch_recovery_classifier_reports_existing_superseding_publication_run_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-publication-superseded"
+  let issue = issue("issue-1", "LIV-739", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  seed_existing_superseding_run(root, issue, "run-1", "run-2", 1030)
+
+  let assert dispatch_recovery.SupersedingRunAlreadyExists("run-1", "run-2") =
     dispatch_recovery.classify(
       load_projection_or_panic(root),
       issue,
@@ -2735,6 +2892,145 @@ pub fn dispatch_recovery_rejects_unsafe_publication_candidate_with_state_move_te
   assert wait_for_log(log_subject, "dispatch_recovery_rejected", 100)
   assert !wait_for_log(log_subject, "agent_run:issue-1", 5)
   assert contains_kind_sequence(root, ["issue_parked_v2"])
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn dispatch_recovery_publication_workflow_drift_starts_superseding_run_without_parking_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-publication-workflow-drift"
+  let issue = issue("issue-1", "LIV-1402", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  append_auto_unpark_issue_change_parked_record(root, issue, 20)
+  drift_retry_publication_workflow(workflow_path)
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let base_deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_with_candidate(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_with_candidate(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected agent step")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_deps,
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..base_deps.workflow_run_dependencies,
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _command: String,
+          _timeout_ms: Int,
+          _secrets: List(String),
+          limits: config_types.ArtifactLimits,
+        ) {
+          let tmp_dir = context.workspace_path <> "/tmp"
+          let _ = simplifile.create_directory_all(tmp_dir)
+          let _ =
+            simplifile.write(
+              tmp_dir <> "/commit-stack.json",
+              commit_stack_payload(context.run_id),
+            )
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "seeded",
+            "",
+            False,
+            [],
+            limits,
+          )
+        },
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(
+    log_subject,
+    "dispatch_recovery_publication_superseded",
+    100,
+  )
+  assert wait_for_log(log_subject, "dispatch_started", 100)
+  assert !wait_for_log(log_subject, "dispatch_recovery_rejected", 5)
+  assert count_kind(root, "workflow_run_superseded") == 1
+  assert count_kind(root, "issue_parked_v2") == 1
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn dispatch_recovery_existing_superseding_run_does_not_start_duplicate_test() {
+  let dir = "test/tmp/daemon-dispatch-recovery-publication-superseded"
+  let issue = issue("issue-1", "LIV-1406", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  seed_existing_superseding_run(root, issue, "run-1", "run-2", 1030)
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_with_candidate(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_with_candidate(issue),
+      ),
+      hub_subject,
+      fn(issue, _, _) {
+        process.send(log_subject, "agent_run:" <> issue.id)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_log(
+    log_subject,
+    "dispatch_recovery_superseding_run_exists",
+    100,
+  )
+  assert !wait_for_log(log_subject, "dispatch_started", 5)
+  assert !wait_for_log(log_subject, "agent_run:issue-1", 5)
+  assert count_kind(root, "workflow_run_superseded") == 1
+  assert count_kind(root, "issue_parked_v2") == 0
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -4819,7 +5115,7 @@ fn write_retry_publication_workflow_with_publications(
   let assert Ok(Nil) =
     simplifile.write(
       driver_path,
-      "#!/bin/sh\nif [ \"$1\" = describe ] && [ \"$2\" = --json ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"publish-commit-stack\"]}'\n  exit 0\nfi\nexit 1\n",
+      "#!/bin/sh\nif [ \"$1\" = describe ] && [ \"$2\" = --json ]; then\n  printf '%s\\n' '{\"version\":1,\"capabilities\":[\"publish-commit-stack\"]}'\n  exit 0\nfi\nif [ \"$1\" = lifecycle ]; then\n  if [ \"$2\" = create ]; then\n    mkdir -p \"$SCHERZO_WORKSPACE_PATH\"\n  fi\n  exit 0\nfi\nexit 1\n",
     )
   test_helpers.chmod_executable(driver_path)
   let assert Ok(Nil) =
@@ -4841,6 +5137,17 @@ fn write_retry_publication_workflow_with_publications(
         <> "agents:\n  concurrency: 1\n  sessions_per_task: 1\n  runtime:\n    type: pi\n    pi:\n      executable: fake\ntask_routing:\n  labels:\n    require_exactly_one: false\n    default_workflow: execplan\nartifacts:\n  repositories:\n    github:\n      docs:\n        repo: scherzo-systems/scherzo\n        base: main\n        branch:\n          strategy: stable_per_work\n          template: scherzo/workflow.{{ workflow.id }}/{{ work.identifier }}/{{ publication.id }}\n        pull_request:\n          enabled: true\n          strategy: update_existing\n          draft: true\n          title: '{{ work.identifier }} publication'\n          body_template: templates/publication.md\nworkflows:\n  execplan: workflows/execplan.yaml\n",
     )
   #(config_path, root)
+}
+
+fn drift_retry_publication_workflow(config_path: String) -> Nil {
+  let assert Ok(base) = path.dirname(config_path)
+  let workflow_path = base <> "/workflows/execplan.yaml"
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_path,
+      "version: 1\nid: execplan\nsteps:\n  - id: materialize\n    kind: command\n    run: drifted\n",
+    )
+  Nil
 }
 
 fn single_publication_routes_yaml() -> String {
@@ -5305,6 +5612,62 @@ fn workflow_fingerprint_for_publication_root(root: String) -> String {
       bundle.orchestrator,
     )
   fingerprint
+}
+
+fn seed_existing_superseding_run(
+  root: String,
+  issue: tracker_issue.Issue,
+  superseded_run_id: String,
+  superseding_run_id: String,
+  at_ms: Int,
+) -> Nil {
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let fingerprint = workflow_fingerprint_for_publication_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started-" <> superseding_run_id,
+          at_ms,
+          record.WorkflowRunStarted(
+            run_id: superseding_run_id,
+            workflow_id: "execplan",
+            workflow_fingerprint: fingerprint,
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            issue_fingerprint: tracker_issue.content_fingerprint(issue),
+            observed_updated_at_ms: at_ms - 1,
+            run_root: root <> "/runs/" <> superseding_run_id,
+          ),
+        ),
+        record.with_id(
+          "workflow-finished-" <> superseding_run_id,
+          at_ms + 1,
+          record.WorkflowRunFinished(
+            run_id: superseding_run_id,
+            workflow_id: "execplan",
+            issue_id: issue.id,
+            outcome: "superseding_run_reported",
+            token_total: 0,
+            turns: 1,
+          ),
+        ),
+        record.with_id(
+          "workflow-superseded-" <> superseded_run_id,
+          at_ms + 10,
+          record.WorkflowRunSuperseded(
+            run_id: superseded_run_id,
+            workflow_id: "execplan",
+            issue_id: issue.id,
+            superseded_by_run_id: superseding_run_id,
+            reason: "dispatch_publication_recovery_superseded",
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
 }
 
 fn interrupted_publication_failed_attempt_record(
