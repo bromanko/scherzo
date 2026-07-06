@@ -27,7 +27,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+sys.dont_write_bytecode = True
+
 from scherzo_workflow import commit_stack as commit_stack_helper
+from scherzo_workflow import errors as workflow_errors
+from scherzo_workflow import json_io as workflow_json
+from scherzo_workflow import process as workflow_process
+from scherzo_workflow import workspace_driver as workflow_workspace_driver
 
 TMP_DIR = Path("tmp")
 METADATA_PATH = TMP_DIR / "scherzo-implementation.json"
@@ -135,33 +141,20 @@ ticket-brief <issue-json>
 
 
 def fail(message: str, *, failure_code: str | None = None, exit_code: int = 1) -> None:
-    if failure_code:
-        print(f"SCHERZO_FAILURE_CODE={failure_code}", file=sys.stderr)
-    print(f"scherzo-implementation: {message}", file=sys.stderr)
-    sys.exit(exit_code)
+    workflow_errors.exit_with_failure(
+        "scherzo-implementation",
+        message,
+        code=failure_code,
+        exit_code=exit_code,
+    )
 
 
 def diagnostic_excerpt(value: str, max_chars: int = COMMAND_DIAGNOSTIC_MAX_CHARS) -> str:
-    value = value.strip()
-    if len(value) <= max_chars:
-        return value
-    marker = "\n... truncated ...\n"
-    available = max(0, max_chars - len(marker))
-    omitted = len(value) - available
-    marker = f"\n... truncated {omitted} chars ...\n"
-    available = max(0, max_chars - len(marker))
-    head_chars = available // 2
-    tail_chars = available - head_chars
-    return value[:head_chars] + marker + value[-tail_chars:]
+    return workflow_process.diagnostic_excerpt(value, max_chars)
 
 
 def subprocess_failure_details(stdout: str, stderr: str, returncode: int) -> str:
-    parts = [f"exit_code: {returncode}"]
-    if stderr.strip():
-        parts.append("stderr:\n" + diagnostic_excerpt(stderr))
-    if stdout.strip():
-        parts.append("stdout:\n" + diagnostic_excerpt(stdout))
-    return "\n\n".join(parts)
+    return workflow_process.subprocess_failure_details(stdout, stderr, returncode)
 
 
 def run_proc(
@@ -169,13 +162,7 @@ def run_proc(
     *,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        args,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+    return workflow_process.run_proc(args, env=env)
 
 
 def run_proc_with_heartbeat(
@@ -184,30 +171,12 @@ def run_proc_with_heartbeat(
     env: dict[str, str] | None = None,
     heartbeat_seconds: int = 60,
 ) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.Popen(
+    return workflow_process.run_proc_with_heartbeat(
         args,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         env=env,
+        heartbeat_seconds=heartbeat_seconds,
+        label="scherzo-implementation",
     )
-    started = time.monotonic()
-    command = " ".join(shell_display(arg) for arg in args)
-    while True:
-        try:
-            stdout, stderr = proc.communicate(timeout=heartbeat_seconds)
-            return subprocess.CompletedProcess(
-                args,
-                proc.returncode,
-                stdout or "",
-                stderr or "",
-            )
-        except subprocess.TimeoutExpired:
-            elapsed = int(time.monotonic() - started)
-            print(
-                f"[scherzo-implementation] still running after {elapsed}s: {command}",
-                flush=True,
-            )
 
 
 def run(
@@ -232,12 +201,11 @@ def print_process_output(proc: subprocess.CompletedProcess[str]) -> None:
 
 
 def workspace_driver_command() -> str | None:
-    driver = os.environ.get("SCHERZO_WORKSPACE_DRIVER", "").strip()
-    return driver or None
+    return workflow_workspace_driver.command()
 
 
 def workspace_driver_available() -> bool:
-    return workspace_driver_command() is not None
+    return workflow_workspace_driver.available()
 
 
 def pr_draft_setting() -> bool | None:
@@ -270,45 +238,14 @@ def run_workspace_driver_json(
     check: bool = True,
     failure_code: str = "workspace_driver_failed",
 ) -> tuple[dict[str, Any], subprocess.CompletedProcess[str]]:
-    driver = workspace_driver_command()
-    if driver is None:
-        workspace_driver_missing(failure_code="workspace_driver_unavailable")
-    proc = run_proc([driver, *args])
     try:
-        payload = json.loads(proc.stdout) if proc.stdout.strip() else None
-    except json.JSONDecodeError as exc:
-        fail(
-            "workspace driver returned malformed JSON for `"
-            + " ".join(args)
-            + f"`: {exc}",
+        return workflow_workspace_driver.run_json(
+            args,
+            check=check,
             failure_code=failure_code,
         )
-    if not isinstance(payload, dict):
-        details = subprocess_failure_details(proc.stdout, proc.stderr, proc.returncode)
-        fail(
-            "workspace driver did not return a JSON object for `"
-            + " ".join(args)
-            + "`\n"
-            + details,
-            failure_code=failure_code,
-        )
-    if payload.get("version") != 1:
-        fail(
-            "workspace driver JSON for `"
-            + " ".join(args)
-            + "` must set version=1",
-            failure_code=failure_code,
-        )
-    if check and proc.returncode != 0:
-        message = str(payload.get("message") or "workspace driver command failed")
-        fail(
-            "workspace driver command failed: `"
-            + " ".join(args)
-            + "`\n"
-            + message,
-            failure_code=str(payload.get("failure_code") or failure_code),
-        )
-    return payload, proc
+    except workflow_workspace_driver.WorkspaceDriverError as exc:
+        fail(str(exc), failure_code=exc.code)
 
 
 def workspace_driver_changed_file_records() -> list[dict[str, str]]:
@@ -316,37 +253,13 @@ def workspace_driver_changed_file_records() -> list[dict[str, str]]:
         ["changed-files", "--json"],
         failure_code="workspace_driver_changed_files_failed",
     )
-    raw_files = payload.get("files")
-    records: list[dict[str, str]] = []
-    if isinstance(raw_files, list):
-        for item in raw_files:
-            if not isinstance(item, dict):
-                fail(
-                    "workspace driver changed-files JSON field 'files' must contain objects",
-                    failure_code="workspace_driver_changed_files_failed",
-                )
-            path = item.get("path")
-            status = item.get("status")
-            if not isinstance(path, str) or not path.strip():
-                fail(
-                    "workspace driver changed-files record is missing a non-empty path",
-                    failure_code="workspace_driver_changed_files_failed",
-                )
-            if status not in {"added", "modified", "deleted", "renamed", "conflicted"}:
-                fail(
-                    f"workspace driver changed-files record for {path!r} has invalid status {status!r}",
-                    failure_code="workspace_driver_changed_files_failed",
-                )
-            record = {"path": path.strip(), "status": str(status)}
-            old_path = item.get("old_path")
-            if isinstance(old_path, str) and old_path.strip():
-                record["old_path"] = old_path.strip()
-            records.append(record)
-    else:
-        fail(
-            "workspace driver changed-files JSON must contain a files list",
-            failure_code="workspace_driver_changed_files_failed",
+    try:
+        records = workflow_workspace_driver.changed_file_records(
+            payload,
+            validate_status=True,
         )
+    except workflow_workspace_driver.WorkspaceDriverError as exc:
+        fail(str(exc), failure_code=exc.code)
     return sorted(records, key=lambda record: record["path"])
 
 
@@ -359,14 +272,10 @@ def workspace_driver_diff_text() -> str:
         ["diff", "--json"],
         failure_code="workspace_driver_diff_failed",
     )
-    text = payload.get("text")
-    truncated = payload.get("truncated")
-    if not isinstance(text, str) or not isinstance(truncated, bool):
-        fail(
-            "workspace driver diff JSON must include text and truncated fields",
-            failure_code="workspace_driver_diff_failed",
-        )
-    return text
+    try:
+        return workflow_workspace_driver.diff_text(payload)
+    except workflow_workspace_driver.WorkspaceDriverError as exc:
+        fail(str(exc), failure_code=exc.code)
 
 
 def workspace_driver_baseline() -> dict[str, Any]:
@@ -467,34 +376,31 @@ def validation_failure_summary(stdout: str, stderr: str) -> str:
 
 
 def shell_display(value: str) -> str:
-    if re.match(r"^[A-Za-z0-9_./:=+@-]+$", value):
-        return value
-    return "'" + value.replace("'", "'\\''") + "'"
+    return workflow_process.shell_display(value)
 
 
 def command_exists(name: str) -> bool:
-    proc = subprocess.run(
-        ["sh", "-c", f"command -v {name} >/dev/null 2>&1"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return proc.returncode == 0
+    return workflow_process.command_exists(name)
 
 
 def require_command(name: str) -> None:
-    if not command_exists(name):
-        fail(f"required command not found: {name}")
+    try:
+        workflow_process.require_command(name)
+    except workflow_process.ProcessError as exc:
+        fail(str(exc))
 
 
 def load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         fail(f"missing {path}; run prepare first")
-    return json.loads(path.read_text())
+    try:
+        return workflow_json.load_json(path)
+    except workflow_json.JsonIoError as exc:
+        fail(str(exc))
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    workflow_json.write_json(path, value)
 
 
 def canonical_metadata_path() -> Path | None:
@@ -2403,14 +2309,7 @@ def structured_output_candidate_paths(path_text: str, artifact_dir: Path) -> lis
 
 
 def sha256_file(path: Path) -> str | None:
-    try:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(65536), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-    except OSError:
-        return None
+    return workflow_json.sha256_file(path, missing_ok=True)
 
 
 def structured_output_sha_matches(path: Path, structured_output: dict[str, Any]) -> bool:

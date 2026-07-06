@@ -19,6 +19,7 @@ steps:
       direnv allow .
       scripts/scherzo-ci fmt
       scripts/scherzo-ci unit
+      scripts/scherzo-ci review-tools
 
   - label: ":mag: production lint"
     key: "production-lint"

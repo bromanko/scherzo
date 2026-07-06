@@ -23,8 +23,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.dont_write_bytecode = True
+
 from scherzo_review import review_input_context
 from scherzo_review import review_lane_contract as lane_contract
+from scherzo_workflow import errors as workflow_errors
+from scherzo_workflow import json_io as workflow_json
+from scherzo_workflow import paths as workflow_paths
+from scherzo_workflow import process as workflow_process
+from scherzo_workflow import workspace_driver as workflow_workspace_driver
 
 SCHEMA_VERSION = 1
 CONTRACT_SCHEMA_REF = ".scherzo/workflows/schemas/review-artifacts.v1.schema.json"
@@ -111,8 +118,7 @@ def usage_error(message: str) -> None:
 
 
 def fail(message: str) -> None:
-    print(f"scherzo-review: {message}", file=sys.stderr)
-    sys.exit(1)
+    workflow_errors.exit_with_failure("scherzo-review", message)
 
 
 def now_utc() -> str:
@@ -125,36 +131,26 @@ def now_utc() -> str:
 
 
 def sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return workflow_json.sha256_text(value)
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    digest = workflow_json.sha256_file(path)
+    if digest is None:
+        raise ReviewError(f"could not hash file: {path}")
+    return digest
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    workflow_json.write_json(path, value)
 
 
 def resolve_run_root_relative_path(path: Path) -> Path:
-    run_root = os.environ.get("SCHERZO_RUN_ROOT", "").strip()
-    if run_root and not path.is_absolute() and path.parts[:1] == ("state",):
-        return Path(run_root) / path
-    return path
+    return workflow_paths.resolve_run_root_relative_path(path)
 
 
 def run_read_only(args: list[str]) -> str:
-    proc = subprocess.run(
-        args,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    proc = workflow_process.run_proc(args)
     if proc.returncode != 0:
         stderr = proc.stderr.strip()
         stdout = proc.stdout.strip()
@@ -164,8 +160,10 @@ def run_read_only(args: list[str]) -> str:
 
 
 def require_command(command: str) -> None:
-    if shutil.which(command) is None:
-        raise ReviewError(f"required command not found on PATH: {command}")
+    try:
+        workflow_process.require_command(command)
+    except workflow_process.ProcessError as exc:
+        raise ReviewError(f"required command not found on PATH: {command}") from exc
 
 
 class DiffFile:
@@ -360,38 +358,25 @@ def source_from_jj(from_rev: str, to_rev: str) -> tuple[str, dict[str, Any]]:
 
 
 def workspace_driver_command() -> str | None:
-    value = os.environ.get("SCHERZO_WORKSPACE_DRIVER", "").strip()
-    return value or None
+    return workflow_workspace_driver.command()
 
 
 def run_workspace_driver_json(args: list[str]) -> dict[str, Any]:
-    driver = workspace_driver_command()
-    if not driver:
-        raise ReviewError("SCHERZO_WORKSPACE_DRIVER is required for driver-backed review input")
-    proc = subprocess.run(
-        [driver, *args],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
     try:
-        payload = json.loads(proc.stdout) if proc.stdout.strip() else None
-    except json.JSONDecodeError as exc:
-        raise ReviewError(f"workspace driver returned malformed JSON for {' '.join(args)}: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("version") != 1:
-        raise ReviewError(f"workspace driver {' '.join(args)} must return a JSON object with version=1")
-    if proc.returncode != 0:
-        raise ReviewError(str(payload.get("message") or "workspace driver command failed"))
-    return payload
+        payload, _ = workflow_workspace_driver.run_json(args)
+        return payload
+    except workflow_workspace_driver.WorkspaceDriverError as exc:
+        raise ReviewError(str(exc)) from exc
 
 
 def source_from_workspace_driver() -> tuple[str, dict[str, Any]]:
     diff_payload = run_workspace_driver_json(["diff", "--json"])
     changed_payload = run_workspace_driver_json(["changed-files", "--json"])
-    text = diff_payload.get("text")
+    try:
+        text = workflow_workspace_driver.diff_text(diff_payload)
+    except workflow_workspace_driver.WorkspaceDriverError as exc:
+        raise ReviewError(str(exc)) from exc
     truncated = diff_payload.get("truncated")
-    if not isinstance(text, str) or not isinstance(truncated, bool):
-        raise ReviewError("workspace driver diff JSON must include text and truncated fields")
     files = changed_payload.get("files")
     if not isinstance(files, list):
         raise ReviewError("workspace driver changed-files JSON must contain a files list")
@@ -1416,13 +1401,9 @@ def validate_artifact(value: dict[str, Any]) -> None:
 
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        text = path.read_text()
-    except OSError as exc:
-        raise ReviewError(f"could not read JSON artifact {path}: {exc}") from exc
-    try:
-        value = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ReviewError(f"invalid JSON in {path}: {exc}") from exc
+        value = workflow_json.load_json(path)
+    except workflow_json.JsonIoError as exc:
+        raise ReviewError(str(exc)) from exc
     if not isinstance(value, dict):
         raise ReviewError(f"artifact JSON must be an object: {path}")
     return value
