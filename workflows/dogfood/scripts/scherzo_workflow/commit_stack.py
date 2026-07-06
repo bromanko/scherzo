@@ -12,11 +12,13 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+
+from . import json_io
+from . import process
 
 COMMIT_STACK_ARTIFACT_TYPE = "scherzo.git_commit_stack.v1"
 BUNDLE_MEDIA_TYPE = "application/vnd.git.bundle"
@@ -44,45 +46,23 @@ def fail(code: str, message: str) -> None:
 
 
 def diagnostic_excerpt(value: str, max_chars: int = COMMAND_DIAGNOSTIC_MAX_CHARS) -> str:
-    value = value.strip()
-    if len(value) <= max_chars:
-        return value
-    marker = "\n... truncated ...\n"
-    available = max(0, max_chars - len(marker))
-    omitted = len(value) - available
-    marker = f"\n... truncated {omitted} chars ...\n"
-    available = max(0, max_chars - len(marker))
-    head_chars = available // 2
-    tail_chars = available - head_chars
-    return value[:head_chars] + marker + value[-tail_chars:]
+    return process.diagnostic_excerpt(value, max_chars)
 
 
 def subprocess_failure_details(stdout: str, stderr: str, returncode: int) -> str:
-    parts = [f"exit_code: {returncode}"]
-    if stderr.strip():
-        parts.append("stderr:\n" + diagnostic_excerpt(stderr))
-    if stdout.strip():
-        parts.append("stdout:\n" + diagnostic_excerpt(stdout))
-    return "\n\n".join(parts)
+    return process.subprocess_failure_details(stdout, stderr, returncode)
 
 
 def shell_display(value: str) -> str:
-    if re.match(r"^[A-Za-z0-9_./:=+@^-]+$", value):
-        return value
-    return "'" + value.replace("'", "'\\''") + "'"
+    return process.shell_display(value)
 
 
 def command_display(args: Sequence[str]) -> str:
-    return " ".join(shell_display(arg) for arg in args)
+    return process.command_display(args)
 
 
 def run_proc(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        list(args),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    return process.run_proc(args)
 
 
 def run_checked(
@@ -104,16 +84,14 @@ def run_checked(
 
 
 def require_command(name: str) -> None:
-    if shutil.which(name) is None:
-        fail("required_command_missing", f"required command not found: {name}")
+    try:
+        process.require_command(name)
+    except process.ProcessError as exc:
+        fail("required_command_missing", str(exc))
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, indent=2, sort_keys=True, separators=(",", ": ")) + "\n",
-        encoding="utf-8",
-    )
+    json_io.write_json(path, value)
 
 
 def require_artifact_run_id(value: str) -> str:
@@ -247,11 +225,10 @@ def carrier_max_bytes(default_max: int = DEFAULT_MAX_CARRIER_BYTES) -> int:
 
 
 def file_sha256(path: Path, chunk_bytes: int = DEFAULT_HASH_CHUNK_BYTES) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(chunk_bytes), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    digest = json_io.sha256_file(path, missing_ok=True, chunk_bytes=chunk_bytes)
+    if digest is None:
+        fail("invalid_commit_stack_artifact", f"could not hash file: {path}")
+    return digest
 
 
 def require_git_oid(value: str, *, label: str) -> str:
