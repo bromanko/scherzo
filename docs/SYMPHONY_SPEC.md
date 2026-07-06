@@ -459,6 +459,18 @@ Rendering requirements:
 - Use a strict template engine (Liquid-compatible semantics are sufficient).
 - Unknown variables MUST fail rendering.
 - Unknown filters MUST fail rendering.
+- Prompt templates MAY include shared prompt fragments with `{% include "relative/path.md" %}`.
+- Include paths are resolved relative to the file containing the include, not the workflow YAML file.
+- Include paths MUST be relative, MUST NOT contain `..`, absolute roots, or control characters, and MUST remain inside the workflow bundle.
+- Include expansion happens before variable and block rendering.
+- Included fragments MAY themselves contain `{{ }}`, `{% if %}`, and `{% for %}`.
+- Implementations MUST reject malformed include tags, include cycles, and include chains deeper than three include edges.
+
+Load-time validation requirements:
+
+- Missing or unsafe included fragments MUST fail workflow-config loading before dispatch.
+- Scheduled-workflow validation MUST observe variables referenced from included fragments.
+- Workflow fingerprinting MUST reflect effective prompt content after include expansion.
 
 Template input variables:
 
@@ -488,7 +500,8 @@ Error classes:
 Dispatch gating behavior:
 
 - Workflow file read/YAML errors block new dispatches until fixed.
-- Template errors fail only the affected run attempt.
+- Prompt include load failures block new dispatches until fixed.
+- Template render errors for variables or filters fail only the affected run attempt.
 
 ## 6. Configuration Specification
 

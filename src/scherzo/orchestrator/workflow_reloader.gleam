@@ -297,13 +297,25 @@ fn missing_file_dependency_path(
   code: String,
   message: String,
 ) -> Option(String) {
-  case
-    is_missing_file_code(code),
-    string.starts_with(message, "could not read ")
-  {
-    True, True ->
-      Some(string.drop_start(message, string.length("could not read ")))
-    _, _ -> None
+  case code {
+    "prompt_include_error" -> prompt_include_missing_dependency_path(message)
+    _ ->
+      case
+        is_missing_file_code(code),
+        string.starts_with(message, "could not read ")
+      {
+        True, True ->
+          Some(string.drop_start(message, string.length("could not read ")))
+        _, _ -> None
+      }
+  }
+}
+
+fn prompt_include_missing_dependency_path(message: String) -> Option(String) {
+  let marker = "could not read included prompt fragment "
+  case string.split(message, on: marker) |> list.reverse {
+    [path, _] -> Some(path)
+    _ -> None
   }
 }
 

@@ -1,6 +1,8 @@
 import birl
+import gleam/dict
 import gleam/option.{None, Some}
 import gleam/string
+import scherzo/error
 import scherzo/template
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
@@ -200,6 +202,228 @@ pub fn scheduled_context_does_not_expose_issue_variables_test() {
     )
   let assert Error(_) =
     template.render_scheduled("{{ issue.identifier }}", scheduled)
+}
+
+fn include_entry(
+  source_path: String,
+  include_path: String,
+  resolved_path: String,
+  contents: String,
+) -> #(String, template.IncludeDependency) {
+  #(
+    source_path <> "::" <> include_path,
+    template.IncludeDependency(path: resolved_path, contents: contents),
+  )
+}
+
+fn include_resolver(
+  entries: List(#(String, template.IncludeDependency)),
+) -> fn(String, String) ->
+  Result(template.IncludeDependency, error.TemplateError) {
+  let index = dict.from_list(entries)
+  fn(include_path: String, source_path: String) {
+    case dict.get(index, source_path <> "::" <> include_path) {
+      Ok(dependency) -> Ok(dependency)
+      Error(_) ->
+        Error(error.TemplateRenderError(
+          "missing include " <> include_path <> " from " <> source_path,
+        ))
+    }
+  }
+}
+
+pub fn include_expansion_inlines_fragment_before_rendering_test() {
+  let resolver =
+    include_resolver([
+      include_entry(
+        "/bundle/prompts/implement.md",
+        "fragments/policy.md",
+        "/bundle/prompts/fragments/policy.md",
+        "Policy for {{ issue.identifier }}",
+      ),
+    ])
+  let assert Ok(expansion) =
+    template.expand_includes(
+      "Intro\n{% include \"fragments/policy.md\" %}\nOutro",
+      "/bundle/prompts/implement.md",
+      resolver,
+    )
+  let assert Ok(rendered) = template.render(expansion.contents, issue(), None)
+
+  assert rendered == "Intro\nPolicy for ABC-123\nOutro"
+}
+
+pub fn nested_include_expands_with_host_context_test() {
+  let resolver =
+    include_resolver([
+      include_entry(
+        "/bundle/prompts/implement.md",
+        "fragments/outer.md",
+        "/bundle/prompts/fragments/outer.md",
+        "Outer {% include \"inner.md\" %}",
+      ),
+      include_entry(
+        "/bundle/prompts/fragments/outer.md",
+        "inner.md",
+        "/bundle/prompts/fragments/inner.md",
+        "{{ issue.title }}",
+      ),
+    ])
+  let assert Ok(expansion) =
+    template.expand_includes(
+      "{% include \"fragments/outer.md\" %}",
+      "/bundle/prompts/implement.md",
+      resolver,
+    )
+  let assert Ok(rendered) = template.render(expansion.contents, issue(), None)
+
+  assert rendered == "Outer Fix tests"
+}
+
+pub fn include_fragment_can_contain_variables_if_and_for_blocks_test() {
+  let resolver =
+    include_resolver([
+      include_entry(
+        "/bundle/prompts/implement.md",
+        "fragments/body.md",
+        "/bundle/prompts/fragments/body.md",
+        "{{ issue.identifier }}:{% if attempt %} retry{% else %} first{% endif %}:{% for label in issue.labels %}[{{ label }}]{% endfor %}",
+      ),
+    ])
+  let assert Ok(expansion) =
+    template.expand_includes(
+      "{% include \"fragments/body.md\" %}",
+      "/bundle/prompts/implement.md",
+      resolver,
+    )
+  let assert Ok(rendered) =
+    template.render(expansion.contents, issue(), Some(1))
+
+  assert rendered == "ABC-123: retry:[bug][tests]"
+}
+
+pub fn include_missing_file_returns_template_error_test() {
+  let resolver = include_resolver([])
+  let assert Error(error.TemplateRenderError(message)) =
+    template.expand_includes(
+      "{% include \"fragments/missing.md\" %}",
+      "/bundle/prompts/implement.md",
+      resolver,
+    )
+
+  assert string.contains(message, "missing include")
+}
+
+pub fn include_cycle_returns_clear_template_error_test() {
+  let resolver =
+    include_resolver([
+      include_entry(
+        "/bundle/prompts/implement.md",
+        "fragments/outer.md",
+        "/bundle/prompts/fragments/outer.md",
+        "{% include \"inner.md\" %}",
+      ),
+      include_entry(
+        "/bundle/prompts/fragments/outer.md",
+        "inner.md",
+        "/bundle/prompts/fragments/inner.md",
+        "{% include \"outer.md\" %}",
+      ),
+      include_entry(
+        "/bundle/prompts/fragments/inner.md",
+        "outer.md",
+        "/bundle/prompts/fragments/outer.md",
+        "{% include \"inner.md\" %}",
+      ),
+    ])
+  let assert Error(error.TemplateRenderError(message)) =
+    template.expand_includes(
+      "{% include \"fragments/outer.md\" %}",
+      "/bundle/prompts/implement.md",
+      resolver,
+    )
+
+  assert string.contains(message, "include cycle")
+  assert string.contains(message, "/bundle/prompts/fragments/outer.md")
+}
+
+pub fn include_depth_limit_returns_clear_template_error_test() {
+  let resolver =
+    include_resolver([
+      include_entry(
+        "/bundle/prompts/implement.md",
+        "fragments/one.md",
+        "/bundle/prompts/fragments/one.md",
+        "{% include \"two.md\" %}",
+      ),
+      include_entry(
+        "/bundle/prompts/fragments/one.md",
+        "two.md",
+        "/bundle/prompts/fragments/two.md",
+        "{% include \"three.md\" %}",
+      ),
+      include_entry(
+        "/bundle/prompts/fragments/two.md",
+        "three.md",
+        "/bundle/prompts/fragments/three.md",
+        "{% include \"four.md\" %}",
+      ),
+      include_entry(
+        "/bundle/prompts/fragments/three.md",
+        "four.md",
+        "/bundle/prompts/fragments/four.md",
+        "too deep",
+      ),
+    ])
+  let assert Error(error.TemplateRenderError(message)) =
+    template.expand_includes_with_limit(
+      "{% include \"fragments/one.md\" %}",
+      "/bundle/prompts/implement.md",
+      3,
+      resolver,
+    )
+
+  assert string.contains(message, "include depth limit exceeded")
+  assert string.contains(message, "four.md")
+}
+
+pub fn malformed_include_tag_returns_template_error_test() {
+  let resolver = include_resolver([])
+  let assert Error(error.TemplateRenderError(message)) =
+    template.expand_includes(
+      "{% include fragments/policy.md %}",
+      "/bundle/prompts/implement.md",
+      resolver,
+    )
+
+  assert string.contains(message, "malformed include tag")
+}
+
+pub fn referenced_variables_with_includes_traverses_fragment_variables_test() {
+  let resolver =
+    include_resolver([
+      include_entry(
+        "/bundle/prompts/implement.md",
+        "fragments/body.md",
+        "/bundle/prompts/fragments/body.md",
+        "{{ issue.identifier }}{% if issue.description %}{{ attempt }}{% endif %}{% for label in issue.labels %}{{ label }}{% endfor %}",
+      ),
+    ])
+  let assert Ok(variables) =
+    template.referenced_variables_with_includes(
+      "{% include \"fragments/body.md\" %}",
+      "/bundle/prompts/implement.md",
+      resolver,
+    )
+
+  assert variables
+    == [
+      "issue.identifier",
+      "issue.description",
+      "attempt",
+      "issue.labels",
+      "label",
+    ]
 }
 
 pub fn referenced_variables_scans_variables_if_and_for_tags_test() {

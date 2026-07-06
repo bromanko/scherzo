@@ -5,15 +5,10 @@ Task URL:
 
 ExecPlan identity model:
 
-- The workflow task in this prompt is the implementation handoff issue; it owns this implementation run and should be used for Linear/GitHub linkage.
-- `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json` records that handoff under `implementation_handoff` and records the source ExecPlan/review-doc issue under `source_issue`.
-- `implementation_handoff.issue_identifier` may differ from `source_issue.identifier`; that split is valid and expected for handoff tasks.
+{% include "fragments/execplan-identity-model.md" %}
 - Do not report a conflict, fail completion, or request revision solely because the handoff issue, source issue, review doc path, or implementation pack provenance reference different Linear keys. Treat only review-doc/implementation-pack disagreement in intent, scope, acceptance, safety, or source-plan provenance beyond that expected split as blocking.
 
-Verification contract:
-
-- This is plan-completion verification, not broad review. Check promised behavior, required tests, required validation evidence, required docs/helper migrations, and required acceptance criteria only.
-- Do not edit tracked files, the ExecPlan review doc, the implementation pack, or verdict JSON files. Submit the semantic verdict with `submit_plan_completion_verdict`.
+{% include "fragments/execplan-verification-contract.md" %}
 
 - Read `$SCHERZO_RUN_ROOT/state/implementation/metadata.json`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json`, `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md`, and `$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json`.
 - Treat `$SCHERZO_RUN_ROOT/state/implementation/execplan-review-doc.md` as the authoritative canonical plan. Treat the implementation pack as authoritative mechanical handoff only when it does not conflict with canonical-plan intent, scope, acceptance, safety, or source-plan provenance beyond the expected handoff/source identity split.

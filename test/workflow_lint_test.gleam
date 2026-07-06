@@ -107,8 +107,8 @@ pub fn workflow_lint_catches_seeded_prompt_fragment_drift_test() {
   copy_bundle(bundle)
   replace_in_file(
     bundle <> "/prompts/execplan-implementation-apply-feedback.md",
-    "implementation_handoff.issue_identifier",
-    "implementation_handoff.issue_key",
+    "handoff issue, source issue",
+    "handoff task, source issue",
   )
 
   let artifact = run_command(lint_command(bundle))

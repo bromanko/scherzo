@@ -462,6 +462,8 @@ pub fn execplan_prompts_describe_bundle_handoff_test() {
     read_file(".scherzo/workflows/prompts/execplan-incorporate-review.md")
   let implementation_prompt =
     read_file(".scherzo/workflows/prompts/execplan-implementation-implement.md")
+  let execplan_identity_fragment =
+    read_file(".scherzo/workflows/prompts/fragments/execplan-identity-model.md")
   let revision_prompt =
     read_file(".scherzo/workflows/prompts/execplan-revision.md")
 
@@ -481,9 +483,13 @@ pub fn execplan_prompts_describe_bundle_handoff_test() {
   )
   assert_contains(
     implementation_prompt,
+    "{% include \"fragments/execplan-identity-model.md\" %}",
+  )
+  assert_contains(
+    execplan_identity_fragment,
     "implementation_handoff.issue_identifier` may differ from `source_issue.identifier",
   )
-  assert_contains(implementation_prompt, "expected for handoff tasks")
+  assert_contains(execplan_identity_fragment, "expected for handoff tasks")
   assert_contains(
     implementation_prompt,
     "source-plan provenance beyond that expected split as blocking",

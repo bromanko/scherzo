@@ -11,6 +11,7 @@ import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/model_config
 import scherzo/path
+import scherzo/runtime_bundle_prompt_loader
 import scherzo/template
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_bundle
@@ -489,7 +490,7 @@ fn resolve_step_prompt_refs(
       workflow_dag.PromptFile(prompt_path),
       structured_output,
     ) -> {
-      use #(prompt, dependency) <- result.try(read_relative_prompt(
+      use #(prompt, prompt_dependencies) <- result.try(read_relative_prompt(
         prompt_path,
         workflow_path,
       ))
@@ -501,7 +502,7 @@ fn resolve_step_prompt_refs(
             structured_output,
           ),
         ),
-        list.append(recover_dependencies, [dependency]),
+        list.append(recover_dependencies, prompt_dependencies),
       ))
     }
     _ -> Ok(#(step, recover_dependencies))
@@ -520,24 +521,22 @@ fn resolve_recover_prompt(
     Some(workflow_dag.RecoveryConfigPatch(enabled, attempts, model, prompt)) ->
       case prompt {
         Some(workflow_dag.PromptFile(prompt_path)) -> {
-          use #(contents, dependency) <- result.try(read_relative_prompt(
+          use #(contents, dependencies) <- result.try(read_relative_prompt(
             prompt_path,
             workflow_path,
           ))
-          Ok(
-            #(
-              Some(workflow_dag.RecoveryConfigPatch(
-                enabled: enabled,
-                attempts: attempts,
-                model: model,
-                prompt: Some(workflow_dag.PromptResolvedFile(
-                  prompt_path,
-                  contents,
-                )),
+          Ok(#(
+            Some(workflow_dag.RecoveryConfigPatch(
+              enabled: enabled,
+              attempts: attempts,
+              model: model,
+              prompt: Some(workflow_dag.PromptResolvedFile(
+                prompt_path,
+                contents,
               )),
-              [dependency],
-            ),
-          )
+            )),
+            dependencies,
+          ))
         }
         _ -> Ok(#(recover, []))
       }
@@ -700,19 +699,25 @@ fn validate_scheduled_workflow(
   job: config_types.ScheduledJobConfig,
   dag: workflow_dag.WorkflowDag,
 ) -> Result(Nil, BundleError) {
-  validate_scheduled_steps(job, workflow_dag.id(dag), workflow_dag.steps(dag))
+  validate_scheduled_steps(
+    job,
+    workflow_dag.id(dag),
+    dag,
+    workflow_dag.steps(dag),
+  )
 }
 
 fn validate_scheduled_steps(
   job: config_types.ScheduledJobConfig,
   workflow_id: String,
+  dag: workflow_dag.WorkflowDag,
   steps: List(workflow_dag.WorkflowStep),
 ) -> Result(Nil, BundleError) {
   case steps {
     [] -> Ok(Nil)
     [step, ..rest] -> {
-      use _ <- result.try(validate_scheduled_step(job, workflow_id, step))
-      validate_scheduled_steps(job, workflow_id, rest)
+      use _ <- result.try(validate_scheduled_step(job, workflow_id, dag, step))
+      validate_scheduled_steps(job, workflow_id, dag, rest)
     }
   }
 }
@@ -720,6 +725,7 @@ fn validate_scheduled_steps(
 fn validate_scheduled_step(
   job: config_types.ScheduledJobConfig,
   workflow_id: String,
+  dag: workflow_dag.WorkflowDag,
   step: workflow_dag.WorkflowStep,
 ) -> Result(Nil, BundleError) {
   let source = case step.kind {
@@ -729,6 +735,41 @@ fn validate_scheduled_step(
     workflow_dag.AgentStep(workflow_dag.PromptFile(path), _) -> path
     workflow_dag.CommandStep(run, _) -> run
   }
+  use _ <- result.try(validate_scheduled_issue_references(
+    job,
+    workflow_id,
+    step.id,
+    source,
+    "",
+  ))
+  case workflow_dag.effective_recovery_config(dag, step) {
+    Ok(None) -> Ok(Nil)
+    Ok(Some(workflow_dag.EffectiveRecoveryConfig(prompt: prompt, ..))) -> {
+      let source = case prompt {
+        workflow_dag.PromptInline(contents) -> contents
+        workflow_dag.PromptResolvedFile(_, contents) -> contents
+        workflow_dag.PromptFile(path) -> path
+      }
+      validate_scheduled_issue_references(
+        job,
+        workflow_id,
+        step.id,
+        source,
+        " recovery prompt",
+      )
+    }
+    Error(workflow_dag.DagError(code, message)) ->
+      Error(BundleError(code, message))
+  }
+}
+
+fn validate_scheduled_issue_references(
+  job: config_types.ScheduledJobConfig,
+  workflow_id: String,
+  step_id: String,
+  source: String,
+  source_label: String,
+) -> Result(Nil, BundleError) {
   case first_issue_reference(template.referenced_variables(source)) {
     None -> Ok(Nil)
     Some(variable) ->
@@ -739,7 +780,8 @@ fn validate_scheduled_step(
           <> " workflow "
           <> workflow_id
           <> " step "
-          <> step.id
+          <> step_id
+          <> source_label
           <> " references issue variable "
           <> variable
           <> "; scheduled workflows must use scheduled_job.*, schedule.*, or run.* variables",
@@ -812,79 +854,26 @@ fn validate_step_model_settings(
 fn read_relative_prompt(
   prompt_path: String,
   workflow_path: String,
-) -> Result(#(String, BundleDependency), BundleError) {
-  case validate_relative_path(prompt_path, "invalid_prompt_path") {
-    Error(BundleError(code, message)) ->
-      Error(BundleError(code, message <> " in workflow " <> workflow_path))
-    Ok(Nil) -> {
-      let prompt_path = string.trim(prompt_path)
-      use workflow_dir <- result.try(
-        path.dirname(workflow_path)
-        |> result.replace_error(BundleError(
-          "invalid_prompt_path",
-          "could not resolve workflow directory for " <> workflow_path,
-        )),
-      )
-      let joined_path = path.join(workflow_dir, prompt_path)
-      use full_path <- result.try(
-        path.absolute(joined_path)
-        |> result.replace_error(BundleError(
-          "invalid_prompt_path",
-          "could not resolve prompt path "
-            <> prompt_path
-            <> " in workflow "
-            <> workflow_path,
-        )),
-      )
-      use workflow_dir_abs <- result.try(
-        path.absolute(workflow_dir)
-        |> result.replace_error(BundleError(
-          "invalid_prompt_path",
-          "could not resolve workflow directory for " <> workflow_path,
-        )),
-      )
-      case path.contains(workflow_dir_abs, full_path) {
-        False ->
-          Error(BundleError(
-            "invalid_prompt_path",
-            "prompt path escapes workflow directory: "
-              <> prompt_path
-              <> " in workflow "
-              <> workflow_path,
-          ))
-        True -> {
-          use contents <- result.try(read_file(full_path, "missing_prompt_file"))
-          Ok(#(contents, BundleDependency(full_path, contents)))
-        }
+) -> Result(#(String, List(BundleDependency)), BundleError) {
+  use resolved <- result.try(
+    runtime_bundle_prompt_loader.read_relative_prompt(
+      prompt_path,
+      workflow_path,
+    )
+    |> result.map_error(fn(load_error) {
+      case load_error {
+        runtime_bundle_prompt_loader.PromptLoadError(code, message) ->
+          BundleError(code, message)
       }
-    }
-  }
-}
-
-fn validate_relative_path(
-  value: String,
-  code: String,
-) -> Result(Nil, BundleError) {
-  let trimmed = string.trim(value)
-  case trimmed == "" {
-    True -> Error(BundleError(code, "path must be non-empty"))
-    False ->
-      case string.starts_with(trimmed, "/") || has_parent_segment(trimmed) {
-        True ->
-          Error(BundleError(
-            code,
-            "path must be relative and must not contain ..",
-          ))
-        False -> Ok(Nil)
-      }
-  }
-}
-
-fn has_parent_segment(value: String) -> Bool {
-  value == ".."
-  || string.starts_with(value, "../")
-  || string.ends_with(value, "/..")
-  || string.contains(value, "/../")
+    }),
+  )
+  Ok(#(
+    resolved.contents,
+    list.map(resolved.dependencies, fn(dependency) {
+      let #(path, contents) = dependency
+      BundleDependency(path, contents)
+    }),
+  ))
 }
 
 fn normalize_dependencies(
