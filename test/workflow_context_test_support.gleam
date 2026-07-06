@@ -29,6 +29,7 @@ fn workflow_context_keys() -> List(String) {
     "SCHERZO_PR_REPO",
     "SCHERZO_REPO_ROOT",
     "SCHERZO_RUN_ATTEMPT",
+    "SCHERZO_RUN_ARTIFACT_DIR",
     "SCHERZO_RUN_ID",
     "SCHERZO_RUN_KIND",
     "SCHERZO_RUN_ROOT",

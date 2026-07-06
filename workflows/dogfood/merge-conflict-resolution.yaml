@@ -49,7 +49,7 @@ artifacts:
 steps:
   - id: prepare_target
     kind: command
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" prepare'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-merge-conflict" prepare'
     timeout: 5m
     run_in: main
 
@@ -64,7 +64,7 @@ steps:
   - id: validate_resolution
     kind: command
     depends_on: [resolve_conflicts]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" validate'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-merge-conflict" validate'
     timeout: 5m
     run_in:
       name: main
@@ -75,15 +75,11 @@ steps:
     depends_on: [validate_resolution]
     run: |
       set -eu
-      bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
-      if [ -z "$bundle_dir" ]; then
-        bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"
-      fi
-      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      : "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"
       # Repo-local validation for Scherzo dogfood. The helper runs the command
       # with workflow-run-scoped Scherzo variables scrubbed, then records the
       # successful project-validation marker for publish.
-      "$bundle_dir/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c '
+      "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c '
         direnv allow .
         rm -rf test/tmp
         direnv exec . gleam format --check src test
@@ -97,7 +93,7 @@ steps:
   - id: materialize_commit_stack
     kind: command
     depends_on: [project_validation]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" publish'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-merge-conflict" publish'
     timeout: 5m
     run_in:
       name: main

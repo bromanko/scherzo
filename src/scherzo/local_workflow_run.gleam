@@ -234,6 +234,14 @@ fn local_dependencies(
       command_ready,
       record_pi_session,
     ) {
+      let context =
+        workflow_run.StepContext(
+          ..context,
+          run_artifact_dir: local_run_artifact_dir(
+            context.run_root,
+            context.run_id,
+          ),
+        )
       default_dependencies.agent_step(
         step_issue,
         context,
@@ -293,6 +301,13 @@ fn prepare_local_step(
   }
 }
 
+fn local_run_artifact_dir(run_root: String, run_id: String) -> String {
+  path.join(
+    path.join(path.join(run_root, ".scherzo-state"), "artifacts"),
+    "runs/" <> run_id,
+  )
+}
+
 fn local_step_env(
   context: workflow_run.StepContext,
 ) -> List(#(String, String)) {
@@ -303,6 +318,10 @@ fn local_step_env(
     #("SCHERZO_WORKFLOW_BUNDLE_DIR", context.workflow_bundle_dir),
     #("SCHERZO_RUN_ID", context.run_id),
     #("SCHERZO_RUN_ROOT", context.run_root),
+    #(
+      "SCHERZO_RUN_ARTIFACT_DIR",
+      local_run_artifact_dir(context.run_root, context.run_id),
+    ),
     #("SCHERZO_RUN_KIND", context.run_kind),
     #("SCHERZO_ISSUE_ID", context.issue_id),
     #("SCHERZO_ISSUE_IDENTIFIER", context.issue_identifier),

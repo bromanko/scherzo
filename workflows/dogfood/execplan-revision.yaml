@@ -93,7 +93,7 @@ workstream_phase:
 steps:
   - id: prepare_revision
     kind: command
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" prepare-revision --prefer-workstream-input --write-bundle tmp/execplan-previous-bundle.json --write-review-doc-path tmp/execplan-review-doc.path --write-pack tmp/execplan-previous-pack.json'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" prepare-revision --prefer-workstream-input --write-bundle tmp/execplan-previous-bundle.json --write-review-doc-path tmp/execplan-review-doc.path --write-pack tmp/execplan-previous-pack.json'
     timeout: 5m
     run_in: main
 
@@ -123,25 +123,25 @@ steps:
   - id: validate_review_doc_after_revision
     kind: command
     depends_on: [revise_plan]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; review_doc_path=$(cat tmp/execplan-review-doc.path); "$bundle_dir/scripts/scherzo-execplan" validate-review-doc --path "$review_doc_path"'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; review_doc_path=$(cat tmp/execplan-review-doc.path); "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" validate-review-doc --path "$review_doc_path"'
     run_in: main
 
   - id: materialize_pack
     kind: command
     depends_on: [validate_review_doc_after_revision]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$bundle_dir/scripts/scherzo-execplan" materialize-pack --review-doc-path-file tmp/execplan-review-doc.path --submission-step revise_plan --submission-artifact implementation_pack_submission --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json"'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; : "${SCHERZO_RUN_ARTIFACT_DIR:?Scherzo command-step contract missing SCHERZO_RUN_ARTIFACT_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" materialize-pack --review-doc-path-file tmp/execplan-review-doc.path --submission-step revise_plan --submission-artifact implementation_pack_submission --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json"'
     run_in: main
 
   - id: materialize_commit_stack
     kind: command
     depends_on: [materialize_pack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; artifact_dir="${SCHERZO_RUN_ARTIFACT_DIR:-$SCHERZO_RUN_ROOT/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID}"; if [ ! -e "$artifact_dir" ]; then artifact_dir="$(cd "$SCHERZO_RUN_ROOT/../../.." && pwd -P)/.scherzo-state/artifacts/runs/$SCHERZO_RUN_ID"; fi; SCHERZO_RUN_ARTIFACT_DIR="$artifact_dir" "$bundle_dir/scripts/scherzo-execplan" materialize-commit-stack --review-doc-path-file tmp/execplan-review-doc.path --previous-bundle tmp/execplan-previous-bundle.json --target-output "$SCHERZO_RUN_ROOT/state/implementation/execplan-publication-target.json" --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-commit-stack.json"'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; : "${SCHERZO_RUN_ARTIFACT_DIR:?Scherzo command-step contract missing SCHERZO_RUN_ARTIFACT_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" materialize-commit-stack --review-doc-path-file tmp/execplan-review-doc.path --previous-bundle tmp/execplan-previous-bundle.json --target-output "$SCHERZO_RUN_ROOT/state/implementation/execplan-publication-target.json" --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-commit-stack.json"'
     timeout: 5m
     run_in: main
 
   - id: materialize_revision
     kind: command
     depends_on: [materialize_commit_stack]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-execplan" materialize-revision --previous-bundle tmp/execplan-previous-bundle.json --review-doc-path-file tmp/execplan-review-doc.path --pack "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json" --status auto --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json"'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" materialize-revision --previous-bundle tmp/execplan-previous-bundle.json --review-doc-path-file tmp/execplan-review-doc.path --pack "$SCHERZO_RUN_ROOT/state/implementation/execplan-implementation-pack.json" --status auto --output "$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json"'
     timeout: 5m
     run_in: main

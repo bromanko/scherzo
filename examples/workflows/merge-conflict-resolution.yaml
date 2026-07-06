@@ -41,7 +41,7 @@ artifacts:
 steps:
   - id: prepare_target
     kind: command
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" prepare'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-merge-conflict" prepare'
     timeout: 5m
     run_in: main
 
@@ -56,7 +56,7 @@ steps:
   - id: validate_resolution
     kind: command
     depends_on: [resolve_conflicts]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" validate'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-merge-conflict" validate'
     timeout: 5m
     run_in:
       name: main
@@ -67,11 +67,7 @@ steps:
     depends_on: [validate_resolution]
     run: |
       set -eu
-      bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}
-      if [ -z "$bundle_dir" ]; then
-        bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"
-      fi
-      repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}
+      : "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"
       # Replace the example validation command with repo-local validation such as
       # `npm test`, `cargo test`, or a project script. The generic helper has
       # already checked conflict markers, non-conflicted file drift, and the
@@ -82,7 +78,7 @@ steps:
         echo "or set SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND for this example bundle" >&2
         exit 64
       fi
-      "$bundle_dir/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c "$SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND"
+      "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-merge-conflict" run-project-validation -- sh -eu -c "$SCHERZO_MERGE_CONFLICT_PROJECT_VALIDATION_COMMAND"
     timeout: 20m
     run_in:
       name: main
@@ -91,7 +87,7 @@ steps:
   - id: materialize_commit_stack
     kind: command
     depends_on: [project_validation]
-    run: 'bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}; if [ -z "$bundle_dir" ]; then bundle_dir="$(cd "$SCHERZO_CONFIG_DIR/workflows" && pwd -P)"; fi; repo_root=${SCHERZO_REPO_ROOT:-$(cd "$SCHERZO_CONFIG_DIR/.." && pwd -P)}; "$bundle_dir/scripts/scherzo-merge-conflict" publish'
+    run: ': "${SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR}"; "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-merge-conflict" publish'
     timeout: 5m
     run_in:
       name: main

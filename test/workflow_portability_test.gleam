@@ -43,6 +43,27 @@ fn assert_step_contains(
   }
 }
 
+fn assert_step_not_contains(
+  path: String,
+  step_id: String,
+  contents: String,
+  unexpected: String,
+) -> Nil {
+  case string.contains(contents, unexpected) {
+    False -> Nil
+    True -> {
+      let message =
+        "unexpected text found in "
+        <> path
+        <> " step "
+        <> step_id
+        <> ": "
+        <> unexpected
+      panic as message
+    }
+  }
+}
+
 fn assert_not_contains(contents: String, unexpected: String) -> Nil {
   case string.contains(contents, unexpected) {
     False -> Nil
@@ -111,32 +132,22 @@ fn example_workflow_paths() -> List(String) {
   ]
 }
 
-fn assert_bundle_dir_initialized_when_referenced(
+fn assert_bundle_helper_command_uses_contract_env(
   path: String,
   step: workflow_dag.WorkflowStep,
 ) -> Nil {
   case step.kind {
     workflow_dag.CommandStep(run, _) -> {
-      case string.contains(run, "$bundle_dir") {
+      case string.contains(run, "SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/") {
         True -> {
           assert_step_contains(
             path,
             step.id,
             run,
-            "bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}",
+            "SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR",
           )
-          assert_step_contains(
-            path,
-            step.id,
-            run,
-            "if [ -z \"$bundle_dir\" ]; then",
-          )
-          assert_step_contains(
-            path,
-            step.id,
-            run,
-            "bundle_dir=\"$(cd \"$SCHERZO_CONFIG_DIR/workflows\" && pwd -P)\"",
-          )
+          assert_step_not_contains(path, step.id, run, "bundle_dir=")
+          assert_step_not_contains(path, step.id, run, "$bundle_dir")
         }
         False -> Nil
       }
@@ -187,7 +198,7 @@ pub fn execplan_v2_suffix_workflow_files_are_retired_test() {
   })
 }
 
-pub fn execplan_workflows_resolve_helpers_from_repo_root_test() {
+pub fn execplan_workflows_resolve_helpers_from_bundle_contract_test() {
   list.each(
     [
       ".scherzo/workflows/execplan.yaml",
@@ -196,8 +207,14 @@ pub fn execplan_workflows_resolve_helpers_from_repo_root_test() {
     ],
     fn(path) {
       let workflow = read_file(path)
-      assert_contains(workflow, "bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}")
-      assert_contains(workflow, "\"$bundle_dir/scripts/scherzo-execplan\"")
+      assert_contains(
+        workflow,
+        "SCHERZO_WORKFLOW_BUNDLE_DIR:?Scherzo command-step contract missing SCHERZO_WORKFLOW_BUNDLE_DIR",
+      )
+      assert_contains(
+        workflow,
+        "\"$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan\"",
+      )
       assert_not_contains(
         workflow,
         "run: .scherzo/workflows/scripts/scherzo-execplan",
@@ -206,12 +223,12 @@ pub fn execplan_workflows_resolve_helpers_from_repo_root_test() {
   )
 }
 
-pub fn workflow_command_bundle_dir_references_are_initialized_test() {
+pub fn workflow_command_bundle_helper_references_use_contract_env_test() {
   list.each(workflow_paths_with_packaged_helper_commands(), fn(path) {
     let assert Ok(source) = simplifile.read(path)
     let assert Ok(dag) = workflow_dag.parse(source)
     list.each(workflow_dag.steps(dag), fn(step) {
-      assert_bundle_dir_initialized_when_referenced(path, step)
+      assert_bundle_helper_command_uses_contract_env(path, step)
     })
   })
 }
@@ -270,7 +287,10 @@ pub fn review_workflows_use_staged_artifacts_instead_of_local_review_skills_test
       assert_contains(workflow, "submit_review_lane_draft")
       assert_contains(workflow, "prepare-native")
       assert_contains(workflow, "synthesize_review")
-      assert_contains(workflow, "$bundle_dir/scripts/scherzo-review")
+      assert_contains(
+        workflow,
+        "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-review",
+      )
       assert_not_contains(workflow, "run-" <> "lane --lane")
     },
   )
@@ -480,8 +500,12 @@ pub fn workflow_docs_explain_canonical_execplan_routing_and_validation_test() {
   assert_contains(docs, "## Workflow-packaged guidance and portability")
   assert_contains(docs, "Bundle-based ExecPlan workflows")
   assert_contains(docs, ".scherzo/workflows/schemas/")
-  assert_contains(docs, "bundle_dir=${SCHERZO_WORKFLOW_BUNDLE_DIR:-}")
-  assert_contains(docs, "\"$bundle_dir/scripts/scherzo-execplan\"")
+  assert_contains(docs, "SCHERZO_WORKFLOW_BUNDLE_DIR")
+  assert_contains(docs, "SCHERZO_RUN_ARTIFACT_DIR")
+  assert_contains(
+    docs,
+    "\"$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan\"",
+  )
   assert_contains(docs, "workflow portability validation")
   assert_contains(docs, "doctor --check workflow-config")
   assert_contains(docs, ".scherzo/workflows/scripts/scherzo-review")
