@@ -178,7 +178,9 @@ fn write_fake_gh(path: String, log: String) -> Nil {
         <> test_helpers.shell_quote(log)
         <> " 2>/dev/null || printf '%s' 0)\n"
         <> "  view_after=${SCHERZO_FAKE_GH_VIEW_URL_AFTER:-1}\n"
+        <> "  selector=$3\n"
         <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_SLEEP_SECONDS:-}\" ]; then sleep \"$SCHERZO_FAKE_GH_VIEW_SLEEP_SECONDS\"; fi\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_MATCH_SELECTOR:-}\" ] && [ \"$selector\" = \"$SCHERZO_FAKE_GH_VIEW_MATCH_SELECTOR\" ] && [ -n \"${SCHERZO_FAKE_GH_VIEW_MATCH_URL:-}\" ]; then echo \"$SCHERZO_FAKE_GH_VIEW_MATCH_URL\"; exit 0; fi\n"
         <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_URL:-}\" ] && [ \"$view_count\" -ge \"$view_after\" ]; then echo \"$SCHERZO_FAKE_GH_VIEW_URL\"; exit 0; fi\n"
         <> "  if [ -n \"${SCHERZO_FAKE_GH_VIEW_STDOUT+x}\" ]; then printf '%s\\n' \"$SCHERZO_FAKE_GH_VIEW_STDOUT\"; exit \"${SCHERZO_FAKE_GH_VIEW_EXIT_CODE:-0}\"; fi\n"
         <> "  if [ \"${SCHERZO_FAKE_GH_VIEW_EMPTY_SUCCESS:-}\" = 1 ]; then exit 0; fi\n"
@@ -1178,6 +1180,52 @@ pub fn jj_driver_publish_target_branch_allows_stale_local_bookmark_test() {
   )
 }
 
+pub fn jj_driver_publish_target_pr_never_adopts_branch_pr_when_number_lookup_fails_test() {
+  let dir = "test/tmp/jj-workspace-driver-publish-target-pr-no-branch-adopt"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace)
+  let assert Ok(Nil) = simplifile.write(workspace <> "/title.txt", "Title\n")
+  let assert Ok(Nil) = simplifile.write(workspace <> "/body.txt", "Body\n")
+  write_fake_gh(bin <> "/gh", log)
+
+  let branch = "feature/pr"
+  let target_pr = "198"
+  let wrong_url = "https://github.com/example/repo/pull/999"
+  let artifact =
+    run_jj(
+      "jj_driver_publish_target_pr_no_branch_adopt",
+      "publish-commit-stack --kind merge-conflict --title-file title.txt --body-file body.txt --branch-prefix scherzo/test --base main@origin --target-branch "
+        <> branch
+        <> " --target-pr "
+        <> target_pr
+        <> " --json",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_CHANGED_FILES", "changed.txt\n"),
+        #("SCHERZO_FAKE_GH_VIEW_MATCH_SELECTOR", branch),
+        #("SCHERZO_FAKE_GH_VIEW_MATCH_URL", wrong_url),
+        #("SCHERZO_FAKE_GH_VIEW_STDERR", "HTTP 404: PR not found"),
+        #("SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE", "origin"),
+        #("SCHERZO_PR_REPO", "example/repo"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(
+    artifact.stdout,
+    "\"failure_code\":\"pr_lookup_failed\"",
+  )
+  assert !string.contains(artifact.stdout, wrong_url)
+
+  let logged = log_text(log)
+  assert count_log_lines_containing(
+      log,
+      "gh: pr view " <> target_pr <> " --repo example/repo --json url --jq .url",
+    )
+    == 3
+  assert !string.contains(logged, "gh: pr view " <> branch <> " --repo")
+  assert !string.contains(logged, "gh: pr create")
+}
+
 pub fn jj_driver_publish_commit_stack_target_branch_does_not_create_pr_test() {
   let dir = "test/tmp/jj-workspace-driver-publish-commit-stack-existing-branch"
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
@@ -1416,7 +1464,7 @@ pub fn jj_driver_publish_commit_stack_create_failure_reports_gh_diagnostics_test
     "git push --remote origin --bookmark " <> branch <> " --allow-new",
   )
   assert string.contains(logged, "gh: pr create --repo example/repo")
-  assert count_log_lines_containing(log, "gh: pr view") > 1
+  assert count_log_lines_containing(log, "gh: pr view") == 3
 }
 
 pub fn jj_driver_publish_commit_stack_create_empty_url_reports_specific_failure_test() {
@@ -1602,7 +1650,9 @@ pub fn jj_driver_publish_commit_stack_pr_view_timeout_reports_lookup_failure_tes
     "\"failure_code\":\"pr_lookup_failed\"",
   )
   assert string.contains(artifact.stdout, "timed out after 0.1 seconds")
-  assert count_log_lines_containing(log, "gh: pr view") > 1
+  let pr_view_attempts = count_log_lines_containing(log, "gh: pr view")
+  assert pr_view_attempts > 1
+  assert pr_view_attempts <= 3
 }
 
 pub fn jj_driver_publish_commit_stack_retry_reuses_stable_branch_pr_test() {
