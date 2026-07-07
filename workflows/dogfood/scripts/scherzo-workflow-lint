@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""Lint checked-in Scherzo workflow bundle hygiene.
+
+This script intentionally stays lightweight and dependency-free so it can run in
+source checkouts, packaged workflow bundles, and the workflow-portability Nix
+check. It verifies that bundled prompt files are live, that the duplicated
+implementation review pipeline stays synchronized between the direct and
+ExecPlan implementation workflows, and that shared prompt policy fragments do
+not drift across prompt families.
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import re
+import sys
+from pathlib import Path
+from typing import Iterable
+
+SHARED_STEP_BLOCK = {
+    "name": "implementation-review-pipeline",
+    "left_workflow": "implementation.yaml",
+    "right_workflow": "execplan-implementation.yaml",
+    "start_id": "validate_before_native_review",
+    "end_id": "materialize_commit_stack",
+    "drop_step_ids": {
+        "verify_plan_completion_before_final_validation",
+        "final_validate",
+    },
+}
+
+EXECPLAN_IDENTITY_FRAGMENT = {
+    "name": "execplan-identity-model",
+    "heading": "ExecPlan identity model:",
+    "start_prefix": "- The workflow task in this prompt is the implementation handoff issue;",
+    "end_prefix": "- Do not report a conflict",
+}
+
+STEP_ID_RE = re.compile(r"^  - id: ([A-Za-z0-9_]+)\s*$")
+RUN_RE = re.compile(r"^(?P<indent>\s*)run:\s*(?P<value>.*)$")
+REPO_ROOT_ASSIGN_RE = re.compile(r"(^|[;\s'\"])repo_root=")
+
+
+class WorkflowLintError(Exception):
+    pass
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Lint Scherzo workflow bundle hygiene")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    check = subparsers.add_parser("check", help="run all workflow-bundle lint checks")
+    check.add_argument("--repo-root", default=".", help="repository root containing .scherzo/scherzo.yaml")
+    check.add_argument("--bundle-root", help="workflow bundle root; defaults to <repo-root>/.scherzo/workflows")
+    check.add_argument("--config", help="Scherzo config path; defaults to <repo-root>/.scherzo/scherzo.yaml")
+    return parser.parse_args()
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def read_text_if_possible(path: Path) -> str | None:
+    try:
+        return read_text(path)
+    except UnicodeDecodeError:
+        return None
+
+
+def display_path(path: Path, base: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(base.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def workflow_files(bundle_root: Path) -> list[Path]:
+    return sorted([*bundle_root.glob("*.yaml"), *bundle_root.glob("*.yml")])
+
+
+def script_reference_files(bundle_root: Path) -> list[Path]:
+    scripts_dir = bundle_root / "scripts"
+    if not scripts_dir.exists():
+        return []
+    files: list[Path] = []
+    for path in sorted(scripts_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name == "scherzo-workflow-lint":
+            continue
+        if "__pycache__" in path.parts:
+            continue
+        files.append(path)
+    return files
+
+
+def check_prompt_orphans(repo_root: Path, bundle_root: Path, config_path: Path) -> list[str]:
+    prompt_dir = bundle_root / "prompts"
+    if not prompt_dir.exists():
+        return [f"prompt directory missing: {display_path(prompt_dir, repo_root)}"]
+
+    prompts = sorted(prompt_dir.glob("*.md"))
+    reference_paths = [config_path, *workflow_files(bundle_root), *script_reference_files(bundle_root)]
+    reference_texts: list[str] = []
+    for path in reference_paths:
+        if not path.exists():
+            continue
+        contents = read_text_if_possible(path)
+        if contents is not None:
+            reference_texts.append(contents)
+
+    failures: list[str] = []
+    for prompt in prompts:
+        token = f"prompts/{prompt.name}"
+        referenced = any(token in contents for contents in reference_texts)
+        if not referenced:
+            failures.append(f"orphan prompt: {display_path(prompt, repo_root)}")
+    return failures
+
+
+def parse_steps(workflow_path: Path) -> list[tuple[str, list[str]]]:
+    steps: list[tuple[str, list[str]]] = []
+    current_id: str | None = None
+    current_lines: list[str] = []
+
+    for line in read_text(workflow_path).splitlines():
+        match = STEP_ID_RE.match(line)
+        if match:
+            if current_id is not None:
+                steps.append((current_id, current_lines))
+            current_id = match.group(1)
+            current_lines = [line]
+        elif current_id is not None:
+            current_lines.append(line)
+
+    if current_id is not None:
+        steps.append((current_id, current_lines))
+    return steps
+
+
+def step_region(
+    workflow_path: Path,
+    *,
+    start_id: str,
+    end_id: str,
+) -> list[tuple[str, list[str]]]:
+    steps = parse_steps(workflow_path)
+    ids = [step_id for step_id, _lines in steps]
+    try:
+        start = ids.index(start_id)
+        end = ids.index(end_id)
+    except ValueError as exc:
+        raise WorkflowLintError(
+            f"{workflow_path.name}: missing shared step boundary {start_id!r} or {end_id!r}"
+        ) from exc
+    if end < start:
+        raise WorkflowLintError(
+            f"{workflow_path.name}: shared step boundary {end_id!r} appears before {start_id!r}"
+        )
+    return steps[start : end + 1]
+
+
+def normalize_step_lines(step_id: str, lines: Iterable[str]) -> list[str]:
+    normalized: list[str] = []
+    for line in lines:
+        if step_id == "apply_review_feedback" and (
+            line.startswith("    model: ") or line.startswith("    thinking: ")
+        ):
+            continue
+
+        line = line.rstrip()
+        replacements = {
+            "  - id: apply_review_feedback": "  - id: apply_feedback",
+            "    depends_on: [apply_review_feedback]": "    depends_on: [apply_feedback]",
+            "    depends_on: [verify_plan_completion]": "    depends_on: [analyze_changes]",
+            "    depends_on: [final_validate]": "    depends_on: [refresh_and_validate_after_review]",
+            "    prompt: prompts/execplan-implementation-apply-feedback.md": "    prompt: prompts/apply-feedback.md",
+            "      prompt: prompts/execplan-implementation-repair-base-drift.md": "      prompt: prompts/repair-base-drift.md",
+        }
+        line = replacements.get(line, line)
+        line = line.replace(
+            '--source-label "execplan-implementation-native"',
+            '--source-label "implementation-native"',
+        )
+        line = line.replace("--submission-step apply_review_feedback", "--submission-step apply_feedback")
+        normalized.append(line)
+
+    while normalized and normalized[-1] == "":
+        normalized.pop()
+    return normalized
+
+
+def normalized_shared_step_region(workflow_path: Path, *, drop_step_ids: set[str]) -> list[str]:
+    region = step_region(
+        workflow_path,
+        start_id=SHARED_STEP_BLOCK["start_id"],
+        end_id=SHARED_STEP_BLOCK["end_id"],
+    )
+    output: list[str] = []
+    for step_id, lines in region:
+        if step_id in drop_step_ids:
+            continue
+        output.extend(normalize_step_lines(step_id, lines))
+        output.append("")
+    while output and output[-1] == "":
+        output.pop()
+    return output
+
+
+def check_shared_step_block(repo_root: Path, bundle_root: Path) -> list[str]:
+    left_path = bundle_root / SHARED_STEP_BLOCK["left_workflow"]
+    right_path = bundle_root / SHARED_STEP_BLOCK["right_workflow"]
+    failures: list[str] = []
+
+    try:
+        left = normalized_shared_step_region(left_path, drop_step_ids=set())
+        right = normalized_shared_step_region(
+            right_path,
+            drop_step_ids=set(SHARED_STEP_BLOCK["drop_step_ids"]),
+        )
+    except WorkflowLintError as exc:
+        return [str(exc)]
+
+    if left != right:
+        diff = "\n".join(
+            difflib.unified_diff(
+                left,
+                right,
+                fromfile=f"{display_path(left_path, repo_root)} normalized",
+                tofile=f"{display_path(right_path, repo_root)} normalized",
+                lineterm="",
+            )
+        )
+        failures.append(
+            f"shared step block drift: {SHARED_STEP_BLOCK['name']}\n{diff}"
+        )
+    return failures
+
+
+def extract_prompt_fragment(path: Path, family: dict[str, str]) -> list[str]:
+    lines = read_text(path).splitlines()
+    if family["heading"] not in lines:
+        raise WorkflowLintError(f"{path.name}: missing prompt fragment heading {family['heading']!r}")
+
+    start_index: int | None = None
+    for index, line in enumerate(lines):
+        if line.startswith(family["start_prefix"]):
+            start_index = index
+            break
+    if start_index is None:
+        raise WorkflowLintError(f"{path.name}: missing prompt fragment start {family['start_prefix']!r}")
+
+    end_index: int | None = None
+    for index in range(start_index, len(lines)):
+        if lines[index].startswith(family["end_prefix"]):
+            end_index = index
+            break
+    if end_index is None:
+        raise WorkflowLintError(f"{path.name}: missing prompt fragment end {family['end_prefix']!r}")
+
+    return [line.rstrip() for line in lines[start_index : end_index + 1]]
+
+
+def check_prompt_fragments(repo_root: Path, bundle_root: Path) -> list[str]:
+    prompt_dir = bundle_root / "prompts"
+    prompt_paths = sorted(
+        path
+        for path in prompt_dir.glob("*.md")
+        if EXECPLAN_IDENTITY_FRAGMENT["heading"] in read_text(path)
+    )
+    if len(prompt_paths) <= 1:
+        return []
+
+    failures: list[str] = []
+    baseline_path = prompt_paths[0]
+    try:
+        baseline = extract_prompt_fragment(baseline_path, EXECPLAN_IDENTITY_FRAGMENT)
+    except WorkflowLintError as exc:
+        return [str(exc)]
+
+    for prompt_path in prompt_paths[1:]:
+        try:
+            current = extract_prompt_fragment(prompt_path, EXECPLAN_IDENTITY_FRAGMENT)
+        except WorkflowLintError as exc:
+            failures.append(str(exc))
+            continue
+        if current != baseline:
+            diff = "\n".join(
+                difflib.unified_diff(
+                    baseline,
+                    current,
+                    fromfile=f"{display_path(baseline_path, repo_root)} {EXECPLAN_IDENTITY_FRAGMENT['name']}",
+                    tofile=f"{display_path(prompt_path, repo_root)} {EXECPLAN_IDENTITY_FRAGMENT['name']}",
+                    lineterm="",
+                )
+            )
+            failures.append(
+                f"shared prompt fragment drift: {EXECPLAN_IDENTITY_FRAGMENT['name']}\n{diff}"
+            )
+    return failures
+
+
+def iter_run_commands(workflow_path: Path) -> Iterable[tuple[int, str]]:
+    lines = read_text(workflow_path).splitlines()
+    index = 0
+    while index < len(lines):
+        match = RUN_RE.match(lines[index])
+        if not match:
+            index += 1
+            continue
+
+        line_number = index + 1
+        indent = len(match.group("indent"))
+        value = match.group("value").strip()
+        if value in {"|", "|-", "|+", ">", ">-", ">+"}:
+            block_lines: list[str] = []
+            index += 1
+            while index < len(lines):
+                line = lines[index]
+                if line.strip() == "":
+                    block_lines.append("")
+                    index += 1
+                    continue
+                next_indent = len(line) - len(line.lstrip(" "))
+                if next_indent <= indent:
+                    break
+                trim = min(len(line), indent + 2)
+                block_lines.append(line[trim:])
+                index += 1
+            yield line_number, "\n".join(block_lines)
+            continue
+
+        yield line_number, value
+        index += 1
+
+
+def check_dead_repo_root_assignments(repo_root: Path, bundle_root: Path) -> list[str]:
+    failures: list[str] = []
+    for workflow_path in workflow_files(bundle_root):
+        for line_number, command in iter_run_commands(workflow_path):
+            if not REPO_ROOT_ASSIGN_RE.search(command):
+                continue
+            if "$repo_root" in command or "${repo_root}" in command:
+                continue
+            failures.append(
+                "dead repo_root assignment in workflow run: "
+                f"{display_path(workflow_path, repo_root)}:{line_number}"
+            )
+    return failures
+
+
+def run_check(args: argparse.Namespace) -> int:
+    repo_root = Path(args.repo_root).resolve()
+    bundle_root = Path(args.bundle_root).resolve() if args.bundle_root else (repo_root / ".scherzo" / "workflows").resolve()
+    config_path = Path(args.config).resolve() if args.config else (repo_root / ".scherzo" / "scherzo.yaml").resolve()
+
+    failures: list[str] = []
+    failures.extend(check_prompt_orphans(repo_root, bundle_root, config_path))
+    failures.extend(check_shared_step_block(repo_root, bundle_root))
+    failures.extend(check_prompt_fragments(repo_root, bundle_root))
+    failures.extend(check_dead_repo_root_assignments(repo_root, bundle_root))
+
+    if failures:
+        print("WORKFLOW_LINT=failed")
+        for failure in failures:
+            print(f"workflow-lint: {failure}", file=sys.stderr)
+        return 1
+
+    prompt_count = len(list((bundle_root / "prompts").glob("*.md")))
+    print("WORKFLOW_LINT=ok")
+    print("PROMPT_ORPHANS=0")
+    print(f"PROMPT_COUNT={prompt_count}")
+    print(f"SHARED_STEP_BLOCK={SHARED_STEP_BLOCK['name']}")
+    print(f"SHARED_PROMPT_FRAGMENT={EXECPLAN_IDENTITY_FRAGMENT['name']}")
+    return 0
+
+
+def main() -> int:
+    args = parse_args()
+    if args.command == "check":
+        return run_check(args)
+    raise AssertionError(f"unhandled command: {args.command}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

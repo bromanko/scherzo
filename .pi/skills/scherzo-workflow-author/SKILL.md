@@ -38,6 +38,8 @@ Clarify any missing pieces before making workflow changes:
 - Keep workflow ids, config route keys, labels, and schedule ids consistent. Config `workflows:` paths are relative to the Scherzo config file that contains them.
 - Prefer explicit `kind: agent` / `kind: command` on new steps even though the schema can infer kind.
 - Use `run_in: main` for the step that owns the primary change. Use named workspaces with `from: main` for parallel reviews, validation, or analysis.
+- Keep duplicated twin-pipeline blocks synchronized when a bundle intentionally shares steps across workflows, such as Scherzo's `implementation.yaml` and `execplan-implementation.yaml` review pipeline.
+- Keep shared prompt-family policy fragments synchronized across every prompt that carries the same policy block; do not hand-edit one copy without checking the family.
 - Keep prompts, schemas, scripts, and guidance bundled with the workflow. Do not require consuming repositories to have personal Pi skills installed.
 - Keep the skill repository-agnostic: do not assume a particular bundled workflow set, tracker, VCS, or workspace driver unless the checked-in config or user request says so.
 - Do not put secrets, tokens, machine-specific absolute paths, or local-only usernames in workflow/config files. Use environment variables and ignored `*.local.yaml` overrides for machine-specific data.
@@ -56,6 +58,12 @@ direnv exec . gleam run -- doctor --check workflow-config .scherzo/scherzo.yaml
 ```
 
 If the config requires tracker credentials even for non-mutating checks, set the appropriate dummy environment variable for that tracker.
+
+For Scherzo dogfood workflow bundle edits, run the bundle hygiene lint when it is present; it catches orphaned prompts, twin-pipeline drift, shared prompt-fragment drift, and dead `repo_root=` assignments in workflow `run:` strings:
+
+```sh
+.scherzo/workflows/scripts/scherzo-workflow-lint check --repo-root . --bundle-root .scherzo/workflows --config .scherzo/scherzo.yaml
+```
 
 For workflow bundle portability changes, also run the repository's portability check when one is provided:
 

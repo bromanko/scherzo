@@ -334,6 +334,26 @@ def main() -> int:
         child_env,
         stage_root,
     )
+    lint_script = bundle_root / "scripts" / "scherzo-workflow-lint"
+    lint_command = [
+        str(lint_script),
+        "check",
+        "--repo-root",
+        str(stage_root),
+        "--bundle-root",
+        str(bundle_root),
+        "--config",
+        str(config_path),
+    ]
+    if lint_script.exists():
+        workflow_lint = run_subprocess(lint_command, child_env, stage_root)
+    else:
+        workflow_lint = subprocess.CompletedProcess(
+            lint_command,
+            127,
+            "",
+            f"missing workflow lint script: {lint_script}",
+        )
     checks = driver_checks(fake_bin, child_env, stage_root)
     workflow_report = workflow_entries(workflows, bundle_root)
 
@@ -346,6 +366,16 @@ def main() -> int:
                 "exit_code": doctor.returncode,
                 "stdout": doctor.stdout,
                 "stderr": doctor.stderr,
+            }
+        )
+    if workflow_lint.returncode != 0:
+        failures.append(
+            {
+                "phase": "workflow-lint",
+                "command": lint_command,
+                "exit_code": workflow_lint.returncode,
+                "stdout": workflow_lint.stdout,
+                "stderr": workflow_lint.stderr,
             }
         )
     failures.extend([check for check in checks if check.get("status") != "passed"])
@@ -369,6 +399,12 @@ def main() -> int:
             "exit_code": doctor.returncode,
             "stdout": doctor.stdout,
             "stderr": doctor.stderr,
+        },
+        "workflow_lint": {
+            "command": lint_command,
+            "exit_code": workflow_lint.returncode,
+            "stdout": workflow_lint.stdout,
+            "stderr": workflow_lint.stderr,
         },
         "driver_checks": checks,
         "workflows": workflow_report,

@@ -30,9 +30,10 @@ Command steps receive `SCHERZO_WORKFLOW_BUNDLE_DIR` and `SCHERZO_RUN_ARTIFACT_DI
 "$SCHERZO_WORKFLOW_BUNDLE_DIR/scripts/scherzo-execplan" validate-review-doc --path docs/plans/example.md
 ```
 
-When updating workflow-packaged guidance or helper invocations, run the workflow portability validation through the packaged CLI and positive runtime environment:
+When updating workflow-packaged guidance or helper invocations, run the workflow hygiene lint and workflow portability validation through the packaged CLI and positive runtime environment:
 
 ```sh
+.scherzo/workflows/scripts/scherzo-workflow-lint check --repo-root . --bundle-root .scherzo/workflows --config .scherzo/scherzo.yaml
 nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).workflow-portability --print-build-logs
 nix develop .#workflow-portability
 python3 scripts/scherzo-workflow-portability check --repo-root . --scherzo scherzo --output-dir tmp/scherzo-workflow-portability/manual
