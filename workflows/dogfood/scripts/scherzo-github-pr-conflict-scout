@@ -31,6 +31,7 @@ MAX_CONFLICTED_PATHS = 25
 MAX_CONFLICTED_PATH_BYTES = 4096
 MAX_CONFLICTED_PATH_CHARS = 240
 CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+HEAD_SHA_RE = re.compile(r"(?m)^Head SHA:\s*(.*?)\s*$")
 
 
 class ScoutError(Exception):
@@ -460,12 +461,25 @@ def issue_label_names(issue: dict[str, Any]) -> list[str]:
     return names
 
 
+def issue_description(issue: dict[str, Any]) -> str:
+    value = issue.get("description")
+    return value if isinstance(value, str) else ""
+
+
 def issue_contains_marker(issue: dict[str, Any], issue_marker: str) -> bool:
     title = issue.get("title") if isinstance(issue.get("title"), str) else ""
-    description = (
-        issue.get("description") if isinstance(issue.get("description"), str) else ""
-    )
+    description = issue_description(issue)
     return issue_marker in title or issue_marker in description
+
+
+def issue_head_sha(issue: dict[str, Any]) -> str | None:
+    match = HEAD_SHA_RE.search(issue_description(issue))
+    if match is None:
+        return None
+    value = match.group(1).strip()
+    if not value or value == "-":
+        return None
+    return value
 
 
 def issue_identifier(issue: dict[str, Any]) -> str:
@@ -478,13 +492,34 @@ def issue_identifier(issue: dict[str, Any]) -> str:
     return "unknown"
 
 
+def issue_created_at(issue: dict[str, Any]) -> str:
+    value = issue.get("createdAt")
+    if isinstance(value, str):
+        return value
+    value = issue.get("updatedAt")
+    if isinstance(value, str):
+        return value
+    return ""
+
+
 def choose_dispatchable_issue(issues: list[dict[str, Any]]) -> dict[str, Any] | None:
     in_progress = [issue for issue in issues if issue_state_name(issue) == "In Progress"]
     if in_progress:
-        return sorted(in_progress, key=lambda issue: str(issue.get("createdAt") or ""))[0]
+        return sorted(in_progress, key=issue_created_at)[0]
     todo = [issue for issue in issues if issue_state_name(issue) == "Todo"]
     if todo:
-        return sorted(todo, key=lambda issue: str(issue.get("createdAt") or ""))[0]
+        return sorted(todo, key=issue_created_at)[0]
+    return None
+
+
+def choose_marker_issue_with_head_sha(
+    issues: list[dict[str, Any]], head_sha: str | None
+) -> dict[str, Any] | None:
+    if not head_sha:
+        return None
+    for issue in issues:
+        if issue_head_sha(issue) == head_sha:
+            return issue
     return None
 
 
@@ -554,18 +589,6 @@ def apply_linear_plan(
         for issue in marker_issues
         if issue_state_name(issue) in ACTIVE_DEDUPE_STATES
     ]
-    historical = [
-        issue for issue in marker_issues if issue_state_name(issue) not in ACTIVE_DEDUPE_STATES
-    ]
-    for issue in historical:
-        summary["historical_marker_issues_ignored"].append(
-            {
-                "number": pr.number,
-                "identifier": issue_identifier(issue),
-                "state": issue_state_name(issue),
-            }
-        )
-
     description = generated_description(
         pr,
         detection,
@@ -598,6 +621,32 @@ def apply_linear_plan(
             }
         )
         return
+
+    matching_head_marker = choose_marker_issue_with_head_sha(marker_issues, pr.head_sha)
+    if matching_head_marker is not None:
+        summary["noop"].append(
+            {
+                "number": pr.number,
+                "issue_id": matching_head_marker.get("id"),
+                "identifier": issue_identifier(matching_head_marker),
+                "url": matching_head_marker.get("url"),
+                "state": issue_state_name(matching_head_marker),
+                "reason": "head_sha_unchanged",
+                "head_sha": pr.head_sha or "-",
+            }
+        )
+        return
+    if marker_issues:
+        for issue in marker_issues:
+            summary["historical_marker_issues_ignored"].append(
+                {
+                    "number": pr.number,
+                    "identifier": issue_identifier(issue),
+                    "state": issue_state_name(issue),
+                    "recorded_head_sha": issue_head_sha(issue) or "-",
+                    "current_head_sha": pr.head_sha or "-",
+                }
+            )
 
     input_payload = {
         "teamId": context.team_id,
