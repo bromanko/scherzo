@@ -52,6 +52,193 @@ fn state_for(dir: String) -> workflow_reloader.State {
   workflow_reloader.from_bundle(Some(dir <> "/scherzo.yaml"), bundle)
 }
 
+fn write_structured_project(dir: String) -> Nil {
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/recover.md",
+      "Recover this workflow step without starting over.",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/draft.md", "Draft output.")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/review.md", "Review output.")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/daemon.md",
+      "Use daemon defaults.",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\n"
+        <> "id: implementation\n"
+        <> "workspace:\n"
+        <> "  driver: jj\n"
+        <> "  requires: [status, publish-commit-stack]\n"
+        <> "concurrency: 2\n"
+        <> "model: anthropic/claude-sonnet-4\n"
+        <> "recovery:\n"
+        <> "  attempts: 2\n"
+        <> "  model: openai/gpt-5-mini\n"
+        <> "  prompt: prompts/recover.md\n"
+        <> "contract:\n"
+        <> "  version: 1\n"
+        <> "  inputs:\n"
+        <> "    brief:\n"
+        <> "      kind: file\n"
+        <> "      media_type: text/plain\n"
+        <> "      required: true\n"
+        <> "      source: issue_context\n"
+        <> "  context:\n"
+        <> "    base:\n"
+        <> "      kind: ref\n"
+        <> "      ref_type: git_ref\n"
+        <> "      required: false\n"
+        <> "      source: workspace_driver_base\n"
+        <> "  outputs:\n"
+        <> "    report:\n"
+        <> "      kind: file\n"
+        <> "      media_type: text/markdown\n"
+        <> "      source:\n"
+        <> "        step: review\n"
+        <> "        field: final_response\n"
+        <> "    commit_stack:\n"
+        <> "      kind: commit_stack\n"
+        <> "      media_type: application/vnd.scherzo.git-commit-stack+json\n"
+        <> "      artifact_type: scherzo.git_commit_stack.v1\n"
+        <> "      source:\n"
+        <> "        step: prepare\n"
+        <> "        path: state/commit-stack.json\n"
+        <> "artifacts:\n"
+        <> "  publications:\n"
+        <> "    - id: implementation_pr\n"
+        <> "      repository: github.code\n"
+        <> "      required: true\n"
+        <> "      mode: commit_stack\n"
+        <> "      commit_stack:\n"
+        <> "        select:\n"
+        <> "          output: commit_stack\n"
+        <> "      target:\n"
+        <> "        kind: stable_branch\n"
+        <> "workstream_phase:\n"
+        <> "  phase_id: implementation\n"
+        <> "  display_name: Implementation\n"
+        <> "  next_actions:\n"
+        <> "    - action_id: review\n"
+        <> "      workflow_id: review\n"
+        <> "      inputs: [report]\n"
+        <> "      requires_gate: human_review\n"
+        <> "      auto_enqueue: true\n"
+        <> "steps:\n"
+        <> "  - id: prepare\n"
+        <> "    kind: command\n"
+        <> "    run: echo prepare\n"
+        <> "    timeout: 30s\n"
+        <> "  - id: draft\n"
+        <> "    kind: agent\n"
+        <> "    depends_on: [prepare]\n"
+        <> "    prompt: prompts/draft.md\n"
+        <> "    structured_output:\n"
+        <> "      format: json\n"
+        <> "      artifact_name: implementation_pack\n"
+        <> "      source:\n"
+        <> "        type: pi_tool_call\n"
+        <> "        tool_name: submit_implementation_pack\n"
+        <> "        parameters_schema_path: schemas/implementation-pack.schema.json\n"
+        <> "      required: true\n"
+        <> "      validators:\n"
+        <> "        - name: implementation_pack_shape\n"
+        <> "          type: json_schema\n"
+        <> "          path: schemas/implementation-pack.schema.json\n"
+        <> "          draft: \"2020-12\"\n"
+        <> "      validation_retries: 0\n"
+        <> "  - id: review\n"
+        <> "    kind: agent\n"
+        <> "    depends_on: [draft]\n"
+        <> "    prompt: prompts/review.md\n"
+        <> "    model: openai/gpt-5\n"
+        <> "    on_failure: continue\n"
+        <> "    recovery:\n"
+        <> "      attempts: 3\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/scheduled.yaml",
+      "version: 1\nid: scheduled\nworkspace:\n  driver: noop\nsteps:\n  - id: scan\n    kind: command\n    run: echo scan\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/daemon-default.yaml",
+      "version: 1\nid: daemon-default\nsteps:\n  - id: ask\n    kind: agent\n    prompt: prompts/daemon.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/disabled-scheduled.yaml",
+      "version: 1\nid: disabled-scheduled\nworkspace:\n  driver: noop\nsteps:\n  - id: scan\n    kind: command\n    run: echo disabled\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\n"
+        <> "tracker:\n"
+        <> "  linear:\n"
+        <> "    api_key_env: LINEAR_API_KEY\n"
+        <> "    project: TEST\n"
+        <> "  states:\n"
+        <> "    ready: [Todo]\n"
+        <> "workspace:\n"
+        <> "  root: workspaces\n"
+        <> "  driver: jj\n"
+        <> "  drivers:\n"
+        <> "    noop:\n"
+        <> "      type: noop\n"
+        <> "agents:\n"
+        <> "  model: openai/gpt-5\n"
+        <> "workflows:\n"
+        <> "  implementation: workflows/implementation.yaml\n"
+        <> "  scheduled: workflows/scheduled.yaml\n"
+        <> "  daemon-default: workflows/daemon-default.yaml\n"
+        <> "  disabled-scheduled: workflows/disabled-scheduled.yaml\n"
+        <> "schedules:\n"
+        <> "  - id: scheduled\n"
+        <> "    workflow: scheduled\n"
+        <> "    enabled: true\n"
+        <> "    every: 15m\n"
+        <> "    overlap: skip\n"
+        <> "    catch_up: false\n"
+        <> "    on_failure:\n"
+        <> "      task:\n"
+        <> "        enabled: true\n"
+        <> "        state: Triage\n"
+        <> "        labels: [schedule-failed]\n"
+        <> "        dedupe: open_task_per_schedule\n"
+        <> "  - id: disabled-scheduled\n"
+        <> "    workflow: disabled-scheduled\n"
+        <> "    enabled: false\n"
+        <> "    every: 15m\n"
+        <> "    overlap: skip\n"
+        <> "    catch_up: false\n"
+        <> "artifacts:\n"
+        <> "  repositories:\n"
+        <> "    github:\n"
+        <> "      code:\n"
+        <> "        repo: example/repo\n"
+        <> "        base: main\n",
+    )
+  Nil
+}
+
+fn structured_state_for(dir: String) -> workflow_reloader.State {
+  write_structured_project(dir)
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  workflow_reloader.from_bundle(Some(dir <> "/scherzo.yaml"), bundle)
+}
+
 pub fn workflow_inventory_lists_multiple_loaded_workflows_test() {
   let state = state_for("test/tmp/control-query-workflow-inventory")
 
@@ -104,6 +291,147 @@ pub fn workflow_detail_includes_yaml_sources_and_graph_test() {
   assert edge.to == "ship"
 }
 
+pub fn workflow_detail_includes_structured_read_model_test() {
+  let state = state_for_structured_detail()
+
+  let assert Ok(types.WorkflowDetailResponse(detail)) =
+    query_workflow.execute_detail(
+      state,
+      types.WorkflowDetailQuery(workflow_id: "implementation"),
+    )
+
+  assert detail.schema_version == types.workflow_query_schema_version
+  let assert types.WorkflowRoutedTriggerDto(route, label) = detail.trigger
+  assert route == "implementation"
+  assert label == Some("workflow:implementation")
+  assert detail.workspace.driver == "jj"
+  assert detail.workspace.required_capabilities
+    == [
+      "status",
+      "publish-commit-stack",
+    ]
+  assert detail.execution.model.model == Some("anthropic/claude-sonnet-4")
+  assert detail.execution.max_parallel_steps == 2
+  let assert Some(workflow_recovery) = detail.execution.recovery
+  assert workflow_recovery.attempts == 2
+  assert workflow_recovery.model == Some("openai/gpt-5-mini")
+  assert workflow_recovery.prompt.kind == "file"
+  assert workflow_recovery.prompt.ref == Some("prompts/recover.md")
+
+  let assert Some(contract) = detail.contract
+  let assert [brief] = contract.inputs
+  assert brief.name == "brief"
+  assert brief.type_ == "text"
+  assert brief.source.required == True
+  assert brief.source.kind == Some("issue_context")
+  assert brief.descriptor_present == True
+  let assert [context] = contract.context
+  assert context.source.kind == Some("workspace_driver_base")
+  let assert [report, commit_stack] = contract.outputs
+  assert report.source.kind == Some("field")
+  assert commit_stack.type_ == "commit_stack"
+
+  let assert [prepare, draft, review] = detail.steps
+  assert prepare.kind == "command"
+  assert prepare.depends_on == []
+  let assert Some(command) = prepare.command
+  assert command.run == "echo prepare"
+  assert command.timeout_ms == Some(30_000)
+  assert draft.kind == "agent"
+  assert draft.depends_on == ["prepare"]
+  let assert Some(draft_model) = draft.model
+  assert draft_model.model == Some("anthropic/claude-sonnet-4")
+  let assert Some(draft_agent) = draft.agent
+  assert draft_agent.prompt.kind == "file"
+  assert draft_agent.prompt.ref == Some("prompts/draft.md")
+  let assert Some(structured_output) = draft_agent.structured_output
+  assert structured_output.artifact_name == "implementation_pack"
+  assert structured_output.required == True
+  assert structured_output.validation_retries == 0
+  let assert [validator] = structured_output.validators
+  assert validator.name == "implementation_pack_shape"
+  assert validator.kind == "json_schema"
+  assert review.on_failure == "continue"
+  let assert Some(review_model) = review.model
+  assert review_model.model == Some("openai/gpt-5")
+  let assert Some(review_recovery) = review.recovery
+  assert review_recovery.attempts == 3
+  assert review_recovery.model == Some("openai/gpt-5-mini")
+  assert review_recovery.prompt.kind == "file"
+  assert review_recovery.prompt.ref == Some("prompts/recover.md")
+
+  let assert [publication] = detail.publications
+  assert publication.id == "implementation_pr"
+  assert publication.repository == "github.code"
+  assert publication.required == True
+  assert publication.mode == "commit_stack"
+
+  let assert [next_action] = detail.next_actions
+  assert next_action.action_id == "review"
+  assert next_action.workflow_id == "review"
+  assert next_action.requires_gate == Some("human_review")
+  assert next_action.auto_enqueue == True
+}
+
+pub fn workflow_detail_includes_scheduled_trigger_test() {
+  let state = state_for_structured_detail()
+
+  let assert Ok(types.WorkflowDetailResponse(detail)) =
+    query_workflow.execute_detail(
+      state,
+      types.WorkflowDetailQuery(workflow_id: "scheduled"),
+    )
+
+  let assert types.WorkflowScheduledTriggerDto(
+    schedule_id,
+    every_ms,
+    overlap,
+    catch_up,
+    on_failure,
+  ) = detail.trigger
+  assert schedule_id == "scheduled"
+  assert every_ms == 900_000
+  assert overlap == "skip"
+  assert catch_up == False
+  assert on_failure.task_enabled == True
+  assert on_failure.task_state == Some("Triage")
+  assert on_failure.task_labels == ["schedule-failed"]
+  assert on_failure.task_dedupe == "open_task_per_schedule"
+}
+
+pub fn workflow_detail_ignores_disabled_schedule_trigger_test() {
+  let state = state_for_structured_detail()
+
+  let assert Ok(types.WorkflowDetailResponse(detail)) =
+    query_workflow.execute_detail(
+      state,
+      types.WorkflowDetailQuery(workflow_id: "disabled-scheduled"),
+    )
+
+  let assert types.WorkflowRoutedTriggerDto(route, label) = detail.trigger
+  assert route == "disabled-scheduled"
+  assert label == Some("workflow:disabled-scheduled")
+}
+
+pub fn workflow_detail_resolves_daemon_default_model_test() {
+  let state = state_for_structured_detail()
+
+  let assert Ok(types.WorkflowDetailResponse(detail)) =
+    query_workflow.execute_detail(
+      state,
+      types.WorkflowDetailQuery(workflow_id: "daemon-default"),
+    )
+
+  assert detail.execution.model.model == Some("openai/gpt-5")
+  let assert [step] = detail.steps
+  let assert Some(model) = step.model
+  assert model.model == Some("openai/gpt-5")
+}
+
+fn state_for_structured_detail() -> workflow_reloader.State {
+  structured_state_for("test/tmp/control-query-workflow-structured-detail")
+}
+
 pub fn workflow_detail_redacts_sensitive_yaml_keys_and_caps_contents_test() {
   let state = state_for("test/tmp/control-query-workflow-safe-contents")
   let redacted_config =
@@ -139,6 +467,60 @@ pub fn workflow_detail_redacts_sensitive_yaml_keys_and_caps_contents_test() {
   assert string.length(config_source.contents)
     == query_workflow.max_yaml_source_contents_chars
   assert string.length(config_source.contents_sha256) == 64
+}
+
+pub fn workflow_detail_caps_large_structured_strings_test() {
+  let dir = "test/tmp/control-query-workflow-structured-string-cap"
+  let large =
+    string.repeat("x", times: query_workflow.max_structured_field_chars + 1)
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/workflows")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\n"
+        <> "id: implementation\n"
+        <> "contract:\n"
+        <> "  version: 1\n"
+        <> "  inputs:\n"
+        <> "    brief:\n"
+        <> "      kind: file\n"
+        <> "      media_type: text/plain\n"
+        <> "      description: "
+        <> large
+        <> "\n"
+        <> "      required: true\n"
+        <> "      source: issue_context\n"
+        <> "steps:\n"
+        <> "  - id: oversized\n"
+        <> "    kind: command\n"
+        <> "    run: "
+        <> large
+        <> "\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n  implementation: workflows/implementation.yaml\n",
+    )
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  let state =
+    workflow_reloader.from_bundle(Some(dir <> "/scherzo.yaml"), bundle)
+
+  let assert Ok(types.WorkflowDetailResponse(detail)) =
+    query_workflow.execute_detail(
+      state,
+      types.WorkflowDetailQuery(workflow_id: "implementation"),
+    )
+
+  let assert [step] = detail.steps
+  let assert Some(command) = step.command
+  assert string.length(command.run) == query_workflow.max_structured_field_chars
+  let assert Some(contract) = detail.contract
+  let assert [input] = contract.inputs
+  let assert Some(description) = input.description
+  assert string.length(description) == query_workflow.max_structured_field_chars
 }
 
 pub fn workflow_queries_execute_through_query_runtime_test() {

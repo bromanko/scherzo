@@ -20,6 +20,7 @@ pub opaque type WorkflowDag {
     description: Option(String),
     workspace_profile: Option(String),
     workspace_capabilities: List(config_types.WorkspaceCapability),
+    model_settings: model_config.Settings,
     max_parallel_steps: Int,
     recover: Option(RecoveryConfigPatch),
     steps: List(WorkflowStep),
@@ -103,6 +104,7 @@ pub type StructuredOutputSpec {
 pub type PromptRef {
   PromptFile(String)
   PromptInline(String)
+  PromptResolvedFile(path: String, contents: String)
 }
 
 pub type WorkspaceRef {
@@ -139,6 +141,7 @@ pub fn new(
     description: description,
     workspace_profile: workspace_profile,
     workspace_capabilities: workspace_capabilities,
+    model_settings: model_config.default_settings(),
     max_parallel_steps: max_parallel_steps,
     recover: recover,
     steps: steps,
@@ -165,6 +168,10 @@ pub fn workspace_capabilities(
   dag: WorkflowDag,
 ) -> List(config_types.WorkspaceCapability) {
   dag.workspace_capabilities
+}
+
+pub fn model_settings(dag: WorkflowDag) -> model_config.Settings {
+  dag.model_settings
 }
 
 pub fn max_parallel_steps(dag: WorkflowDag) -> Int {
@@ -241,6 +248,7 @@ pub fn parse_root(root: yay.Node) -> Result(WorkflowDag, DagError) {
           description: optional_string(root, "description"),
           workspace_profile: workspace_profile,
           workspace_capabilities: workspace_capabilities,
+          model_settings: workflow_model_settings,
           max_parallel_steps: max_parallel_steps,
           recover: recover,
           steps: steps,
@@ -273,6 +281,7 @@ pub fn terminal_step(dag: WorkflowDag) -> Option(WorkflowStep) {
 pub fn prompt_file_path(step: WorkflowStep) -> Option(String) {
   case step.kind {
     AgentStep(PromptFile(path), _) -> Some(path)
+    AgentStep(PromptResolvedFile(path, _), _) -> Some(path)
     _ -> None
   }
 }

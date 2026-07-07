@@ -376,6 +376,8 @@ fn issue_references_in_step(
 ) -> List(IssueReference) {
   let source = case step.kind {
     workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), _) -> prompt
+    workflow_dag.AgentStep(workflow_dag.PromptResolvedFile(_, prompt), _) ->
+      prompt
     workflow_dag.AgentStep(workflow_dag.PromptFile(path), _) -> path
     workflow_dag.CommandStep(run, _) -> run
   }

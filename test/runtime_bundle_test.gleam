@@ -490,8 +490,10 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   assert bundle.config_path == dir <> "/scherzo.yaml"
   let assert Ok(dag) = dict.get(bundle.workflows, "implementation")
   let assert [step] = workflow_dag.steps(dag)
-  let assert workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), None) =
-    step.kind
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptResolvedFile("prompts/implement.md", prompt),
+    None,
+  ) = step.kind
   assert prompt == "Implement {{ issue.identifier }}"
 }
 
@@ -803,12 +805,18 @@ pub fn loads_recovery_prompt_files_test() {
   let assert Ok(dag) =
     runtime_bundle.load_workflow_file(dir <> "/workflows/implementation.yaml")
   let assert Some(workflow_dag.RecoveryConfigPatch(
-    prompt: Some(workflow_dag.PromptInline(workflow_prompt)),
+    prompt: Some(workflow_dag.PromptResolvedFile(
+      "prompts/recover.md",
+      workflow_prompt,
+    )),
     ..,
   )) = workflow_dag.recovery_config(dag)
   let assert [step] = workflow_dag.steps(dag)
   let assert Some(workflow_dag.RecoveryConfigPatch(
-    prompt: Some(workflow_dag.PromptInline(step_prompt)),
+    prompt: Some(workflow_dag.PromptResolvedFile(
+      "prompts/recover-step.md",
+      step_prompt,
+    )),
     ..,
   )) = step.recover
   assert workflow_prompt == "Recover workflow"

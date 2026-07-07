@@ -341,6 +341,8 @@ fn prompt_fingerprint(prompt: workflow_dag.PromptRef) -> String {
     workflow_dag.PromptFile(path) -> "file:" <> path
     workflow_dag.PromptInline(contents) ->
       "inline:" <> int.to_string(string.length(contents))
+    workflow_dag.PromptResolvedFile(_, contents) ->
+      "inline:" <> int.to_string(string.length(contents))
   }
 }
 

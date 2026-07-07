@@ -378,6 +378,8 @@ fn prompt_status(
 ) -> Result(String, CliError) {
   case prompt {
     workflow_dag.PromptInline(text) -> Ok(prompt_text_status(text, tool_name))
+    workflow_dag.PromptResolvedFile(_, text) ->
+      Ok(prompt_text_status(text, tool_name))
     workflow_dag.PromptFile(prompt_path) ->
       read_text_file(resolve_workflow_relative_path(workflow_path, prompt_path))
       |> result.map(fn(text) { prompt_text_status(text, tool_name) })

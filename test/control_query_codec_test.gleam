@@ -419,28 +419,11 @@ pub fn workflow_query_request_response_roundtrip_test() {
         workflows: [workflow_summary()],
       ),
     )
-  let detail_response =
-    types.WorkflowDetailResponse(types.WorkflowDetailDto(
-      schema_version: types.workflow_query_schema_version,
-      summary: workflow_summary(),
-      yaml_sources: [workflow_yaml_source()],
-      diagnostics: [],
-      freshness: workflow_freshness(),
-      graph: types.WorkflowGraphDto(
-        nodes: [
-          types.WorkflowGraphNodeDto(
-            id: "implement",
-            label: "implement",
-            kind: "agent",
-          ),
-        ],
-        edges: [],
-      ),
-    ))
+  let detail_response = workflow_detail_response()
 
   let encoded_list = codec.response_to_string(list_response)
   assert string.contains(encoded_list, "\"type\":\"workflow_list\"")
-  assert string.contains(encoded_list, "\"schema_version\":1")
+  assert string.contains(encoded_list, "\"schema_version\":2")
   assert codec.decode_response(encoded_list) == Ok(list_response)
 
   let encoded_detail = codec.response_to_string(detail_response)
@@ -448,6 +431,16 @@ pub fn workflow_query_request_response_roundtrip_test() {
   assert string.contains(encoded_detail, "workflows/implementation.yaml")
   assert string.contains(encoded_detail, "\"contents_truncated\":false")
   assert codec.decode_response(encoded_detail) == Ok(detail_response)
+}
+
+pub fn workflow_detail_scheduled_command_response_roundtrip_test() {
+  let response = scheduled_command_workflow_detail_response()
+
+  let encoded = codec.response_to_string(response)
+
+  assert string.contains(encoded, "\"kind\":\"scheduled\"")
+  assert string.contains(encoded, "\"command\":{")
+  assert codec.decode_response(encoded) == Ok(response)
 }
 
 pub fn malformed_workflow_response_payloads_are_rejected_test() {
@@ -480,8 +473,8 @@ pub fn workflow_response_rejects_unsupported_schema_versions_test() {
   let invalid_list_schema =
     codec.response_to_string(workflow_list_response())
     |> string.replace(
-      each: "\"schema_version\":1",
-      with: "\"schema_version\":2",
+      each: "\"schema_version\":2",
+      with: "\"schema_version\":999",
     )
 
   let assert Error(types.QueryError(code: list_code, message: list_message)) =
@@ -492,8 +485,8 @@ pub fn workflow_response_rejects_unsupported_schema_versions_test() {
   let invalid_detail_schema =
     codec.response_to_string(workflow_detail_response())
     |> string.replace(
-      each: "\"schema_version\":1",
-      with: "\"schema_version\":2",
+      each: "\"schema_version\":2",
+      with: "\"schema_version\":999",
     )
 
   let assert Error(types.QueryError(code: detail_code, message: detail_message)) =
@@ -715,6 +708,113 @@ fn workflow_detail_response() -> types.QueryResponse {
     yaml_sources: [workflow_yaml_source()],
     diagnostics: [],
     freshness: workflow_freshness(),
+    trigger: types.WorkflowRoutedTriggerDto(
+      route: "implementation",
+      label: Some("workflow:implementation"),
+    ),
+    workspace: types.WorkflowWorkspaceDto(
+      driver: "noop",
+      required_capabilities: ["status"],
+    ),
+    execution: types.WorkflowExecutionDefaultsDto(
+      model: types.WorkflowModelSettingsDto(
+        model: Some("openai/gpt-5"),
+        thinking: Some("high"),
+      ),
+      max_parallel_steps: 1,
+      recovery: Some(types.WorkflowRecoveryDto(
+        attempts: 1,
+        model: None,
+        prompt: types.WorkflowPromptRefDto(
+          kind: "file",
+          ref: Some("prompts/recover.md"),
+        ),
+      )),
+    ),
+    contract: Some(
+      types.WorkflowContractDto(
+        version: 1,
+        inputs: [
+          types.WorkflowContractSpecDto(
+            name: "brief",
+            type_: "text",
+            description: Some("Task brief"),
+            source: types.WorkflowContractSourceDto(
+              required: True,
+              kind: Some("issue_context"),
+            ),
+            descriptor_present: True,
+          ),
+        ],
+        context: [],
+        outputs: [
+          types.WorkflowContractSpecDto(
+            name: "result",
+            type_: "document.markdown",
+            description: None,
+            source: types.WorkflowContractSourceDto(
+              required: True,
+              kind: Some("field"),
+            ),
+            descriptor_present: True,
+          ),
+        ],
+      ),
+    ),
+    steps: [
+      types.WorkflowStepDto(
+        id: "implement",
+        kind: "agent",
+        depends_on: [],
+        on_failure: "fail",
+        model: Some(types.WorkflowModelSettingsDto(
+          model: Some("openai/gpt-5"),
+          thinking: Some("high"),
+        )),
+        recovery: Some(types.WorkflowRecoveryDto(
+          attempts: 1,
+          model: None,
+          prompt: types.WorkflowPromptRefDto(
+            kind: "file",
+            ref: Some("prompts/recover.md"),
+          ),
+        )),
+        command: None,
+        agent: Some(types.WorkflowAgentStepDto(
+          prompt: types.WorkflowPromptRefDto(
+            kind: "file",
+            ref: Some("prompts/implement.md"),
+          ),
+          structured_output: Some(types.WorkflowStructuredOutputDto(
+            artifact_name: "implementation_pack",
+            required: True,
+            validators: [
+              types.WorkflowStructuredOutputValidatorDto(
+                name: "implementation_pack_shape",
+                kind: "json_schema",
+              ),
+            ],
+            validation_retries: 1,
+          )),
+        )),
+      ),
+    ],
+    publications: [
+      types.WorkflowPublicationDto(
+        id: "implementation_pr",
+        repository: "github.code",
+        required: True,
+        mode: "commit_stack",
+      ),
+    ],
+    next_actions: [
+      types.WorkflowNextActionDto(
+        action_id: "review",
+        workflow_id: "review",
+        requires_gate: Some("human_review"),
+        auto_enqueue: False,
+      ),
+    ],
     graph: types.WorkflowGraphDto(
       nodes: [
         types.WorkflowGraphNodeDto(
@@ -726,6 +826,48 @@ fn workflow_detail_response() -> types.QueryResponse {
       edges: [],
     ),
   ))
+}
+
+fn scheduled_command_workflow_detail_response() -> types.QueryResponse {
+  let assert types.WorkflowDetailResponse(detail) = workflow_detail_response()
+  types.WorkflowDetailResponse(
+    types.WorkflowDetailDto(
+      ..detail,
+      trigger: types.WorkflowScheduledTriggerDto(
+        schedule_id: "implementation-schedule",
+        every_ms: 900_000,
+        overlap: "skip",
+        catch_up: False,
+        on_failure: types.WorkflowScheduledFailureDto(
+          task_enabled: True,
+          task_state: Some("Triage"),
+          task_labels: ["schedule-failed"],
+          task_dedupe: "open_task_per_schedule",
+        ),
+      ),
+      steps: [
+        types.WorkflowStepDto(
+          id: "ship",
+          kind: "command",
+          depends_on: ["prepare"],
+          on_failure: "continue",
+          model: None,
+          recovery: None,
+          command: Some(types.WorkflowCommandStepDto(
+            run: "echo ship",
+            timeout_ms: Some(30_000),
+          )),
+          agent: None,
+        ),
+      ],
+      graph: types.WorkflowGraphDto(
+        nodes: [
+          types.WorkflowGraphNodeDto(id: "ship", label: "ship", kind: "command"),
+        ],
+        edges: [types.WorkflowGraphEdgeDto(from: "prepare", to: "ship")],
+      ),
+    ),
+  )
 }
 
 fn workflow_summary() -> types.WorkflowSummaryDto {
