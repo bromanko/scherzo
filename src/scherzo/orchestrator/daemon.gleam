@@ -3270,7 +3270,7 @@ fn retry_workflow_step_for_operator(
           command.rejected(
             operator_command,
             workflow_repair.describe_error(error),
-            workflow_repair.error_message(error),
+            retry_step_admission_error_message(error, target),
           ),
         )
         Ok(#(run_id, issue_id, issue_identifier)) ->
@@ -3285,16 +3285,27 @@ fn retry_workflow_step_for_operator(
                 )
               {
                 Error(result) -> #(state, result)
-                Ok(_) ->
-                  queue_retry_step_operation_for_operator(
-                    state,
-                    operator_command,
-                    run_id,
-                    issue_id,
-                    issue_identifier,
-                    step_id,
-                    None,
-                  )
+                Ok(observation) ->
+                  case operator_command {
+                    command.RetryWorkflowStepDryRun(_, _) ->
+                      retry_step_dry_run_for_operator(
+                        state,
+                        operator_command,
+                        run_id,
+                        step_id,
+                        observation,
+                      )
+                    _ ->
+                      queue_retry_step_operation_for_operator(
+                        state,
+                        operator_command,
+                        run_id,
+                        issue_id,
+                        issue_identifier,
+                        step_id,
+                        None,
+                      )
+                  }
               }
             False ->
               case
@@ -3309,21 +3320,112 @@ fn retry_workflow_step_for_operator(
               {
                 Error(result) -> #(state, result)
                 Ok(retry_step_operation.IssuePreflight(
+                  issue: issue,
                   released_park: released_park,
-                  ..,
                 )) ->
-                  queue_retry_step_operation_for_operator(
-                    state,
-                    operator_command,
-                    run_id,
-                    issue_id,
-                    issue_identifier,
-                    step_id,
-                    released_park,
-                  )
+                  case operator_command {
+                    command.RetryWorkflowStepDryRun(_, _) ->
+                      retry_step_dry_run_for_operator(
+                        state,
+                        operator_command,
+                        run_id,
+                        step_id,
+                        startup_recovery.current_workflow_observation(
+                          state.workflow.bundle,
+                          issue,
+                        ),
+                      )
+                    _ ->
+                      queue_retry_step_operation_for_operator(
+                        state,
+                        operator_command,
+                        run_id,
+                        issue_id,
+                        issue_identifier,
+                        step_id,
+                        released_park,
+                      )
+                  }
               }
           }
       }
+  }
+}
+
+fn retry_step_admission_error_message(
+  error: workflow_repair.RepairError,
+  target: command.RetryWorkflowStepTarget,
+) -> Option(String) {
+  let reason = workflow_repair.describe_error(error)
+  let base = option.unwrap(workflow_repair.error_message(error), reason)
+  Some(
+    base
+    <> "; no run, park, or tracker state was changed. Next safe command: "
+    <> retry_step_admission_next_command(reason, target),
+  )
+}
+
+fn retry_step_admission_next_command(
+  reason: String,
+  target: command.RetryWorkflowStepTarget,
+) -> String {
+  case reason {
+    "ambiguous_failed_run" -> "scripts/scherzoctl ps --json"
+    "no_failed_workflow_run" -> no_failed_run_next_command(target)
+    _ -> "scripts/scherzoctl ps --json"
+  }
+}
+
+fn no_failed_run_next_command(
+  target: command.RetryWorkflowStepTarget,
+) -> String {
+  case target {
+    command.RetryWorkflowStepRunId(run_id) ->
+      "scripts/scherzoctl session " <> run_id <> " --json"
+    command.RetryWorkflowStepIssueRef(issue_ref) ->
+      "scripts/scherzoctl retry all "
+      <> command.issue_ref_to_string(issue_ref)
+      <> " --json"
+    command.RetryWorkflowStepAutoTarget(target) ->
+      "scripts/scherzoctl retry all " <> target <> " --json"
+  }
+}
+
+fn retry_step_dry_run_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  step_id: Option(String),
+  observation: recovery.CurrentWorkflowObservation,
+) -> #(State, command.CommandResult) {
+  case
+    workflow_repair.retry_dry_run(
+      state.ledger_projection,
+      command.RetryWorkflowStepRunId(run_id),
+      step_id,
+      observation,
+    )
+  {
+    Error(error) -> #(
+      state,
+      command.rejected(
+        operator_command,
+        workflow_repair.describe_error(error),
+        Some(retry_step_operation.failure_message(
+          workflow_repair.describe_error(error),
+          workflow_repair.error_message(error),
+          run_id,
+          step_id,
+        )),
+      ),
+    )
+    Ok(plan) -> #(
+      state,
+      command.applied(
+        operator_command,
+        Some(workflow_repair.retry_dry_run_message(plan)),
+      ),
+    )
   }
 }
 
@@ -3499,7 +3601,9 @@ fn queue_recollect_outputs_operation(
             operator_command,
             decision.operation_id,
             Some(
-              "recollect-outputs already queued/running; poll query operation-status for completion",
+              "recollect-outputs already queued/running; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status "
+              <> decision.operation_id
+              <> " --json",
             ),
           ),
         )
@@ -4978,7 +5082,9 @@ fn retry_artifact_publication_for_operator(
             operator_command,
             operation_id,
             Some(
-              "artifact publication retry already queued/running; poll query operation-status for completion",
+              "artifact publication retry already queued/running; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status "
+              <> operation_id
+              <> " --json",
             ),
           ),
         )

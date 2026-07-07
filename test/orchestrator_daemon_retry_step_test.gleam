@@ -25,6 +25,7 @@ import scherzo/orchestrator/yaml_step_session
 import scherzo/path
 import scherzo/port
 import scherzo/result_artifact
+import scherzo/retry_step_validation
 import scherzo/runtime/state as orchestrator_state
 import scherzo/runtime_bundle
 import scherzo/session/event
@@ -58,6 +59,61 @@ import test_async
 type FetchCounterMessage {
   FetchShouldBlock(process.Subject(Bool))
   ArmFetchGate
+}
+
+pub fn retry_recovery_rejection_messages_include_next_command_table_test() {
+  let cases = [
+    #(
+      "artifact_recovery_failed",
+      retry_step_validation.operation_failure_message(
+        "artifact_recovery_failed",
+        Some("artifact sha mismatch"),
+        "run-1",
+        Some("build"),
+      ),
+    ),
+    #(
+      "workflow_drift",
+      retry_step_validation.operation_failure_message(
+        "workflow_drift",
+        Some("workflow fingerprint drifted"),
+        "run-1",
+        Some("build"),
+      ),
+    ),
+    #(
+      "ambiguous_repair_step",
+      retry_step_validation.operation_failure_message(
+        "ambiguous_repair_step",
+        Some("multiple failed or interrupted steps match; use --step"),
+        "run-1",
+        Some("build"),
+      ),
+    ),
+    #(
+      "issue_state_drift:terminal_state",
+      retry_step_validation.operation_failure_message(
+        "issue_state_drift:terminal_state",
+        Some("issue is terminal"),
+        "run-1",
+        Some("build"),
+      ),
+    ),
+    #(
+      "issue_parked",
+      "issue is parked for operator_hold; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl unpark LIV-1 --json",
+    ),
+    #(
+      "control_operation_already_running",
+      "control operation already queued/running; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status op-1 --json",
+    ),
+  ]
+
+  list.each(cases, fn(entry) {
+    let #(reason, message) = entry
+    assert reason != ""
+    assert string.contains(message, "Next safe command: scripts/scherzoctl ")
+  })
 }
 
 pub fn retry_step_rejects_active_issue_for_interrupted_run_test() {
@@ -307,6 +363,58 @@ pub fn retry_step_rejects_manual_drift_like_parked_issue_test() {
   assert command.status_to_string(result.status) == "rejected"
   assert command.status_reason(result.status) == Some("issue_parked")
   assert ledger_bodies(root) == before
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_dry_run_reports_safe_point_and_preserved_discarded_steps_test() {
+  let dir = "test/tmp/daemon-retry-dry-run-plan"
+  let issue = issue("issue-1", "LIV-1374", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(_, _, _) {
+        process.send(worker_subject, "unexpected_worker_started")
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let before = ledger_bodies(root)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStepDryRun(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "applied"
+  let assert Some(message) = result.message
+  assert string.contains(
+    message,
+    "chosen safe point=resume from apply_feedback",
+  )
+  assert string.contains(message, "preserved steps=seed")
+  assert string.contains(message, "discarded steps=apply_feedback")
+  assert ledger_bodies(root) == before
+  test_async.assert_no_extra_message(worker_subject)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -1746,6 +1854,11 @@ pub fn retry_step_rejects_terminal_issue_state_for_retained_run_test() {
   assert command.status_to_string(result.status) == "rejected"
   assert command.status_reason(result.status)
     == Some("issue_state_drift:terminal_state")
+  let assert Some(message) = result.message
+  assert string.contains(
+    message,
+    "Next safe command: scripts/scherzoctl task show LIV-511 --json",
+  )
   assert ledger_bodies(root) == before
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -3638,10 +3751,17 @@ pub fn artifact_publication_retry_reuses_existing_operation_for_duplicate_target
     )
   assert command.status_to_string(second.status) == "queued"
   assert second.operation_id == Some(first_operation_id)
-  assert second.message
-    == Some(
-      "artifact publication retry already queued/running; poll query operation-status for completion",
-    )
+  let assert Some(second_message) = second.message
+  assert string.contains(
+    second_message,
+    "artifact publication retry already queued/running",
+  )
+  assert string.contains(
+    second_message,
+    "Next safe command: scripts/scherzoctl query operation-status "
+      <> first_operation_id
+      <> " --json",
+  )
   assert count_kind(root, "control_operation_queued") == 1
   assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
 

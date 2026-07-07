@@ -795,36 +795,57 @@ fn operator_command(
 fn build_retry_command(
   parsed: command_spec.ParsedCommand(command_registry.HandlerKey),
 ) -> Result(Command, Error) {
-  let issue = issue_ref(first_positional(parsed, parsed.usage))
-  let start_fresh =
-    command_spec.has_flag(parsed, "--start-fresh")
-    || command_spec.has_flag(parsed, "--from-scratch")
-  let default_reason = case parsed.path {
-    ["retry", "all"] -> Some("operator_forced_from_scratch")
-    _ -> None
-  }
-  let reason = case command_spec.option_value(parsed, "--reason") {
-    Some(reason) -> Some(reason)
-    None -> default_reason
-  }
-  case start_fresh, reason {
-    True, Some(reason) ->
-      Ok(TaskRetryStartFresh(
-        control_file_option(parsed),
-        json_output(parsed),
-        issue,
-        reason,
-      ))
-    True, None ->
-      Error(UsageError(
-        "task retry --start-fresh/--from-scratch requires --reason <text>",
-      ))
-    False, Some(_) ->
-      Error(UsageError(
-        "task retry --reason <text> requires --start-fresh or --from-scratch",
-      ))
-    False, None ->
-      Ok(operator_command(parsed, control_command.RetryIssue(issue)))
+  case parsed.path {
+    ["retry"] -> {
+      let target =
+        retry_workflow_step_target(first_positional(parsed, parsed.usage))
+      let step_id = command_spec.option_value(parsed, "--step")
+      case command_spec.has_flag(parsed, "--dry-run") {
+        True ->
+          Ok(operator_command(
+            parsed,
+            control_command.RetryWorkflowStepDryRun(target, step_id),
+          ))
+        False ->
+          Ok(operator_command(
+            parsed,
+            control_command.RetryWorkflowStep(target, step_id),
+          ))
+      }
+    }
+    _ -> {
+      let issue = issue_ref(first_positional(parsed, parsed.usage))
+      let start_fresh =
+        command_spec.has_flag(parsed, "--start-fresh")
+        || command_spec.has_flag(parsed, "--from-scratch")
+      let default_reason = case parsed.path {
+        ["retry", "all"] -> Some("operator_forced_from_scratch")
+        _ -> None
+      }
+      let reason = case command_spec.option_value(parsed, "--reason") {
+        Some(reason) -> Some(reason)
+        None -> default_reason
+      }
+      case start_fresh, reason {
+        True, Some(reason) ->
+          Ok(TaskRetryStartFresh(
+            control_file_option(parsed),
+            json_output(parsed),
+            issue,
+            reason,
+          ))
+        True, None ->
+          Error(UsageError(
+            "task retry --start-fresh/--from-scratch requires --reason <text>",
+          ))
+        False, Some(_) ->
+          Error(UsageError(
+            "task retry --reason <text> requires --start-fresh or --from-scratch",
+          ))
+        False, None ->
+          Ok(operator_command(parsed, control_command.RetryIssue(issue)))
+      }
+    }
   }
 }
 
@@ -843,7 +864,7 @@ fn normalize_retry_alias_args(args: List(String)) -> List(String) {
           ..rest
         ]
       }
-    ["retry", "step", target, ..rest] -> ["retry-step", target, ..rest]
+    ["retry", "step", target, ..rest] -> ["retry", target, ..rest]
     _ -> args
   }
 }

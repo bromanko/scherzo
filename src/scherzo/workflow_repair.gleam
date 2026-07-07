@@ -69,6 +69,19 @@ pub type RepairPlan {
   )
 }
 
+pub type RetryDryRunPlan {
+  RetryDryRunPlan(
+    run_id: String,
+    issue_identifier: String,
+    requested_step_id: String,
+    safe_point: workflow_retry_planner.SafePoint,
+    preserved_step_ids: List(String),
+    discarded_step_ids: List(String),
+    reason: Option(String),
+    summary: String,
+  )
+}
+
 type SelectedRun {
   SelectedRun(
     run_id: String,
@@ -208,6 +221,96 @@ pub fn plan_exact(
     current,
     ExactRetryPlanning,
   )
+}
+
+pub fn retry_dry_run(
+  projection_state: projection.Projection,
+  target: command.RetryWorkflowStepTarget,
+  selected_step_id: Option(String),
+  current: recovery.CurrentWorkflowObservation,
+) -> Result(RetryDryRunPlan, RepairError) {
+  use run <- result.try(select_run(projection_state, target))
+  case require_current_workflow(current) {
+    Error(error) -> Error(error)
+    Ok(recovery.CurrentWorkflow(
+      issue,
+      current_workflow_id,
+      current_workflow_fingerprint,
+      _,
+      dag,
+      workspace_root,
+    )) -> {
+      use _ <- result.try(validate_issue_and_task(run, issue))
+      use _ <- result.try(validate_run_root(
+        run.run_id,
+        run.run_root,
+        workspace_root,
+      ))
+      let attempts = attempts_for_run(projection_state, run.run_id)
+      use selected_boundary <- result.try(select_repair_boundary(
+        run,
+        attempts,
+        dag,
+        selected_step_id,
+      ))
+      let retry_plan =
+        build_retry_plan(
+          projection_state,
+          run,
+          current_workflow_id,
+          current_workflow_fingerprint,
+          selected_boundary.step_id,
+          dag,
+          attempts,
+          workspace_root,
+        )
+      Ok(RetryDryRunPlan(
+        run_id: run.run_id,
+        issue_identifier: issue.identifier,
+        requested_step_id: selected_boundary.step_id,
+        safe_point: retry_plan.safe_point,
+        preserved_step_ids: retry_plan.preserved_step_ids,
+        discarded_step_ids: retry_plan.discarded_step_ids,
+        reason: retry_plan.reason,
+        summary: retry_plan.summary,
+      ))
+    }
+    Ok(_) ->
+      Error(RepairError("workflow_unavailable", Some("workflow is unavailable")))
+  }
+}
+
+pub fn retry_dry_run_message(plan: RetryDryRunPlan) -> String {
+  "retry dry-run plan: run="
+  <> plan.run_id
+  <> "; requested step="
+  <> plan.requested_step_id
+  <> "; chosen safe point="
+  <> safe_point_to_string(plan.safe_point)
+  <> "; preserved steps="
+  <> step_list_to_string(plan.preserved_step_ids)
+  <> "; discarded steps="
+  <> step_list_to_string(plan.discarded_step_ids)
+  <> "; summary="
+  <> plan.summary
+}
+
+fn safe_point_to_string(
+  safe_point: workflow_retry_planner.SafePoint,
+) -> String {
+  case safe_point {
+    workflow_retry_planner.ResumeFrom(step_id) -> "resume from " <> step_id
+    workflow_retry_planner.RewindTo(step_id) -> "rewind to " <> step_id
+    workflow_retry_planner.FreshStart -> "fresh start"
+    workflow_retry_planner.HardStop(reason) -> "blocked: " <> reason
+  }
+}
+
+fn step_list_to_string(step_ids: List(String)) -> String {
+  case step_ids {
+    [] -> "(none)"
+    _ -> string.join(step_ids, with: ",")
+  }
 }
 
 fn plan_with_mode(

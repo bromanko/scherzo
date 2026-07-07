@@ -109,6 +109,13 @@ pub fn mutating_command_requests_roundtrip_to_operator_commands_test() {
   )
   assert_command_roundtrip(
     "4c",
+    command.RetryWorkflowStepDryRun(
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("build"),
+    ),
+  )
+  assert_command_roundtrip(
+    "4d",
     command.RunFinalize(
       run_id: "run-1",
       validate: True,
@@ -179,6 +186,16 @@ pub fn mutating_command_aliases_decode_test() {
   )) =
     protocol.decode_request(
       "{\"version\":1,\"type\":\"retry_step\",\"id\":\"2b\",\"token\":\"secret\",\"run_id\":\"run-1\",\"step_id\":\"step-1\"}",
+    )
+
+  let assert Ok(protocol.RetryDryRun(
+    _,
+    _,
+    command.RetryWorkflowStepRunId("run-1"),
+    Some("step-1"),
+  )) =
+    protocol.decode_request(
+      "{\"version\":1,\"type\":\"retry_dry_run\",\"id\":\"2c\",\"token\":\"secret\",\"run_id\":\"run-1\",\"step_id\":\"step-1\"}",
     )
 
   let assert Ok(protocol.RespondUi(

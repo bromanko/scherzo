@@ -71,20 +71,27 @@ Before sending `prompt`, `stop-after-turn`, `abort`, or `ui respond`, disambigua
 - `abort` on a top-level issue session stops the whole workflow run and its step sessions. `abort` on a step session sends the abort to that step command subject when available.
 - Command steps do not run pi, but they still get `workflow-step-...` sessions and failure events.
 
-## Resource-first recovery commands
+## Recovery commands
 
-Recovery commands are now resource-first. The first command word after `scherzoctl` should say which durable resource is being changed.
-
-Canonical forms:
+The normal recovery surface is consolidated around two commands:
 
 ```sh
-# Whole task retry, preserving normal guarded retry semantics.
-scripts/scherzoctl task retry <task|id:<id>> --json
+# Preview retained-run retry without mutating state.
+scripts/scherzoctl retry <task|id:<id>|run:<run-id>> --step <step-id> --dry-run --json
 
-# Fresh run from current task payload and current workflow definition; use for intentional drift recovery.
-scripts/scherzoctl task retry <task|id:<id>> --start-fresh --reason "workflow drift" --json
+# Retained-run retry using the safe rewind lattice.
+scripts/scherzoctl retry <task|id:<id>|run:<run-id>> --step <step-id> --json
 
-# Retained-run step repair. Use a bare run id; do not prefix with run:.
+# Fresh run from current task payload and current workflow definition.
+scripts/scherzoctl retry all <task|id:<id>> --json
+```
+
+`retry --dry-run` prints the chosen safe point and preserved/discarded steps. Use it before mutating retained state unless the user has already supplied the exact plan.
+
+Salvage override forms remain available for inspected maintenance, but do not lead with them as the normal decision tree:
+
+```sh
+# Exact fail-closed retained-run step repair override. Use a bare run id.
 scripts/scherzoctl run retry-step <run-id> --step <step-id> --json
 
 # Reconstruct workflow contract outputs without rerunning completed steps.
@@ -103,22 +110,22 @@ scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --dry-run --json
 scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --yes --json
 ```
 
-Do not use legacy top-level `retry`, `retry-step`, or `recollect-outputs` spellings as normal examples. If they still exist, treat them as hidden/deprecated compatibility aliases and prefer the resource-first replacement.
+Legacy `retry-step` and `recollect-outputs` top-level spellings are deprecated compatibility aliases. `task retry --start-fresh/--from-scratch --reason <text>` remains a scripted compatibility spelling for fresh runs, but prefer `retry all` in operator guidance.
 
 ### Choosing a recovery path
 
-Prefer retained-run recovery over whole-task restart when completed upstream work or retained artifacts are useful:
+Prefer retained-run recovery over fresh restart when completed upstream work or retained artifacts are useful:
 
 1. Inspect `ps`, `session`, `events`, retained artifacts, and any previous queued operation status.
-2. Identify the failed or interrupted `run_id` and `step_id`.
-3. Use `run retry-step <run-id> --step <step-id>` when one failed/interrupted step and descendants need repair.
-4. Use `run recollect-outputs <run-id>` when the run work is complete but contract outputs need reconstruction.
-5. Use `publication retry <run-id>` when outputs exist and publication failed.
-6. Use `run finalize ... --dry-run`, then `--yes`, only for explicit manual finalization after reviewing the dry-run plan.
-7. Use `task retry <task>` for a whole-task retry when retained-run recovery is unavailable, rejected, unsafe, or explicitly requested.
-8. Add `--start-fresh --reason <text>` only when the operator intentionally wants a new run from current issue/workflow state, such as workflow/issue drift recovery. Fresh retry messages should say that Scherzo starts a fresh run.
+2. Identify the failed or interrupted `run_id` and optional `step_id`.
+3. Run `retry <task|run:run-id> --step <step-id> --dry-run` and check the safe point plus preserved/discarded steps.
+4. Run the same `retry` command without `--dry-run` when the plan is expected.
+5. Use `run recollect-outputs <run-id>` when the run work is complete but contract outputs need reconstruction.
+6. Use `publication retry <run-id>` when outputs exist and publication failed.
+7. Use `run finalize ... --dry-run`, then `--yes`, only for explicit manual finalization after reviewing the dry-run plan.
+8. Use `retry all <task>` when the operator intentionally wants a fresh superseding run.
 
-`run retry-step` can be rejected if the run/step is not repairable, the issue already has an active/pending workflow, the issue is parked, drift makes in-place repair unsafe, the selected step is not failed/interrupted, or upstream artifacts/workspace recovery fail. Report that reason; do not automatically jump to fresh retry unless the user asked for it or the reason clearly calls for drift recovery.
+Retry/recovery rejections include a stable `reason`, human `message`, and exact `Next safe command:`. Report those fields verbatim. Manual operator holds may point at `unpark`; for quarantined non-manual parks that `retry` can release itself, follow `retry` rather than inventing a manual unpark step.
 
 Queued recovery commands return `status: queued` and an `operation_id` when accepted. Poll before declaring completion:
 
@@ -146,7 +153,7 @@ scripts/scherzoctl ui respond <session-id> <request-id> --value "approved" --jso
 scripts/scherzoctl run-schedule <job> --now --json
 ```
 
-A successful `task retry` response acknowledges acceptance after synchronous safety checks. Later claim, Linear reporting, workspace setup, worker start, or run failures are reported through normal ledger/session/failure evidence; inspect `ps`, `session`, and `events` when a retry was accepted but does not later run successfully.
+A successful `retry` or `retry all` response acknowledges acceptance after synchronous safety checks. Later claim, Linear reporting, workspace setup, worker start, or run failures are reported through normal ledger/session/failure evidence; inspect `ps`, `session`, `events`, and `query operation-status` when a retry was accepted but does not later run successfully.
 
 ## JSON response handling
 

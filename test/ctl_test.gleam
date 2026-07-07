@@ -1627,7 +1627,19 @@ pub fn parse_operator_commands_test() {
     == Ok(ctl.Operator(
       None,
       False,
-      command.RetryIssue(command.IssueIdentifier("ABC-123")),
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepAutoTarget("ABC-123"),
+        None,
+      ),
+    ))
+  assert ctl.parse(["retry", "run:run-1", "--dry-run", "--json"])
+    == Ok(ctl.Operator(
+      None,
+      True,
+      command.RetryWorkflowStepDryRun(
+        command.RetryWorkflowStepRunId("run-1"),
+        None,
+      ),
     ))
   assert ctl.parse(["retry", "all", "ABC-123"])
     == Ok(ctl.TaskRetryStartFresh(
@@ -1878,13 +1890,10 @@ pub fn deprecated_ctl_json_alias_keeps_stdout_machine_readable_test() {
 }
 
 pub fn deprecated_recovery_aliases_print_resource_first_hints_test() {
-  assert command_registry.deprecated_alias_hint(["retry", "ABC-123"])
-    == Some(
-      "Deprecated: scherzo ctl retry ABC-123 will be removed after one release; use scherzo ctl task retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>].",
-    )
+  assert command_registry.deprecated_alias_hint(["retry", "ABC-123"]) == None
   assert command_registry.deprecated_alias_hint(["retry-step", "run:run-1"])
     == Some(
-      "Deprecated: scherzo ctl retry-step run:run-1 will be removed after one release; use scherzo ctl retry step <target> [--step <step-id>] for the common retry path, or scherzo ctl run retry-step <run-id> --step <step-id> for the exact expert override.",
+      "Deprecated: scherzo ctl retry-step run:run-1 will be removed after one release; use scherzo ctl retry <target> [--step <step-id>] for the common retry path, or scherzo ctl run retry-step <run-id> --step <step-id> for the exact expert override.",
     )
   assert command_registry.deprecated_alias_hint([
       "recollect-outputs",
@@ -2236,6 +2245,10 @@ pub fn usage_mentions_daemon_only_commands_and_options_test() {
   assert string.contains(
     usage,
     "task retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]",
+  )
+  assert string.contains(
+    usage,
+    "retry <task|id:<id>|run:<run-id>> [--step <step-id>] [--dry-run]",
   )
   assert string.contains(usage, "run retry-step <run-id> --step <step-id>")
   assert string.contains(

@@ -211,7 +211,9 @@ pub fn queue_decision_outcome(
         operator_command,
         operation_id,
         Some(
-          "run finalize already queued/running; poll query operation-status for completion",
+          "run finalize already queued/running; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status "
+          <> operation_id
+          <> " --json",
         ),
       ))
     ConflictingOperation(_, _, message) ->
@@ -603,12 +605,18 @@ fn is_incomplete(status: String) -> Bool {
 }
 
 fn conflict_message(operation_kind: String, operation_id: String) -> String {
+  let next =
+    "; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status "
+    <> operation_id
+    <> " --json"
   case operation_kind {
     "artifact_publication_retry" ->
-      "artifact publication retry already queued/running as " <> operation_id
+      "artifact publication retry already queued/running as "
+      <> operation_id
+      <> next
     "recollect_outputs" ->
-      "recollect-outputs already queued/running as " <> operation_id
-    _ -> "run finalize already queued/running as " <> operation_id
+      "recollect-outputs already queued/running as " <> operation_id <> next
+    _ -> "run finalize already queued/running as " <> operation_id <> next
   }
 }
 

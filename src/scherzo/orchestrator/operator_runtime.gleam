@@ -192,6 +192,7 @@ pub fn operator_issue_resolution(
     | command.ResumeDispatch
     | command.ReloadWorkflow
     | command.RetryWorkflowStep(_, _)
+    | command.RetryWorkflowStepDryRun(_, _)
     | command.RetryWorkflowStepExact(_, _)
     | command.RecollectWorkflowOutputs(_)
     | command.RunFinalize(..)
@@ -230,6 +231,7 @@ pub fn parked_issue_resolution(
     | command.RetryIssue(_)
     | command.RetryIssueStartFresh(_, _)
     | command.RetryWorkflowStep(_, _)
+    | command.RetryWorkflowStepDryRun(_, _)
     | command.RetryWorkflowStepExact(_, _)
     | command.RecollectWorkflowOutputs(_)
     | command.RunFinalize(..)
@@ -256,6 +258,7 @@ pub fn apply_shell_operator_command(
     command.ReloadWorkflow ->
       handlers.reload_workflow_for_operator(state, operator_command)
     command.RetryWorkflowStep(target, step_id)
+    | command.RetryWorkflowStepDryRun(target, step_id)
     | command.RetryWorkflowStepExact(target, step_id) ->
       handlers.retry_workflow_step_for_operator(
         state,

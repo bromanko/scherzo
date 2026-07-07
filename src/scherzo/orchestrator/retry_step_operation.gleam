@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/orchestrator/core
@@ -116,7 +117,10 @@ fn validate_issue_state(
           <> " for issue "
           <> issue.identifier
           <> " is currently in terminal state "
-          <> issue_state.to_string(issue.state),
+          <> issue_state.to_string(issue.state)
+          <> "; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl task show "
+          <> issue.identifier
+          <> " --json",
         ),
       ))
     False -> Ok(IssuePreflight(issue, released_park))
@@ -128,9 +132,9 @@ pub fn parked_rejection_message(
 ) -> String {
   "issue is parked for "
   <> orchestrator_reason.park_to_string(parked.reason)
-  <> "; run `"
-  <> core.parked_unpark_command(parked)
-  <> "` before retry-step"
+  <> "; no run, park, or tracker state was changed. Next safe command: "
+  <> scripts_command(core.parked_unpark_command(parked))
+  <> " --json"
 }
 
 pub fn clear_released_park(
@@ -258,7 +262,11 @@ pub fn parked_issue(
             operator_command,
             "issue_parked",
             Some(
-              "issue is parked for " <> reason <> "; unpark before retry-step",
+              "issue is parked for "
+              <> reason
+              <> "; no run, park, or tracker state was changed. Next safe command: "
+              <> scripts_command(core.parked_unpark_command(parked))
+              <> " --json",
             ),
           ))
       }
@@ -297,6 +305,13 @@ pub fn diagnostic_bodies(
 ) -> List(record.RecordBody) {
   finalization.diagnostics
   |> list.map(recovery.workflow_recovery_diagnostic_record_body)
+}
+
+fn scripts_command(command_text: String) -> String {
+  case string.starts_with(command_text, "scripts/") {
+    True -> command_text
+    False -> "scripts/" <> command_text
+  }
 }
 
 pub fn rejection_reason(finalization: recovery.WorkflowFinalization) -> String {

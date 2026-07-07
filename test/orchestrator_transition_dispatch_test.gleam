@@ -634,7 +634,7 @@ pub fn explicit_retry_preserves_parked_safety_test() {
   assert has_finished_operator_rejected(effects, "retry_issue_parked")
   assert has_operator_rejection_message(
     effects,
-    "retry rejected: issue is parked for operator_hold; run `scherzoctl unpark 'ABC-1'` before retry",
+    "retry rejected: issue is parked for operator_hold; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl unpark 'ABC-1' --json",
   )
 }
 
@@ -687,7 +687,7 @@ pub fn explicit_retry_preserves_max_sessions_safety_park_test() {
   assert has_finished_operator_rejected(effects, "retry_issue_parked")
   assert has_operator_rejection_message(
     effects,
-    "retry rejected: issue is parked for max_sessions_per_issue; run `scherzoctl unpark 'ABC-1'` before retry",
+    "retry rejected: issue is parked for max_sessions_per_issue; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl unpark 'ABC-1' --json",
   )
 }
 
@@ -732,7 +732,7 @@ pub fn explicit_retry_quotes_unpark_advice_target_test() {
 
   assert has_operator_rejection_message(
     effects,
-    "retry rejected: issue is parked for operator_hold; run `scherzoctl unpark 'ABC 1;$(touch x)'` before retry",
+    "retry rejected: issue is parked for operator_hold; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl unpark 'ABC 1;$(touch x)' --json",
   )
 }
 
