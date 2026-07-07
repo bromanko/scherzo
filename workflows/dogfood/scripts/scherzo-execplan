@@ -1363,6 +1363,13 @@ def now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def env_source_issue() -> dict[str, str]:
+    identifier = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "LIV-UNKNOWN").strip() or "LIV-UNKNOWN"
+    title = os.environ.get("SCHERZO_ISSUE_TITLE", "Untitled source task").strip() or "Untitled source task"
+    url = os.environ.get("SCHERZO_ISSUE_URL", f"https://linear.app/living-systems/issue/{identifier}").strip()
+    return {"identifier": identifier, "title": title, "url": url}
+
+
 def source_issue_from_submission_or_env(payload: dict[str, Any]) -> dict[str, str]:
     source = payload.get("source_issue")
     if isinstance(source, dict):
@@ -1371,10 +1378,31 @@ def source_issue_from_submission_or_env(payload: dict[str, Any]) -> dict[str, st
         url = str(source.get("url") or "").strip()
         if identifier and title and url:
             return {"identifier": identifier, "title": title, "url": url}
-    identifier = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "LIV-UNKNOWN").strip() or "LIV-UNKNOWN"
-    title = os.environ.get("SCHERZO_ISSUE_TITLE", "Untitled source task").strip() or "Untitled source task"
-    url = os.environ.get("SCHERZO_ISSUE_URL", f"https://linear.app/living-systems/issue/{identifier}").strip()
-    return {"identifier": identifier, "title": title, "url": url}
+    return env_source_issue()
+
+
+def authoritative_pack_source_issue(payload: dict[str, Any]) -> dict[str, str]:
+    """Resolve the pack source issue, treating the task environment as authoritative.
+
+    Agent submissions echo `source_issue` as a compatibility field; when the
+    daemon-provided SCHERZO_ISSUE_IDENTIFIER disagrees with the submission,
+    repair the pack from the task environment so downstream fail-closed checks
+    (materialize-bundle) validate against the real task instead of a placeholder
+    such as `workflow:execplan`.
+    """
+    source_issue = source_issue_from_submission_or_env(payload)
+    expected = os.environ.get("SCHERZO_ISSUE_IDENTIFIER", "").strip()
+    if not expected or expected == "LIV-UNKNOWN":
+        return source_issue
+    if source_issue["identifier"].strip() == expected:
+        return source_issue
+    print(
+        "scherzo-execplan: warning: submission source issue identifier "
+        f"{source_issue['identifier']!r} does not match SCHERZO_ISSUE_IDENTIFIER "
+        f"{expected!r}; using task environment metadata for the pack",
+        file=sys.stderr,
+    )
+    return env_source_issue()
 
 
 def materialize_pack(review_doc: Path, submission: Path, output: Path) -> dict[str, Any]:
@@ -1385,7 +1413,7 @@ def materialize_pack(review_doc: Path, submission: Path, output: Path) -> dict[s
         validate_schema(payload, EXEC_PLAN_REVISION_SUBMISSION_SCHEMA)
     else:
         validate_schema(payload, IMPLEMENTATION_PACK_SUBMISSION_SCHEMA)
-    source_issue = source_issue_from_submission_or_env(payload)
+    source_issue = authoritative_pack_source_issue(payload)
     pack_id = str(payload.get("pack_id") or f"pack-{source_issue['identifier'].lower()}-{os.environ.get('SCHERZO_RUN_ID', 'local')}")
     pack = {
         "schema_version": 2,
