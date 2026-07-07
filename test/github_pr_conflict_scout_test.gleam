@@ -59,20 +59,31 @@ fn noop_fixture() -> String {
 }
 
 fn safe_dirty_fixture(linear_body: String) -> String {
+  safe_dirty_fixture_with_head(linear_body, "head-sha")
+}
+
+fn safe_dirty_fixture_with_head(
+  linear_body: String,
+  head_sha: String,
+) -> String {
   "{\n"
   <> "  \"observed_at\": \""
   <> observed_at
   <> "\",\n"
   <> "  \"github\": {\n"
   <> "    \"pulls\": ["
-  <> safe_pr_json(123, "feature/conflicted-change")
+  <> safe_pr_json_with_head(123, "feature/conflicted-change", head_sha)
   <> "],\n"
   <> "    \"details\": {\n"
-  <> "      \"123\": {\"mergeable\": false, \"mergeable_state\": \"dirty\", \"base\": {\"sha\": \"base-sha\"}, \"head\": {\"sha\": \"head-sha\"}}\n"
+  <> "      \"123\": {\"mergeable\": false, \"mergeable_state\": \"dirty\", \"base\": {\"sha\": \"base-sha\"}, \"head\": {\"sha\": \""
+  <> head_sha
+  <> "\"}}\n"
   <> "    }\n"
   <> "  },\n"
   <> "  \"preflight\": {\n"
-  <> "    \"123\": {\"status\": \"conflicted\", \"paths\": [\"conflicted.txt\"], \"base_sha\": \"base-sha\", \"head_sha\": \"head-sha\"}\n"
+  <> "    \"123\": {\"status\": \"conflicted\", \"paths\": [\"conflicted.txt\"], \"base_sha\": \"base-sha\", \"head_sha\": \""
+  <> head_sha
+  <> "\"}\n"
   <> "  },\n"
   <> "  \"linear\": "
   <> linear_body
@@ -81,6 +92,14 @@ fn safe_dirty_fixture(linear_body: String) -> String {
 }
 
 fn safe_pr_json(number: Int, head_branch: String) -> String {
+  safe_pr_json_with_head(number, head_branch, "head-sha")
+}
+
+fn safe_pr_json_with_head(
+  number: Int,
+  head_branch: String,
+  head_sha: String,
+) -> String {
   let number_string = int.to_string(number)
   "{\n"
   <> "  \"number\": "
@@ -93,7 +112,9 @@ fn safe_pr_json(number: Int, head_branch: String) -> String {
   <> "  \"base\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \"main\", \"sha\": \"base-sha\"},\n"
   <> "  \"head\": {\"repo\": {\"full_name\": \"scherzo-systems/scherzo\"}, \"ref\": \""
   <> head_branch
-  <> "\", \"sha\": \"head-sha\"}\n"
+  <> "\", \"sha\": \""
+  <> head_sha
+  <> "\"}\n"
   <> "}"
 }
 
@@ -126,6 +147,24 @@ fn existing_issue(
   state_name: String,
   description: String,
 ) -> String {
+  existing_issue_with_timestamps(
+    id,
+    identifier,
+    state_name,
+    description,
+    "2026-05-09T19:00:00Z",
+    "2026-05-09T19:00:00Z",
+  )
+}
+
+fn existing_issue_with_timestamps(
+  id: String,
+  identifier: String,
+  state_name: String,
+  description: String,
+  created_at: String,
+  updated_at: String,
+) -> String {
   "{\n"
   <> "  \"id\": \""
   <> id
@@ -140,8 +179,12 @@ fn existing_issue(
   <> "  \"url\": \"https://linear.app/living-systems/issue/"
   <> identifier
   <> "\",\n"
-  <> "  \"createdAt\": \"2026-05-09T19:00:00Z\",\n"
-  <> "  \"updatedAt\": \"2026-05-09T19:00:00Z\",\n"
+  <> "  \"createdAt\": \""
+  <> created_at
+  <> "\",\n"
+  <> "  \"updatedAt\": \""
+  <> updated_at
+  <> "\",\n"
   <> "  \"state\": {\"name\": \""
   <> state_name
   <> "\", \"type\": \""
@@ -155,12 +198,24 @@ fn state_type(name: String) -> String {
   case name {
     "Todo" -> "unstarted"
     "In Progress" -> "started"
+    "In Review" -> "started"
     "Triage" -> "triage"
+    "Backlog" -> "backlog"
+    "Done" -> "completed"
+    "Canceled" -> "canceled"
+    "Duplicate" -> "duplicate"
     _ -> "unstarted"
   }
 }
 
 fn generated_description(detection: String) -> String {
+  generated_description_with_head(detection, "head-sha")
+}
+
+fn generated_description_with_head(
+  detection: String,
+  head_sha: String,
+) -> String {
   "github-pr-conflict:scherzo-systems/scherzo#123\n"
   <> "\n"
   <> "GitHub PR: https://github.com/scherzo-systems/scherzo/pull/123\n"
@@ -168,7 +223,9 @@ fn generated_description(detection: String) -> String {
   <> "PR base ref: main\n"
   <> "PR head ref: feature/conflicted-change\n"
   <> "Base SHA: base-sha\n"
-  <> "Head SHA: head-sha\n"
+  <> "Head SHA: "
+  <> head_sha
+  <> "\n"
   <> "Detection: "
   <> detection
   <> "\n"
@@ -417,17 +474,98 @@ pub fn scout_identical_existing_marker_is_noop_test() {
   assert artifact.stderr == ""
 }
 
-pub fn scout_ignores_triage_marker_and_creates_dispatchable_issue_test() {
+pub fn scout_in_review_marker_same_head_sha_is_noop_test() {
+  let issue =
+    existing_issue(
+      "in-review-issue-id",
+      "LIV-502",
+      "In Review",
+      generated_description("local-merge-tree"),
+    )
+  let fixture =
+    write_fixture(
+      "test/tmp/github-pr-conflict-scout-in-review-same-sha",
+      safe_dirty_fixture(linear_project_with_issues("[" <> issue <> "]")),
+    )
+
+  let artifact = run_scout("scan-fixture " <> fixture <> " --json-summary")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "\"noop\": [")
+  assert string.contains(artifact.stdout, "in-review-issue-id")
+  assert string.contains(artifact.stdout, "head_sha_unchanged")
+  assert string.contains(artifact.stdout, "\"created\": []")
+  assert string.contains(artifact.stdout, "\"updated\": []")
+  assert artifact.stderr == ""
+}
+
+pub fn scout_in_review_marker_different_head_sha_creates_issue_test() {
+  let issue =
+    existing_issue(
+      "in-review-issue-id",
+      "LIV-503",
+      "In Review",
+      generated_description_with_head("local-merge-tree", "old-head-sha"),
+    )
+  let fixture =
+    write_fixture(
+      "test/tmp/github-pr-conflict-scout-in-review-new-sha",
+      safe_dirty_fixture_with_head(
+        linear_project_with_issues("[" <> issue <> "]"),
+        "new-head-sha",
+      ),
+    )
+
+  let artifact = run_scout("scan-fixture " <> fixture <> " --json-summary")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "\"created\": [")
+  assert string.contains(artifact.stdout, "\"state\": \"Todo\"")
+  assert string.contains(artifact.stdout, "Head SHA: new-head-sha")
+  assert string.contains(artifact.stdout, "old-head-sha")
+  assert string.contains(artifact.stdout, "new-head-sha")
+  assert artifact.stderr == ""
+}
+
+pub fn scout_triage_marker_same_head_sha_is_noop_test() {
   let triage_issue =
     existing_issue(
       "triage-issue-id",
-      "LIV-502",
+      "LIV-504",
+      "Triage",
+      generated_description("local-merge-tree"),
+    )
+  let fixture =
+    write_fixture(
+      "test/tmp/github-pr-conflict-scout-triage-same-sha",
+      safe_dirty_fixture(linear_project_with_issues("[" <> triage_issue <> "]")),
+    )
+
+  let artifact = run_scout("scan-fixture " <> fixture <> " --json-summary")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "\"noop\": [")
+  assert string.contains(artifact.stdout, "triage-issue-id")
+  assert string.contains(artifact.stdout, "head_sha_unchanged")
+  assert string.contains(artifact.stdout, "\"created\": []")
+  assert string.contains(artifact.stdout, "\"updated\": []")
+  assert artifact.stderr == ""
+}
+
+pub fn scout_legacy_triage_marker_without_head_sha_creates_issue_test() {
+  let triage_issue =
+    existing_issue(
+      "legacy-triage-issue-id",
+      "LIV-505",
       "Triage",
       "github-pr-conflict:scherzo-systems/scherzo#123\n\nOld triage copy.\n",
     )
   let fixture =
     write_fixture(
-      "test/tmp/github-pr-conflict-scout-triage",
+      "test/tmp/github-pr-conflict-scout-legacy-triage",
       safe_dirty_fixture(linear_project_with_issues("[" <> triage_issue <> "]")),
     )
 
@@ -436,9 +574,49 @@ pub fn scout_ignores_triage_marker_and_creates_dispatchable_issue_test() {
   assert artifact.status == step_artifact.StepSucceeded
   assert artifact.exit_code == Some(0)
   assert string.contains(artifact.stdout, "historical_marker_issues_ignored")
-  assert string.contains(artifact.stdout, "LIV-502")
+  assert string.contains(artifact.stdout, "LIV-505")
   assert string.contains(artifact.stdout, "\"created\": [")
   assert string.contains(artifact.stdout, "\"state\": \"Todo\"")
+  assert string.contains(artifact.stdout, "Head SHA: head-sha")
+  assert artifact.stderr == ""
+}
+
+pub fn scout_matching_historical_marker_noops_even_when_newer_marker_is_stale_test() {
+  let newer_stale_marker =
+    existing_issue_with_timestamps(
+      "newer-stale-marker-id",
+      "LIV-506",
+      "Triage",
+      generated_description_with_head("local-merge-tree", "old-head-sha"),
+      "2026-05-09T19:30:00Z",
+      "2026-05-09T19:45:00Z",
+    )
+  let older_matching_marker =
+    existing_issue_with_timestamps(
+      "older-matching-marker-id",
+      "LIV-507",
+      "In Review",
+      generated_description("local-merge-tree"),
+      "2026-05-09T18:00:00Z",
+      "2026-05-09T18:05:00Z",
+    )
+  let fixture =
+    write_fixture(
+      "test/tmp/github-pr-conflict-scout-mixed-historical-markers",
+      safe_dirty_fixture(linear_project_with_issues(
+        "[" <> newer_stale_marker <> "," <> older_matching_marker <> "]",
+      )),
+    )
+
+  let artifact = run_scout("scan-fixture " <> fixture <> " --json-summary")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(artifact.stdout, "\"noop\": [")
+  assert string.contains(artifact.stdout, "older-matching-marker-id")
+  assert string.contains(artifact.stdout, "head_sha_unchanged")
+  assert string.contains(artifact.stdout, "\"created\": []")
+  assert string.contains(artifact.stdout, "\"updated\": []")
   assert artifact.stderr == ""
 }
 
