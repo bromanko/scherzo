@@ -11,10 +11,13 @@ import scherzo/orchestrator/service
 import scherzo/path
 import scherzo/runtime_bundle
 import scherzo/smoke
+import scherzo/state/artifact_store
 import scherzo/state/ledger
 import scherzo/state/record
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_attempt
+import scherzo/workflow_interface_snapshot
 import scherzo/workspace
 import scherzo/workspace_run
 import simplifile
@@ -289,7 +292,10 @@ fn contract_client(
   linear.ContractClient(fetch_remote_contract: fn() { result })
 }
 
-fn seed_retained_materialized_unpublished_run(root: String) -> Nil {
+fn seed_retained_materialized_unpublished_run(
+  bundle: runtime_bundle.RuntimeBundle,
+) -> Nil {
+  let root = bundle.effective.workspace.root
   let run_root = root <> "/runs/run-1"
   let assert Ok(Nil) = simplifile.create_directory_all(run_root)
   let assert Ok(Nil) =
@@ -297,6 +303,24 @@ fn seed_retained_materialized_unpublished_run(root: String) -> Nil {
       workspace_run.cleanup_retention_marker(run_root),
       "manual recovery retained workspace",
     )
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "implementation")
+  let fingerprint =
+    workflow_attempt.workflow_fingerprint(workflow, bundle.orchestrator)
+  let snapshot_contents =
+    workflow_interface_snapshot.from_dag(workflow, fingerprint)
+    |> workflow_interface_snapshot.to_string
+  let assert Ok(snapshot_ref) =
+    artifact_store.write_workflow_interface_snapshot(
+      artifact_store.new(root),
+      "run-1",
+      snapshot_contents,
+    )
+  let artifact_store.ArtifactRef(
+    ref: artifact_ref,
+    sha256: artifact_sha256,
+    bytes: artifact_bytes,
+  ) = snapshot_ref
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) =
     ledger.append_many(
@@ -308,7 +332,7 @@ fn seed_retained_materialized_unpublished_run(root: String) -> Nil {
           record.WorkflowRunStarted(
             run_id: "run-1",
             workflow_id: "implementation",
-            workflow_fingerprint: "workflow-fingerprint",
+            workflow_fingerprint: fingerprint,
             issue_id: "issue-1",
             issue_identifier: "LIV-1407",
             issue_fingerprint: "issue-fingerprint",
@@ -317,12 +341,24 @@ fn seed_retained_materialized_unpublished_run(root: String) -> Nil {
           ),
         ),
         record.with_id(
+          "workflow-interface-snapshot-run-1",
+          15,
+          record.WorkflowInterfaceSnapshotRecorded(
+            run_id: "run-1",
+            workflow_id: "implementation",
+            workflow_fingerprint: fingerprint,
+            artifact_ref: artifact_ref,
+            artifact_sha256: artifact_sha256,
+            artifact_bytes: artifact_bytes,
+          ),
+        ),
+        record.with_id(
           "outputs-recorded-run-1",
           20,
           record.WorkflowRunOutputsRecorded(
             run_id: "run-1",
             workflow_id: "implementation",
-            workflow_fingerprint: "workflow-fingerprint",
+            workflow_fingerprint: fingerprint,
             artifact_ref: "runs/run-1/outputs.v1.json",
             artifact_sha256: "sha256",
             artifact_bytes: 123,
@@ -448,7 +484,7 @@ pub fn doctor_retained_publications_warns_with_pending_route_test() {
   let config_path =
     write_retained_publication_config("test/tmp/doctor-retained-publications")
   let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
-  seed_retained_materialized_unpublished_run(bundle.effective.workspace.root)
+  seed_retained_materialized_unpublished_run(bundle)
   let subject = process.new_subject()
   let deps = successful_deps(subject)
   let options =

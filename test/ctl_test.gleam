@@ -33,9 +33,11 @@ import scherzo/state/record
 import scherzo/task
 import scherzo/terminal/style
 import scherzo/turn_telemetry
+import scherzo/workflow_attempt
 import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
 import scherzo/workflow_dag
+import scherzo/workflow_interface_snapshot
 import scherzo/workspace
 import scherzo/workspace_manifest
 import simplifile
@@ -3119,6 +3121,101 @@ pub fn artifact_publication_retry_uses_retained_workspace_driver_for_commit_stac
   assert !string.contains(commands, ".scherzo-state/artifact-repositories")
 }
 
+pub fn artifact_publication_retry_publishes_declared_commit_stack_without_attempt_test() {
+  let base = "test/tmp/ctl-artifact-publication-retry-declared-commit-stack"
+  let root = base <> "/workspaces"
+  test_helpers.reset_dir(base)
+  seed_declared_commit_stack_publication_state_without_attempt(root)
+  let subject = process.new_subject()
+  let command_subject = process.new_subject()
+
+  assert ctl_artifact_publication_retry.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      None,
+      retained_workspace_publish_runner(command_subject),
+      subject_line(subject),
+    )
+    == Ok(Nil)
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "\"publication_id\":\"publish_stack\"")
+  assert string.contains(transcript, "\"status\":\"published\"")
+  assert string.contains(
+    drain_output(command_subject),
+    "retained-driver publish-commit-stack",
+  )
+}
+
+pub fn artifact_publication_retry_rejects_declared_route_without_snapshot_test() {
+  let base = "test/tmp/ctl-artifact-publication-retry-declared-no-snapshot"
+  let root = base <> "/workspaces"
+  test_helpers.reset_dir(base)
+  seed_declared_commit_stack_publication_state(root, include_snapshot: False)
+  let command_subject = process.new_subject()
+
+  let assert Error(#(code, message)) =
+    ctl_artifact_publication_retry.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      None,
+      retained_workspace_publish_runner(command_subject),
+      subject_line(process.new_subject()),
+    )
+  assert code == "publication_route_discovery_unsafe"
+  assert string.contains(message, "no run-pinned workflow interface snapshot")
+  assert drain_output(command_subject) == ""
+}
+
+pub fn artifact_publication_retry_rejects_declared_route_drift_test() {
+  let base = "test/tmp/ctl-artifact-publication-retry-declared-route-drift"
+  let root = base <> "/workspaces"
+  test_helpers.reset_dir(base)
+  seed_declared_commit_stack_publication_state_without_attempt(root)
+  drift_commit_stack_publication_route(root)
+  let command_subject = process.new_subject()
+
+  let assert Error(#(code, message)) =
+    ctl_artifact_publication_retry.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      None,
+      retained_workspace_publish_runner(command_subject),
+      subject_line(process.new_subject()),
+    )
+  assert code == "publication_route_discovery_unsafe"
+  assert string.contains(message, "publication routes differ")
+  assert drain_output(command_subject) == ""
+}
+
+pub fn artifact_publication_retry_rejects_corrupt_route_snapshot_test() {
+  let base = "test/tmp/ctl-artifact-publication-retry-declared-snapshot-hash"
+  let root = base <> "/workspaces"
+  test_helpers.reset_dir(base)
+  seed_declared_commit_stack_publication_state_without_attempt(root)
+  write_seed_artifact(
+    root,
+    artifact_store.workflow_interface_snapshot_ref("run-1"),
+    "{}",
+  )
+  let command_subject = process.new_subject()
+
+  let assert Error(#(code, message)) =
+    ctl_artifact_publication_retry.retry_with_runner(
+      root,
+      True,
+      "run-1",
+      None,
+      retained_workspace_publish_runner(command_subject),
+      subject_line(process.new_subject()),
+    )
+  assert code == "publication_route_discovery_snapshot_hash_mismatch"
+  assert string.contains(message, "workflow-interface.v1.json")
+  assert drain_output(command_subject) == ""
+}
+
 pub fn artifact_publication_retry_replans_pre_execution_file_failure_to_unsupported_test() {
   let root = "test/tmp/ctl-artifact-publication-retry-replans/workspaces"
   test_helpers.reset_dir("test/tmp/ctl-artifact-publication-retry-replans")
@@ -4105,6 +4202,105 @@ fn seed_failed_commit_stack_retry_publication_state(root: String) -> Nil {
         ),
       ],
       True,
+    )
+  Nil
+}
+
+fn seed_declared_commit_stack_publication_state_without_attempt(
+  root: String,
+) -> Nil {
+  seed_declared_commit_stack_publication_state(root, include_snapshot: True)
+}
+
+fn seed_declared_commit_stack_publication_state(
+  root: String,
+  include_snapshot include_snapshot: Bool,
+) -> Nil {
+  let config_path = write_commit_stack_retry_publication_config(root)
+  write_commit_stack_retained_workspace_manifest(root)
+  let output_manifest = seeded_commit_stack_output_manifest(root)
+  let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
+  let assert Ok(#(_, workflow)) =
+    runtime_bundle.workflow_by_id(bundle, "implementation")
+  let fingerprint =
+    workflow_attempt.workflow_fingerprint(workflow, bundle.orchestrator)
+  let snapshot_records = case include_snapshot {
+    True -> [workflow_interface_snapshot_record(root, workflow, fingerprint)]
+    False -> []
+  }
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      list.append(
+        [
+          record.with_id(
+            "workflow-started",
+            1000,
+            record.WorkflowRunStarted(
+              run_id: "run-1",
+              workflow_id: "implementation",
+              workflow_fingerprint: fingerprint,
+              issue_id: "issue-1",
+              issue_identifier: "LIV-917",
+              issue_fingerprint: "issue-fingerprint",
+              observed_updated_at_ms: 999,
+              run_root: root <> "/runs/run-1",
+            ),
+          ),
+          ..snapshot_records
+        ],
+        [
+          commit_stack_output_manifest_record(root, output_manifest),
+          record.with_id(
+            "workflow-finished",
+            1020,
+            record.WorkflowRunFinished(
+              run_id: "run-1",
+              workflow_id: "implementation",
+              issue_id: "issue-1",
+              outcome: "completed",
+              token_total: 0,
+              turns: 1,
+            ),
+          ),
+        ],
+      ),
+      True,
+    )
+  Nil
+}
+
+fn workflow_interface_snapshot_record(
+  root: String,
+  workflow: workflow_dag.WorkflowDag,
+  fingerprint: String,
+) -> record.LedgerRecord {
+  let ref = artifact_store.workflow_interface_snapshot_ref("run-1")
+  let contents =
+    workflow_interface_snapshot.from_dag(workflow, fingerprint)
+    |> workflow_interface_snapshot.to_string
+  write_seed_artifact(root, ref, contents)
+  record.with_id(
+    "workflow-interface-snapshot",
+    1005,
+    record.WorkflowInterfaceSnapshotRecorded(
+      run_id: "run-1",
+      workflow_id: "implementation",
+      workflow_fingerprint: fingerprint,
+      artifact_ref: ref,
+      artifact_sha256: hash.sha256_hex(contents),
+      artifact_bytes: bit_array.byte_size(bit_array.from_string(contents)),
+    ),
+  )
+}
+
+fn drift_commit_stack_publication_route(root: String) -> Nil {
+  let assert Ok(base) = path.dirname(root)
+  let assert Ok(Nil) =
+    simplifile.write(
+      base <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\ncontract:\n  version: 1\n  outputs:\n    commit_stack:\n      type: commit_stack\n      source:\n        step: main\n        field: stdout\n    merge_target:\n      type: code_change\n      source:\n        step: main\n        field: stdout\nartifacts:\n  publications:\n    - id: publish_stack_after_run\n      repository: github.code\n      required: true\n      mode: commit_stack\n      commit_stack:\n        select:\n          output: commit_stack\n      target:\n        kind: existing_pr_branch\n        source:\n          output: merge_target\nsteps:\n  - id: main\n    kind: command\n    run: ignored\n",
     )
   Nil
 }

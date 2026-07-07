@@ -8,6 +8,7 @@ import scherzo/artifact_publication_executor
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_planner
 import scherzo/artifact_publication_recording
+import scherzo/artifact_publication_retry_targets
 import scherzo/artifact_publication_runtime
 import scherzo/artifact_repository/command_runner
 import scherzo/ctl/schedule_state
@@ -16,7 +17,6 @@ import scherzo/runtime_bundle
 import scherzo/state/artifact_store
 import scherzo/state/projection
 import scherzo/workflow_checkpoint
-import scherzo/workflow_contract_manifest
 import scherzo/workflow_dag
 import simplifile
 
@@ -137,13 +137,62 @@ pub fn inspect_retryable_attempts(
   publication_id: Option(String),
 ) -> Result(List(projection.PublicationAttempt), #(String, String)) {
   use _ <- result.try(require_publication_run(projected, run_id))
-  use targets <- result.try(select_retry_targets(
+  use targets <- result.try(
+    artifact_publication_retry_targets.select_legacy_targets(
+      projected,
+      run_id,
+      publication_id,
+    ),
+  )
+  use _ <- result.try(
+    artifact_publication_retry_targets.require_output_manifest_ref(
+      projected,
+      run_id,
+    ),
+  )
+  Ok(artifact_publication_retry_targets.targets_to_attempts(
     projected,
     run_id,
-    publication_id,
+    targets,
   ))
-  use _ <- result.try(require_output_manifest_ref(projected, run_id))
-  Ok(retry_targets_to_attempts(targets))
+}
+
+pub fn inspect_retryable_attempts_with_bundle(
+  projected: projection.Projection,
+  root: String,
+  run_id: String,
+  publication_id: Option(String),
+  bundle: runtime_bundle.RuntimeBundle,
+) -> Result(List(projection.PublicationAttempt), #(String, String)) {
+  use _ <- result.try(require_publication_run(projected, run_id))
+  use context <- result.try(artifact_publication_retry_targets.load_context(
+    projected,
+    root,
+    run_id,
+    bundle,
+  ))
+  use targets <- result.try(
+    artifact_publication_retry_targets.select_with_declared_routes(
+      projected,
+      root,
+      run_id,
+      publication_id,
+      bundle,
+      context,
+    ),
+  )
+  use _resolved <- result.try(artifact_publication_retry_targets.resolve_routes(
+    targets,
+    bundle,
+    context,
+    root,
+    run_id,
+  ))
+  Ok(artifact_publication_retry_targets.targets_to_attempts(
+    projected,
+    run_id,
+    targets,
+  ))
 }
 
 pub fn inspect_publication_recovery(
@@ -151,10 +200,29 @@ pub fn inspect_publication_recovery(
   run_id: String,
 ) -> Result(PublicationRecoveryInspection, #(String, String)) {
   use _ <- result.try(require_publication_run(projected, run_id))
-  use _ <- result.try(require_output_manifest_ref(projected, run_id))
-  case select_retry_targets(projected, run_id, None) {
+  use _ <- result.try(
+    artifact_publication_retry_targets.require_output_manifest_ref(
+      projected,
+      run_id,
+    ),
+  )
+  case
+    artifact_publication_retry_targets.select_legacy_targets(
+      projected,
+      run_id,
+      None,
+    )
+  {
     Ok(targets) ->
-      Ok(RetryablePublicationAttempts(retry_targets_to_attempts(targets)))
+      Ok(
+        RetryablePublicationAttempts(
+          artifact_publication_retry_targets.targets_to_attempts(
+            projected,
+            run_id,
+            targets,
+          ),
+        ),
+      )
     Error(#("publication_retry_targets_not_found", _)) -> {
       use attempts <- result.try(require_required_publications_published(
         projected,
@@ -164,14 +232,6 @@ pub fn inspect_publication_recovery(
     }
     Error(error) -> Error(error)
   }
-}
-
-type RetrySelection {
-  RetrySelection(latest: projection.PublicationAttempt)
-}
-
-type RetryResolvedRoute {
-  RetryResolvedRoute(route: artifact_publication_config.PublicationRoute)
 }
 
 type PublicationManifestDetails {
@@ -198,72 +258,6 @@ fn require_publication_run(
         "publication run not found: " <> run_id,
       ))
   }
-}
-
-fn select_retry_targets(
-  projected: projection.Projection,
-  run_id: String,
-  publication_id: Option(String),
-) -> Result(List(RetrySelection), #(String, String)) {
-  case publication_id {
-    Some(publication_id) -> {
-      let attempts =
-        projection.publication_attempts_for_run(
-          projected,
-          run_id,
-          publication_id,
-        )
-      use latest <- result.try(publication_or_not_found(
-        attempts,
-        publication_id,
-      ))
-      use _ <- result.try(require_retryable_latest(latest))
-      Ok([RetrySelection(latest: latest)])
-    }
-    None -> {
-      let #(targets, cannot_replan) =
-        projection.publication_ids_for_run(projected, run_id)
-        |> list.fold(#([], []), fn(acc, publication_id) {
-          let #(targets, cannot_replan) = acc
-          let attempts =
-            projection.publication_attempts_for_run(
-              projected,
-              run_id,
-              publication_id,
-            )
-          case publication_or_not_found(attempts, publication_id) {
-            Ok(latest) ->
-              case retry_eligibility(latest) {
-                artifact_publication_manifest.RetryAllowed -> #(
-                  [RetrySelection(latest: latest), ..targets],
-                  cannot_replan,
-                )
-                artifact_publication_manifest.RetryCannotReplan(reason) -> #(
-                  targets,
-                  [#(latest, reason), ..cannot_replan],
-                )
-                artifact_publication_manifest.RetryNotRetryable -> acc
-              }
-            Error(_) -> acc
-          }
-        })
-      case list.reverse(cannot_replan), list.reverse(targets) {
-        [#(latest, reason), ..], _ ->
-          Error(artifact_publication_manifest.retry_replan_unavailable_error(
-            latest.publication_id,
-            reason,
-          ))
-        [], [] -> Error(publication_retry_targets_not_found_error(run_id))
-        [], targets -> Ok(targets)
-      }
-    }
-  }
-}
-
-fn retry_targets_to_attempts(
-  targets: List(RetrySelection),
-) -> List(projection.PublicationAttempt) {
-  list.map(targets, fn(target) { target.latest })
 }
 
 fn require_required_publications_published(
@@ -334,56 +328,42 @@ fn retry_selected_publications(
   runner: command_runner.Runner,
 ) -> Result(List(projection.PublicationAttempt), #(String, String)) {
   use _ <- result.try(require_publication_run(projected, run_id))
-  use targets <- result.try(select_retry_targets(
+  use context <- result.try(artifact_publication_retry_targets.load_context(
     projected,
+    root,
     run_id,
-    publication_id,
+    bundle,
   ))
-  use output_manifest_ref <- result.try(require_output_manifest_ref(
-    projected,
-    run_id,
-  ))
-  use output_manifest <- result.try(
-    workflow_contract_manifest.load_retained_output_manifest(
+  use targets <- result.try(
+    artifact_publication_retry_targets.select_with_declared_routes(
+      projected,
       root,
-      output_manifest_ref.artifact_ref,
-      output_manifest_ref.artifact_sha256,
-      output_manifest_ref.artifact_bytes,
+      run_id,
+      publication_id,
+      bundle,
+      context,
     ),
   )
-  use workflow_status <- result.try(require_workflow_run(projected, run_id))
-  use #(_, workflow) <- result.try(
-    runtime_bundle.workflow_by_id(bundle, output_manifest.workflow_id)
-    |> result.map_error(fn(error) {
-      let runtime_bundle.BundleError(code: code, message: message) = error
-      #(code, message)
-    }),
-  )
-  use work <- result.try(publication_workflow_identity(
-    projected,
-    run_id,
-    workflow_status,
-  ))
-  use resolved <- result.try(resolve_retry_routes(
+  use routes <- result.try(artifact_publication_retry_targets.resolve_routes(
     targets,
-    workflow,
     bundle,
-    output_manifest,
+    context,
     root,
-    work,
     run_id,
   ))
-  let routes = list.map(resolved, fn(entry) { entry.route })
   let workflow_bundle_dir =
-    runtime_bundle.workflow_bundle_dir(bundle, workflow_dag.id(workflow))
+    runtime_bundle.workflow_bundle_dir(
+      bundle,
+      workflow_dag.id(context.workflow),
+    )
   use publication_driver <- result.try(retry_publication_driver(
     routes,
-    workflow,
+    context.workflow,
     bundle,
     workflow_bundle_dir,
     run_id,
-    workflow_status,
-    work,
+    context.workflow_status,
+    context.work,
   ))
   let retry_result =
     artifact_publication_executor.retry_routes_for_work_with_state_root_and_publication_driver(
@@ -392,13 +372,13 @@ fn retry_selected_publications(
       bundle.orchestrator.config_dir,
       workflow_bundle_dir,
       root,
-      output_manifest,
-      work,
+      context.output_manifest,
+      context.work,
       run_id,
       checkpoint,
       runner,
       publication_driver,
-      list.all(targets, fn(target) { target.latest.status != "unchanged" }),
+      list.all(targets, artifact_publication_retry_targets.should_publish),
     )
   use
     artifact_publication_recording.PublicationRecordingResult(
@@ -426,7 +406,7 @@ fn retry_selected_publications(
         list.map(attempts, fn(attempt) {
           projection_attempt_from_summary(
             run_id,
-            output_manifest.workflow_id,
+            context.output_manifest.workflow_id,
             attempt,
           )
         }),
@@ -473,190 +453,6 @@ fn routes_require_commit_stack(
       artifact_publication_config.FilePublicationRoute(_) -> False
     }
   })
-}
-
-fn resolve_retry_routes(
-  targets: List(RetrySelection),
-  workflow: workflow_dag.WorkflowDag,
-  bundle: runtime_bundle.RuntimeBundle,
-  output_manifest: workflow_contract_manifest.ContractOutputManifest,
-  root: String,
-  work: artifact_publication_planner.PublicationWork,
-  run_id: String,
-) -> Result(List(RetryResolvedRoute), #(String, String)) {
-  resolve_retry_routes_loop(
-    targets,
-    workflow_dag.publication_routes(workflow),
-    bundle,
-    output_manifest,
-    root,
-    work,
-    run_id,
-    [],
-  )
-}
-
-fn resolve_retry_routes_loop(
-  targets: List(RetrySelection),
-  routes: List(artifact_publication_config.PublicationRoute),
-  bundle: runtime_bundle.RuntimeBundle,
-  output_manifest: workflow_contract_manifest.ContractOutputManifest,
-  root: String,
-  work: artifact_publication_planner.PublicationWork,
-  run_id: String,
-  acc: List(RetryResolvedRoute),
-) -> Result(List(RetryResolvedRoute), #(String, String)) {
-  case targets {
-    [] -> Ok(list.reverse(acc))
-    [RetrySelection(latest: latest), ..rest] -> {
-      use route <- result.try(find_retry_route(routes, latest.publication_id))
-      use _ <- result.try(validate_retry_route(
-        route,
-        latest,
-        bundle,
-        output_manifest,
-        root,
-        work,
-        run_id,
-      ))
-      resolve_retry_routes_loop(
-        rest,
-        routes,
-        bundle,
-        output_manifest,
-        root,
-        work,
-        run_id,
-        [RetryResolvedRoute(route: route), ..acc],
-      )
-    }
-  }
-}
-
-fn find_retry_route(
-  routes: List(artifact_publication_config.PublicationRoute),
-  publication_id: String,
-) -> Result(artifact_publication_config.PublicationRoute, #(String, String)) {
-  case list.filter(routes, fn(route) { route.id == publication_id }) {
-    [route] -> Ok(route)
-    [] ->
-      Error(#(
-        "publication_retry_config_drift",
-        "current workflow no longer defines publication route: "
-          <> publication_id,
-      ))
-    [_, _, ..] ->
-      Error(#(
-        "publication_retry_config_drift",
-        "current workflow defines publication route more than once: "
-          <> publication_id,
-      ))
-  }
-}
-
-fn validate_retry_route(
-  route: artifact_publication_config.PublicationRoute,
-  latest: projection.PublicationAttempt,
-  bundle: runtime_bundle.RuntimeBundle,
-  output_manifest: workflow_contract_manifest.ContractOutputManifest,
-  root: String,
-  work: artifact_publication_planner.PublicationWork,
-  run_id: String,
-) -> Result(Nil, #(String, String)) {
-  use body_templates <- result.try(
-    artifact_publication_recording.load_body_templates(
-      [route],
-      bundle.orchestrator.artifact_repositories,
-      bundle.orchestrator.config_dir,
-      runtime_bundle.workflow_bundle_dir(bundle, output_manifest.workflow_id),
-    )
-    |> result.map_error(fn(message) {
-      #("publication_retry_config_invalid", message)
-    }),
-  )
-  use planned <- result.try(
-    artifact_publication_planner.plan_publication(
-      output_manifest,
-      bundle.orchestrator.artifact_repositories,
-      route,
-      artifact_store.new(root),
-      work,
-      run_id,
-      body_templates,
-    )
-    |> result.map_error(fn(error) {
-      #(artifact_publication_planner.code(error), planner_error_message(error))
-    }),
-  )
-  let legacy_series_id =
-    work.id
-    <> ":"
-    <> output_manifest.workflow_id
-    <> ":"
-    <> latest.publication_id
-  let identity_matches = case latest.version_id {
-    Some(version_id) ->
-      planned.series_id == latest.series_id && planned.version_id == version_id
-    None ->
-      latest.series_id == legacy_series_id
-      || planned.series_id == latest.series_id
-  }
-  let matches = identity_matches && planned.required == latest.required
-  case matches {
-    True -> Ok(Nil)
-    False ->
-      Error(#(
-        "publication_retry_config_drift",
-        "current workflow publication config no longer matches retained retry target: "
-          <> latest.publication_id,
-      ))
-  }
-}
-
-fn require_retryable_latest(
-  latest: projection.PublicationAttempt,
-) -> Result(Nil, #(String, String)) {
-  case retry_eligibility(latest) {
-    artifact_publication_manifest.RetryAllowed -> Ok(Nil)
-    artifact_publication_manifest.RetryCannotReplan(reason) ->
-      Error(artifact_publication_manifest.retry_replan_unavailable_error(
-        latest.publication_id,
-        reason,
-      ))
-    artifact_publication_manifest.RetryNotRetryable ->
-      Error(#(
-        "publication_not_retryable",
-        "latest publication attempt is not retryable: "
-          <> latest.publication_id
-          <> " status="
-          <> latest.status,
-      ))
-  }
-}
-
-fn retry_eligibility(
-  latest: projection.PublicationAttempt,
-) -> artifact_publication_manifest.RetryEligibility {
-  artifact_publication_manifest.retry_eligibility_for_attempt(
-    latest.status,
-    retryable: latest.retryable,
-    retry_execution_available: latest.retry_execution_available,
-    version_id: latest.version_id,
-  )
-}
-
-fn publication_or_not_found(
-  attempts: List(projection.PublicationAttempt),
-  publication_id: String,
-) -> Result(projection.PublicationAttempt, #(String, String)) {
-  case list.reverse(attempts) {
-    [latest, ..] -> Ok(latest)
-    [] ->
-      Error(#(
-        "publication_not_found",
-        "publication not found: " <> publication_id,
-      ))
-  }
 }
 
 fn print_retry_results(
@@ -780,89 +576,12 @@ fn load_publication_manifest(
   })
 }
 
-fn require_output_manifest_ref(
-  projected: projection.Projection,
-  run_id: String,
-) -> Result(projection.WorkflowContractManifestRef, #(String, String)) {
-  case projection.workflow_output_manifest(projected, run_id) {
-    Some(output_manifest) -> Ok(output_manifest)
-    None ->
-      Error(#(
-        "publication_retry_output_manifest_missing",
-        "workflow run is missing a retained output manifest: " <> run_id,
-      ))
-  }
-}
-
-fn require_workflow_run(
-  projected: projection.Projection,
-  run_id: String,
-) -> Result(projection.WorkflowRunStatus, #(String, String)) {
-  projection.workflow_run(projected, run_id)
-  |> result.map_error(fn(_) {
-    #("publication_run_not_found", "publication run not found: " <> run_id)
-  })
-}
-
 fn workflow_status_run_root(status: projection.WorkflowRunStatus) -> String {
   case status {
     projection.WorkflowRunActive(run_root: run_root, ..)
     | projection.WorkflowRunFinished(run_root: run_root, ..)
     | projection.WorkflowRunInterrupted(run_root: run_root, ..)
     | projection.WorkflowRunSuperseded(run_root: run_root, ..) -> run_root
-  }
-}
-
-fn publication_workflow_identity(
-  projected: projection.Projection,
-  run_id: String,
-  workflow_status: projection.WorkflowRunStatus,
-) -> Result(artifact_publication_planner.PublicationWork, #(String, String)) {
-  case workflow_status {
-    projection.WorkflowRunActive(
-      issue_id: issue_id,
-      issue_identifier: issue_identifier,
-      ..,
-    ) -> {
-      let source_url = case projection.workflow_task_ref(projected, run_id) {
-        Ok(task_ref) -> task_ref.task_url
-        Error(_) -> None
-      }
-      Ok(artifact_publication_planner.PublicationWork(
-        kind: artifact_publication_planner.TaskWork,
-        id: issue_id,
-        identifier: issue_identifier,
-        slug: issue_identifier,
-        title: None,
-        url: source_url,
-      ))
-    }
-    projection.WorkflowRunFinished(issue_id: issue_id, ..)
-    | projection.WorkflowRunInterrupted(issue_id: issue_id, ..)
-    | projection.WorkflowRunSuperseded(issue_id: issue_id, ..) -> {
-      use task_ref <- result.try(
-        projection.workflow_task_ref(projected, run_id)
-        |> result.map_error(fn(_) {
-          #(
-            "publication_retry_task_ref_missing",
-            "workflow run is missing retained task identity for retry: "
-              <> run_id,
-          )
-        }),
-      )
-      let issue_identifier = case task_ref.task_key {
-        Some(task_key) -> task_key
-        None -> task_ref.task_remote_id
-      }
-      Ok(artifact_publication_planner.PublicationWork(
-        kind: artifact_publication_planner.TaskWork,
-        id: issue_id,
-        identifier: issue_identifier,
-        slug: issue_identifier,
-        title: None,
-        url: task_ref.task_url,
-      ))
-    }
   }
 }
 
@@ -918,13 +637,6 @@ fn commit_sha_option(details: PublicationManifestDetails) -> Option(String) {
 
 fn pr_url_option(details: PublicationManifestDetails) -> Option(String) {
   details.pr_url
-}
-
-fn planner_error_message(
-  error: artifact_publication_planner.PlannerError,
-) -> String {
-  let artifact_publication_planner.PlannerError(message: message, ..) = error
-  message
 }
 
 fn require_config_path(root: String) -> Result(String, #(String, String)) {
