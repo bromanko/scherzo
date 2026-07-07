@@ -511,6 +511,7 @@ fn prompt_mode_for_step(
     Error(Nil) -> {
       let prompt_template = case prompt_ref {
         workflow_dag.PromptInline(prompt) -> prompt
+        workflow_dag.PromptResolvedFile(_, prompt) -> prompt
         workflow_dag.PromptFile(path) -> path
       }
       let locals =

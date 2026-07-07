@@ -504,14 +504,18 @@ fn recovery_config_to_json(
 
 fn prompt_ref_to_json(prompt_ref: workflow_dag.PromptRef) -> json.Json {
   case prompt_ref {
-    workflow_dag.PromptInline(prompt) ->
-      json.object([
-        #("type", json.string("inline")),
-        #("text", json.string(prompt)),
-      ])
+    workflow_dag.PromptInline(prompt) -> prompt_text_to_json(prompt)
+    workflow_dag.PromptResolvedFile(_, prompt) -> prompt_text_to_json(prompt)
     workflow_dag.PromptFile(path) ->
       json.object([#("type", json.string("file")), #("path", json.string(path))])
   }
+}
+
+fn prompt_text_to_json(prompt: String) -> json.Json {
+  json.object([
+    #("type", json.string("inline")),
+    #("text", json.string(prompt)),
+  ])
 }
 
 fn workspace_to_json(workspace: workflow_dag.WorkspaceRef) -> json.Json {

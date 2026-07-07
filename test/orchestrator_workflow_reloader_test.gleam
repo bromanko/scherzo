@@ -189,7 +189,7 @@ pub fn workflow_reloader_changed_prompt_reloads_prompt_contents_test() {
       let assert [step] = workflow_dag.steps(dag)
       assert step.kind
         == workflow_dag.AgentStep(
-          workflow_dag.PromptInline("Updated Prompt"),
+          workflow_dag.PromptResolvedFile("prompts/task.md", "Updated Prompt"),
           None,
         )
     }
@@ -268,7 +268,10 @@ pub fn workflow_reloader_missing_prompt_keeps_last_known_good_and_names_path_tes
       let assert Ok(dag) = dict.get(next.bundle.workflows, "implementation")
       let assert [step] = workflow_dag.steps(dag)
       assert step.kind
-        == workflow_dag.AgentStep(workflow_dag.PromptInline("Prompt"), None)
+        == workflow_dag.AgentStep(
+          workflow_dag.PromptResolvedFile("prompts/task.md", "Prompt"),
+          None,
+        )
     }
     _ -> panic as "expected missing prompt reload outcome"
   }
@@ -303,7 +306,10 @@ pub fn workflow_reloader_recovers_when_created_prompt_was_not_in_last_good_bundl
         dict.get(recovered.bundle.workflows, "implementation")
       let assert [step] = workflow_dag.steps(dag)
       assert step.kind
-        == workflow_dag.AgentStep(workflow_dag.PromptInline("New Prompt"), None)
+        == workflow_dag.AgentStep(
+          workflow_dag.PromptResolvedFile("prompts/new-task.md", "New Prompt"),
+          None,
+        )
     }
     _ -> panic as "expected created missing prompt to recover"
   }
@@ -371,7 +377,10 @@ pub fn workflow_reloader_recovers_after_invalid_dependency_is_fixed_test() {
         dict.get(recovered.bundle.workflows, "implementation")
       let assert [step] = workflow_dag.steps(dag)
       assert step.kind
-        == workflow_dag.AgentStep(workflow_dag.PromptInline("Prompt"), None)
+        == workflow_dag.AgentStep(
+          workflow_dag.PromptResolvedFile("prompts/task.md", "Prompt"),
+          None,
+        )
     }
     _ -> panic as "expected exact last-good prompt restoration to recover"
   }
@@ -391,7 +400,7 @@ pub fn workflow_reloader_reload_now_reloads_when_config_contents_unchanged_test(
       let assert [step] = workflow_dag.steps(dag)
       assert step.kind
         == workflow_dag.AgentStep(
-          workflow_dag.PromptInline("Updated Prompt"),
+          workflow_dag.PromptResolvedFile("prompts/task.md", "Updated Prompt"),
           None,
         )
     }

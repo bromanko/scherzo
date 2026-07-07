@@ -534,6 +534,7 @@ fn stop_after_guard_failure(
 fn prompt_ref_text(prompt_ref: workflow_dag.PromptRef) -> String {
   case prompt_ref {
     workflow_dag.PromptInline(prompt) -> prompt
+    workflow_dag.PromptResolvedFile(_, prompt) -> prompt
     workflow_dag.PromptFile(path) -> path
   }
 }

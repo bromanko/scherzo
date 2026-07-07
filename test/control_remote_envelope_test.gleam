@@ -159,6 +159,46 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
           source_hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           reload_status: "valid",
         ),
+        trigger: query_types.WorkflowRoutedTriggerDto(
+          route: "implementation",
+          label: Some("workflow:implementation"),
+        ),
+        workspace: query_types.WorkflowWorkspaceDto(
+          driver: "noop",
+          required_capabilities: [],
+        ),
+        execution: query_types.WorkflowExecutionDefaultsDto(
+          model: query_types.WorkflowModelSettingsDto(
+            model: None,
+            thinking: None,
+          ),
+          max_parallel_steps: 1,
+          recovery: None,
+        ),
+        contract: None,
+        steps: [
+          query_types.WorkflowStepDto(
+            id: "implement",
+            kind: "agent",
+            depends_on: [],
+            on_failure: "fail",
+            model: Some(query_types.WorkflowModelSettingsDto(
+              model: None,
+              thinking: None,
+            )),
+            recovery: None,
+            command: None,
+            agent: Some(query_types.WorkflowAgentStepDto(
+              prompt: query_types.WorkflowPromptRefDto(
+                kind: "file",
+                ref: Some("prompts/implement.md"),
+              ),
+              structured_output: None,
+            )),
+          ),
+        ],
+        publications: [],
+        next_actions: [],
         graph: query_types.WorkflowGraphDto(
           nodes: [
             query_types.WorkflowGraphNodeDto(

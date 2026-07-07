@@ -273,8 +273,13 @@ pub fn public_example_conflict_scout_schedule_loads_test() {
   assert resolve.depends_on == ["prepare_target"]
   assert resolve.workspace.name == "main"
   assert resolve.workspace.from == Some("main")
-  let assert workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), None) =
-    resolve.kind
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptResolvedFile(
+      "prompts/resolve-merge-conflicts.md",
+      prompt,
+    ),
+    None,
+  ) = resolve.kind
   let assert [prompt_contract, _] =
     string.split(prompt, "Untrusted task data follows")
   assert_contains(prompt_contract, "Workflow contract:")

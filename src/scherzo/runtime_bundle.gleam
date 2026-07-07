@@ -497,7 +497,7 @@ fn resolve_step_prompt_refs(
         workflow_dag.WorkflowStep(
           ..step,
           kind: workflow_dag.AgentStep(
-            workflow_dag.PromptInline(prompt),
+            workflow_dag.PromptResolvedFile(prompt_path, prompt),
             structured_output,
           ),
         ),
@@ -530,7 +530,10 @@ fn resolve_recover_prompt(
                 enabled: enabled,
                 attempts: attempts,
                 model: model,
-                prompt: Some(workflow_dag.PromptInline(contents)),
+                prompt: Some(workflow_dag.PromptResolvedFile(
+                  prompt_path,
+                  contents,
+                )),
               )),
               [dependency],
             ),
@@ -721,6 +724,8 @@ fn validate_scheduled_step(
 ) -> Result(Nil, BundleError) {
   let source = case step.kind {
     workflow_dag.AgentStep(workflow_dag.PromptInline(prompt), _) -> prompt
+    workflow_dag.AgentStep(workflow_dag.PromptResolvedFile(_, prompt), _) ->
+      prompt
     workflow_dag.AgentStep(workflow_dag.PromptFile(path), _) -> path
     workflow_dag.CommandStep(run, _) -> run
   }

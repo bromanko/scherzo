@@ -263,6 +263,132 @@ pub type WorkflowGraphDto {
   )
 }
 
+pub type WorkflowScheduledFailureDto {
+  WorkflowScheduledFailureDto(
+    task_enabled: Bool,
+    task_state: Option(String),
+    task_labels: List(String),
+    task_dedupe: String,
+  )
+}
+
+pub type WorkflowTriggerDto {
+  WorkflowRoutedTriggerDto(route: String, label: Option(String))
+  WorkflowScheduledTriggerDto(
+    schedule_id: String,
+    every_ms: Int,
+    overlap: String,
+    catch_up: Bool,
+    on_failure: WorkflowScheduledFailureDto,
+  )
+}
+
+pub type WorkflowWorkspaceDto {
+  WorkflowWorkspaceDto(driver: String, required_capabilities: List(String))
+}
+
+pub type WorkflowModelSettingsDto {
+  WorkflowModelSettingsDto(model: Option(String), thinking: Option(String))
+}
+
+pub type WorkflowPromptRefDto {
+  WorkflowPromptRefDto(kind: String, ref: Option(String))
+}
+
+pub type WorkflowRecoveryDto {
+  WorkflowRecoveryDto(
+    attempts: Int,
+    model: Option(String),
+    prompt: WorkflowPromptRefDto,
+  )
+}
+
+pub type WorkflowExecutionDefaultsDto {
+  WorkflowExecutionDefaultsDto(
+    model: WorkflowModelSettingsDto,
+    max_parallel_steps: Int,
+    recovery: Option(WorkflowRecoveryDto),
+  )
+}
+
+pub type WorkflowContractSourceDto {
+  WorkflowContractSourceDto(required: Bool, kind: Option(String))
+}
+
+pub type WorkflowContractSpecDto {
+  WorkflowContractSpecDto(
+    name: String,
+    type_: String,
+    description: Option(String),
+    source: WorkflowContractSourceDto,
+    descriptor_present: Bool,
+  )
+}
+
+pub type WorkflowContractDto {
+  WorkflowContractDto(
+    version: Int,
+    inputs: List(WorkflowContractSpecDto),
+    context: List(WorkflowContractSpecDto),
+    outputs: List(WorkflowContractSpecDto),
+  )
+}
+
+pub type WorkflowStructuredOutputValidatorDto {
+  WorkflowStructuredOutputValidatorDto(name: String, kind: String)
+}
+
+pub type WorkflowStructuredOutputDto {
+  WorkflowStructuredOutputDto(
+    artifact_name: String,
+    required: Bool,
+    validators: List(WorkflowStructuredOutputValidatorDto),
+    validation_retries: Int,
+  )
+}
+
+pub type WorkflowCommandStepDto {
+  WorkflowCommandStepDto(run: String, timeout_ms: Option(Int))
+}
+
+pub type WorkflowAgentStepDto {
+  WorkflowAgentStepDto(
+    prompt: WorkflowPromptRefDto,
+    structured_output: Option(WorkflowStructuredOutputDto),
+  )
+}
+
+pub type WorkflowStepDto {
+  WorkflowStepDto(
+    id: String,
+    kind: String,
+    depends_on: List(String),
+    on_failure: String,
+    model: Option(WorkflowModelSettingsDto),
+    recovery: Option(WorkflowRecoveryDto),
+    command: Option(WorkflowCommandStepDto),
+    agent: Option(WorkflowAgentStepDto),
+  )
+}
+
+pub type WorkflowPublicationDto {
+  WorkflowPublicationDto(
+    id: String,
+    repository: String,
+    required: Bool,
+    mode: String,
+  )
+}
+
+pub type WorkflowNextActionDto {
+  WorkflowNextActionDto(
+    action_id: String,
+    workflow_id: String,
+    requires_gate: Option(String),
+    auto_enqueue: Bool,
+  )
+}
+
 pub type WorkflowListDto {
   WorkflowListDto(
     schema_version: Int,
@@ -279,6 +405,13 @@ pub type WorkflowDetailDto {
     yaml_sources: List(WorkflowYamlSourceDto),
     diagnostics: List(WorkflowDiagnosticDto),
     freshness: WorkflowFreshnessDto,
+    trigger: WorkflowTriggerDto,
+    workspace: WorkflowWorkspaceDto,
+    execution: WorkflowExecutionDefaultsDto,
+    contract: Option(WorkflowContractDto),
+    steps: List(WorkflowStepDto),
+    publications: List(WorkflowPublicationDto),
+    next_actions: List(WorkflowNextActionDto),
     graph: WorkflowGraphDto,
   )
 }
@@ -392,7 +525,7 @@ pub type OperationalMetricsSource {
 
 pub const operational_metrics_schema_version = 1
 
-pub const workflow_query_schema_version = 1
+pub const workflow_query_schema_version = 2
 
 pub const workflow_detail_schema_version = workflow_query_schema_version
 
