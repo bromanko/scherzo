@@ -510,6 +510,62 @@ pub fn retry_step_queues_operation_and_records_lifecycle_before_spawning_recover
   hub.stop(hub_subject)
 }
 
+pub fn queued_retry_step_replays_ledger_before_planning_test() {
+  let dir = "test/tmp/daemon-retry-step-queued-replay"
+  let issue = issue("issue-1", "LIV-509", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(issue, context, _) {
+        process.send(
+          log_subject,
+          "recovered_worker_started:" <> issue.id <> ":" <> context.step_id,
+        )
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
+
+  assert wait_for_log(
+    log_subject,
+    "recovered_worker_started:issue-1:apply_feedback",
+    100,
+  )
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.requested_step_id == Some("apply_feedback")
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn retry_step_accepts_issue_description_drift_and_records_retry_snapshot_test() {
   let dir = "test/tmp/daemon-retry-step-issue-drift"
   let original_issue = issue("issue-1", "LIV-1370", "Todo")

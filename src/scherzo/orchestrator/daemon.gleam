@@ -4418,7 +4418,27 @@ fn continue_retry_step_operation_with_observation(
   observation: recovery.CurrentWorkflowObservation,
   released_park: Option(orchestrator_state.ParkedEntry),
 ) -> QueuedControlOperationResult {
-  let projection_state = state.ledger_projection
+  case replay_projection_for_operator(state) {
+    Error(reason) ->
+      QueuedControlOperationFailed("ledger_read_failed", Some(reason))
+    Ok(projection_state) ->
+      continue_retry_step_operation_with_projection(
+        state,
+        operation,
+        observation,
+        released_park,
+        projection_state,
+      )
+  }
+}
+
+fn continue_retry_step_operation_with_projection(
+  state: State,
+  operation: projection.ControlOperationStatus,
+  observation: recovery.CurrentWorkflowObservation,
+  released_park: Option(orchestrator_state.ParkedEntry),
+  projection_state: projection.Projection,
+) -> QueuedControlOperationResult {
   let target =
     command.RetryWorkflowStepRunId(option.unwrap(operation.run_id, ""))
   let step_id = operation.requested_step_id
