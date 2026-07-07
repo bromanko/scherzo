@@ -125,6 +125,8 @@ steps:
     kind: agent
     depends_on: [validate_review_doc]
     prompt: prompts/execplan-review.md
+    model: anthropic/claude-fable-5
+    thinking: xhigh
     run_in: main
 
   - id: incorporate_review

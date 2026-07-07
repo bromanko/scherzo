@@ -76,6 +76,8 @@ steps:
     kind: agent
     depends_on: [prepare_review]
     prompt: prompts/review-native-correctness.md
+    model: anthropic/claude-fable-5
+    thinking: xhigh
     on_failure: continue
     run_in:
       name: review-correctness
