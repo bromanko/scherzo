@@ -42,7 +42,10 @@ pub fn queue_decision(
           Error(#(
             "artifact_publication_retry_already_running",
             "artifact publication retry already queued/running as "
-              <> existing.operation_id,
+              <> existing.operation_id
+              <> "; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status "
+              <> existing.operation_id
+              <> " --json",
           ))
       }
     Error(Nil) -> {

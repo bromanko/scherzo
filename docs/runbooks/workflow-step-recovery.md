@@ -174,4 +174,8 @@ If a recovery worker changes or deletes one of those protected files, Scherzo re
 
 Workflow terminal outcomes remain `completed` and `failed_fatal` for clean runs. When same-run step-recovery evidence exists, terminal workflow outcomes may instead be `succeeded_after_recovery` or `failed_after_recovery`.
 
+## Operator retry surface
+
+When same-run step recovery gives up or a daemon restart leaves a retained failed/interrupted workflow run, use the operator retry surface from `docs/runbooks/workflow-recovery.md`: first preview with `scripts/scherzoctl retry <task|run:run-id> --step <step-id> --dry-run --json`, then run the same `retry` command without `--dry-run` if the chosen safe point and preserved/discarded steps are expected. Use `scripts/scherzoctl retry all <task> --json` only when intentionally starting a fresh superseding run. Exact `run retry-step`, `run recollect-outputs`, `run finalize`, and `publication retry` remain salvage overrides for cases where retained evidence has been inspected manually.
+
 The older `recover` spelling is removed. Use `recovery` everywhere.

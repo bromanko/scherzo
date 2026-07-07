@@ -78,6 +78,7 @@ pub fn handle_submitted(
         callbacks,
       )
     command.RetryWorkflowStep(_, _)
+    | command.RetryWorkflowStepDryRun(_, _)
     | command.RetryWorkflowStepExact(_, _)
     | command.RecollectWorkflowOutputs(_)
     | command.RunFinalize(..)
@@ -225,7 +226,10 @@ fn handle_retry(
             command.rejected(
               request.operator_command,
               "issue_already_active",
-              Some("issue is running, claimed, or pending claim"),
+              Some(retry_rejection_with_next_command(
+                "issue is running, claimed, or pending claim",
+                "scripts/scherzoctl ps --json",
+              )),
             ),
           )
         False ->
@@ -237,7 +241,10 @@ fn handle_retry(
                 command.rejected(
                   request.operator_command,
                   "dispatch_paused",
-                  Some("dispatch is paused"),
+                  Some(retry_rejection_with_next_command(
+                    "dispatch is paused",
+                    "scripts/scherzoctl resume --json",
+                  )),
                 ),
               )
             False -> retry_issue(state, request, context, issue, callbacks)
@@ -266,7 +273,10 @@ fn retry_issue(
         command.rejected(
           request.operator_command,
           "dispatch_disabled",
-          Some("dispatch is not currently enabled"),
+          Some(retry_rejection_with_next_command(
+            "dispatch is not currently enabled",
+            "scripts/scherzoctl query status --json",
+          )),
         ),
       )
     True -> {
@@ -299,7 +309,12 @@ fn retry_issue(
                 command.rejected(
                   request.operator_command,
                   "retry_workflow_policy_invalid",
-                  Some("retry rejected: workflow policy is not satisfied"),
+                  Some(retry_rejection_with_next_command(
+                    "retry rejected: workflow policy is not satisfied",
+                    "scripts/scherzoctl task show "
+                      <> issue.identifier
+                      <> " --json",
+                  )),
                 ),
               )
             True ->
@@ -311,7 +326,10 @@ fn retry_issue(
                     command.rejected(
                       request.operator_command,
                       "retry_no_dispatch_slots",
-                      Some("retry deferred: no dispatch slots are available"),
+                      Some(retry_rejection_with_next_command(
+                        "retry deferred: no dispatch slots are available",
+                        "scripts/scherzoctl ps --json",
+                      )),
                     ),
                   )
                 True -> {
@@ -371,7 +389,10 @@ fn handle_retry_start_fresh(
             command.rejected(
               request.operator_command,
               "issue_already_active",
-              Some("issue is running, claimed, or pending claim"),
+              Some(retry_rejection_with_next_command(
+                "issue is running, claimed, or pending claim",
+                "scripts/scherzoctl ps --json",
+              )),
             ),
           )
         False ->
@@ -383,7 +404,10 @@ fn handle_retry_start_fresh(
                 command.rejected(
                   request.operator_command,
                   "dispatch_paused",
-                  Some("dispatch is paused"),
+                  Some(retry_rejection_with_next_command(
+                    "dispatch is paused",
+                    "scripts/scherzoctl resume --json",
+                  )),
                 ),
               )
             False ->
@@ -421,7 +445,10 @@ fn retry_issue_start_fresh(
         command.rejected(
           request.operator_command,
           "dispatch_disabled",
-          Some("dispatch is not currently enabled"),
+          Some(retry_rejection_with_next_command(
+            "dispatch is not currently enabled",
+            "scripts/scherzoctl query status --json",
+          )),
         ),
       )
     True ->
@@ -454,7 +481,12 @@ fn retry_issue_start_fresh(
                     command.rejected(
                       request.operator_command,
                       "retry_workflow_policy_invalid",
-                      Some("retry rejected: workflow policy is not satisfied"),
+                      Some(retry_rejection_with_next_command(
+                        "retry rejected: workflow policy is not satisfied",
+                        "scripts/scherzoctl task show "
+                          <> issue.identifier
+                          <> " --json",
+                      )),
                     ),
                   )
                 True ->
@@ -466,9 +498,10 @@ fn retry_issue_start_fresh(
                         command.rejected(
                           request.operator_command,
                           "retry_no_dispatch_slots",
-                          Some(
+                          Some(retry_rejection_with_next_command(
                             "retry deferred: no dispatch slots are available",
-                          ),
+                            "scripts/scherzoctl ps --json",
+                          )),
                         ),
                       )
                     True -> {
@@ -607,8 +640,15 @@ fn qualifying_start_fresh_reason(reason: String) -> Bool {
 fn start_fresh_rejection_message(reason: String) -> String {
   case reason {
     "start_fresh_not_allowed" ->
-      "start-fresh retry only clears retained drift or recovery-blocked state"
-    _ -> "retry rejected: " <> reason
+      retry_rejection_with_next_command(
+        "start-fresh retry only clears retained drift or recovery-blocked state",
+        "scripts/scherzoctl ps --json",
+      )
+    _ ->
+      retry_rejection_with_next_command(
+        "retry rejected: " <> reason,
+        "scripts/scherzoctl query status --json",
+      )
   }
 }
 
@@ -733,7 +773,36 @@ fn retry_rejection_message(
 ) -> String {
   case reason {
     "retry_issue_parked" -> retry_parked_rejection_message(runtime, issue)
-    _ -> "retry rejected: " <> reason
+    _ ->
+      retry_rejection_with_next_command(
+        "retry rejected: " <> reason,
+        retry_next_command(reason, issue),
+      )
+  }
+}
+
+fn retry_rejection_with_next_command(
+  message: String,
+  next_command: String,
+) -> String {
+  message
+  <> "; no run, park, or tracker state was changed. Next safe command: "
+  <> next_command
+}
+
+fn retry_next_command(reason: String, issue: tracker_issue.Issue) -> String {
+  case string.starts_with(reason, "retry_terminal_state:") {
+    True -> "scripts/scherzoctl task show " <> issue.identifier <> " --json"
+    False ->
+      case reason {
+        "retry_issue_already_running" | "retry_issue_already_claimed" ->
+          "scripts/scherzoctl ps --json"
+        "retry_blocked_by_dependency"
+        | "retry_missing_required_fields"
+        | "retry_workflow_policy_invalid" ->
+          "scripts/scherzoctl task show " <> issue.identifier <> " --json"
+        _ -> "scripts/scherzoctl task show " <> issue.identifier <> " --json"
+      }
   }
 }
 
@@ -743,12 +812,16 @@ fn retry_parked_rejection_message(
 ) -> String {
   case dict.get(runtime.parked, orchestrator_state.issue_identity(issue)) {
     Ok(parked) ->
-      "retry rejected: issue is parked for "
-      <> orchestrator_reason.park_to_string(parked.reason)
-      <> "; run `"
-      <> core.parked_unpark_command(parked)
-      <> "` before retry"
-    Error(Nil) -> "retry rejected: retry_issue_parked"
+      retry_rejection_with_next_command(
+        "retry rejected: issue is parked for "
+          <> orchestrator_reason.park_to_string(parked.reason),
+        "scripts/" <> core.parked_unpark_command(parked) <> " --json",
+      )
+    Error(Nil) ->
+      retry_rejection_with_next_command(
+        "retry rejected: retry_issue_parked",
+        "scripts/scherzoctl ps --json",
+      )
   }
 }
 

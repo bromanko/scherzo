@@ -45,6 +45,12 @@ pub type Request {
     target: command.RetryWorkflowStepTarget,
     step_id: Option(String),
   )
+  RetryDryRun(
+    id: String,
+    token: String,
+    target: command.RetryWorkflowStepTarget,
+    step_id: Option(String),
+  )
   RetryWorkflowStepExact(
     id: String,
     token: String,
@@ -167,6 +173,7 @@ pub fn request_id(request: Request) -> String {
     RetryIssue(id, _, _) -> id
     RetryIssueStartFresh(id, _, _, _) -> id
     RetryWorkflowStep(id, _, _, _) -> id
+    RetryDryRun(id, _, _, _) -> id
     RetryWorkflowStepExact(id, _, _, _) -> id
     RecollectWorkflowOutputs(id, _, _) -> id
     RunFinalize(id, _, _, _, _, _, _, _, _, _) -> id
@@ -198,6 +205,7 @@ pub fn request_token(request: Request) -> String {
     RetryIssue(_, token, _) -> token
     RetryIssueStartFresh(_, token, _, _) -> token
     RetryWorkflowStep(_, token, _, _) -> token
+    RetryDryRun(_, token, _, _) -> token
     RetryWorkflowStepExact(_, token, _, _) -> token
     RecollectWorkflowOutputs(_, token, _) -> token
     RunFinalize(_, token, _, _, _, _, _, _, _, _) -> token
@@ -272,6 +280,12 @@ pub fn request_to_json(request: Request) -> json.Json {
       list.append(
         retry_workflow_step_entries(target, step_id),
         base_request_entries(id, token, "retry_step"),
+      )
+      |> json.object
+    RetryDryRun(id, token, target, step_id) ->
+      list.append(
+        retry_workflow_step_entries(target, step_id),
+        base_request_entries(id, token, "retry_dry_run"),
       )
       |> json.object
     RetryWorkflowStepExact(id, token, target, step_id) ->
@@ -561,6 +575,15 @@ fn request_for_type(fields: RequestFields) -> Result(Request, RequestError) {
       {
         Ok(target), Ok(step_id) ->
           Ok(RetryWorkflowStep(fields.id, fields.token, target, step_id))
+        Error(err), _ | _, Error(err) -> Error(err)
+      }
+    "retry_dry_run" ->
+      case
+        required_retry_workflow_step_target(fields),
+        optional_step_id(fields)
+      {
+        Ok(target), Ok(step_id) ->
+          Ok(RetryDryRun(fields.id, fields.token, target, step_id))
         Error(err), _ | _, Error(err) -> Error(err)
       }
     "retry_step_exact" ->
@@ -1352,6 +1375,8 @@ pub fn command_request(
       RetryIssueStartFresh(id, token, issue_ref, reason)
     command.RetryWorkflowStep(target, step_id) ->
       RetryWorkflowStep(id, token, target, step_id)
+    command.RetryWorkflowStepDryRun(target, step_id) ->
+      RetryDryRun(id, token, target, step_id)
     command.RetryWorkflowStepExact(target, step_id) ->
       RetryWorkflowStepExact(id, token, target, step_id)
     command.RecollectWorkflowOutputs(run_id) ->
@@ -1418,6 +1443,8 @@ pub fn request_operator_command(
       Some(command.RetryIssueStartFresh(issue_ref, reason))
     RetryWorkflowStep(_, _, target, step_id) ->
       Some(command.RetryWorkflowStep(target, step_id))
+    RetryDryRun(_, _, target, step_id) ->
+      Some(command.RetryWorkflowStepDryRun(target, step_id))
     RetryWorkflowStepExact(_, _, target, step_id) ->
       Some(command.RetryWorkflowStepExact(target, step_id))
     RecollectWorkflowOutputs(_, _, run_id) ->

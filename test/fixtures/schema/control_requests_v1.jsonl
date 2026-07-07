@@ -10,6 +10,7 @@
 {"issue_identifier":"LIV-94","version":1,"id":"req-retry","token":"secret","type":"retry"}
 {"reason":"workflow drift","issue_identifier":"LIV-94","version":1,"id":"req-retry-start-fresh","token":"secret","type":"retry_start_fresh"}
 {"step_id":"build","run_id":"run-1","version":1,"id":"req-retry-step","token":"secret","type":"retry_step"}
+{"step_id":"build","run_id":"run-1","version":1,"id":"req-retry-dry-run","token":"secret","type":"retry_dry_run"}
 {"step_id":"build","run_id":"run-1","version":1,"id":"req-retry-step-exact","token":"secret","type":"retry_step_exact"}
 {"run_id":"run-1","version":1,"id":"req-recollect-outputs","token":"secret","type":"recollect_outputs"}
 {"run_id":"run-1","validate":true,"outputs":"auto","publish":true,"update_tracker":true,"dry_run":true,"reason":"operator salvage","allow_unpublished":false,"version":1,"id":"req-run-finalize","token":"secret","type":"run_finalize"}

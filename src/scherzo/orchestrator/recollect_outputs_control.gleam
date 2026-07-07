@@ -96,7 +96,10 @@ pub fn control_operation_running_conflict(
         reason: "artifact_publication_retry_already_running",
         message: Some(
           "artifact publication retry already queued/running as "
-          <> existing.operation_id,
+          <> existing.operation_id
+          <> "; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status "
+          <> existing.operation_id
+          <> " --json",
         ),
       ))
     Error(Nil) -> recollect_running_conflict(projected, operation)
@@ -122,7 +125,10 @@ fn recollect_running_conflict(
           reason: "recollect_outputs_already_running",
           message: Some(
             "recollect-outputs already queued/running as "
-            <> existing.operation_id,
+            <> existing.operation_id
+            <> "; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status "
+            <> existing.operation_id
+            <> " --json",
           ),
         )
       })
@@ -150,7 +156,7 @@ fn is_incomplete(status: String) -> Bool {
 pub fn parked_preflight_for_run(
   runtime: orchestrator_state.RuntimeState,
   operator_command: command.OperatorCommand,
-  run_id: String,
+  _run_id: String,
   issue_id: String,
 ) -> Result(Nil, command.CommandResult) {
   case
@@ -166,8 +172,9 @@ pub fn parked_preflight_for_run(
         Some(
           "issue is parked for "
           <> orchestrator_reason.park_to_string(parked.reason)
-          <> "; unpark before recollect-outputs for run "
-          <> run_id,
+          <> "; no run, park, or tracker state was changed. Next safe command: scripts/"
+          <> core.parked_unpark_command(parked)
+          <> " --json",
         ),
       ))
     Error(Nil) -> Ok(Nil)
@@ -212,7 +219,9 @@ pub fn validate_issue_state(
           <> issue.identifier
           <> " is currently in non-active state "
           <> issue_state.to_string(issue.state)
-          <> "; move the issue to a configured active or terminal state before recollect-outputs",
+          <> "; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl task show "
+          <> issue.identifier
+          <> " --json",
         ),
       )
       |> Error

@@ -326,22 +326,21 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     command_spec.CommandSpec(
       handler: RetryKey,
       path: ["retry"],
-      usage: "retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]",
-      summary: "Retry a task now.",
-      positionals: [command_spec.Required("task_ref")],
+      usage: "retry <task|id:<id>|run:<run-id>> [--step <step-id>] [--dry-run]",
+      summary: "Plan or retry a retained failed workflow run using the safe rewind lattice.",
+      positionals: [command_spec.Required("target")],
       options: [
         control_file_option(),
         json_option(),
         timeout_option(),
         wait_option(),
-        start_fresh_option(),
-        from_scratch_option(),
-        reason_option(),
+        step_option(),
+        dry_run_option(),
       ],
       help_lines: [
         line(
-          "retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]",
-          "Retry a task now.",
+          "retry <task|id:<id>|run:<run-id>> [--step <step-id>] [--dry-run]",
+          "Plan or retry a retained failed workflow run using the safe rewind lattice.",
         ),
       ],
     ),
@@ -1051,6 +1050,7 @@ fn is_canonical_control_command(
       case handler, path {
         SchedulesRunKey, ["run-schedule"] -> True
         RetryKey, ["task", "retry"] -> True
+        RetryKey, ["retry"] -> True
         RetryKey, _ -> False
         RetryStepKey, ["run", "retry-step"] -> True
         RetryStepKey, _ -> False
@@ -1085,7 +1085,6 @@ fn is_deprecated_control_alias(
     False ->
       case handler, path {
         SchedulesRunKey, ["schedules", "run"] -> True
-        RetryKey, ["retry"] -> True
         RetryStepKey, ["retry-step"] -> True
         RecollectOutputsKey, ["recollect-outputs"] -> True
         _, _ -> False
@@ -1139,7 +1138,6 @@ fn is_deprecated_control_alias_spec(
     False ->
       case handler, path {
         SchedulesRunKey, ["schedules", "run"] -> True
-        RetryKey, ["retry"] -> True
         RetryStepKey, ["retry-step"] -> True
         RecollectOutputsKey, ["recollect-outputs"] -> True
         _, _ -> False
@@ -1154,10 +1152,8 @@ fn deprecated_alias_tail(
   case parsed.handler, parsed.path {
     SchedulesRunKey, ["schedules", "run"] ->
       " will be removed after one release; use scherzo ctl run-schedule <job> --now."
-    RetryKey, ["retry"] ->
-      " will be removed after one release; use scherzo ctl task retry <task|id:<id>> [--start-fresh|--from-scratch --reason <text>]."
     RetryStepKey, ["retry-step"] ->
-      " will be removed after one release; use scherzo ctl retry step <target> [--step <step-id>] for the common retry path, or scherzo ctl run retry-step <run-id> --step <step-id> for the exact expert override."
+      " will be removed after one release; use scherzo ctl retry <target> [--step <step-id>] for the common retry path, or scherzo ctl run retry-step <run-id> --step <step-id> for the exact expert override."
     RecollectOutputsKey, ["recollect-outputs"] ->
       " will be removed after one release; use scherzo ctl run recollect-outputs <run-id>."
     _, _ ->
@@ -1412,7 +1408,10 @@ fn yes_option() -> command_spec.OptionSpec {
 }
 
 fn dry_run_option() -> command_spec.OptionSpec {
-  command_spec.flag_option("--dry-run", "Force read-only cleanup inventory.")
+  command_spec.flag_option(
+    "--dry-run",
+    "Preview without mutating retained state.",
+  )
 }
 
 fn reason_option() -> command_spec.OptionSpec {

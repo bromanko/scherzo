@@ -1672,6 +1672,15 @@ fn request_examples() -> List(RequestExample) {
       ),
     ),
     RequestExample(
+      "RetryDryRun",
+      protocol.RetryDryRun(
+        "req-retry-dry-run",
+        "secret",
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("build"),
+      ),
+    ),
+    RequestExample(
       "RetryWorkflowStepExact",
       protocol.RetryWorkflowStepExact(
         "req-retry-step-exact",

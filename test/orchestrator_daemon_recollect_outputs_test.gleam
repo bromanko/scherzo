@@ -97,10 +97,17 @@ pub fn recollect_outputs_daemon_queues_before_async_recollection_work_is_release
     )
   assert command.status_to_string(duplicate_result.status) == "queued"
   assert duplicate_result.operation_id == Some(operation_id)
-  assert duplicate_result.message
-    == Some(
-      "recollect-outputs already queued/running; poll query operation-status for completion",
-    )
+  let assert Some(duplicate_message) = duplicate_result.message
+  assert string.contains(
+    duplicate_message,
+    "recollect-outputs already queued/running",
+  )
+  assert string.contains(
+    duplicate_message,
+    "Next safe command: scripts/scherzoctl query operation-status "
+      <> operation_id
+      <> " --json",
+  )
   assert count_kind(ledger_kinds(root), "control_operation_queued") == 1
   assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
     == before_outputs
@@ -171,7 +178,10 @@ pub fn recollect_outputs_daemon_rejects_parked_issue_without_mutation_test() {
   assert command.status_to_string(result.status) == "rejected"
   assert command.status_reason(result.status) == Some("issue_parked")
   let assert Some(message) = result.message
-  assert string.contains(message, "unpark before recollect-outputs")
+  assert string.contains(
+    message,
+    "Next safe command: scripts/scherzoctl unpark 'LIV-1208' --json",
+  )
   assert after == before
   test_async.assert_no_extra_message(worker_subject)
 

@@ -46,6 +46,10 @@ pub type OperatorCommand {
   RetryIssue(IssueRef)
   RetryIssueStartFresh(IssueRef, reason: String)
   RetryWorkflowStep(target: RetryWorkflowStepTarget, step_id: Option(String))
+  RetryWorkflowStepDryRun(
+    target: RetryWorkflowStepTarget,
+    step_id: Option(String),
+  )
   RetryWorkflowStepExact(
     target: RetryWorkflowStepTarget,
     step_id: Option(String),
@@ -148,6 +152,7 @@ pub fn command_name(command: OperatorCommand) -> String {
     RetryIssue(_) -> "retry"
     RetryIssueStartFresh(_, _) -> "retry_start_fresh"
     RetryWorkflowStep(_, _) -> "retry_step"
+    RetryWorkflowStepDryRun(_, _) -> "retry_dry_run"
     RetryWorkflowStepExact(_, _) -> "retry_step_exact"
     RecollectWorkflowOutputs(_) -> "recollect_outputs"
     RunFinalize(..) -> "run_finalize"
@@ -172,7 +177,9 @@ pub fn command_target(command: OperatorCommand) -> Option(String) {
     | RetryIssueStartFresh(issue_ref, _)
     | ParkIssue(issue_ref, _)
     | UnparkIssue(issue_ref) -> Some(issue_ref_to_string(issue_ref))
-    RetryWorkflowStep(target, _) | RetryWorkflowStepExact(target, _) ->
+    RetryWorkflowStep(target, _)
+    | RetryWorkflowStepDryRun(target, _)
+    | RetryWorkflowStepExact(target, _) ->
       Some(retry_workflow_step_target_to_string(target))
     RecollectWorkflowOutputs(run_id) -> Some("run:" <> run_id)
     RunFinalize(run_id: run_id, ..) -> Some("run:" <> run_id)
@@ -267,6 +274,12 @@ pub fn operator_command_to_json(
       list.append(
         retry_workflow_step_entries(target, step_id),
         base_command_entries("retry_step"),
+      )
+      |> json.object
+    RetryWorkflowStepDryRun(target, step_id) ->
+      list.append(
+        retry_workflow_step_entries(target, step_id),
+        base_command_entries("retry_dry_run"),
       )
       |> json.object
     RetryWorkflowStepExact(target, step_id) ->
@@ -755,6 +768,11 @@ fn operator_command_from_fields(
           use target <- result.try(required_retry_workflow_step_target(fields))
           use step_id <- result.try(optional_step_id(fields))
           Ok(RetryWorkflowStep(target, step_id))
+        }
+        "retry_dry_run" -> {
+          use target <- result.try(required_retry_workflow_step_target(fields))
+          use step_id <- result.try(optional_step_id(fields))
+          Ok(RetryWorkflowStepDryRun(target, step_id))
         }
         "retry_step_exact" -> {
           use target <- result.try(required_retry_workflow_step_target(fields))

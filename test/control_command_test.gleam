@@ -24,6 +24,16 @@ pub fn command_names_and_targets_are_stable_test() {
       Some("step-1"),
     ))
     == "retry_step"
+  assert command.command_name(command.RetryWorkflowStepDryRun(
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("step-1"),
+    ))
+    == "retry_dry_run"
+  assert command.command_target(command.RetryWorkflowStepDryRun(
+      command.RetryWorkflowStepRunId("run-1"),
+      None,
+    ))
+    == Some("run-1")
   assert command.command_target(command.RetryWorkflowStep(
       command.RetryWorkflowStepAutoTarget("ABC-123"),
       None,
@@ -136,6 +146,10 @@ pub fn operator_command_codec_roundtrips_all_variants_test() {
     None,
   ))
   assert_command_roundtrip(command.RetryWorkflowStep(
+    command.RetryWorkflowStepRunId("run-1"),
+    Some("step-2"),
+  ))
+  assert_command_roundtrip(command.RetryWorkflowStepDryRun(
     command.RetryWorkflowStepRunId("run-1"),
     Some("step-2"),
   ))

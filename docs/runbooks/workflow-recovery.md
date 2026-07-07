@@ -63,25 +63,33 @@ If a parked task exists because of retry caps, inspect recent events and handoff
 
 ## Repair interrupted retained workflow runs
 
-Common retry now has three operator-facing entry points. Use `retry step <target>` for the common lattice path that picks the deepest safe retained boundary Scherzo can prove, use `retry all <task>` or `task retry <task> --from-scratch --reason <text>` when you want to force a fresh superseding run, and keep `run retry-step <run-id> --step <step-id>` as the exact fail-closed expert override.
+The normal operator surface has two verbs:
 
-Use `retry step` or `run retry-step` when a retained workflow run has durable completed upstream artifacts and a failed or interrupted repair boundary that you want to rerun in place instead of redispatching the full task:
+- `retry <task|id:<id>|run:<run-id>>` uses the rewind lattice for a retained failed or interrupted run. Scherzo chooses the deepest safe point it can prove, preserves verified upstream steps, and discards the selected failed/interrupted boundary plus affected descendants.
+- `retry all <task>` intentionally supersedes retained recovery and starts a fresh run from the current task payload and current workflow definition.
+
+Before mutating, preview the lattice decision:
 
 ```sh
-scripts/scherzoctl retry step <task|run:run-id> --step <step-id> --json
-scripts/scherzoctl run retry-step <run-id> --step <step-id> --json
+scripts/scherzoctl retry <task|run:run-id> --step <step-id> --dry-run --json
+```
+
+The dry-run response names the chosen safe point plus preserved and discarded steps. When the plan is expected, run the same command without `--dry-run`:
+
+```sh
+scripts/scherzoctl retry <task|run:run-id> --step <step-id> --json
 scripts/scherzoctl query operation-status <operation-id> --json
 ```
 
-A successful acknowledgement is now durable and asynchronous: `retry-step` returns `status: queued` plus `operation_id` after Scherzo records the control intent, and the slow repair runs afterward. Poll `query operation-status <operation-id>` for `queued`, `running`, `completed`, or `failed` status.
+A successful acknowledgement is durable and asynchronous: `retry` returns `status: queued` plus `operation_id` after Scherzo records the control intent, and the slow repair runs afterward. Poll `query operation-status <operation-id>` for `queued`, `running`, `completed`, or `failed` status.
 
 If you want Scherzo to wait for completion, add `--wait --timeout <duration>` to the operation-status read. When the wait budget expires but the accepted operation is still queued or running, `--json` stays machine-readable and returns `ok: true` with `wait.timed_out: true`, `wait.phase: "operation_wait"`, and a safe follow-up command instead of a blind retry. Use `SCHERZO_CTL_TIMEOUT` to change the default request budget and `SCHERZO_CTL_WAIT_TIMEOUT` when you want a longer default wait budget without changing the initial admission timeout.
 
-Mutating controls now treat the admission boundary as the idempotency boundary. `pause`, `resume`, `reload`, `task retry`, `run retry-step`, `run recollect-outputs`, `run finalize`, `publication retry`, `park`, `unpark`, `abort`, `stop-after-turn`, `prompt`, `ui respond`, `schedules run`, and `recovery cleanup-orphan-steps` accept the same timeout options where they use the daemon control channel. If the client loses the response after sending one of those requests, JSON reports `phase: "operation_admission"`, `accepted: "unknown"`, and `retryable: false`; the suggested command is a safe read such as `query status`, `task show`, `events`, or `ps`, never a blind repeat of the mutation. Successful queued or applied command results include `accepted: true` and keep any durable `operation_id` so operators can poll `query operation-status`.
+Mutating controls now treat the admission boundary as the idempotency boundary. `pause`, `resume`, `reload`, `retry`, `retry all`, `run recollect-outputs`, `run finalize`, `publication retry`, `park`, `unpark`, `abort`, `stop-after-turn`, `prompt`, `ui respond`, `schedules run`, and `recovery cleanup-orphan-steps` accept the same timeout options where they use the daemon control channel. If the client loses the response after sending one of those requests, JSON reports `phase: "operation_admission"`, `accepted: "unknown"`, and `retryable: false`; the suggested command is a safe read such as `query status`, `task show`, `events`, or `ps`, never a blind repeat of the mutation. Successful queued or applied command results include `accepted: true` and keep any durable `operation_id` so operators can poll `query operation-status`.
 
 Timeout diagnostics intentionally reuse existing operator-visible surfaces rather than adding provider-live state. The new CLI-local timeout branches are observable through structured JSON/human output and through tests that cover `control_file_discovery`, `daemon_connect`, `request_round_trip`, `daemon_actor_query`, `operation_admission`, and `operation_wait`. No provider-live behavior, remote-provider cache behavior, cache TTL, or invalidation policy changes in this rollout; read commands return the policy timeout error when no safe stale projection is available instead of inventing stale data.
 
-Common `retry step` is total for non-held, non-terminal, non-paused, non-duplicate retained runs: when exact repair is no longer provable, Scherzo rewinds to the deepest verified prefix or supersedes the retained run and starts fresh. The exact `run retry-step` expert override remains fail-closed and is accepted only when workflow identity, issue identity, task identity, run root, retained artifacts, and required source workspaces still match the current world. Stable exact-override rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, and `workspace_recovery_failed`.
+Common `retry` is total for non-held, non-terminal, non-paused, non-duplicate retained runs: when exact repair is no longer provable, Scherzo rewinds to the deepest verified prefix or supersedes the retained run and starts fresh. The exact `run retry-step` expert override remains a fail-closed salvage override and is accepted only when workflow identity, issue identity, task identity, run root, retained artifacts, and required source workspaces still match the current world. Stable exact-override rejection reasons include `workflow_drift`, `issue_drift`, `artifact_recovery_failed`, and `workspace_recovery_failed`.
 
 When the exact override rejects with `artifact_recovery_failed`, the result message names the step, retained artifact ref, and failure reason. A hash mismatch also includes the ledger sha and current file sha, for example:
 
@@ -96,7 +104,7 @@ When the exact override rejects with `artifact_recovery_failed`, the result mess
 
 Interpret `reason=missing` as an artifact ref that is absent under `.scherzo-state/artifacts`, `reason=unreadable` as a local permission or I/O failure, `reason=invalid_json` as retained artifact bytes that match the ledger hash but are not a valid step artifact, and `reason=sha_mismatch` as retained bytes that no longer match the ledger `artifact_sha256`. Fix or restore the named artifact from backup or from the retained workspace evidence, then rerun `retry-step`. The same bounded detail is retained as a projection-neutral `workflow_run_diagnostic` ledger record so later operators can inspect the failed repair without recomputing hashes manually.
 
-If the issue is parked, unpark it first and then rerun `retry-step`. `retry-step` does not silently override operator park policy. `retry-step` now also fails closed when the refreshed issue state is non-active, with a message naming the run and current state; move the issue back to a configured active state before retrying. Terminal states are still rejected.
+If retry or a salvage override is rejected, read the stable `reason`, the human `message`, and the `Next safe command:` in the response. Manual operator holds point at `scripts/scherzoctl unpark <task> --json`; quarantined worker-failure parks that retry can safely release are handled by `retry` itself and should not be manually unparked first. Terminal states are rejected and point at a safe task inspection command.
 
 Use `run recollect-outputs` when every workflow step already succeeded but the workflow output manifest is missing or invalid and you need a fresh output record without rerunning steps:
 
@@ -123,7 +131,7 @@ Stable asynchronous failure reasons include `workflow_drift`, `issue_drift`, `ar
 }
 ```
 
-When retained evidence is missing, expect source-specific failed operation reasons. For example, missing or mismatched step artifacts fail with `artifact_recovery_failed`, and missing step workspaces for `source.path` outputs fail with `workspace_recovery_failed`. Restore the named artifact or workspace first, then rerun `recollect-outputs`. If publication failed separately, run publication retry only after recollection has produced a valid output manifest. If retained evidence cannot be restored safely, fall back to a full task retry instead of forcing output recollection.
+When retained evidence is missing, expect source-specific failed operation reasons. For example, missing or mismatched step artifacts fail with `artifact_recovery_failed`, and missing step workspaces for `source.path` outputs fail with `workspace_recovery_failed`. Restore the named artifact or workspace first, then rerun `recollect-outputs`. If publication failed separately, run publication retry only after recollection has produced a valid output manifest. If retained evidence cannot be restored safely, fall back to `scripts/scherzoctl retry all <task> --json` instead of forcing output recollection.
 
 When a retained run already has orphaned YAML child step sessions, inspect `ps --json` or `session --json` for `workflow_run_id`, `workflow_step_id`, `workflow_attempt_index`, `orphan_status`, `issue_state`, and `recommended_action`, then run:
 
@@ -134,15 +142,13 @@ scripts/scherzoctl recovery cleanup-orphan-steps run:<run-id> --yes
 
 Dry run is the default. `--yes` is the only mutating mode, and rerunning either form is expected to be idempotent.
 
-Use `retry all`, `task retry --from-scratch`, or the older explicit `--start-fresh` spelling when retained drift blocked the old run and you need Scherzo to start a fresh run from the current task payload and current workflow definition instead of repairing the retained run:
+Use `retry all` when retained drift blocked the old run and you need Scherzo to start a fresh run from the current task payload and current workflow definition instead of repairing the retained run:
 
 ```sh
 scripts/scherzoctl retry all <task> --json
-scripts/scherzoctl task retry <task> --from-scratch --reason "workflow drift" --json
-scripts/scherzoctl task retry <task> --start-fresh --reason "workflow drift" --json
 ```
 
-The response message explicitly says that Scherzo `starts a fresh run`. This path clears only retained drift or recovery-blocked state; it does not silently override arbitrary operator holds.
+The response message explicitly says that Scherzo `starts a fresh run`. This path clears only retained drift or recovery-blocked state; it does not silently override arbitrary operator holds. `task retry --from-scratch --reason <text>` and `task retry --start-fresh --reason <text>` remain compatibility spellings for scripted operators, but do not use them as the primary runbook path.
 
 Use `run finalize` when a retained run already has the evidence you need and the remaining work is validation adoption, outputs, publication, and tracker completion without starting a new worker:
 
@@ -155,7 +161,7 @@ scripts/scherzoctl run finalize <run-id> --validate --outputs auto --publish --u
 
 Before posting any “manual recovery completed” handoff or moving the task to a terminal state, record publication evidence: the required publication route id(s), the `publication list`/`publication show` status, and the PR URL or equivalent published artifact reference. Materialized outputs alone are not completion evidence.
 
-If drift or retained artifact recovery cannot be proven safe, fall back to manual salvage or a full task retry with `scripts/scherzoctl task retry <task>`.
+If drift or retained artifact recovery cannot be proven safe, follow the rejected response's `Next safe command:`. The normal fresh-run fallback is `scripts/scherzoctl retry all <task> --json`; retained evidence salvage overrides are `run recollect-outputs`, `run finalize`, and `publication retry`.
 
 The historical LIV-509 retry remains deferred operator evidence after publish, not a pre-publish gate for code changes.
 
@@ -243,7 +249,7 @@ $SCHERZO_RUN_ROOT/state/implementation/scherzo-plan-completion-verdict.json
 
 The human session output appends `workflow_step_recovery_history`, which shows the failed verifier attempt, the nested recovery decision, any recheck attempt, and the terminal workflow outcome. The stamped verdict artifact records the blocking findings the recovery worker was trying to address.
 
-If the recovery result is `gave_up` or the recovery budget is exhausted, inspect or salvage the retained workspace manually and then retry the full workflow when safe — normally with `scherzoctl task retry <issue>`.
+If the recovery result is `gave_up` or the recovery budget is exhausted, inspect or salvage the retained workspace manually and then retry the full workflow when safe — normally with `scripts/scherzoctl retry all <issue> --json`.
 
 Missing, malformed, or stale plan-completion verdict failures remain terminal verifier or workflow-state failures. Same-run resume from exhausted plan-completion recovery is intentionally out of scope for this MVP.
 
