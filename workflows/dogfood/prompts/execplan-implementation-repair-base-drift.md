@@ -5,9 +5,7 @@ Task URL:
 
 ExecPlan identity model:
 
-- The workflow task in this prompt is the implementation handoff issue; it owns this implementation run and should be used for Linear/GitHub linkage.
-- `$SCHERZO_RUN_ROOT/state/implementation/execplan-bundle.json` records that handoff under `implementation_handoff` and records the source ExecPlan/review-doc issue under `source_issue`.
-- `implementation_handoff.issue_identifier` may differ from `source_issue.identifier`; that split is valid and expected for handoff tasks.
+{% include "fragments/execplan-identity-model.md" %}
 - Do not report a conflict, fail completion, or request revision solely because the handoff issue, source issue, review doc path, or implementation pack provenance reference different Linear keys. Treat only review-doc/implementation-pack disagreement in intent, scope, acceptance, safety, or source-plan provenance beyond that expected split as blocking.
 
 You are running only because the combined refresh-and-validate step failed and Scherzo step recovery asked you to make the smallest safe local repair before rerunning that same command unchanged.

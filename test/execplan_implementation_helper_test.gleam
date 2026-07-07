@@ -1914,16 +1914,38 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     ".scherzo/workflows/prompts/execplan-implementation-recover-plan-completion.md",
   ]
 
+  let assert Ok(identity_fragment) =
+    simplifile.read(
+      ".scherzo/workflows/prompts/fragments/execplan-identity-model.md",
+    )
+
   list.each(execplan_prompt_paths, fn(path) {
     let assert Ok(prompt) = simplifile.read(path)
     assert !string.contains(prompt, "{{ issue.description }}")
     assert string.contains(prompt, "{{ issue.url }}")
-    assert string.contains(
-      prompt,
-      "implementation_handoff.issue_identifier` may differ from `source_issue.identifier",
-    )
-    assert string.contains(prompt, "expected")
+    case
+      path
+      == ".scherzo/workflows/prompts/execplan-implementation-recover-plan-completion.md"
+    {
+      True -> {
+        assert string.contains(
+          prompt,
+          "implementation_handoff.issue_identifier` may differ from `source_issue.identifier",
+        )
+      }
+      False -> {
+        assert string.contains(
+          prompt,
+          "{% include \"fragments/execplan-identity-model.md\" %}",
+        )
+      }
+    }
   })
+  assert string.contains(
+    identity_fragment,
+    "implementation_handoff.issue_identifier` may differ from `source_issue.identifier",
+  )
+  assert string.contains(identity_fragment, "expected")
 
   list.each(
     [

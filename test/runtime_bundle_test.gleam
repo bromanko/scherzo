@@ -497,6 +497,234 @@ pub fn loads_yaml_orchestrator_and_prompt_files_test() {
   assert prompt == "Implement {{ issue.identifier }}"
 }
 
+pub fn loads_yaml_orchestrator_and_prompt_includes_test() {
+  let dir = "test/tmp/runtime-bundle-prompt-includes"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts/fragments")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/implement.md",
+      "Implement {% include \"fragments/policy.md\" %}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/fragments/policy.md",
+      "policy for {{ issue.identifier }}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+
+  let assert Ok(bundle) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  let assert Ok(dag) = dict.get(bundle.workflows, "implementation")
+  let assert [step] = workflow_dag.steps(dag)
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptResolvedFile("prompts/implement.md", prompt),
+    None,
+  ) = step.kind
+  assert prompt == "Implement policy for {{ issue.identifier }}"
+}
+
+pub fn resolves_nested_prompt_includes_relative_to_including_file_test() {
+  let dir = "test/tmp/runtime-bundle-prompt-nested-includes"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts/fragments")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/implement.md",
+      "{% include \"fragments/outer.md\" %}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/fragments/outer.md",
+      "Outer {% include \"inner.md\" %}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/fragments/inner.md", "content")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+
+  let assert Ok(dag) =
+    runtime_bundle.load_workflow_file(dir <> "/workflows/implementation.yaml")
+  let assert [step] = workflow_dag.steps(dag)
+  let assert workflow_dag.AgentStep(
+    workflow_dag.PromptResolvedFile("prompts/implement.md", prompt),
+    None,
+  ) = step.kind
+  assert prompt == "Outer content"
+}
+
+pub fn rejects_missing_prompt_include_during_load_test() {
+  let dir = "test/tmp/runtime-bundle-prompt-include-missing"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/implement.md",
+      "{% include \"fragments/missing.md\" %}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "prompt_include_error"
+  assert string.contains(message, "fragments/missing.md")
+  assert string.contains(message, dir <> "/workflows/implementation.yaml")
+}
+
+pub fn rejects_escaping_prompt_include_during_load_test() {
+  let dir = "test/tmp/runtime-bundle-prompt-include-escape"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/implement.md",
+      "{% include \"../escape.md\" %}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\n",
+    )
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "prompt_include_error"
+  assert string.contains(message, "../escape.md")
+  assert string.contains(message, "must be relative")
+}
+
+pub fn loads_recovery_prompt_includes_test() {
+  let dir = "test/tmp/runtime-bundle-recovery-include-prompts"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts/fragments")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/implement.md", "Implement")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/recover.md",
+      "Recover {% include \"fragments/recovery-policy.md\" %}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/fragments/recovery-policy.md",
+      "policy",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nrecovery:\n  prompt: prompts/recover.md\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+
+  let assert Ok(dag) =
+    runtime_bundle.load_workflow_file(dir <> "/workflows/implementation.yaml")
+  let assert Some(workflow_dag.RecoveryConfigPatch(
+    prompt: Some(workflow_dag.PromptResolvedFile(
+      "prompts/recover.md",
+      workflow_prompt,
+    )),
+    ..,
+  )) = workflow_dag.recovery_config(dag)
+  assert workflow_prompt == "Recover policy"
+}
+
+pub fn scheduled_workflow_rejects_issue_variables_from_included_fragment_test() {
+  let dir = "test/tmp/runtime-bundle-scheduled-include-validation"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts/fragments")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/implement.md",
+      "{% include \"fragments/policy.md\" %}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/fragments/policy.md",
+      "{{ issue.identifier }}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\nschedules:\n  - workflow: implementation\n    every: 15m\n",
+    )
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "scheduled_workflow_requires_issue_context"
+  assert string.contains(message, "issue.identifier")
+}
+
+pub fn scheduled_workflow_rejects_issue_variables_from_recovery_fragment_test() {
+  let dir = "test/tmp/runtime-bundle-scheduled-recovery-include-validation"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/workflows/prompts/fragments")
+  let assert Ok(Nil) =
+    simplifile.write(dir <> "/workflows/prompts/implement.md", "Implement")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/recover.md",
+      "{% include \"fragments/policy.md\" %}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/prompts/fragments/policy.md",
+      "{{ issue.identifier }}",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1\nid: implementation\nrecovery:\n  prompt: prompts/recover.md\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/scherzo.yaml",
+      "version: 1\ntracker:\n  linear:\n    api_key_env: LINEAR_API_KEY\n    project: TEST\n  states:\n    ready: [Todo]\nworkspace:\n  root: workspaces\nworkflows:\n    implementation: workflows/implementation.yaml\nschedules:\n  - workflow: implementation\n    every: 15m\n",
+    )
+
+  let assert Error(runtime_bundle.BundleError(code, message)) =
+    runtime_bundle.load_with_env(Some(dir <> "/scherzo.yaml"), env)
+  assert code == "scheduled_workflow_requires_issue_context"
+  assert string.contains(message, "recovery prompt")
+  assert string.contains(message, "issue.identifier")
+}
+
 pub fn task_updates_completion_policy_uses_loaded_workflow_review_metadata_test() {
   let dir = "test/tmp/runtime-bundle-task-updates-review-policy"
   test_helpers.reset_dir(dir)

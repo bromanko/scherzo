@@ -251,6 +251,44 @@ pub fn workflow_fingerprint_changes_for_resolved_recover_prompt_contents_test() 
   assert first_fingerprint != second_fingerprint
 }
 
+pub fn workflow_fingerprint_changes_for_fragment_include_contents_test() {
+  let dir = "test/tmp/workflow-fingerprint-prompt-includes"
+  let workflow_path = dir <> "/workflow.yaml"
+  let prompt_path = dir <> "/prompts/implement.md"
+  let fragment_path = dir <> "/prompts/fragments/shared.md"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(dir <> "/prompts/fragments")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workflow_path,
+      "version: 1\nid: implementation\nsteps:\n  - id: implement\n    kind: agent\n    prompt: prompts/implement.md\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      prompt_path,
+      "Implement {% include \"fragments/shared.md\" %}",
+    )
+  let assert Ok(Nil) = simplifile.write(fragment_path, "policy v1")
+  let assert Ok(first) = runtime_bundle.load_workflow_file(workflow_path)
+  let first_fingerprint = workflow_fingerprint.for_dag("implementation", first)
+
+  let assert Ok(Nil) = simplifile.write(fragment_path, "policy v2")
+  let assert Ok(second) = runtime_bundle.load_workflow_file(workflow_path)
+  let second_fingerprint =
+    workflow_fingerprint.for_dag("implementation", second)
+
+  assert first_fingerprint != second_fingerprint
+  assert string.contains(
+    workflow_fingerprint.canonical_input(second),
+    "policy v2",
+  )
+  assert !string.contains(
+    workflow_fingerprint.canonical_input(second),
+    "{% include",
+  )
+}
+
 pub fn workflow_fingerprint_changes_for_structured_output_contract_test() {
   let unstructured =
     parse(

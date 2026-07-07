@@ -538,6 +538,7 @@ Important workflow rules:
 - `depends_on` forms a DAG; cycles are rejected.
 - A step with `prompt` is an agent step; a step with `run` is a command step.
 - Prompt paths are relative to the workflow YAML file and must stay inside that workflow directory.
+- Prompt templates may inline shared fragments with `{% include "fragments/name.md" %}`. Include paths are relative to the file containing the include, must stay relative, must not contain `..` or control characters, and must remain inside the workflow bundle.
 - Steps sharing the same logical workspace are serialized.
 - Different logical workspaces may run concurrently up to workflow `concurrency` and `agents.concurrency`.
 - Agent steps inherit project-level `agents` settings, then workflow-level `model` / `thinking`, unless the step overrides them.
@@ -583,6 +584,14 @@ Prompt templates are Markdown files rendered for `pi`. Prefer task language in p
 Previous validation output:
 {{ steps.validate_plan_file.stdout }}
 ```
+
+Shared prompt policy can live in fragments under `.scherzo/workflows/prompts/fragments/` and be included from a host prompt:
+
+```md
+{% include "fragments/review-policy.md" %}
+```
+
+Include expansion happens before `{{ }}`, `{% if %}`, and `{% for %}` render, so fragments can contain the same template features as their host prompt. Includes are limited to three include edges, cycle-checked, and validated during workflow-config loading, so missing or escaping fragments fail `scherzo doctor --check workflow-config` before dispatch.
 
 Markdown prompt templates are not runtime workflow definitions. Runtime workflows are YAML DAGs.
 

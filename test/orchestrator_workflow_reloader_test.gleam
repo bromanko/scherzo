@@ -50,6 +50,10 @@ fn new_prompt_file_path(dir: String) -> String {
   dir <> "/workflows/prompts/new-task.md"
 }
 
+fn prompt_fragment_file_path(dir: String) -> String {
+  dir <> "/workflows/prompts/fragments/policy.md"
+}
+
 fn implementation_workflow_text() -> String {
   "version: 1
 id: implementation
@@ -116,7 +120,8 @@ fn write_workflow(dir: String, interval_ms: Int) -> String {
   let config_path = dir <> "/scherzo.yaml"
   let workflow_dir = dir <> "/workflows"
   let prompt_dir = workflow_dir <> "/prompts"
-  let assert Ok(Nil) = simplifile.create_directory_all(prompt_dir)
+  let fragment_dir = prompt_dir <> "/fragments"
+  let assert Ok(Nil) = simplifile.create_directory_all(fragment_dir)
   let assert Ok(Nil) =
     simplifile.write(
       config_path,
@@ -312,6 +317,51 @@ pub fn workflow_reloader_recovers_when_created_prompt_was_not_in_last_good_bundl
         )
     }
     _ -> panic as "expected created missing prompt to recover"
+  }
+}
+
+pub fn workflow_reloader_recovers_when_created_prompt_fragment_was_not_in_last_good_bundle_test() {
+  let dir = "test/tmp/workflow-reloader-recovers-created-new-prompt-fragment"
+  let path = write_workflow(dir, 1000)
+  let state = load_state(path)
+  let assert Ok(Nil) =
+    simplifile.write(
+      prompt_file_path(dir),
+      "Prompt {% include \"fragments/policy.md\" %}",
+    )
+  let _ = simplifile.delete(prompt_fragment_file_path(dir))
+
+  let assert workflow_reloader.Invalid(invalid, reason, message) =
+    workflow_reloader.reload_if_changed(state)
+  assert reason == "prompt_include_error"
+  assert string.contains(message, "workflows/prompts/fragments/policy.md")
+
+  let still_invalid = case workflow_reloader.reload_if_changed(invalid) {
+    workflow_reloader.Unchanged(still_invalid) -> {
+      assert still_invalid.reload_state.current_status
+        == config.CurrentInvalid(reason)
+      still_invalid
+    }
+    _ -> panic as "expected repeated missing fragment poll to be unchanged"
+  }
+
+  let assert Ok(Nil) =
+    simplifile.write(prompt_fragment_file_path(dir), "policy")
+  case workflow_reloader.reload_if_changed(still_invalid) {
+    workflow_reloader.Reloaded(recovered) -> {
+      assert recovered.reload_state.current_status == config.CurrentValid
+      assert config.can_dispatch(recovered.reload_state)
+      assert recovered.last_invalid_dependency_snapshot == None
+      let assert Ok(dag) =
+        dict.get(recovered.bundle.workflows, "implementation")
+      let assert [step] = workflow_dag.steps(dag)
+      assert step.kind
+        == workflow_dag.AgentStep(
+          workflow_dag.PromptResolvedFile("prompts/task.md", "Prompt policy"),
+          None,
+        )
+    }
+    _ -> panic as "expected created missing prompt fragment to recover"
   }
 }
 

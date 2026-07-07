@@ -37,6 +37,220 @@ pub type Context {
   )
 }
 
+pub const include_depth_limit = 3
+
+pub type IncludeDependency {
+  IncludeDependency(path: String, contents: String)
+}
+
+pub type IncludeExpansion {
+  IncludeExpansion(contents: String, dependencies: List(IncludeDependency))
+}
+
+pub fn expand_includes(
+  source: String,
+  source_path: String,
+  resolver: fn(String, String) -> Result(IncludeDependency, error.TemplateError),
+) -> Result(IncludeExpansion, error.TemplateError) {
+  expand_includes_with_limit(source, source_path, include_depth_limit, resolver)
+}
+
+pub fn expand_includes_with_limit(
+  source: String,
+  source_path: String,
+  max_depth: Int,
+  resolver: fn(String, String) -> Result(IncludeDependency, error.TemplateError),
+) -> Result(IncludeExpansion, error.TemplateError) {
+  use contents_and_dependencies <- try_template(expand_include_source(
+    source,
+    source_path,
+    max_depth,
+    0,
+    [source_path],
+    resolver,
+  ))
+  let #(contents, dependencies) = contents_and_dependencies
+  Ok(IncludeExpansion(
+    contents: contents,
+    dependencies: normalize_include_dependencies(dependencies),
+  ))
+}
+
+fn expand_include_source(
+  source: String,
+  source_path: String,
+  max_depth: Int,
+  depth: Int,
+  stack: List(String),
+  resolver: fn(String, String) -> Result(IncludeDependency, error.TemplateError),
+) -> Result(#(String, List(IncludeDependency)), error.TemplateError) {
+  case next_token(source) {
+    None -> Ok(#(source, []))
+    Some(#(before, token, after)) ->
+      case token.kind {
+        Variable(_) -> {
+          use #(expanded_after, dependencies) <- try_template(
+            expand_include_source(
+              after,
+              source_path,
+              max_depth,
+              depth,
+              stack,
+              resolver,
+            ),
+          )
+          Ok(#(before <> token_source(token) <> expanded_after, dependencies))
+        }
+        Tag(tag) ->
+          case parse_include_tag(tag) {
+            Ok(Some(include_path)) -> {
+              use dependency <- try_template(resolve_include_dependency(
+                include_path,
+                source_path,
+                max_depth,
+                depth,
+                stack,
+                resolver,
+              ))
+              use #(expanded_after, after_dependencies) <- try_template(
+                expand_include_source(
+                  after,
+                  source_path,
+                  max_depth,
+                  depth,
+                  stack,
+                  resolver,
+                ),
+              )
+              let IncludeDependency(path:, contents:) = dependency
+              use #(expanded_fragment, fragment_dependencies) <- try_template(
+                expand_include_source(
+                  contents,
+                  path,
+                  max_depth,
+                  depth + 1,
+                  [path, ..stack],
+                  resolver,
+                ),
+              )
+              Ok(
+                #(before <> expanded_fragment <> expanded_after, [
+                  dependency,
+                  ..list.append(fragment_dependencies, after_dependencies)
+                ]),
+              )
+            }
+            Ok(None) -> {
+              use #(expanded_after, dependencies) <- try_template(
+                expand_include_source(
+                  after,
+                  source_path,
+                  max_depth,
+                  depth,
+                  stack,
+                  resolver,
+                ),
+              )
+              Ok(#(
+                before <> token_source(token) <> expanded_after,
+                dependencies,
+              ))
+            }
+            Error(err) -> Error(err)
+          }
+      }
+  }
+}
+
+fn resolve_include_dependency(
+  include_path: String,
+  source_path: String,
+  max_depth: Int,
+  depth: Int,
+  stack: List(String),
+  resolver: fn(String, String) -> Result(IncludeDependency, error.TemplateError),
+) -> Result(IncludeDependency, error.TemplateError) {
+  case depth >= max_depth {
+    True ->
+      Error(error.TemplateRenderError(
+        "include depth limit exceeded while expanding "
+        <> include_path
+        <> " from "
+        <> source_path,
+      ))
+    False -> {
+      use dependency <- try_template(resolver(include_path, source_path))
+      case list.contains(stack, dependency.path) {
+        True ->
+          Error(error.TemplateRenderError(
+            "include cycle detected: "
+            <> string.join(
+              list.reverse([dependency.path, ..stack]),
+              with: " -> ",
+            ),
+          ))
+        False -> Ok(dependency)
+      }
+    }
+  }
+}
+
+fn parse_include_tag(
+  tag: String,
+) -> Result(Option(String), error.TemplateError) {
+  let tag = string.trim(tag)
+  case tag == "include" || string.starts_with(tag, "include ") {
+    False -> Ok(None)
+    True -> {
+      let literal = string.trim(string.drop_start(tag, 7))
+      case is_quoted_include_literal(literal) {
+        True -> {
+          let include_path =
+            literal |> string.drop_start(1) |> string.drop_end(1) |> string.trim
+          case include_path == "" {
+            True -> Error(error.TemplateRenderError("malformed include tag"))
+            False -> Ok(Some(include_path))
+          }
+        }
+        False -> Error(error.TemplateRenderError("malformed include tag"))
+      }
+    }
+  }
+}
+
+fn is_quoted_include_literal(value: String) -> Bool {
+  string.length(value) >= 2
+  && string.starts_with(value, "\"")
+  && string.ends_with(value, "\"")
+}
+
+fn normalize_include_dependencies(
+  dependencies: List(IncludeDependency),
+) -> List(IncludeDependency) {
+  dependencies
+  |> list.reverse
+  |> normalize_include_dependencies_loop([], [])
+}
+
+fn normalize_include_dependencies_loop(
+  dependencies: List(IncludeDependency),
+  seen: List(String),
+  acc: List(IncludeDependency),
+) -> List(IncludeDependency) {
+  case dependencies {
+    [] -> list.reverse(acc)
+    [dependency, ..rest] ->
+      case list.contains(seen, dependency.path) {
+        True -> normalize_include_dependencies_loop(rest, seen, acc)
+        False ->
+          normalize_include_dependencies_loop(rest, [dependency.path, ..seen], [
+            dependency,
+            ..acc
+          ])
+      }
+  }
+}
+
 pub fn render(
   template: String,
   issue: tracker_issue.Issue,
@@ -481,6 +695,15 @@ pub fn referenced_variables(template: String) -> List(String) {
   referenced_variables_loop(template, [])
   |> list.reverse
   |> dedupe_preserving_first
+}
+
+pub fn referenced_variables_with_includes(
+  source: String,
+  source_path: String,
+  resolver: fn(String, String) -> Result(IncludeDependency, error.TemplateError),
+) -> Result(List(String), error.TemplateError) {
+  use expansion <- try_template(expand_includes(source, source_path, resolver))
+  Ok(referenced_variables(expansion.contents))
 }
 
 fn referenced_variables_loop(

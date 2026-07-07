@@ -40,6 +40,7 @@ EXECPLAN_IDENTITY_FRAGMENT = {
 STEP_ID_RE = re.compile(r"^  - id: ([A-Za-z0-9_]+)\s*$")
 RUN_RE = re.compile(r"^(?P<indent>\s*)run:\s*(?P<value>.*)$")
 REPO_ROOT_ASSIGN_RE = re.compile(r"(^|[;\s'\"])repo_root=")
+PROMPT_INCLUDE_RE = re.compile(r'^\{% include "([^"]+)" %\}$')
 
 
 class WorkflowLintError(Exception):
@@ -238,8 +239,27 @@ def check_shared_step_block(repo_root: Path, bundle_root: Path) -> list[str]:
     return failures
 
 
+def expand_prompt_includes_for_lint(path: Path, lines: list[str]) -> list[str]:
+    expanded: list[str] = []
+    for line in lines:
+        match = PROMPT_INCLUDE_RE.match(line.strip())
+        if not match:
+            expanded.append(line)
+            continue
+
+        include_path = match.group(1)
+        if include_path.startswith("/") or ".." in Path(include_path).parts:
+            raise WorkflowLintError(f"{path.name}: unsafe prompt include {include_path!r}")
+        target = path.parent / include_path
+        try:
+            expanded.extend(read_text(target).splitlines())
+        except FileNotFoundError as exc:
+            raise WorkflowLintError(f"{path.name}: missing prompt include {include_path!r}") from exc
+    return expanded
+
+
 def extract_prompt_fragment(path: Path, family: dict[str, str]) -> list[str]:
-    lines = read_text(path).splitlines()
+    lines = expand_prompt_includes_for_lint(path, read_text(path).splitlines())
     if family["heading"] not in lines:
         raise WorkflowLintError(f"{path.name}: missing prompt fragment heading {family['heading']!r}")
 

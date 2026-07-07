@@ -41,6 +41,8 @@ Clarify any missing pieces before making workflow changes:
 - Keep duplicated twin-pipeline blocks synchronized when a bundle intentionally shares steps across workflows, such as Scherzo's `implementation.yaml` and `execplan-implementation.yaml` review pipeline.
 - Keep shared prompt-family policy fragments synchronized across every prompt that carries the same policy block; do not hand-edit one copy without checking the family.
 - Keep prompts, schemas, scripts, and guidance bundled with the workflow. Do not require consuming repositories to have personal Pi skills installed.
+- Prefer prompt fragments for shared prompt policy. Put shared fragments under the bundle-local `prompts/fragments/` directory and include them with `{% include "fragments/name.md" %}` from host prompts.
+- Include paths are relative to the file containing the include, must remain relative, must not contain `..` or control characters, and must stay inside the workflow bundle. Keep host-specific instructions outside shared fragments.
 - Keep the skill repository-agnostic: do not assume a particular bundled workflow set, tracker, VCS, or workspace driver unless the checked-in config or user request says so.
 - Do not put secrets, tokens, machine-specific absolute paths, or local-only usernames in workflow/config files. Use environment variables and ignored `*.local.yaml` overrides for machine-specific data.
 - Do not edit runtime state while authoring workflows: avoid `.scherzo/workspaces/`, `.scherzo/.scherzo-state/`, control files, retained artifacts, and command-step diagnostics unless the user explicitly asks for runtime recovery and the operator skill is active.
@@ -65,7 +67,7 @@ For Scherzo dogfood workflow bundle edits, run the bundle hygiene lint when it i
 .scherzo/workflows/scripts/scherzo-workflow-lint check --repo-root . --bundle-root .scherzo/workflows --config .scherzo/scherzo.yaml
 ```
 
-For workflow bundle portability changes, also run the repository's portability check when one is provided:
+For workflow bundle portability changes, also run the repository's portability check when one is provided. After fragment edits, rerun workflow-config doctor and the portability check so missing or escaping includes fail before dispatch:
 
 ```sh
 nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).workflow-portability --print-build-logs
