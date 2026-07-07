@@ -2379,28 +2379,6 @@ fn has_superseded_attempt(
   })
 }
 
-fn has_finished_attempt(
-  attempts: List(projection.StepAttemptStatus),
-  step_id: String,
-  attempt_index: Int,
-  outcome: String,
-) -> Bool {
-  list.any(attempts, fn(status) {
-    case status {
-      projection.StepAttemptFinishedStatus(
-        step_id: body_step_id,
-        attempt_index: body_attempt_index,
-        outcome: body_outcome,
-        ..,
-      ) ->
-        body_step_id == step_id
-        && body_attempt_index == attempt_index
-        && body_outcome == outcome
-      _ -> False
-    }
-  })
-}
-
 fn has_superseded_candidate_attempt(
   attempts: List(projection.StepAttemptStatus),
   step_id: String,
@@ -2475,22 +2453,6 @@ fn repair_request_matches(
       ) ->
         body_requested_target == requested_target
         && body_requested_step_id == requested_step_id
-      _ -> False
-    }
-  })
-}
-
-fn has_artifact_recovery_detail(
-  finalized: recovery.WorkflowFinalization,
-  expected_detail: String,
-) -> Bool {
-  list.any(finalized.warnings, fn(warning) {
-    string.contains(warning, expected_detail)
-  })
-  && list.any(finalized.records_to_append, fn(ledger_record) {
-    case ledger_record.body {
-      record.WorkflowRunInterrupted(reason: body_reason, ..) ->
-        body_reason == expected_detail
       _ -> False
     }
   })
