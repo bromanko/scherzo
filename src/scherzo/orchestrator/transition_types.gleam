@@ -257,6 +257,7 @@ pub type PendingClaim {
     route_label: String,
     issue: tracker_issue.Issue,
     recovery: Option(session_event.RecoveryInfo),
+    claimed_at_ms: Int,
     remaining_candidates: List(tracker_issue.Issue),
     dispatch_context: DispatchContext,
     previous_retry_generation: Int,

@@ -437,6 +437,15 @@ fn client_dependencies(
             )
             |> query_dto.operational_metrics_from_source,
           ))
+        query_types.ClaimList ->
+          Ok(
+            query_types.ClaimListResponse(
+              query_types.ClaimListDto(
+                sampled_at_ms: scenario.heartbeat_now_ms,
+                items: [],
+              ),
+            ),
+          )
         query_types.TaskList(_) ->
           Ok(
             query_types.TaskListResponse(query_types.TaskListDto(

@@ -595,6 +595,7 @@ fn begin_claim_for_workflow(
               route_label: issue.identifier,
               issue: issue,
               recovery: recovery,
+              claimed_at_ms: context.now_ms,
               remaining_candidates: remaining_candidates,
               dispatch_context: context,
               previous_retry_generation: previous_retry_generation,

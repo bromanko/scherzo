@@ -60,6 +60,33 @@ pub fn metrics_query_response_roundtrip_test() {
   assert decoded == response
 }
 
+pub fn claim_list_query_request_response_roundtrip_test() {
+  let request = types.ClaimList
+  let response =
+    types.ClaimListResponse(
+      types.ClaimListDto(sampled_at_ms: 123, items: [
+        types.ClaimDto(
+          task_identity: "linear:issue-1",
+          issue_id: Some("issue-1"),
+          issue_identifier: Some("LIV-1"),
+          run_id: Some("run-1"),
+          session_id: Some("session-1"),
+          age_ms: Some(42),
+          holder: "pending_claim",
+        ),
+      ]),
+    )
+
+  let encoded_request = codec.request_to_string(request)
+  assert string.contains(encoded_request, "\"type\":\"claim_list\"")
+  assert codec.decode_request(encoded_request) == Ok(request)
+
+  let encoded_response = codec.response_to_string(response)
+  assert string.contains(encoded_response, "\"type\":\"claim_list\"")
+  assert string.contains(encoded_response, "\"holder\":\"pending_claim\"")
+  assert codec.decode_response(encoded_response) == Ok(response)
+}
+
 pub fn metrics_query_response_rejects_unknown_schema_version_test() {
   let response =
     types.default_operational_metrics_source(

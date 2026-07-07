@@ -19,6 +19,14 @@ const ps_status_width = 11
 
 const ps_recovery_width = 8
 
+const claim_issue_width = 12
+
+const claim_run_width = 18
+
+const claim_age_width = 8
+
+const claim_holder_width = 16
+
 pub fn print_sessions_table(
   sessions: List(event.SessionSummary),
   now_ms: Int,
@@ -189,6 +197,27 @@ pub fn print_query_metrics(
   print_int("token_cache_read", metrics.token_totals.cache_read, output_line)
   print_int("token_cache_write", metrics.token_totals.cache_write, output_line)
   print_int("token_total", metrics.token_totals.total, output_line)
+}
+
+pub fn print_claims(
+  claims: query_types.ClaimListDto,
+  line output_line: fn(String) -> Nil,
+) -> Nil {
+  print_int("sampled_at_ms", claims.sampled_at_ms, output_line)
+  case claims.items {
+    [] -> output_line("claims: none")
+    items -> {
+      output_line(claim_table_row("ISSUE", "RUN", "AGE_MS", "HOLDER"))
+      list.each(items, fn(claim) {
+        output_line(claim_table_row(
+          ellipsize_middle(claim_issue_label(claim), claim_issue_width),
+          ellipsize_middle(option_string(claim.run_id), claim_run_width),
+          ellipsize_middle(option_int(claim.age_ms), claim_age_width),
+          ellipsize_middle(claim.holder, claim_holder_width),
+        ))
+      })
+    }
+  }
 }
 
 pub fn print_operation_status(
@@ -367,6 +396,43 @@ fn ps_exit_reason_to_string(reason: session_reason.WorkerExitReason) -> String {
     session_reason.OperatorStopAfterCurrentTurn -> "op_stop_after"
     session_reason.Stopped -> "stopped"
   }
+}
+
+fn claim_issue_label(claim: query_types.ClaimDto) -> String {
+  case claim.issue_identifier, claim.issue_id {
+    Some(identifier), _ -> identifier
+    None, Some(issue_id) -> issue_id
+    None, None -> claim.task_identity
+  }
+}
+
+fn option_string(value: Option(String)) -> String {
+  case value {
+    Some(value) -> value
+    None -> "-"
+  }
+}
+
+fn option_int(value: Option(Int)) -> String {
+  case value {
+    Some(value) -> int.to_string(value)
+    None -> "-"
+  }
+}
+
+fn claim_table_row(
+  issue: String,
+  run_id: String,
+  age_ms: String,
+  holder: String,
+) -> String {
+  pad_right(issue, claim_issue_width)
+  <> "  "
+  <> pad_right(run_id, claim_run_width)
+  <> "  "
+  <> pad_left(age_ms, claim_age_width)
+  <> "  "
+  <> pad_right(holder, claim_holder_width)
 }
 
 fn ps_table_row(

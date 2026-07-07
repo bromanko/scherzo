@@ -228,6 +228,26 @@ pub fn decode_operational_metrics_dynamic(
   }
 }
 
+pub fn claim_list_to_json(claims: types.ClaimListDto) -> json.Json {
+  json.object([
+    #("sampled_at_ms", json.int(claims.sampled_at_ms)),
+    #("items", json.array(claims.items, of: claim_to_json)),
+  ])
+}
+
+pub fn decode_claim_list_dynamic(
+  value: Dynamic,
+) -> Result(types.ClaimListDto, types.QueryError) {
+  case decode.run(value, claim_list_decoder()) {
+    Ok(claims) -> Ok(claims)
+    Error(_) ->
+      Error(types.QueryError(
+        types.QueryBackendFailed,
+        "invalid claim list query payload",
+      ))
+  }
+}
+
 fn status_decoder() -> decode.Decoder(types.StatusDto) {
   use daemon_id <- decode.field("daemon_id", decode.string)
   use boot_id <- decode.field("boot_id", decode.string)
@@ -367,6 +387,66 @@ fn operational_metrics_decoder() -> decode.Decoder(types.OperationalMetricsDto) 
     scheduled_retry_timer_count: scheduled_retry_timer_count,
     scheduled_report_retry_timer_count: scheduled_report_retry_timer_count,
     token_totals: token_totals,
+  ))
+}
+
+fn claim_to_json(claim: types.ClaimDto) -> json.Json {
+  json.object([
+    #("task_identity", json.string(claim.task_identity)),
+    #("issue_id", json.nullable(claim.issue_id, of: json.string)),
+    #(
+      "issue_identifier",
+      json.nullable(claim.issue_identifier, of: json.string),
+    ),
+    #("run_id", json.nullable(claim.run_id, of: json.string)),
+    #("session_id", json.nullable(claim.session_id, of: json.string)),
+    #("age_ms", json.nullable(claim.age_ms, of: json.int)),
+    #("holder", json.string(claim.holder)),
+  ])
+}
+
+fn claim_list_decoder() -> decode.Decoder(types.ClaimListDto) {
+  use sampled_at_ms <- decode.field("sampled_at_ms", decode.int)
+  use items <- decode.field("items", decode.list(claim_decoder()))
+  decode.success(types.ClaimListDto(sampled_at_ms: sampled_at_ms, items: items))
+}
+
+fn claim_decoder() -> decode.Decoder(types.ClaimDto) {
+  use task_identity <- decode.field("task_identity", decode.string)
+  use issue_id <- decode.optional_field(
+    "issue_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use issue_identifier <- decode.optional_field(
+    "issue_identifier",
+    None,
+    decode.optional(decode.string),
+  )
+  use run_id <- decode.optional_field(
+    "run_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use session_id <- decode.optional_field(
+    "session_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use age_ms <- decode.optional_field(
+    "age_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use holder <- decode.field("holder", decode.string)
+  decode.success(types.ClaimDto(
+    task_identity: task_identity,
+    issue_id: issue_id,
+    issue_identifier: issue_identifier,
+    run_id: run_id,
+    session_id: session_id,
+    age_ms: age_ms,
+    holder: holder,
   ))
 }
 
