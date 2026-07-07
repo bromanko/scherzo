@@ -6298,6 +6298,45 @@ fn dispatch_time_recovery_claim_issue(
             workspace_path,
             run_id,
           )
+        dispatch_recovery.FreshSupersedingDispatch(
+          superseded_run_id,
+          workflow_id,
+          reason,
+          message,
+        ) ->
+          apply_dispatch_fresh_superseding_recovery(
+            state,
+            task_ref,
+            issue,
+            workspace_path,
+            run_id,
+            remaining_candidates,
+            superseded_run_id,
+            workflow_id,
+            reason,
+            message,
+          )
+        dispatch_recovery.SupersedingRunAlreadyExists(
+          superseded_run_id,
+          superseded_by_run_id,
+        ) ->
+          report_dispatch_superseding_run_already_exists(
+            state,
+            task_ref,
+            remaining_candidates,
+            issue,
+            superseded_run_id,
+            superseded_by_run_id,
+          )
+        dispatch_recovery.RequeueRecovery(reason, message) ->
+          requeue_dispatch_recovery(
+            state,
+            remaining_candidates,
+            task_ref,
+            issue,
+            reason,
+            message,
+          )
         dispatch_recovery.StepRecovery(plan) ->
           apply_dispatch_step_recovery(
             state,
@@ -6388,6 +6427,167 @@ fn enqueue_tracker_claim_issue(
       capability: require_handoff_capability(state),
     )
   })
+}
+
+fn apply_dispatch_fresh_superseding_recovery(
+  state: State,
+  task_ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  workspace_path: String,
+  run_id: String,
+  remaining_candidates: List(tracker_issue.Issue),
+  superseded_run_id: String,
+  workflow_id: String,
+  reason: String,
+  message: String,
+) -> State {
+  let #(state, appended) =
+    append_ledger_bodies(
+      state,
+      [
+        record.WorkflowRunSuperseded(
+          superseded_run_id,
+          workflow_id,
+          issue.id,
+          run_id,
+          reason,
+        ),
+      ],
+      "dispatch_recovery_supersede_append_failed",
+    )
+  case appended {
+    False ->
+      requeue_dispatch_recovery(
+        state,
+        remaining_candidates,
+        task_ref,
+        issue,
+        "dispatch_recovery_supersede_append_failed",
+        "failed to record superseded publication recovery run",
+      )
+    True -> {
+      log_state(state, "info", "dispatch_recovery_publication_superseded", [
+        #("issue_id", issue.id),
+        #("superseded_run_id", superseded_run_id),
+        #("superseded_by_run_id", run_id),
+        #("workflow_id", workflow_id),
+        #("reason", reason),
+      ])
+      case string.trim(message) == "" {
+        True -> Nil
+        False ->
+          log_state(
+            state,
+            "info",
+            "dispatch_recovery_publication_superseded_message",
+            [
+              #("issue_id", issue.id),
+              #("superseded_run_id", superseded_run_id),
+              #("message", message),
+            ],
+          )
+      }
+      enqueue_tracker_claim_issue(
+        state,
+        task_ref,
+        issue,
+        workspace_path,
+        run_id,
+      )
+    }
+  }
+}
+
+fn report_dispatch_superseding_run_already_exists(
+  state: State,
+  task_ref: task.TaskRef,
+  remaining_candidates: List(tracker_issue.Issue),
+  issue: tracker_issue.Issue,
+  superseded_run_id: String,
+  superseded_by_run_id: String,
+) -> State {
+  let state = clear_pending_claim_for_task_ref(state, task_ref)
+  log_state(state, "info", "dispatch_recovery_superseding_run_exists", [
+    #("issue_id", issue.id),
+    #("superseded_run_id", superseded_run_id),
+    #("superseded_by_run_id", superseded_by_run_id),
+  ])
+  continue_dispatching_remaining_candidates(state, remaining_candidates)
+}
+
+fn requeue_dispatch_recovery(
+  state: State,
+  remaining_candidates: List(tracker_issue.Issue),
+  task_ref: task.TaskRef,
+  issue: tracker_issue.Issue,
+  reason: String,
+  message: String,
+) -> State {
+  let task_identity = orchestrator_state.task_ref_identity(task_ref)
+  let generation =
+    next_dispatch_recovery_retry_generation(state, task_identity, task_ref)
+  let delay_ms = core.backoff_delay(generation, core.default_max_backoff_ms())
+  let retry =
+    orchestrator_state.RetryEntry(
+      task_ref: task_ref,
+      issue_id: issue.id,
+      delay_ms: delay_ms,
+      timer_generation: generation,
+    )
+  let state = clear_pending_claim_for_task_ref(state, task_ref)
+  let runtime =
+    orchestrator_state.mark_task_retrying(
+      state.runtime,
+      task_identity,
+      retry,
+      issue.identifier,
+    )
+  let state = State(..state, runtime: runtime)
+  let #(state, _) =
+    append_ledger_bodies(
+      state,
+      [
+        record.RetryScheduled(
+          issue.id,
+          issue.identifier,
+          delay_ms,
+          generation,
+          reason,
+        ),
+      ],
+      "dispatch_recovery_requeue_append_failed",
+    )
+  log_state(state, "warn", "dispatch_recovery_requeued", [
+    #("issue_id", issue.id),
+    #("reason", reason),
+    #("message", message),
+    #("delay_ms", int.to_string(delay_ms)),
+    #("generation", int.to_string(generation)),
+  ])
+  let state =
+    transition_schedule_retry_timer(
+      state,
+      issue.id,
+      delay_ms,
+      generation,
+      orchestrator_reason.RetryPollFailed,
+    )
+  continue_dispatching_remaining_candidates(state, remaining_candidates)
+}
+
+fn next_dispatch_recovery_retry_generation(
+  state: State,
+  task_identity: identity.TaskIdentity,
+  task_ref: task.TaskRef,
+) -> Int {
+  case dict.get(state.runtime.retry_attempts, task_identity) {
+    Ok(previous_retry) -> previous_retry.timer_generation + 1
+    Error(Nil) ->
+      case pending_claim_for_task_ref(state, task_ref) {
+        Ok(pending) -> pending.previous_retry_generation + 1
+        Error(Nil) -> 1
+      }
+  }
 }
 
 fn pending_claim_for_task_ref(
