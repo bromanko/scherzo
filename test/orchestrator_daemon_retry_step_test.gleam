@@ -48,6 +48,7 @@ import scherzo/workflow_contract
 import scherzo/workflow_contract_manifest
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint as workflow_fingerprint_module
+import scherzo/workflow_interface_snapshot
 import scherzo/workflow_repair
 import scherzo/workflow_run
 import scherzo/workspace
@@ -4369,6 +4370,111 @@ pub fn run_finalize_dry_run_reports_plan_without_queueing_test() {
   hub.stop(hub_subject)
 }
 
+pub fn run_finalize_dry_run_reports_declared_pending_publication_for_finished_run_test() {
+  let dir = "test/tmp/daemon-run-finalize-finished-declared-dry-run"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_finished_publication_run_without_attempts(root, issue, "run-1", 1000)
+  let log_subject = process.new_subject()
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        process.send(worker_subject, "unexpected_worker")
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      run_finalize_command("run-1", dry_run: True),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "applied"
+  let assert Some(message) = result.message
+  assert string.contains(message, "execplan_review_doc=pending(required)")
+  assert !string.contains(message, "no publication targets")
+  assert count_kind(root, "control_operation_queued") == 0
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn run_finalize_finished_run_queues_declared_publication_retry_test() {
+  let dir = "test/tmp/daemon-run-finalize-finished-declared-queue"
+  let issue = issue("issue-1", "LIV-1336", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_finished_publication_run_without_attempts(root, issue, "run-1", 1000)
+  let log_subject = process.new_subject()
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_issue_only(issue),
+      tracker_adapter_with_transition_logging(
+        log_subject,
+        tracker_issue_only(issue),
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        process.send(worker_subject, "unexpected_worker")
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      publication_retry_runner(),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      run_finalize_command("run-1", dry_run: False),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "queued"
+  let assert Some(operation_id) = result.operation_id
+  assert string.starts_with(
+    operation_id,
+    "artifact-publication-retry:run-1:all:",
+  )
+  let assert Ok(completed_operation) =
+    wait_for_operation_status(root, operation_id, "completed", 20)
+  assert completed_operation.message
+    == Some("publication retry recorded execplan_review_doc as published")
+  assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
+  assert count_kind(root, "workflow_run_finished") == 1
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
 pub fn run_finalize_dry_run_rejects_parked_issue_test() {
   let dir = "test/tmp/daemon-run-finalize-parked-issue"
   let issue = issue("issue-1", "LIV-1336", "Todo")
@@ -5467,11 +5573,29 @@ fn seed_finished_publication_run_without_attempts(
   run_id: String,
   at_ms: Int,
 ) -> Nil {
+  seed_finished_publication_run_without_attempts_snapshot(
+    root,
+    issue,
+    run_id,
+    at_ms,
+    include_snapshot: True,
+  )
+}
+
+fn seed_finished_publication_run_without_attempts_snapshot(
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  at_ms: Int,
+  include_snapshot include_snapshot: Bool,
+) -> Nil {
   write_seed_artifact(
     root,
     run_output_ref(run_id),
     commit_stack_payload(run_id),
   )
+  write_seed_artifact(root, run_bundle_ref(run_id), "bundle")
+  write_publication_retained_workspace_manifest(root, run_id)
   let config_path = publication_config_path(root)
   let assert Ok(bundle) = runtime_bundle.load(Some(config_path))
   let assert Ok(#(_, workflow)) =
@@ -5481,39 +5605,57 @@ fn seed_finished_publication_run_without_attempts(
       workflow,
       bundle.orchestrator,
     )
+  let snapshot_records = case include_snapshot {
+    True -> [
+      workflow_interface_snapshot_record(
+        root,
+        run_id,
+        "execplan",
+        workflow,
+        fingerprint,
+        at_ms + 5,
+      ),
+    ]
+    False -> []
+  }
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let assert Ok(Nil) =
     ledger.append_many(
       ledger_path,
-      [
-        record.with_id(
-          "workflow-started-" <> run_id,
-          at_ms,
-          record.WorkflowRunStarted(
-            run_id: run_id,
-            workflow_id: "execplan",
-            workflow_fingerprint: fingerprint,
-            issue_id: issue.id,
-            issue_identifier: issue.identifier,
-            issue_fingerprint: tracker_issue.content_fingerprint(issue),
-            observed_updated_at_ms: at_ms - 1,
-            run_root: root <> "/runs/" <> run_id,
+      list.append(
+        [
+          record.with_id(
+            "workflow-started-" <> run_id,
+            at_ms,
+            record.WorkflowRunStarted(
+              run_id: run_id,
+              workflow_id: "execplan",
+              workflow_fingerprint: fingerprint,
+              issue_id: issue.id,
+              issue_identifier: issue.identifier,
+              issue_fingerprint: tracker_issue.content_fingerprint(issue),
+              observed_updated_at_ms: at_ms - 1,
+              run_root: root <> "/runs/" <> run_id,
+            ),
           ),
-        ),
-        seeded_output_manifest_record(root, run_id),
-        record.with_id(
-          "workflow-finished-" <> run_id,
-          at_ms + 10,
-          record.WorkflowRunFinished(
-            run_id: run_id,
-            workflow_id: "execplan",
-            issue_id: issue.id,
-            outcome: "completed",
-            token_total: 0,
-            turns: 1,
+          ..snapshot_records
+        ],
+        [
+          seeded_output_manifest_record(root, run_id),
+          record.with_id(
+            "workflow-finished-" <> run_id,
+            at_ms + 10,
+            record.WorkflowRunFinished(
+              run_id: run_id,
+              workflow_id: "execplan",
+              issue_id: issue.id,
+              outcome: "completed",
+              token_total: 0,
+              turns: 1,
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
       True,
     )
   Nil
@@ -6226,6 +6368,33 @@ fn write_publication_retained_workspace_manifest(
       ),
     )
   Nil
+}
+
+fn workflow_interface_snapshot_record(
+  root: String,
+  run_id: String,
+  workflow_id: String,
+  workflow: workflow_dag.WorkflowDag,
+  fingerprint: String,
+  at_ms: Int,
+) -> record.LedgerRecord {
+  let ref = artifact_store.workflow_interface_snapshot_ref(run_id)
+  let contents =
+    workflow_interface_snapshot.from_dag(workflow, fingerprint)
+    |> workflow_interface_snapshot.to_string
+  write_seed_artifact(root, ref, contents)
+  record.with_id(
+    "workflow-interface-snapshot-" <> run_id,
+    at_ms,
+    record.WorkflowInterfaceSnapshotRecorded(
+      run_id: run_id,
+      workflow_id: workflow_id,
+      workflow_fingerprint: fingerprint,
+      artifact_ref: ref,
+      artifact_sha256: hash.sha256_hex(contents),
+      artifact_bytes: bit_array.byte_size(bit_array.from_string(contents)),
+    ),
+  )
 }
 
 fn seeded_output_manifest_record(

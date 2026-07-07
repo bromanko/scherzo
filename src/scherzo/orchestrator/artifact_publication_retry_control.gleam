@@ -25,13 +25,17 @@ pub fn queue_decision(
   operator_command: command.OperatorCommand,
   run_id: String,
   publication_id: Option(String),
+  root: String,
+  bundle: runtime_bundle.RuntimeBundle,
   now_ms: Int,
 ) -> Result(QueueDecision, #(String, String)) {
   use _attempts <- result.try(
-    artifact_publication_retry.inspect_retryable_attempts(
+    artifact_publication_retry.inspect_retryable_attempts_with_bundle(
       projected,
+      root,
       run_id,
       publication_id,
+      bundle,
     ),
   )
   case active_operation_for_target(projected, run_id, publication_id) {

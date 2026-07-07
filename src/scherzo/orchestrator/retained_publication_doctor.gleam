@@ -197,6 +197,7 @@ fn retained_unpublished_for_status(
         run_finalize_control.publication_statuses_for_bundle(
           projected,
           bundle,
+          bundle.effective.workspace.root,
           run_id,
         )
         |> result.map_error(fn(error) {

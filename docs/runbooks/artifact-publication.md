@@ -29,6 +29,8 @@ Retry every latest failed retryable publication for the run:
 
     direnv exec . gleam run -- artifact publication retry --run <run-id> --root <workspace-root>
 
+If a retained run was finalized manually before any durable publication attempt was recorded, the same retry command can target declared workflow publication routes whose selected outputs exist in the retained output manifest. Scherzo only uses current workflow routes for this no-attempt recovery path when the retained run fingerprint still matches or a run-pinned workflow interface snapshot proves route discovery safe; otherwise it fails closed with `publication_route_discovery_unsafe`.
+
 Retry is an offline retained-state command. It requires `--root`, acquires the workspace instance lock before mutating retained publication state, validates that the run still has a retained output manifest, and checks that the current workflow publication config still matches the retained retry target.
 
 ## Common retry failures

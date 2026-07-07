@@ -3635,7 +3635,6 @@ fn run_finalize_for_operator(
 ) -> #(State, command.CommandResult) {
   let _ = validate
   let _ = outputs
-  let _ = publish
   let _ = update_tracker
   case replay_projection_for_operator(state) {
     Error(message) -> #(
@@ -3649,20 +3648,34 @@ fn run_finalize_for_operator(
         Ok(plan) ->
           case plan.already_finalized {
             True ->
-              case dry_run {
-                True -> #(
-                  state,
-                  command.applied(
-                    operator_command,
-                    Some(finalize.dry_run_message(plan)),
-                  ),
+              case
+                finalize.already_finalized_publication_action(
+                  projected,
+                  state.workflow.bundle,
+                  state.workflow.effective.workspace.root,
+                  operator_command,
+                  publish,
+                  dry_run,
+                  plan,
                 )
-                False -> #(
-                  state,
-                  command.applied(
+              {
+                Error(#(code, message)) ->
+                  run_finalize_command_error(
+                    state,
                     operator_command,
-                    Some(finalize.already_finalized_message(run_id)),
-                  ),
+                    code,
+                    message,
+                  )
+                Ok(finalize.QueueAlreadyFinalizedPublicationRetry) ->
+                  retry_artifact_publication_for_operator(
+                    state,
+                    operator_command,
+                    plan.run_id,
+                    None,
+                  )
+                Ok(finalize.AlreadyFinalizedCommandResult(result)) -> #(
+                  state,
+                  result,
                 )
               }
             False ->
@@ -3742,6 +3755,7 @@ fn run_finalize_plan_with_publication_status(
     finalize.plan_with_bundle_publication_statuses(
       projected,
       state.workflow.bundle,
+      state.workflow.effective.workspace.root,
       plan.run_id,
       plan,
     )
@@ -4543,6 +4557,7 @@ fn continue_run_finalize_operation(
         finalize.publication_statuses_for_bundle(
           publication_projection,
           state.workflow.bundle,
+          state.workflow.effective.workspace.root,
           plan.run_id,
         )
       {
@@ -5060,72 +5075,84 @@ fn retry_artifact_publication_for_operator(
       command.rejected(operator_command, "ledger_read_failed", Some(reason)),
     )
     Ok(projection_state) ->
-      case
-        artifact_publication_retry_control.queue_decision(
-          projection_state,
-          operator_command,
-          run_id,
-          publication_id,
-          state.dependencies.now_ms(),
-        )
-      {
-        Error(error) -> #(
+      queue_artifact_publication_retry_for_operator(
+        state,
+        operator_command,
+        run_id,
+        publication_id,
+        projection_state,
+      )
+  }
+}
+
+fn queue_artifact_publication_retry_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  publication_id: Option(String),
+  projection_state: projection.Projection,
+) -> #(State, command.CommandResult) {
+  case
+    artifact_publication_retry_control.queue_decision(
+      projection_state,
+      operator_command,
+      run_id,
+      publication_id,
+      state.workflow.effective.workspace.root,
+      state.workflow.bundle,
+      state.dependencies.now_ms(),
+    )
+  {
+    Error(error) -> #(
+      state,
+      artifact_publication_retry_control.error_result(operator_command, error),
+    )
+    Ok(artifact_publication_retry_control.ExistingOperation(operation_id)) -> #(
+      state,
+      command.queued_operation(
+        operator_command,
+        operation_id,
+        Some(
+          "artifact publication retry already queued/running; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status "
+          <> operation_id
+          <> " --json",
+        ),
+      ),
+    )
+    Ok(artifact_publication_retry_control.NewOperation(
+      operation_id,
+      queued_body,
+    )) -> {
+      let #(state, appended) =
+        append_ledger_bodies(
           state,
-          artifact_publication_retry_control.error_result(
+          [queued_body],
+          "artifact_publication_retry_queue_append_failed",
+        )
+      case appended {
+        False -> #(
+          state,
+          command.rejected(
             operator_command,
-            error,
+            "ledger_append_failed",
+            Some("failed to append artifact publication retry operation"),
           ),
         )
-        Ok(artifact_publication_retry_control.ExistingOperation(operation_id)) -> #(
-          state,
-          command.queued_operation(
-            operator_command,
-            operation_id,
-            Some(
-              "artifact publication retry already queued/running; no run, park, or tracker state was changed. Next safe command: scripts/scherzoctl query operation-status "
-              <> operation_id
-              <> " --json",
-            ),
-          ),
-        )
-        Ok(artifact_publication_retry_control.NewOperation(
-          operation_id,
-          queued_body,
-        )) -> {
-          let #(state, appended) =
-            append_ledger_bodies(
-              state,
-              [queued_body],
-              "artifact_publication_retry_queue_append_failed",
-            )
-          case appended {
-            False -> #(
-              state,
-              command.rejected(
-                operator_command,
-                "ledger_append_failed",
-                Some("failed to append artifact publication retry operation"),
+        True -> {
+          process.send(state.subject, RunQueuedControlOperation(operation_id))
+          #(
+            state,
+            command.queued_operation(
+              operator_command,
+              operation_id,
+              Some(
+                "artifact publication retry accepted; poll query operation-status for completion",
               ),
-            )
-            True -> {
-              process.send(
-                state.subject,
-                RunQueuedControlOperation(operation_id),
-              )
-              #(
-                state,
-                command.queued_operation(
-                  operator_command,
-                  operation_id,
-                  Some(
-                    "artifact publication retry accepted; poll query operation-status for completion",
-                  ),
-                ),
-              )
-            }
-          }
+            ),
+          )
         }
       }
+    }
   }
 }
 

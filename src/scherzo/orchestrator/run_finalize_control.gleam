@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/artifact_publication_route_discovery
 import scherzo/control/command
 import scherzo/orchestrator/recollect_outputs_control
 import scherzo/runtime_bundle
@@ -52,6 +53,11 @@ pub type PublicationRouteStatus {
     status: String,
     latest_attempt_status: Option(String),
   )
+}
+
+pub type AlreadyFinalizedPublicationAction {
+  AlreadyFinalizedCommandResult(command.CommandResult)
+  QueueAlreadyFinalizedPublicationRetry
 }
 
 pub fn dry_run(
@@ -144,6 +150,41 @@ pub fn validated_dry_run(
       )
       Ok(FinalizePlan(..plan, output_action: output_action))
     }
+  }
+}
+
+pub fn already_finalized_publication_action(
+  projected: projection.Projection,
+  bundle: runtime_bundle.RuntimeBundle,
+  root: String,
+  operator_command: command.OperatorCommand,
+  publish: Bool,
+  dry_run: Bool,
+  plan: FinalizePlan,
+) -> Result(AlreadyFinalizedPublicationAction, #(String, String)) {
+  use plan <- result.try(plan_with_bundle_publication_statuses(
+    projected,
+    bundle,
+    root,
+    plan.run_id,
+    plan,
+  ))
+  case dry_run, publish, unpublished_publications(plan.publication_statuses) {
+    True, _, _ ->
+      Ok(
+        AlreadyFinalizedCommandResult(command.applied(
+          operator_command,
+          Some(dry_run_message(plan)),
+        )),
+      )
+    False, True, [_, ..] -> Ok(QueueAlreadyFinalizedPublicationRetry)
+    False, _, _ ->
+      Ok(
+        AlreadyFinalizedCommandResult(command.applied(
+          operator_command,
+          Some(already_finalized_message(plan.run_id)),
+        )),
+      )
   }
 }
 
@@ -251,6 +292,7 @@ pub fn accepted_result(
 pub fn publication_statuses_for_bundle(
   projected: projection.Projection,
   bundle: runtime_bundle.RuntimeBundle,
+  root: String,
   run_id: String,
 ) -> Result(List(PublicationRouteStatus), #(String, String)) {
   use status <- result.try(
@@ -266,6 +308,15 @@ pub fn publication_statuses_for_bundle(
     }),
   )
   let routes = workflow_dag.publication_routes(workflow)
+  let attempted_ids = projection.publication_ids_for_run(projected, run_id)
+  use _ <- result.try(ensure_declared_route_statuses_safe(
+    projected,
+    bundle,
+    root,
+    run_id,
+    workflow,
+    attempted_ids,
+  ))
   let route_statuses =
     routes
     |> list.map(fn(route) {
@@ -288,7 +339,7 @@ pub fn publication_statuses_for_bundle(
     })
   let route_ids = list.map(routes, fn(route) { route.id })
   let historical_ids =
-    projection.publication_ids_for_run(projected, run_id)
+    attempted_ids
     |> list.filter(fn(publication_id) {
       !list.contains(route_ids, publication_id)
     })
@@ -298,15 +349,41 @@ pub fn publication_statuses_for_bundle(
   ))
 }
 
+fn ensure_declared_route_statuses_safe(
+  projected: projection.Projection,
+  bundle: runtime_bundle.RuntimeBundle,
+  root: String,
+  run_id: String,
+  workflow: workflow_dag.WorkflowDag,
+  attempted_ids: List(String),
+) -> Result(Nil, #(String, String)) {
+  let declared_without_attempts =
+    workflow_dag.publication_routes(workflow)
+    |> list.filter(fn(route) { !list.contains(attempted_ids, route.id) })
+  case declared_without_attempts {
+    [] -> Ok(Nil)
+    [_, ..] ->
+      artifact_publication_route_discovery.ensure_current_routes_safe(
+        projected,
+        bundle,
+        root,
+        run_id,
+        workflow,
+      )
+  }
+}
+
 pub fn plan_with_bundle_publication_statuses(
   projected: projection.Projection,
   bundle: runtime_bundle.RuntimeBundle,
+  root: String,
   run_id: String,
   plan: FinalizePlan,
 ) -> Result(FinalizePlan, #(String, String)) {
   use publication_statuses <- result.try(publication_statuses_for_bundle(
     projected,
     bundle,
+    root,
     run_id,
   ))
   Ok(
@@ -342,6 +419,13 @@ pub fn required_unpublished(
 ) -> List(PublicationRouteStatus) {
   publication_statuses
   |> list.filter(fn(status) { status.required && status.status != "published" })
+}
+
+pub fn unpublished_publications(
+  publication_statuses: List(PublicationRouteStatus),
+) -> List(PublicationRouteStatus) {
+  publication_statuses
+  |> list.filter(fn(status) { status.status != "published" })
 }
 
 pub fn run_finalize_command_name(allow_unpublished: Bool) -> String {
