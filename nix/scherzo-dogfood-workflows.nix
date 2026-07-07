@@ -64,6 +64,8 @@ stdenvNoCC.mkDerivation {
     test -f "$out/workspace-cleanup.yaml"
     test -x "$out/scripts/scherzo-review"
     test -x "$out/scripts/scherzo-execplan"
+    test -x "$out/scripts/scherzo-workflow-lint"
+    "$out/scripts/scherzo-workflow-lint" check --repo-root "$src" --bundle-root "$out" --config "$src/.scherzo/scherzo.yaml"
     PYTHONPATH="$out/scripts" python3 -c 'import os, sys; sys.path.insert(0, os.environ["PYTHONPATH"]); import scherzo_review'
 
     consumer="$TMPDIR/consumer"

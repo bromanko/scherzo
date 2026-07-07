@@ -371,7 +371,6 @@ pub fn implementation_like_workflows_use_workspace_driver_language_test() {
 
   let prompt_paths = [
     ".scherzo/workflows/prompts/implement.md",
-    ".scherzo/workflows/prompts/code-review.md",
     ".scherzo/workflows/prompts/apply-feedback.md",
     ".scherzo/workflows/prompts/repair-base-drift.md",
     ".scherzo/workflows/prompts/execplan-draft.md",
@@ -634,6 +633,8 @@ pub fn workflow_portability_harness_writes_report_test() {
 pub fn workflow_portability_gate_is_wired_into_flake_test() {
   let flake = read_file("flake.nix")
   let nix_file = read_file("nix/workflow-portability.nix")
+  let package_nix = read_file("nix/scherzo-dogfood-workflows.nix")
+  let portability_script = read_file("scripts/scherzo-workflow-portability")
   let docs = read_file(".scherzo/README.md")
 
   assert_contains(
@@ -647,6 +648,9 @@ pub fn workflow_portability_gate_is_wired_into_flake_test() {
   assert_contains(nix_file, "scripts/scherzo-workflow-portability")
   assert_contains(nix_file, "workflow-portability-report.v1.json")
   assert_contains(nix_file, "workflow portability debug shell")
+  assert_contains(package_nix, "scherzo-workflow-lint")
+  assert_contains(portability_script, "workflow-lint")
+  assert_contains(portability_script, "workflow_lint")
   assert_contains(
     docs,
     "nix build .#checks.$(nix eval --raw --impure --expr builtins.currentSystem).workflow-portability",
@@ -656,5 +660,6 @@ pub fn workflow_portability_gate_is_wired_into_flake_test() {
     docs,
     "scripts/scherzo-workflow-portability check --repo-root .",
   )
+  assert_contains(docs, "scherzo-workflow-lint check --repo-root .")
   assert_contains(docs, "do not restore `gleam run -- workflow run`")
 }
