@@ -22,7 +22,11 @@ pub type RemoteSession {
     issue_identifier: String,
     status: String,
     current_turn: Int,
+    started_at_ms: Option(Int),
     last_event_at_ms: Int,
+    activity_label: Option(String),
+    current_step_id: Option(String),
+    current_step_label: Option(String),
   )
 }
 
@@ -165,6 +169,28 @@ fn optional_message_entries(
   }
 }
 
+fn optional_string_entry(
+  fields: List(#(String, json.Json)),
+  name: String,
+  value: Option(String),
+) -> List(#(String, json.Json)) {
+  case value {
+    Some(value) -> [#(name, json.string(value)), ..fields]
+    None -> fields
+  }
+}
+
+fn optional_int_entry(
+  fields: List(#(String, json.Json)),
+  name: String,
+  value: Option(Int),
+) -> List(#(String, json.Json)) {
+  case value {
+    Some(value) -> [#(name, json.int(value)), ..fields]
+    None -> fields
+  }
+}
+
 fn query_result_to_json(
   result: Result(query_types.QueryResponse, query_types.QueryError),
 ) -> json.Json {
@@ -175,14 +201,19 @@ fn query_result_to_json(
 }
 
 fn remote_session_to_json(session: RemoteSession) -> json.Json {
-  json.object([
+  [
     #("session_id", json.string(session.session_id)),
     #("display_name", json.string(session.display_name)),
     #("issue_identifier", json.string(session.issue_identifier)),
     #("status", json.string(session.status)),
     #("current_turn", json.int(session.current_turn)),
     #("last_event_at_ms", json.int(session.last_event_at_ms)),
-  ])
+  ]
+  |> optional_int_entry("started_at_ms", session.started_at_ms)
+  |> optional_string_entry("activity_label", session.activity_label)
+  |> optional_string_entry("current_step_id", session.current_step_id)
+  |> optional_string_entry("current_step_label", session.current_step_label)
+  |> json.object
 }
 
 fn envelope_fields_decoder() -> decode.Decoder(EnvelopeFields) {
@@ -280,14 +311,38 @@ fn remote_session_decoder() -> decode.Decoder(RemoteSession) {
   use issue_identifier <- decode.field("issue_identifier", decode.string)
   use status <- decode.field("status", decode.string)
   use current_turn <- decode.field("current_turn", decode.int)
+  use started_at_ms <- decode.optional_field(
+    "started_at_ms",
+    None,
+    decode.optional(decode.int),
+  )
   use last_event_at_ms <- decode.field("last_event_at_ms", decode.int)
+  use activity_label <- decode.optional_field(
+    "activity_label",
+    None,
+    decode.optional(decode.string),
+  )
+  use current_step_id <- decode.optional_field(
+    "current_step_id",
+    None,
+    decode.optional(decode.string),
+  )
+  use current_step_label <- decode.optional_field(
+    "current_step_label",
+    None,
+    decode.optional(decode.string),
+  )
   decode.success(RemoteSession(
     session_id: session_id,
     display_name: display_name,
     issue_identifier: issue_identifier,
     status: status,
     current_turn: current_turn,
+    started_at_ms: started_at_ms,
     last_event_at_ms: last_event_at_ms,
+    activity_label: activity_label,
+    current_step_id: current_step_id,
+    current_step_label: current_step_label,
   ))
 }
 

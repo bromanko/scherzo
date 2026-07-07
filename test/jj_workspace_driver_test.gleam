@@ -281,6 +281,7 @@ fn scrubbed_driver_env(
       #("SCHERZO_CONFIG_DIR", ""),
       #("SCHERZO_GITHUB_REPO", ""),
       #("SCHERZO_REPO_ROOT", ""),
+      #("SCHERZO_RUN_ROOT", ""),
       #("SCHERZO_JJ_WORKSPACE_BASE", ""),
       #("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", ""),
       #("SCHERZO_JJ_WORKSPACE_FETCH_BASE", ""),

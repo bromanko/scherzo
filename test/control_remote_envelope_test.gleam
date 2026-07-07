@@ -250,10 +250,26 @@ pub fn remote_envelope_roundtrips_all_message_shapes_test() {
         issue_identifier: "LIV-1",
         status: "running",
         current_turn: 3,
+        started_at_ms: Some(900),
         last_event_at_ms: 998,
+        activity_label: Some("Run tests"),
+        current_step_id: Some("run_tests"),
+        current_step_label: Some("Run tests"),
       ),
     ]),
   )
+}
+
+pub fn remote_envelope_decodes_legacy_sessions_without_activity_fields_test() {
+  let payload =
+    "{\"version\":1,\"type\":\"state_snapshot\",\"now_ms\":999,\"dispatch_paused\":false,\"sessions\":[{\"session_id\":\"session-1\",\"display_name\":\"LIV-1\",\"issue_identifier\":\"LIV-1\",\"status\":\"running\",\"current_turn\":3,\"last_event_at_ms\":998}]}"
+
+  let assert Ok(remote_envelope.RemoteStateSnapshot(_, _, [session])) =
+    remote_envelope.decode(payload)
+  assert session.started_at_ms == None
+  assert session.activity_label == None
+  assert session.current_step_id == None
+  assert session.current_step_label == None
 }
 
 pub fn remote_envelope_encoding_omits_local_loopback_fields_test() {

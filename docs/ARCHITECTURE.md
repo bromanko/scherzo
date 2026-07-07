@@ -247,10 +247,26 @@ is eliminated.
   derived from the daemon operational metrics that also describe concurrency
   pressure. Session snapshots are published separately in `daemon_state` frames
   and are not counted as occupied slots, so a workflow parent session plus one
-  active child step still reports one occupied slot. If the occupancy lookup is
-  temporarily unavailable while building hello or state frames, `known` is
-  false and the daemon leaves `active`/`used` at `0` rather than presenting
-  those counts as authoritative. Heartbeats reuse the cached slot snapshot from
+  active child step still reports one occupied slot. Each session entry retains
+  the compatibility fields `issueIdentifier`, `status`, `currentTurn`, and
+  `lastEventAtMs`, and also includes `startedAtMs` for that live session.
+  `lastEventAtMs` is freshness/debug metadata: it advances when the session hub
+  observes events and must not be interpreted as task runtime. `startedAtMs` is
+  the session registration time. The companion `activeIssues` array rolls up
+  non-exited sessions by `issueIdentifier`; its `startedAtMs` is the earliest
+  active session registration for that issue in the current daemon run, so a
+  parent workflow plus current child step reports the top-level dispatch or
+  resumption start rather than the last event time. `activeIssues[].lastEventAtMs`
+  remains the maximum session event time for freshness. Optional `activityLabel`,
+  `currentStepId`, and `currentStepLabel` fields may be present on sessions and
+  active issue rows. Activity labels are bounded to 64 characters and derived
+  only from daemon status plus workflow step identifiers; they are terminal-safe
+  and do not include prompts, transcript text, tool input/output, command output,
+  or secrets. If an activity label is absent, consumers should keep using the
+  issue id plus raw `status` fallback. If the occupancy lookup is temporarily
+  unavailable while building hello or state frames, `known` is false and the
+  daemon leaves `active`/`used` at `0` rather than presenting those counts as
+  authoritative. Heartbeats reuse the cached slot snapshot from
   connect/state frames so heartbeat delivery does not block on another
   occupancy lookup. Heartbeats also include an `event` object
   with lifecycle kind, heartbeat type, and `daemon heartbeat` message, which

@@ -1,7 +1,7 @@
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/control/command
 import scherzo/control/query/types as query_types
@@ -976,7 +976,11 @@ fn session_fixture() -> remote_envelope.RemoteSession {
     issue_identifier: "LIV-686",
     status: "running",
     current_turn: 3,
+    started_at_ms: Some(100),
     last_event_at_ms: 123,
+    activity_label: Some("Running workflow"),
+    current_step_id: None,
+    current_step_label: None,
   )
 }
 

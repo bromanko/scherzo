@@ -1,9 +1,13 @@
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/control/remote/ui_protocol
 import scherzo/managed_launch/grant as managed_launch_grant
+import scherzo/session/event
+import scherzo/session/recovery as session_recovery
+import scherzo/session/tokens as session_tokens
 
 pub fn ui_protocol_encodes_daemon_messages_test() {
   let runtime_state = test_runtime_state(None)
@@ -61,13 +65,225 @@ pub fn ui_protocol_encodes_daemon_messages_test() {
           "LIV-1",
           "running",
           3,
+          10,
           99,
+          Some("Running workflow"),
+          None,
+          None,
         ),
       ]),
     )
   assert string.contains(state, "daemon_state")
   assert string.contains(state, "dispatchPaused")
   assert string.contains(state, "sessionId")
+}
+
+pub fn ui_protocol_encodes_activity_fields_and_active_issue_rollup_test() {
+  let runtime_state = test_runtime_state(None)
+  let payload =
+    ui_protocol.encode_client_message(
+      ui_protocol.DaemonState(42, False, None, runtime_state, [
+        ui_protocol.SessionSnapshot(
+          "session-parent",
+          "LIV-1 parent",
+          "LIV-1",
+          "running",
+          1,
+          100,
+          130,
+          Some("Running workflow"),
+          None,
+          None,
+        ),
+        ui_protocol.SessionSnapshot(
+          "session-step",
+          "LIV-1 step",
+          "LIV-1",
+          "running",
+          2,
+          150,
+          250,
+          Some("Editing daemon status copy"),
+          Some("edit_daemon_status_copy"),
+          Some("Edit daemon status copy"),
+        ),
+      ]),
+    )
+
+  assert string.contains(payload, "\"startedAtMs\":100")
+  assert string.contains(
+    payload,
+    "\"activityLabel\":\"Editing daemon status copy\"",
+  )
+  assert string.contains(
+    payload,
+    "\"currentStepId\":\"edit_daemon_status_copy\"",
+  )
+  assert string.contains(payload, "\"activeIssues\":[")
+  assert string.contains(payload, "\"lastEventAtMs\":250")
+}
+
+pub fn ui_protocol_rolls_up_active_issue_work_and_missing_optional_fields_test() {
+  let active =
+    ui_protocol.active_issue_work_from_sessions([
+      ui_protocol.SessionSnapshot(
+        "parent",
+        "LIV-1 parent",
+        "LIV-1",
+        "running",
+        1,
+        100,
+        120,
+        Some("Running workflow"),
+        None,
+        None,
+      ),
+      ui_protocol.SessionSnapshot(
+        "child",
+        "LIV-1 child",
+        "LIV-1",
+        "running",
+        2,
+        180,
+        240,
+        Some("Run tests"),
+        Some("run_tests"),
+        Some("Run tests"),
+      ),
+      ui_protocol.SessionSnapshot(
+        "old",
+        "LIV-1 old",
+        "LIV-1",
+        "exited",
+        3,
+        10,
+        300,
+        Some("Old transcript-derived text should be ignored"),
+        None,
+        None,
+      ),
+      ui_protocol.SessionSnapshot(
+        "missing",
+        "LIV-2 missing",
+        "LIV-2",
+        "preparing",
+        0,
+        200,
+        201,
+        None,
+        None,
+        None,
+      ),
+    ])
+
+  assert list.length(active) == 2
+  let assert [liv1, liv2] = active
+  assert liv1.issue_identifier == "LIV-1"
+  assert liv1.status == "running"
+  assert liv1.started_at_ms == 100
+  assert liv1.last_event_at_ms == 240
+  assert liv1.activity_label == Some("Run tests")
+  assert liv1.current_step_id == Some("run_tests")
+  assert liv2.issue_identifier == "LIV-2"
+  assert liv2.activity_label == None
+  assert liv2.current_step_id == None
+}
+
+pub fn ui_protocol_rollup_uses_status_winning_activity_for_operator_states_test() {
+  let active =
+    ui_protocol.active_issue_work_from_sessions([
+      ui_protocol.SessionSnapshot(
+        "running",
+        "LIV-1 running",
+        "LIV-1",
+        "running",
+        1,
+        100,
+        200,
+        Some("Run tests"),
+        Some("run_tests"),
+        Some("Run tests"),
+      ),
+      ui_protocol.SessionSnapshot(
+        "waiting",
+        "LIV-1 waiting",
+        "LIV-1",
+        "waiting_ui",
+        2,
+        150,
+        240,
+        Some("Waiting for operator input"),
+        None,
+        None,
+      ),
+    ])
+
+  let assert [liv1] = active
+  assert liv1.status == "waiting_ui"
+  assert liv1.started_at_ms == 100
+  assert liv1.last_event_at_ms == 240
+  assert liv1.activity_label == Some("Waiting for operator input")
+  assert liv1.current_step_id == None
+}
+
+pub fn ui_protocol_sanitizes_activity_label_whitespace_before_control_escape_test() {
+  let active =
+    ui_protocol.active_issue_work_from_sessions([
+      ui_protocol.SessionSnapshot(
+        "running",
+        "LIV-1 running",
+        "LIV-1",
+        "running",
+        1,
+        100,
+        200,
+        Some("Run\t\t tests\nnow\r please\u{1b}[31m"),
+        None,
+        None,
+      ),
+    ])
+
+  let assert [liv1] = active
+  assert liv1.activity_label == Some("Run tests now please␛[31m")
+}
+
+pub fn ui_protocol_derives_bounded_activity_label_and_started_time_from_summary_test() {
+  let step_id =
+    "editing_daemon_status_copy_that_has_a_very_long_suffix_for_status_density"
+  let recovery =
+    event.RecoveryInfo(
+      ..session_recovery.base_info(event.Resumed, "test", None, []),
+      workflow_step_id: Some(step_id),
+    )
+  let snapshot =
+    ui_protocol.session_from_summary(event.SessionSummary(
+      session_id: "session-activity",
+      display_name: "LIV-1 activity",
+      issue_id: "issue-1",
+      issue_identifier: "LIV-1",
+      issue_title: "Expose rich labels",
+      workspace_path: "test/tmp/workspace",
+      pi_session_id: None,
+      status: event.Running,
+      recovery: Some(recovery),
+      current_turn: 4,
+      current_turn_status: None,
+      current_turn_started_at_ms: None,
+      last_turn_finished_at_ms: None,
+      last_turn_duration_ms: None,
+      last_turn_token_delta: session_tokens.zero_token_totals(),
+      last_turn_reason: None,
+      started_at_ms: 1234,
+      last_event_at_ms: 5678,
+      token_totals: session_tokens.zero_token_totals(),
+    ))
+
+  let assert Some(label) = snapshot.activity_label
+  assert snapshot.started_at_ms == 1234
+  assert snapshot.last_event_at_ms == 5678
+  assert snapshot.current_step_id == Some(step_id)
+  assert string.length(label) <= ui_protocol.max_activity_label_chars
+  assert !string.contains(label, "_")
 }
 
 pub fn ui_protocol_runtime_state_uses_agent_slot_occupancy_test() {
