@@ -7,6 +7,7 @@ import scherzo/work_item
 pub type QueryRequest {
   Status
   Metrics
+  ClaimList
   TaskList(TaskListQuery)
   TaskShow(TaskShowQuery)
   WorkItemList(WorkItemListQuery)
@@ -21,6 +22,7 @@ pub type QueryRequest {
 pub type QueryResponse {
   StatusResponse(status: StatusDto)
   MetricsResponse(metrics: OperationalMetricsDto)
+  ClaimListResponse(claims: ClaimListDto)
   TaskListResponse(tasks: TaskListDto)
   TaskShowResponse(task: TaskDetailDto)
   WorkItemListResponse(work_item_list: work_item.WorkItemPage)
@@ -115,6 +117,22 @@ pub type StatusDto {
     ui_server_enabled: Bool,
     supported_queries: List(String),
   )
+}
+
+pub type ClaimDto {
+  ClaimDto(
+    task_identity: String,
+    issue_id: Option(String),
+    issue_identifier: Option(String),
+    run_id: Option(String),
+    session_id: Option(String),
+    age_ms: Option(Int),
+    holder: String,
+  )
+}
+
+pub type ClaimListDto {
+  ClaimListDto(sampled_at_ms: Int, items: List(ClaimDto))
 }
 
 pub type TaskSourceDto {
@@ -533,6 +551,7 @@ pub fn supported_queries() -> List(String) {
   [
     "status",
     "metrics",
+    "claim_list",
     "task_list",
     "task_show",
     "work_item_list",
@@ -600,6 +619,7 @@ pub fn query_type(request: QueryRequest) -> String {
   case request {
     Status -> "status"
     Metrics -> "metrics"
+    ClaimList -> "claim_list"
     TaskList(_) -> "task_list"
     TaskShow(_) -> "task_show"
     WorkItemList(_) -> "work_item_list"
@@ -616,6 +636,7 @@ pub fn response_type(response: QueryResponse) -> String {
   case response {
     StatusResponse(_) -> "status"
     MetricsResponse(_) -> "metrics"
+    ClaimListResponse(_) -> "claim_list"
     TaskListResponse(_) -> "task_list"
     TaskShowResponse(_) -> "task_show"
     WorkItemListResponse(_) -> "work_item_list"

@@ -753,6 +753,9 @@ fn start_query_runtime_with_projection(
       get_projection_snapshot: get_projection_snapshot,
       get_outbox_snapshot: fn(_) { Ok([]) },
       get_workflow_snapshot: get_workflow_snapshot,
+      get_claims_snapshot: fn(_) {
+        Ok(types.ClaimListDto(sampled_at_ms: 0, items: []))
+      },
     )
   handle
 }

@@ -24,6 +24,8 @@ pub fn start(
     Result(List(#(String, projection.OutboxStatus)), Nil),
   get_workflow_snapshot get_workflow_snapshot: fn(Int) ->
     Result(workflow_reloader.State, Nil),
+  get_claims_snapshot get_claims_snapshot: fn(Int) ->
+    Result(query_types.ClaimListDto, Nil),
 ) -> Result(query_service.Handle, query_service.StartError) {
   let settings = query_service.default_settings()
   query_service.start(
@@ -37,6 +39,11 @@ pub fn start(
           query_metrics.execute_status(get_snapshot: get_read_model_snapshot)
         query_types.Metrics ->
           query_metrics.execute_metrics(get_snapshot: get_read_model_snapshot)
+        query_types.ClaimList ->
+          execute_claim_list(
+            timeout_ms: effective.control.command_timeout_ms,
+            get_snapshot: get_claims_snapshot,
+          )
         query_types.TaskList(_)
         | query_types.TaskShow(_)
         | query_types.WorkItemList(_)
@@ -133,6 +140,20 @@ fn execute_workflow_query(
       Error(query_types.QueryError(
         query_types.QueryTimeout,
         "daemon actor query timed out while loading workflow state",
+      ))
+  }
+}
+
+fn execute_claim_list(
+  timeout_ms timeout_ms: Int,
+  get_snapshot get_snapshot: fn(Int) -> Result(query_types.ClaimListDto, Nil),
+) -> Result(query_types.QueryResponse, query_types.QueryError) {
+  case get_snapshot(timeout_ms) {
+    Ok(claims) -> Ok(query_types.ClaimListResponse(claims))
+    Error(Nil) ->
+      Error(query_types.QueryError(
+        query_types.QueryTimeout,
+        "daemon claim query timed out",
       ))
   }
 }

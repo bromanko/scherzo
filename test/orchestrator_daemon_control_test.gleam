@@ -578,6 +578,17 @@ fn disabled_handoff() -> handoff.Client {
   handoff.disabled_client()
 }
 
+fn failing_claim_handoff() -> handoff.Client {
+  handoff.Client(
+    claim_issue: fn(_, _) { Error(error.LinearApiStatus(400)) },
+    report_success: fn(_, _, _) { Ok(Nil) },
+    report_success_for_workflow: fn(_, _, _, _) { Ok(Nil) },
+    report_failure: fn(_, _, _) { Ok(Nil) },
+    report_failure_for_workflow: fn(_, _, _, _) { Ok(Nil) },
+    report_park: fn(_) { Ok(Nil) },
+  )
+}
+
 fn park_reporting_handoff(subject: process.Subject(String)) -> handoff.Client {
   handoff.Client(
     claim_issue: fn(_, _) { Ok(Nil) },
@@ -1172,6 +1183,50 @@ pub fn daemon_status_and_metrics_queries_do_not_call_tracker_adapter_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn control_queries_use_snapshot_cache_while_startup_recovery_is_blocked_test() {
+  let #(workflow_path, _root) =
+    write_workflow("test/tmp/daemon-control-query-recovery-cache")
+  let log_subject = process.new_subject()
+  let recovery_started = process.new_subject()
+  let recovery_barrier = test_async.new_barrier()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..dependencies(log_subject),
+      make_control_token: fn() { Ok("test-token") },
+      observe_startup_recovery_stage: fn(stage) {
+        case stage {
+          "startup_recovery" -> {
+            process.send(recovery_started, Nil)
+            test_async.block_until_released(recovery_barrier)
+          }
+          _ -> Nil
+        }
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = process.receive(recovery_started, within: 1000)
+  let assert Ok(control_path) = receive_control_file_path(log_subject, 10)
+  let assert Ok(control) = control_file.read(control_path)
+
+  let assert Ok(query_types.StatusResponse(_)) =
+    client.query(control, query_types.Status)
+  let assert Ok(query_types.MetricsResponse(_)) =
+    client.query(control, query_types.Metrics)
+  let assert Ok(query_types.OutboxListResponse(outbox_page)) =
+    client.query(
+      control,
+      query_types.OutboxList(query_types.default_outbox_list_query()),
+    )
+  assert outbox_page.items == []
+  let assert Ok(query_types.ClaimListResponse(claim_page)) =
+    client.query(control, query_types.ClaimList)
+  assert claim_page.items == []
+
+  test_async.release_barrier(recovery_barrier)
+  wait_until_startup_recovery_ready(started.data)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn daemon_execute_query_timeout_does_not_leave_late_reply_in_caller_mailbox_test() {
   let #(workflow_path, _root) =
     write_workflow("test/tmp/daemon-control-query-timeout-reply")
@@ -1274,6 +1329,119 @@ pub fn daemon_outbox_queries_use_recovered_outbox_snapshot_test() {
   assert !string.contains(encoded, "raw-secret")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn start_fresh_retry_handoff_failure_clears_pending_claim_test() {
+  let candidate = issue("issue-start-fresh", "LIV-CLAIM", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let #(workflow_path, _root) =
+    write_workflow_with_limits(
+      "test/tmp/daemon-control-start-fresh-claim-clear",
+      1,
+      1,
+    )
+  let log_subject = process.new_subject()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      failing_claim_handoff(),
+      hub_subject,
+      long_running_agent(log_subject, worker_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let start_fresh =
+    command.RetryIssueStartFresh(
+      command.IssueIdentifier("LIV-CLAIM"),
+      "test retry after failed claim enqueue",
+    )
+  let assert Ok(first_result) =
+    daemon.apply_operator_command(started.data, start_fresh, 1000)
+  assert first_result.status == command.Applied
+  assert wait_for_log(log_subject, "handoff_claim_failed", 100)
+  let assert Ok(query_types.ClaimListResponse(claims)) =
+    daemon.execute_query(started.data, query_types.ClaimList, 1000)
+  assert claims.items == []
+
+  let second_start_fresh =
+    command.RetryIssueStartFresh(
+      command.IssueIdentifier("LIV-CLAIM"),
+      "second retry should not see a phantom claim",
+    )
+  let assert Ok(second_result) =
+    daemon.apply_operator_command(started.data, second_start_fresh, 1000)
+  assert second_result.status == command.Applied
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn claim_list_reports_pending_and_worker_claims_with_provenance_test() {
+  let candidate = issue("issue-claim-positive", "LIV-CLAIM-POSITIVE", "Todo")
+  let tracker_client = tracker_with(candidate)
+  let #(workflow_path, _root) =
+    write_workflow_with_limits(
+      "test/tmp/daemon-control-claim-list-positive",
+      1,
+      1,
+    )
+  let log_subject = process.new_subject()
+  let handoff_barrier = test_async.new_barrier()
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      blocking_handoff(log_subject, handoff_barrier),
+      hub_subject,
+      long_running_agent(log_subject, worker_barrier),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let start_fresh =
+    command.RetryIssueStartFresh(
+      command.IssueIdentifier("LIV-CLAIM-POSITIVE"),
+      "positive claim-list provenance coverage",
+    )
+  let assert Ok(result) =
+    daemon.apply_operator_command(started.data, start_fresh, 1000)
+  assert result.status == command.Applied
+  assert wait_for_log(log_subject, "claim_started", 100)
+
+  let assert Ok(pending_claims) =
+    wait_for_claim_holder(started.data, "pending_claim", 20)
+  let assert [pending] = pending_claims.items
+  assert pending.task_identity == "6:linear|20:issue-claim-positive"
+  assert pending.issue_id == Some("issue-claim-positive")
+  assert pending.issue_identifier == Some("LIV-CLAIM-POSITIVE")
+  let assert Some(_) = pending.run_id
+  let assert Some(_) = pending.session_id
+  assert pending.age_ms == Some(0)
+  assert pending.holder == "pending_claim"
+
+  test_async.release_barrier(handoff_barrier)
+  assert wait_for_log(log_subject, "agent_run:issue-claim-positive", 100)
+  let assert Ok(active_claims) =
+    wait_for_claim_holder(started.data, "worker_running", 20)
+  let assert [active] = active_claims.items
+  assert active.task_identity == "6:linear|20:issue-claim-positive"
+  assert active.issue_id == Some("issue-claim-positive")
+  assert active.issue_identifier == Some("LIV-CLAIM-POSITIVE")
+  let assert Some(_) = active.run_id
+  let assert Some(_) = active.session_id
+  assert active.age_ms == None
+  assert active.holder == "worker_running"
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
 }
 
 pub fn daemon_status_and_metrics_queries_stay_bounded_with_large_retained_history_test() {
@@ -3014,6 +3182,24 @@ fn wait_for_monitor_down(monitor: process.Monitor, timeout_ms: Int) -> Bool {
   }
 }
 
+fn receive_control_file_path(
+  subject: process.Subject(String),
+  attempts: Int,
+) -> Result(String, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case process.receive(subject, within: 100) {
+        Ok(actual) ->
+          case string.ends_with(actual, "control.json") {
+            True -> Ok(actual)
+            False -> receive_control_file_path(subject, attempts - 1)
+          }
+        Error(_) -> receive_control_file_path(subject, attempts - 1)
+      }
+  }
+}
+
 fn wait_for_log(
   subject: process.Subject(String),
   expected: String,
@@ -3029,6 +3215,31 @@ fn wait_for_log(
             False -> wait_for_log(subject, expected, attempts - 1)
           }
         Error(_) -> wait_for_log(subject, expected, attempts - 1)
+      }
+  }
+}
+
+fn wait_for_claim_holder(
+  daemon_subject: process.Subject(daemon.Message),
+  holder: String,
+  attempts: Int,
+) -> Result(query_types.ClaimListDto, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case daemon.execute_query(daemon_subject, query_types.ClaimList, 1000) {
+        Ok(query_types.ClaimListResponse(claims)) ->
+          case list.any(claims.items, fn(claim) { claim.holder == holder }) {
+            True -> Ok(claims)
+            False -> {
+              process.sleep(50)
+              wait_for_claim_holder(daemon_subject, holder, attempts - 1)
+            }
+          }
+        _ -> {
+          process.sleep(50)
+          wait_for_claim_holder(daemon_subject, holder, attempts - 1)
+        }
       }
   }
 }

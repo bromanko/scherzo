@@ -223,6 +223,7 @@ pub fn state_with_pending_claim(
         route_label: issue.identifier,
         issue: issue,
         recovery: None,
+        claimed_at_ms: 0,
         remaining_candidates: [],
         dispatch_context: fixture_context(),
         previous_retry_generation: 0,

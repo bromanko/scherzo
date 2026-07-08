@@ -70,7 +70,8 @@ pub fn run_with_projection(
         read_projection,
         work_item_query,
       )
-    types.OutboxList(_)
+    types.ClaimList
+    | types.OutboxList(_)
     | types.OutboxShow(_)
     | types.OperationStatus(_)
     | types.WorkflowList

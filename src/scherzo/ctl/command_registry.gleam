@@ -13,6 +13,7 @@ pub type HandlerKey {
   PsKey
   QueryStatusKey
   QueryMetricsKey
+  QueryClaimsKey
   QueryOperationStatusKey
   TaskListKey
   TaskShowKey
@@ -126,6 +127,17 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
           "query metrics",
           "Show daemon operational health and runtime counters.",
         ),
+      ],
+    ),
+    command_spec.CommandSpec(
+      handler: QueryClaimsKey,
+      path: ["query", "claims"],
+      usage: "query claims",
+      summary: "List current task claims with holder provenance.",
+      positionals: [],
+      options: [control_file_option(), json_option(), timeout_option()],
+      help_lines: [
+        line("query claims", "List current task claims with holder provenance."),
       ],
     ),
     command_spec.CommandSpec(

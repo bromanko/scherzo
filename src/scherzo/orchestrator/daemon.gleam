@@ -38,6 +38,7 @@ import scherzo/orchestrator/operator_worker_command
 import scherzo/orchestrator/outbox_effects
 import scherzo/orchestrator/poll_scheduler
 import scherzo/orchestrator/query_runtime
+import scherzo/orchestrator/query_snapshot_cache
 import scherzo/orchestrator/read_model
 import scherzo/orchestrator/recollect_outputs_control
 import scherzo/orchestrator/remote_command_runtime as remote
@@ -285,6 +286,7 @@ type State {
     control_server_monitor: Option(process.Monitor),
     control_file_path: Option(String),
     query_service: query_service.Handle,
+    query_cache: query_snapshot_cache.Handle,
     read_model: read_model.ReadModel,
     ledger_projection: projection.Projection,
     remote_client: Option(remote.Handle),
@@ -539,29 +541,31 @@ fn scheduled_failure_paths(
 
 fn start_query_service(
   effective: config_types.EffectiveConfig,
-  daemon_subject: process.Subject(Message),
   identity: daemon_identity.DaemonIdentity,
-  _now_ms: fn() -> Int,
   tracker_adapter: adapter.TrackerAdapter,
+  query_cache: query_snapshot_cache.Handle,
 ) -> Result(query_service.Handle, StartupError) {
   query_runtime.start(
     effective,
     identity,
     tracker_adapter,
     get_dispatch_paused: fn(timeout_ms) {
-      get_remote_dispatch_paused(daemon_subject, timeout_ms)
+      query_snapshot_cache.get_dispatch_paused(query_cache, timeout_ms)
     },
     get_read_model_snapshot: fn(timeout_ms) {
-      get_read_model_snapshot(daemon_subject, timeout_ms)
+      query_snapshot_cache.get_read_model_snapshot(query_cache, timeout_ms)
     },
     get_projection_snapshot: fn(timeout_ms) {
-      get_projection_snapshot(daemon_subject, timeout_ms)
+      query_snapshot_cache.get_projection_snapshot(query_cache, timeout_ms)
     },
     get_outbox_snapshot: fn(timeout_ms) {
-      get_outbox_snapshot(daemon_subject, timeout_ms)
+      query_snapshot_cache.get_outbox_snapshot(query_cache, timeout_ms)
     },
     get_workflow_snapshot: fn(timeout_ms) {
-      get_workflow_snapshot(daemon_subject, timeout_ms)
+      query_snapshot_cache.get_workflow_snapshot(query_cache, timeout_ms)
+    },
+    get_claims_snapshot: fn(timeout_ms) {
+      query_snapshot_cache.get_claims(query_cache, timeout_ms)
     },
   )
   |> result.map_error(fn(error) {
@@ -690,6 +694,68 @@ fn read_model_snapshot_from_state(state: State) -> read_model.Snapshot {
     state.read_model,
     sampled_at_ms: state.dependencies.now_ms(),
   )
+}
+
+fn initial_query_snapshot(
+  model: read_model.ReadModel,
+  projection_state: projection.Projection,
+  workflow: workflow_reloader.State,
+  sampled_at_ms: Int,
+) -> query_snapshot_cache.Snapshot {
+  query_snapshot_cache.Snapshot(
+    read_model: read_model.snapshot(model, sampled_at_ms: sampled_at_ms),
+    projection: projection_state,
+    outbox: dict.to_list(projection_state.outbox),
+    workflow: workflow,
+    dispatch_paused: projection_state.dispatch_paused,
+    claims: query_types.ClaimListDto(sampled_at_ms: sampled_at_ms, items: []),
+  )
+}
+
+fn start_query_snapshot_cache(
+  snapshot: query_snapshot_cache.Snapshot,
+) -> Result(query_snapshot_cache.Handle, StartupError) {
+  case query_snapshot_cache.start(snapshot) {
+    Ok(handle) -> Ok(handle)
+    Error(Nil) ->
+      Error(StartupError(
+        "query_snapshot_cache_start_failed",
+        "query snapshot cache failed to start",
+      ))
+  }
+}
+
+fn stop_query_snapshot_cache_best_effort(
+  handle: query_snapshot_cache.Handle,
+) -> Nil {
+  case query_snapshot_cache.stop(handle, 1000) {
+    Ok(Nil) -> Nil
+    Error(Nil) -> Nil
+  }
+}
+
+fn query_snapshot_from_state(state: State) -> query_snapshot_cache.Snapshot {
+  query_snapshot_cache.Snapshot(
+    read_model: read_model_snapshot_from_state(state),
+    projection: state.ledger_projection,
+    outbox: dict.to_list(state.ledger_projection.outbox),
+    workflow: state.workflow,
+    dispatch_paused: state.operator_paused,
+    claims: query_snapshot_cache.claims_snapshot(
+      pending_claims: state.pending_claims,
+      worker_claims: state.workers.by_issue,
+      runtime_claims: state.runtime.claimed,
+      sampled_at_ms: state.dependencies.now_ms(),
+    ),
+  )
+}
+
+fn publish_query_snapshot(state: State) -> State {
+  query_snapshot_cache.update(
+    state.query_cache,
+    query_snapshot_from_state(state),
+  )
+  state
 }
 
 fn start_control_plane(
@@ -991,6 +1057,23 @@ fn start_with_managed_launch_and_initialiser_timeout(
       StartupError("daemon_identity_failed", daemon_identity.error_message(err))
     }),
   )
+  let initial_read_model =
+    read_model.new(
+      daemon_id: daemon_identity.daemon_id,
+      boot_id: daemon_identity.boot_id,
+      ui_server_enabled: ui_server_enabled(effective.ui_server),
+    )
+    |> read_model.update_dispatch_paused(
+      dispatch_paused: startup_recovery.projection.dispatch_paused,
+    )
+  use query_cache <- try_startup(
+    start_query_snapshot_cache(initial_query_snapshot(
+      initial_read_model,
+      startup_recovery.projection,
+      workflow,
+      dependencies.now_ms(),
+    )),
+  )
   let startup_phase = start_startup_phase_tracker("pre_actor_startup_complete")
   let builder =
     actor.new_with_initialiser(initialiser_timeout_ms, fn(subject) {
@@ -998,10 +1081,9 @@ fn start_with_managed_launch_and_initialiser_timeout(
       case
         start_query_service(
           effective,
-          subject,
           daemon_identity,
-          dependencies.now_ms,
           tracker_adapter,
+          query_cache,
         )
       {
         Error(err) -> Error(encode_startup_error(err))
@@ -1093,13 +1175,8 @@ fn start_with_managed_launch_and_initialiser_timeout(
                           control_server_monitor: control_server_monitor,
                           control_file_path: control_plane.control_file_path,
                           query_service: query_handle,
-                          read_model: read_model.new(
-                            daemon_id: daemon_identity.daemon_id,
-                            boot_id: daemon_identity.boot_id,
-                            ui_server_enabled: ui_server_enabled(
-                              effective.ui_server,
-                            ),
-                          ),
+                          query_cache: query_cache,
+                          read_model: initial_read_model,
                           ledger_projection: startup_recovery.projection,
                           remote_client: None,
                           remote_client_monitor: None,
@@ -1119,6 +1196,8 @@ fn start_with_managed_launch_and_initialiser_timeout(
                           dependencies: dependencies,
                         )
                         |> log_startup_invariant_warn_mode
+                        |> refresh_read_model
+                        |> publish_query_snapshot
                       dependencies.enqueue_startup_recovery_message(
                         subject,
                         ContinueStartupRecovery,
@@ -1179,6 +1258,10 @@ fn start_with_managed_launch_and_initialiser_timeout(
     Error(_) -> Error(StartupError("daemon_start_failed", "actor start failed"))
   }
   stop_startup_phase_tracker(startup_phase)
+  case result {
+    Ok(_) -> Nil
+    Error(_) -> stop_query_snapshot_cache_best_effort(query_cache)
+  }
   result
 }
 
@@ -2161,8 +2244,49 @@ fn continue_with_refreshed_state(state: State) -> actor.Next(State, Message) {
       let _shutdown_state = shutdown_runtime_shell(state, True)
       actor.stop_abnormal("transition_invariant_violation")
     }
-    False -> actor.continue(refresh_read_model(state))
+    False ->
+      actor.continue(
+        reconcile_stale_runtime_claims(state)
+        |> refresh_read_model
+        |> publish_query_snapshot,
+      )
   }
+}
+
+fn reconcile_stale_runtime_claims(state: State) -> State {
+  state.runtime.claimed
+  |> dict.keys
+  |> list.fold(state, fn(state, task_identity) {
+    case has_claim_holder(state, task_identity) {
+      True -> state
+      False -> {
+        log_state(state, "warn", "stale_runtime_claim_reconciled", [
+          #(
+            "task_identity",
+            orchestrator_state.task_identity_to_string(task_identity),
+          ),
+        ])
+        State(
+          ..state,
+          runtime: orchestrator_state.clear_task_lifecycle(
+            state.runtime,
+            task_identity,
+          ),
+        )
+      }
+    }
+  })
+}
+
+fn has_claim_holder(
+  state: State,
+  task_identity: identity.TaskIdentity,
+) -> Bool {
+  dict.has_key(state.pending_claims, task_identity)
+  || dict.has_key(state.workers.by_issue, task_identity)
+  || dict.has_key(state.runtime.running, task_identity)
+  || dict.has_key(state.runtime.retry_attempts, task_identity)
+  || dict.has_key(state.pending_review_lane_preflights, task_identity)
 }
 
 fn handle_issue_worker_finished(
@@ -2353,7 +2477,7 @@ fn handle_message(
         YamlStepUpdate(session_id, update) -> {
           event_publisher.worker_update(state.event_hub, session_id, update)
           log_yaml_step_update(state, session_id, update)
-          actor.continue(
+          continue_with_refreshed_state(
             State(
               ..state,
               yaml_step_tokens: session_metrics.update_from_runner(
@@ -2427,7 +2551,10 @@ fn handle_message(
           actor.continue(state)
         }
         GetReadModelSnapshot(reply) -> {
-          let refreshed = refresh_read_model(state)
+          let refreshed =
+            reconcile_stale_runtime_claims(state)
+            |> refresh_read_model
+            |> publish_query_snapshot
           process.send(reply, read_model_snapshot_from_state(refreshed))
           actor.continue(refreshed)
         }
@@ -2844,6 +2971,7 @@ fn operator_command_reply(
   timeout_ms: Int,
   reply: process.Subject(command.CommandResult),
 ) -> State {
+  let state = reconcile_stale_runtime_claims(state)
   case startup_recovery_ready(state) {
     False -> {
       let result = startup_recovery_rejection(operator_command)
@@ -6550,16 +6678,44 @@ fn enqueue_tracker_claim_issue(
       state.workflow.effective.handoff,
       tracker_secrets(state),
     )
-  enqueue_outbox_side_effect(state, intent, fn(intent) {
-    effect_runner.ClaimIssue(
-      outbox: intent,
-      task_ref: task_ref,
-      issue: issue,
-      workspace_path: workspace_path,
-      run_id: run_id,
-      capability: require_handoff_capability(state),
+  let #(state, enqueued) =
+    enqueue_outbox_side_effect_with_attempt_count_result(
+      state,
+      intent,
+      1,
+      fn(intent) {
+        effect_runner.ClaimIssue(
+          outbox: intent,
+          task_ref: task_ref,
+          issue: issue,
+          workspace_path: workspace_path,
+          run_id: run_id,
+          capability: require_handoff_capability(state),
+        )
+      },
     )
-  })
+  case enqueued {
+    True -> state
+    False -> {
+      process.send(
+        state.subject,
+        SideEffectCompleted(effect_runner.Finished(
+          0,
+          effect_runner.HandoffClaimFinished(
+            intent,
+            issue.id,
+            run_id,
+            Error(error.LinearApiRequest("outbox_ledger_append_failed")),
+          ),
+        )),
+      )
+      log_state(state, "warn", "claim_enqueue_failed_reconcile_queued", [
+        #("issue_id", issue.id),
+        #("run_id", run_id),
+      ])
+      state
+    }
+  }
 }
 
 fn apply_dispatch_fresh_superseding_recovery(
@@ -10594,6 +10750,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
     None -> Nil
   }
   let _best_effort = query_service.stop(state.query_service, 1000)
+  let _cache_stop = query_snapshot_cache.stop(state.query_cache, 1000)
   state.dependencies.stop_control_server(state.control_server)
   case state.control_file_path {
     Some(path) -> control_file.remove(path)

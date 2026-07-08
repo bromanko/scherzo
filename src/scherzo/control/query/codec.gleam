@@ -22,6 +22,7 @@ fn request_entries(request: types.QueryRequest) -> List(#(String, json.Json)) {
   case request {
     types.Status -> base_request_entries(types.query_type(request))
     types.Metrics -> base_request_entries(types.query_type(request))
+    types.ClaimList -> base_request_entries(types.query_type(request))
     types.TaskList(query) ->
       list.append(
         task_list_query_entries(query),
@@ -175,6 +176,13 @@ pub fn response_to_json(response: types.QueryResponse) -> json.Json {
         #("type", json.string(types.response_type(response))),
         #("metrics", dto.operational_metrics_to_json(metrics)),
       ])
+    types.ClaimListResponse(claims) ->
+      json.object([
+        #("version", json.int(version)),
+        #("ok", json.bool(True)),
+        #("type", json.string(types.response_type(response))),
+        #("claims", dto.claim_list_to_json(claims)),
+      ])
     types.TaskListResponse(tasks) ->
       json.object([
         #("version", json.int(version)),
@@ -324,6 +332,7 @@ type ResponseFields {
     type_: Option(String),
     status: Option(Dynamic),
     metrics: Option(Dynamic),
+    claims: Option(Dynamic),
     task_list: Option(Dynamic),
     task: Option(Dynamic),
     work_item_list: Option(Dynamic),
@@ -465,6 +474,11 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     None,
     decode.optional(decode.dynamic),
   )
+  use claims <- decode.optional_field(
+    "claims",
+    None,
+    decode.optional(decode.dynamic),
+  )
   use task_list <- decode.optional_field(
     "task_list",
     None,
@@ -521,6 +535,7 @@ fn response_fields_decoder() -> decode.Decoder(ResponseFields) {
     type_: type_,
     status: status,
     metrics: metrics,
+    claims: claims,
     task_list: task_list,
     task: task,
     work_item_list: work_item_list,
@@ -557,6 +572,7 @@ fn request_from_fields(
       case fields.type_ {
         Some("status") -> Ok(types.Status)
         Some("metrics") -> Ok(types.Metrics)
+        Some("claim_list") -> Ok(types.ClaimList)
         Some("task_list") -> task_list_request_from_fields(fields)
         Some("task_show") -> task_show_request_from_fields(fields)
         Some("work_item_list") -> work_item_list_request_from_fields(fields)
@@ -890,6 +906,7 @@ fn decode_success_response(
   case fields.type_ {
     Some("status") -> decode_status_response(fields.status)
     Some("metrics") -> decode_metrics_response(fields.metrics)
+    Some("claim_list") -> decode_claim_list_response(fields.claims)
     Some("task_list") ->
       case fields.task_list {
         Some(task_list) ->
@@ -980,6 +997,17 @@ fn decode_metrics_response(
     Some(metrics) ->
       dto.decode_operational_metrics_dynamic(metrics)
       |> result.map(types.MetricsResponse)
+    None -> missing_response_payload()
+  }
+}
+
+fn decode_claim_list_response(
+  claims: Option(Dynamic),
+) -> Result(types.QueryResponse, types.QueryError) {
+  case claims {
+    Some(claims) ->
+      dto.decode_claim_list_dynamic(claims)
+      |> result.map(types.ClaimListResponse)
     None -> missing_response_payload()
   }
 }

@@ -390,6 +390,12 @@ fn build_command(
         json_output(parsed),
         query_types.Metrics,
       ))
+    command_registry.QueryClaimsKey ->
+      Ok(Query(
+        control_file_option(parsed),
+        json_output(parsed),
+        query_types.ClaimList,
+      ))
     command_registry.QueryOperationStatusKey ->
       Ok(Query(
         control_file_option(parsed),
@@ -1483,6 +1489,10 @@ fn run_with_deps_and_env_internal(
             }
             Ok(query_types.MetricsResponse(metrics)) -> {
               ctl_renderers.print_query_metrics(metrics, line: output.line)
+              Ok(Nil)
+            }
+            Ok(query_types.ClaimListResponse(claims)) -> {
+              ctl_renderers.print_claims(claims, line: output.line)
               Ok(Nil)
             }
             Ok(query_types.OperationStatusResponse(operation)) -> {

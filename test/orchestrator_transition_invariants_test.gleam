@@ -235,6 +235,7 @@ pub fn pending_slot_overcommit_reports_clear_error_test() {
       route_label: other_issue.identifier,
       issue: other_issue,
       recovery: None,
+      claimed_at_ms: 0,
       remaining_candidates: [],
       dispatch_context: orchestrator_transition_test.fixture_context(),
       previous_retry_generation: 0,
