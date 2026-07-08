@@ -261,23 +261,11 @@ type State {
     scheduled_runtime: scheduled_runtime.Runtime,
     scheduled_retry_timers: Dict(String, TimerHandle),
     scheduled_report_retry_timers: Dict(String, TimerHandle),
-    runtime: orchestrator_state.RuntimeState,
-    workers: transition_types.WorkerDirectory,
+    core: transition_types.State,
     poll: poll_scheduler.State(TimerHandle),
     retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
     yaml_step_tokens: session_metrics.StepTokenEntries,
-    pending_claims: Dict(identity.TaskIdentity, transition_types.PendingClaim),
-    dispatch_recovery_cleared_pending_claims: List(identity.TaskIdentity),
-    pending_dispatch_validations: Dict(
-      identity.TaskIdentity,
-      transition_types.PendingDispatchValidation,
-    ),
-    pending_review_lane_preflights: Dict(
-      identity.TaskIdentity,
-      transition_types.PendingReviewLanePreflight,
-    ),
-    next_dispatch_validation_generation: Int,
     recovery_by_issue: Dict(String, session_event.RecoveryInfo),
     effect_runner: effect_runner.Handle,
     effect_runner_monitor: process.Monitor,
@@ -575,7 +563,7 @@ fn start_query_service(
 }
 
 fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
-  let running_workers = dict.size(state.runtime.running)
+  let running_workers = dict.size(state.core.runtime.running)
   let running_scheduled_workers =
     worker_registry.scheduled_worker_count(state.registry)
   let now_ms = state.dependencies.now_ms()
@@ -595,15 +583,17 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
       + worker_registry.active_yaml_step_session_count(state.registry),
     running_workers: running_workers,
     running_scheduled_workers: running_scheduled_workers,
-    queued_claims: dict.size(state.pending_claims),
-    pending_dispatch_validations: dict.size(state.pending_dispatch_validations),
-    pending_review_lane_preflights: dict.size(
-      state.pending_review_lane_preflights,
+    queued_claims: dict.size(state.core.pending_claims),
+    pending_dispatch_validations: dict.size(
+      state.core.pending_dispatch_validations,
     ),
-    claimed_tasks: dict.size(state.runtime.claimed),
-    retry_tasks: dict.size(state.runtime.retry_attempts),
-    parked_tasks: dict.size(state.runtime.parked),
-    completed_tasks: dict.size(state.runtime.completed),
+    pending_review_lane_preflights: dict.size(
+      state.core.pending_review_lane_preflights,
+    ),
+    claimed_tasks: dict.size(state.core.runtime.claimed),
+    retry_tasks: dict.size(state.core.runtime.retry_attempts),
+    parked_tasks: dict.size(state.core.runtime.parked),
+    completed_tasks: dict.size(state.core.runtime.completed),
     pending_outbox_count: pending_outbox_count,
     in_flight_outbox_count: in_flight_outbox_count,
     retryable_outbox_count: retryable_outbox_count,
@@ -612,11 +602,11 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
     poll_in_flight: poll_scheduler.in_flight(state.poll) != None,
     poll_timer_active: poll_scheduler.timer(state.poll) != None,
     retry_timer_count: retry_scheduler.timer_count(state.retry),
-    retry_refresh_in_flight_count: retry_scheduler.refresh_in_flight_count(
-      state.retry,
+    retry_refresh_in_flight_count: dict.size(
+      state.core.retry_refresh_generations,
     ),
     lifecycle_projection_failed: daemon_transition_shell.lifecycle_projection_failed(
-      transition_state_from_daemon(state),
+      get_core_state(state),
     ),
     scheduled_due_count: state.scheduled_runtime
       |> scheduled_runtime.due_count(now_ms),
@@ -676,7 +666,7 @@ fn outbox_counts_for_metrics(state: State) -> #(Int, Int, Int, Int) {
 
 fn metrics_token_totals(state: State) -> session_tokens.TokenTotals {
   session_metrics.total(state.yaml_step_tokens)
-  |> session_tokens.add(state.runtime.aggregate_pi_totals)
+  |> session_tokens.add(state.core.runtime.aggregate_pi_totals)
 }
 
 fn refresh_read_model(state: State) -> State {
@@ -742,9 +732,9 @@ fn query_snapshot_from_state(state: State) -> query_snapshot_cache.Snapshot {
     workflow: state.workflow,
     dispatch_paused: state.operator_paused,
     claims: query_snapshot_cache.claims_snapshot(
-      pending_claims: state.pending_claims,
-      worker_claims: state.workers.by_issue,
-      runtime_claims: state.runtime.claimed,
+      pending_claims: state.core.pending_claims,
+      worker_claims: state.core.workers.by_issue,
+      runtime_claims: state.core.runtime.claimed,
       sampled_at_ms: state.dependencies.now_ms(),
     ),
   )
@@ -1156,17 +1146,21 @@ fn start_with_managed_launch_and_initialiser_timeout(
                           scheduled_runtime: startup_recovery.scheduled.runtime,
                           scheduled_retry_timers: dict.new(),
                           scheduled_report_retry_timers: dict.new(),
-                          runtime: runtime,
-                          workers: transition_types.new_worker_directory(),
+                          core: transition_types.State(
+                            runtime: runtime,
+                            workers: transition_types.new_worker_directory(),
+                            pending_claims: dict.new(),
+                            pending_dispatch_validations: dict.new(),
+                            pending_review_lane_preflights: dict.new(),
+                            lifecycle: transition_types.empty_lifecycle(),
+                            retry_refresh_generations: dict.new(),
+                            next_dispatch_validation_generation: 1,
+                            next_session_sequence: 1,
+                          ),
                           poll: poll_scheduler.idle(),
                           retry: retry_scheduler.new(),
                           registry: worker_registry.new(),
                           yaml_step_tokens: session_metrics.new(),
-                          pending_claims: dict.new(),
-                          dispatch_recovery_cleared_pending_claims: [],
-                          pending_dispatch_validations: dict.new(),
-                          pending_review_lane_preflights: dict.new(),
-                          next_dispatch_validation_generation: 1,
                           recovery_by_issue: startup_recovery.recovery_by_issue,
                           effect_runner: effect_runner_handle,
                           effect_runner_monitor: effect_runner_monitor,
@@ -1748,9 +1742,7 @@ fn spawn_recovered_scheduled_workflow_resumption(
   {
     Ok(_) -> state
     Error(Nil) -> {
-      let #(registry, session_sequence) =
-        worker_registry.reserve_session_sequence(state.registry)
-      let state = State(..state, registry: registry)
+      let #(state, session_sequence) = reserve_core_session_sequence(state)
       let session_id =
         make_recovered_session_id(recovered.run_id, session_sequence)
       let started_at_ms = state.dependencies.now_ms()
@@ -1884,9 +1876,7 @@ fn spawn_recovered_workflow_resumption(
   case has_active_run(state, recovered.issue.id) {
     True -> state
     False -> {
-      let #(registry, session_sequence) =
-        worker_registry.reserve_session_sequence(state.registry)
-      let state = State(..state, registry: registry)
+      let #(state, session_sequence) = reserve_core_session_sequence(state)
       let session_id =
         make_recovered_session_id(recovered.run_id, session_sequence)
       let started_at_ms = state.dependencies.now_ms()
@@ -1940,7 +1930,7 @@ fn spawn_recovered_workflow_resumption(
       ])
       let runtime =
         core.apply_worker_start(
-          state.runtime,
+          state.core.runtime,
           recovered.issue,
           recovered.run_root,
         )
@@ -2008,27 +1998,29 @@ fn spawn_recovered_workflow_resumption(
         )
       let workers =
         transition_types.WorkerDirectory(
-          ..state.workers,
+          ..state.core.workers,
           by_issue: dict.insert(
-            state.workers.by_issue,
+            state.core.workers.by_issue,
             task_identity,
             worker_entry,
           ),
           by_session: dict.insert(
-            state.workers.by_session,
+            state.core.workers.by_session,
             session_id,
             task_identity,
           ),
           route_to_session: dict.insert(
-            state.workers.route_to_session,
+            state.core.workers.route_to_session,
             command_route_id,
             session_id,
           ),
         )
+      let state =
+        update_core_state(state, fn(core) {
+          transition_types.State(..core, runtime: runtime, workers: workers)
+        })
       State(
         ..state,
-        runtime: runtime,
-        workers: workers,
         registry: worker_registry.register_worker(state.registry, handle),
       )
     }
@@ -2254,7 +2246,7 @@ fn continue_with_refreshed_state(state: State) -> actor.Next(State, Message) {
 }
 
 fn reconcile_stale_runtime_claims(state: State) -> State {
-  state.runtime.claimed
+  state.core.runtime.claimed
   |> dict.keys
   |> list.fold(state, fn(state, task_identity) {
     case has_claim_holder(state, task_identity) {
@@ -2266,13 +2258,15 @@ fn reconcile_stale_runtime_claims(state: State) -> State {
             orchestrator_state.task_identity_to_string(task_identity),
           ),
         ])
-        State(
-          ..state,
-          runtime: orchestrator_state.clear_task_lifecycle(
-            state.runtime,
-            task_identity,
-          ),
-        )
+        update_core_state(state, fn(core) {
+          transition_types.State(
+            ..core,
+            runtime: orchestrator_state.clear_task_lifecycle(
+              core.runtime,
+              task_identity,
+            ),
+          )
+        })
       }
     }
   })
@@ -2282,11 +2276,11 @@ fn has_claim_holder(
   state: State,
   task_identity: identity.TaskIdentity,
 ) -> Bool {
-  dict.has_key(state.pending_claims, task_identity)
-  || dict.has_key(state.workers.by_issue, task_identity)
-  || dict.has_key(state.runtime.running, task_identity)
-  || dict.has_key(state.runtime.retry_attempts, task_identity)
-  || dict.has_key(state.pending_review_lane_preflights, task_identity)
+  dict.has_key(state.core.pending_claims, task_identity)
+  || dict.has_key(state.core.workers.by_issue, task_identity)
+  || dict.has_key(state.core.runtime.running, task_identity)
+  || dict.has_key(state.core.runtime.retry_attempts, task_identity)
+  || dict.has_key(state.core.pending_review_lane_preflights, task_identity)
 }
 
 fn handle_issue_worker_finished(
@@ -2547,7 +2541,7 @@ fn handle_message(
             completion,
           ))
         GetSnapshot(reply) -> {
-          effect_runner.reply_snapshot(state.runtime, reply)
+          effect_runner.reply_snapshot(state.core.runtime, reply)
           actor.continue(state)
         }
         GetReadModelSnapshot(reply) -> {
@@ -2883,7 +2877,7 @@ fn handle_known_worker_down(
 ) -> State {
   let state = State(..state, registry: registry)
   let state = case
-    worker_lifecycle.worker_down_matches(state.workers, issue_id, handle)
+    worker_lifecycle.worker_down_matches(state.core.workers, issue_id, handle)
   {
     False -> state
     True -> {
@@ -3601,13 +3595,15 @@ fn queue_retry_step_operation_for_operator(
     )
   case result.status {
     command.Queued -> #(
-      State(
-        ..state,
-        runtime: retry_step_operation.clear_released_park(
-          state.runtime,
-          queue_released_park,
-        ),
-      ),
+      update_core_state(state, fn(core) {
+        transition_types.State(
+          ..core,
+          runtime: retry_step_operation.clear_released_park(
+            core.runtime,
+            queue_released_park,
+          ),
+        )
+      }),
       result,
     )
     _ -> #(state, result)
@@ -3714,7 +3710,7 @@ fn queue_recollect_outputs_operation(
 ) -> #(State, command.CommandResult) {
   case
     recollect_outputs_control.parked_preflight_for_run(
-      state.runtime,
+      state.core.runtime,
       operator_command,
       run_id,
       decision.issue_id,
@@ -3983,7 +3979,7 @@ fn recollect_outputs_issue_preflight_for_run(
   issue_id: String,
 ) -> Result(tracker_issue.Issue, command.CommandResult) {
   use Nil <- result.try(recollect_outputs_control.parked_preflight_for_run(
-    state.runtime,
+    state.core.runtime,
     operator_command,
     run_id,
     issue_id,
@@ -4089,7 +4085,7 @@ fn retry_step_issue_preflight(
   issue_id: String,
 ) -> Result(retry_step_operation.IssuePreflight, command.CommandResult) {
   retry_step_operation.issue_preflight(
-    state.runtime,
+    state.core.runtime,
     projection_state,
     state.workflow.effective,
     operator_command,
@@ -4099,14 +4095,14 @@ fn retry_step_issue_preflight(
     fn(issue_id) { fetch_issue_by_id(state, issue_id) },
     fn(released_park) {
       retry_step_operation.issue_is_active_or_pending(
-        state.runtime,
+        state.core.runtime,
         state.tracker_adapter.kind,
         issue_id,
         released_park,
         has_active_run(state, issue_id),
-        state.pending_claims,
-        state.pending_dispatch_validations,
-        state.pending_review_lane_preflights,
+        state.core.pending_claims,
+        state.core.pending_dispatch_validations,
+        state.core.pending_review_lane_preflights,
       )
     },
   )
@@ -5510,7 +5506,7 @@ fn schedule_run_now_for_enabled_job(
 }
 
 fn route_worker_command_session_id(state: State, session_id: String) -> String {
-  case dict.get(state.workers.route_to_session, session_id) {
+  case dict.get(state.core.workers.route_to_session, session_id) {
     Ok(routed_session_id) -> routed_session_id
     Error(Nil) -> session_id
   }
@@ -5780,7 +5776,7 @@ fn active_run_count(state: State) -> Int {
 fn active_run_issue_ids(state: State) -> List(String) {
   []
   |> append_unique_list(
-    state.runtime.running
+    state.core.runtime.running
     |> dict.values
     |> list.map(fn(entry) { entry.issue.id }),
   )
@@ -5803,20 +5799,25 @@ fn issue_for_id(
   issue_id: String,
 ) -> Result(tracker_issue.Issue, command.CommandStatus) {
   let identity = orchestrator_state.linear_issue_id_identity(issue_id)
-  case dict.get(state.runtime.running, identity) {
+  case dict.get(state.core.runtime.running, identity) {
     Ok(entry) -> Ok(entry.issue)
     Error(Nil) ->
-      case dict.get(state.pending_claims, identity) {
+      case dict.get(state.core.pending_claims, identity) {
         Ok(pending) -> Ok(pending.issue)
         Error(Nil) ->
-          case dict.get(state.pending_dispatch_validations, identity) {
+          case dict.get(state.core.pending_dispatch_validations, identity) {
             Ok(pending) -> Ok(pending.issue)
             Error(Nil) ->
-              case dict.get(state.pending_review_lane_preflights, identity) {
+              case
+                dict.get(state.core.pending_review_lane_preflights, identity)
+              {
                 Ok(pending) -> Ok(pending.issue)
                 Error(Nil) ->
                   case
-                    orchestrator_state.completed_for(state.runtime, identity)
+                    orchestrator_state.completed_for(
+                      state.core.runtime,
+                      identity,
+                    )
                   {
                     Ok(issue) -> Ok(issue)
                     Error(Nil) -> fetch_issue_by_id(state, issue_id)
@@ -5853,22 +5854,22 @@ fn local_issues_with_identifier(
   identifier: String,
 ) -> List(tracker_issue.Issue) {
   let running =
-    state.runtime.running
+    state.core.runtime.running
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
   let pending =
-    state.pending_claims
+    state.core.pending_claims
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
   let pending_validations =
-    state.pending_dispatch_validations
+    state.core.pending_dispatch_validations
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
   let pending_preflights =
-    state.pending_review_lane_preflights
+    state.core.pending_review_lane_preflights
     |> dict.values
     |> list.map(fn(entry) { entry.issue })
-  let completed = orchestrator_state.completed_issues(state.runtime)
+  let completed = orchestrator_state.completed_issues(state.core.runtime)
   list.append(
     running,
     list.append(
@@ -5925,7 +5926,7 @@ fn parked_issue_id_for_ref(
     command.IssueId(issue_id) ->
       case
         dict.has_key(
-          state.runtime.parked,
+          state.core.runtime.parked,
           orchestrator_state.linear_issue_id_identity(issue_id),
         )
       {
@@ -5942,7 +5943,7 @@ fn parked_issue_id_for_identifier(
   identifier: String,
 ) -> Result(String, command.CommandStatus) {
   let matches =
-    state.runtime.parked
+    state.core.runtime.parked
     |> dict.values
     |> list.filter(fn(entry) { entry.identifier == identifier })
   case matches {
@@ -6267,86 +6268,29 @@ fn transition_dispatch_context(
   )
 }
 
-fn transition_state_from_daemon(state: State) -> transition_types.State {
-  transition_types.State(
-    runtime: state.runtime,
-    workers: state.workers,
-    pending_claims: state.pending_claims,
-    pending_dispatch_validations: state.pending_dispatch_validations,
-    pending_review_lane_preflights: state.pending_review_lane_preflights,
-    lifecycle: transition_types.empty_lifecycle(),
-    retry_refresh_generations: dict.from_list(
-      retry_scheduler.refresh_generations(state.retry),
-    ),
-    next_dispatch_validation_generation: state.next_dispatch_validation_generation,
-    next_session_sequence: worker_registry.next_session_sequence(state.registry),
-  )
+fn get_core_state(state: State) -> transition_types.State {
+  state.core
 }
 
-fn merge_transition_state(
+fn put_core_state(state: State, core: transition_types.State) -> State {
+  State(..state, core: core)
+}
+
+fn update_core_state(
   state: State,
-  input_transition_state: transition_types.State,
-  transition_state: transition_types.State,
+  update: fn(transition_types.State) -> transition_types.State,
 ) -> State {
-  let pending_claims =
-    merge_transition_field(
-      state.pending_claims,
-      input_transition_state.pending_claims,
-      transition_state.pending_claims,
-    )
-    |> clear_dispatch_recovery_pending_claims(
-      state.dispatch_recovery_cleared_pending_claims,
-    )
-  State(
-    ..state,
-    runtime: merge_transition_field(
-      state.runtime,
-      input_transition_state.runtime,
-      transition_state.runtime,
-    ),
-    workers: merge_transition_field(
-      state.workers,
-      input_transition_state.workers,
-      transition_state.workers,
-    ),
-    pending_claims: pending_claims,
-    dispatch_recovery_cleared_pending_claims: [],
-    pending_dispatch_validations: merge_transition_field(
-      state.pending_dispatch_validations,
-      input_transition_state.pending_dispatch_validations,
-      transition_state.pending_dispatch_validations,
-    ),
-    pending_review_lane_preflights: merge_transition_field(
-      state.pending_review_lane_preflights,
-      input_transition_state.pending_review_lane_preflights,
-      transition_state.pending_review_lane_preflights,
-    ),
-    next_dispatch_validation_generation: merge_transition_field(
-      state.next_dispatch_validation_generation,
-      input_transition_state.next_dispatch_validation_generation,
-      transition_state.next_dispatch_validation_generation,
-    ),
+  put_core_state(state, update(state.core))
+}
+
+fn reserve_core_session_sequence(state: State) -> #(State, Int) {
+  let sequence = state.core.next_session_sequence
+  #(
+    update_core_state(state, fn(core) {
+      transition_types.State(..core, next_session_sequence: sequence + 1)
+    }),
+    sequence,
   )
-}
-
-fn clear_dispatch_recovery_pending_claims(
-  pending_claims: Dict(identity.TaskIdentity, transition_types.PendingClaim),
-  cleared: List(identity.TaskIdentity),
-) -> Dict(identity.TaskIdentity, transition_types.PendingClaim) {
-  list.fold(cleared, pending_claims, fn(pending_claims, task_identity) {
-    dict.delete(pending_claims, task_identity)
-  })
-}
-
-fn merge_transition_field(
-  shell_value: value,
-  input_value: value,
-  transition_value: value,
-) -> value {
-  case transition_value == input_value {
-    True -> shell_value
-    False -> transition_value
-  }
 }
 
 fn run_transition_messages(
@@ -6361,8 +6305,8 @@ fn transition_shell_context(
 ) -> daemon_transition_shell.Context(State) {
   daemon_transition_shell.context(
     state: state,
-    transition_state_from_state: transition_state_from_daemon,
-    merge_transition_state: merge_transition_state,
+    get_transition_state: get_core_state,
+    put_transition_state: put_core_state,
     log_exhausted: fn(state, message_limit) {
       log_state(state, "warn", "transition_runner_exhausted", [
         #("message_limit", int.to_string(message_limit)),
@@ -6483,12 +6427,7 @@ fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
     remove_retry_timer: fn(state, issue_id) {
       State(..state, retry: retry_scheduler.remove_timer(state.retry, issue_id))
     },
-    finish_retry_refresh: fn(state, issue_id) {
-      State(
-        ..state,
-        retry: retry_scheduler.finish_refresh(state.retry, issue_id),
-      )
-    },
+    finish_retry_refresh: fn(state, _issue_id) { state },
     defer_retry_timer: transition_defer_retry_timer,
     begin_retry_refresh: transition_begin_retry_refresh,
     schedule_retry_timer: transition_schedule_retry_timer,
@@ -6846,12 +6785,15 @@ fn requeue_dispatch_recovery(
   let state = clear_pending_claim_for_task_ref(state, task_ref)
   let runtime =
     orchestrator_state.mark_task_retrying(
-      state.runtime,
+      state.core.runtime,
       task_identity,
       retry,
       issue.identifier,
     )
-  let state = State(..state, runtime: runtime)
+  let state =
+    update_core_state(state, fn(core) {
+      transition_types.State(..core, runtime: runtime)
+    })
   let #(state, _) =
     append_ledger_bodies(
       state,
@@ -6889,7 +6831,7 @@ fn next_dispatch_recovery_retry_generation(
   task_identity: identity.TaskIdentity,
   task_ref: task.TaskRef,
 ) -> Int {
-  case dict.get(state.runtime.retry_attempts, task_identity) {
+  case dict.get(state.core.runtime.retry_attempts, task_identity) {
     Ok(previous_retry) -> previous_retry.timer_generation + 1
     Error(Nil) ->
       case pending_claim_for_task_ref(state, task_ref) {
@@ -6903,7 +6845,10 @@ fn pending_claim_for_task_ref(
   state: State,
   task_ref: task.TaskRef,
 ) -> Result(transition_types.PendingClaim, Nil) {
-  dict.get(state.pending_claims, orchestrator_state.task_ref_identity(task_ref))
+  dict.get(
+    state.core.pending_claims,
+    orchestrator_state.task_ref_identity(task_ref),
+  )
 }
 
 fn clear_pending_claim_for_task_ref(
@@ -6911,14 +6856,12 @@ fn clear_pending_claim_for_task_ref(
   task_ref: task.TaskRef,
 ) -> State {
   let task_identity = orchestrator_state.task_ref_identity(task_ref)
-  State(
-    ..state,
-    pending_claims: dict.delete(state.pending_claims, task_identity),
-    dispatch_recovery_cleared_pending_claims: [
-      task_identity,
-      ..state.dispatch_recovery_cleared_pending_claims
-    ],
-  )
+  update_core_state(state, fn(core) {
+    transition_types.State(
+      ..core,
+      pending_claims: dict.delete(core.pending_claims, task_identity),
+    )
+  })
 }
 
 fn apply_dispatch_step_recovery(
@@ -7254,8 +7197,11 @@ fn park_dispatch_recovery_rejection(
     )
   let identity = orchestrator_state.task_ref_identity(task_ref)
   let runtime =
-    orchestrator_state.mark_task_parked(state.runtime, identity, parked)
-  let state = State(..state, runtime: runtime)
+    orchestrator_state.mark_task_parked(state.core.runtime, identity, parked)
+  let state =
+    update_core_state(state, fn(core) {
+      transition_types.State(..core, runtime: runtime)
+    })
   let state = transition_park_issue(state, parked, None)
   let state = case string.trim(message) == "" {
     True -> state
@@ -7877,9 +7823,7 @@ fn transition_mark_yaml_run_stopping(
 }
 
 fn transition_reserve_session_sequence(state: State, sequence: Int) -> State {
-  let #(registry, reserved) =
-    worker_registry.reserve_session_sequence(state.registry)
-  let state = State(..state, registry: registry)
+  let #(state, reserved) = reserve_core_session_sequence(state)
   case reserved == sequence {
     True -> state
     False -> {
@@ -7920,21 +7864,14 @@ fn transition_begin_retry_refresh(
   issue_id: String,
   generation: Int,
 ) -> State {
-  case retry_scheduler.begin_refresh(state.retry, issue_id, generation) {
-    Error(Nil) -> {
-      log_state(state, "info", "retry_timer_stale", [#("issue_id", issue_id)])
-      state
-    }
-    Ok(retry) ->
-      enqueue_side_effect(
-        State(..state, retry: retry),
-        effect_runner.RefreshRetry(
-          issue_id: issue_id,
-          generation: generation,
-          tracker_adapter: state.tracker_adapter,
-        ),
-      )
-  }
+  enqueue_side_effect(
+    state,
+    effect_runner.RefreshRetry(
+      issue_id: issue_id,
+      generation: generation,
+      tracker_adapter: state.tracker_adapter,
+    ),
+  )
 }
 
 fn transition_schedule_retry_timer(
@@ -8394,9 +8331,9 @@ fn block_pending_scheduled_run(
 
 fn scheduled_slot_available_for_start(state: State) -> Bool {
   active_run_count(state)
-  + dict.size(state.pending_claims)
-  + dict.size(state.pending_dispatch_validations)
-  + dict.size(state.pending_review_lane_preflights)
+  + dict.size(state.core.pending_claims)
+  + dict.size(state.core.pending_dispatch_validations)
+  + dict.size(state.core.pending_review_lane_preflights)
   + list.length(worker_registry.scheduled_worker_handles(state.registry))
   + pending_issue_retry_headroom(state)
   < state.workflow.effective.agent.max_concurrent_agents
@@ -8410,7 +8347,7 @@ fn pending_issue_retry_headroom(state: State) -> Int {
 }
 
 fn has_pending_issue_retry(state: State) -> Bool {
-  state.runtime.retry_attempts
+  state.core.runtime.retry_attempts
   |> dict.values
   |> list.any(fn(retry) {
     !list.contains(active_run_issue_ids(state), retry.issue_id)
@@ -8598,15 +8535,17 @@ fn worker_spawn_context(
       ])
     },
     apply_task_ref_start: fn(state, ref, issue, workspace_path) {
-      State(
-        ..state,
-        runtime: core.apply_task_ref_start(
-          state.runtime,
-          ref,
-          issue,
-          workspace_path,
-        ),
-      )
+      update_core_state(state, fn(transition_core) {
+        transition_types.State(
+          ..transition_core,
+          runtime: core.apply_task_ref_start(
+            transition_core.runtime,
+            ref,
+            issue,
+            workspace_path,
+          ),
+        )
+      })
     },
     spawn: fn(_issue, _run_id, _session_id) {
       process.spawn_unlinked(fn() {
@@ -8667,9 +8606,8 @@ fn scheduled_worker_spawn_context(
     state: state,
     now_ms: state.dependencies.now_ms,
     reserve_session_sequence: fn(state) {
-      let #(registry, _session_sequence) =
-        worker_registry.reserve_session_sequence(state.registry)
-      State(..state, registry: registry)
+      let #(state, _session_sequence) = reserve_core_session_sequence(state)
+      state
     },
     register_session: fn(session_id, display_ref, run_root, started_at_ms) {
       hub.register_session(
@@ -9737,9 +9675,9 @@ fn workflow_id_for_handle(
   state: State,
   handle: worker_registry.WorkerHandle,
 ) -> Result(String, Nil) {
-  case dict.get(state.workers.by_session, handle.session_id) {
+  case dict.get(state.core.workers.by_session, handle.session_id) {
     Ok(worker_identity) ->
-      case dict.get(state.workers.by_issue, worker_identity) {
+      case dict.get(state.core.workers.by_issue, worker_identity) {
         Ok(entry) -> Ok(entry.workflow_id)
         Error(Nil) -> workflow_id_for_issue_from_bundle(state, handle.issue)
       }
@@ -9979,9 +9917,10 @@ fn handle_handoff_claim_finished(
       issue_id,
       state.tracker_adapter.kind,
     )
-  let active_run_present = dict.has_key(state.runtime.running, task_identity)
+  let active_run_present =
+    dict.has_key(state.core.runtime.running, task_identity)
   let pending_claim_superseded = case
-    dict.get(state.pending_claims, task_identity)
+    dict.get(state.core.pending_claims, task_identity)
   {
     Ok(pending) -> pending.run_id != run_id
     Error(Nil) -> False
@@ -9990,7 +9929,7 @@ fn handle_handoff_claim_finished(
     Ok(Nil) ->
       case
         abandoned_claim.claim_success_abandoned(
-          state.pending_claims,
+          state.core.pending_claims,
           state.tracker_adapter.kind,
           issue_id,
         )
@@ -10016,10 +9955,12 @@ fn handle_handoff_claim_finished(
   case compensation_reason {
     Some(reason) -> {
       let state =
-        State(
-          ..state,
-          pending_claims: dict.delete(state.pending_claims, task_identity),
-        )
+        update_core_state(state, fn(core) {
+          transition_types.State(
+            ..core,
+            pending_claims: dict.delete(core.pending_claims, task_identity),
+          )
+        })
       compensate_abandoned_claim(state, outbox, run_id, reason)
     }
     None -> {
@@ -10055,7 +9996,7 @@ fn handoff_claim_result_for_transition(
     Ok(Nil) ->
       case
         dict.get(
-          state.pending_claims,
+          state.core.pending_claims,
           orchestrator_state.issue_id_identity_for_backend(
             issue_id,
             state.tracker_adapter.kind,
@@ -10080,14 +10021,17 @@ fn compensate_abandoned_claim(
 ) -> State {
   let compensation =
     abandoned_claim.compensate(
-      state.runtime,
+      state.core.runtime,
       outbox_effects.task_ref_from_fields(outbox.task_ref),
       run_id,
       abandonment_reason,
       state.dependencies.now_ms(),
       tracker_secrets(state),
     )
-  let state = State(..state, runtime: compensation.runtime)
+  let state =
+    update_core_state(state, fn(core) {
+      transition_types.State(..core, runtime: compensation.runtime)
+    })
   log_state(state, "warn", "abandoned_claim_compensated", [
     #("issue_id", compensation.parked.issue_id),
     #("issue_identifier", compensation.parked.identifier),
@@ -10129,7 +10073,7 @@ fn claim_ledger_batch_for_pending(
 ) -> transition_types.HandoffClaimResult {
   let post_spawn_runtime =
     core.apply_task_ref_start(
-      state.runtime,
+      state.core.runtime,
       pending.task_ref,
       pending.issue,
       pending.workspace_path,
@@ -10805,10 +10749,13 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
     poll: poll,
     retry: retry,
     registry: registry,
-    workers: transition_types.new_worker_directory(),
-    pending_claims: dict.new(),
-    pending_dispatch_validations: dict.new(),
-    pending_review_lane_preflights: dict.new(),
+    core: transition_types.State(
+      ..state.core,
+      workers: transition_types.new_worker_directory(),
+      pending_claims: dict.new(),
+      pending_dispatch_validations: dict.new(),
+      pending_review_lane_preflights: dict.new(),
+    ),
     scheduled_runtime: scheduled_runtime.new(),
     scheduled_retry_timers: dict.new(),
     scheduled_report_retry_timers: dict.new(),

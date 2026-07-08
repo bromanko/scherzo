@@ -69,6 +69,13 @@ Milestone 7 runs full validation and records outcomes. The result should be beha
 - [x] (2026-07-08) Inspected the daemon state, transition state, transition shell context, merge helpers, retry scheduler, worker registry, and architecture guardrail surfaces relevant to this refactor.
 - [x] (2026-07-08) Wrote this concise review document as a planning artifact only; production code was not changed.
 - [x] (2026-07-08) Incorporated review feedback by tightening per-message core synchronization, negative/error-path, duplicate/idempotency, full-validation, and out-of-scope evidence obligations for the implementation handoff.
+- [x] (2026-07-08) Implemented the transition-shell context getter/setter API and moved shell execution to per-message core synchronization.
+- [x] (2026-07-08) Added transition-shell regression coverage showing finish-hook core updates survive `run_one_message_with_operator_reply` and targeted transition-shell tests pass.
+- [x] (2026-07-08) Migrated daemon logical ownership from copy/merge helpers to an embedded `state.core` record.
+- [x] (2026-07-08) Removed duplicated daemon fields, worker-registry session sequence ownership, retry refresh duplication, and the dispatch-recovery cleared-claims side channel.
+- [x] (2026-07-08) Updated daemon/source boundary guardrails and architecture documentation for the embedded-core boundary.
+- [x] (2026-07-08) Ran implementation validation through direnv: format check, unit suite, contract suite, glinter, and scherzo_lint.
+- [x] (2026-07-08) Attempted retained-run verifier recovery for `verify_plan_completion`; Scherzo accepted the first exact retry but cancelled before starting the verifier, then rejected the next exact retry because the run no longer had a failed workflow state.
 
 ## Surprises & Discoveries
 
@@ -78,6 +85,10 @@ Milestone 7 runs full validation and records outcomes. The result should be beha
   Evidence: `transition_state_from_daemon` reads `worker_registry.next_session_sequence(state.registry)`, and claim transition code increments `next_session_sequence` when reserving run/session IDs.
 - Observation: The transition shell test harness already models a shell state that contains `transition_state`, which is close to the desired embedded-core shape.
   Evidence: `test/orchestrator_daemon_transition_shell_test.gleam` defines `ShellState(transition_state: transition_types.State, ...)` and merges by replacing that field.
+- Observation: The completed ownership migration shrank `src/scherzo/orchestrator/daemon.gleam` enough to lower the daemon/source guardrail ratchet instead of raising it.
+  Evidence: the checked daemon line baseline was updated from 10869 to 10836, and `direnv exec . gleam test -- --suite unit` passes with the updated boundary tests.
+- Observation: Retained-run verifier recovery did not actually execute the verifier after manual repair.
+  Evidence: `scripts/scherzoctl run retry-step LIV-1455-1783527064919-8 --step verify_plan_completion --json` queued `retry-step:LIV-1455-1783527064919-8:verify_plan_completion:1783540523222`, the ledger recorded `step_attempt_prepared` for attempt 2, then `workflow_run_finished` with outcome `cancelled` before any attempt-2 `step_attempt_started` event or artifact was written. A follow-up exact retry returned `reason: no_failed_workflow_run`; the temporary Linear state change to `Todo` was reverted to `Triage` to avoid an unintended fresh dispatch.
 
 ## Decision Log
 
@@ -87,10 +98,15 @@ Milestone 7 runs full validation and records outcomes. The result should be beha
 - Decision: Treat dispatch-recovery claim clearing as normal transition state rather than a daemon merge escape hatch. Rationale: side-channel state that is applied only during merge recreates the silent overwrite hazard this plan is removing. Date: 2026-07-08.
 - Decision: Make negative/error-path and duplicate/idempotency tests explicit acceptance obligations, while keeping browser, provider-live, provider-cache, and workflow-helper evidence out of scope unless implementation touches those surfaces. Rationale: review feedback emphasized that semantic acceptance must travel into the implementation pack rather than relying on keyword checks or happy-path validation. Date: 2026-07-08.
 - Decision: Synchronize the embedded core before effect interpretation and continue from the post-effect embedded core. Rationale: a final direct replacement would remove the merge layer but could still overwrite shell callbacks that intentionally update logical core state during effect handling. Date: 2026-07-08.
+- Decision: Land the shell getter/setter and per-message synchronization before changing daemon ownership. Rationale: this retires the transition-shell overwrite hazard with a focused test seam while leaving the larger daemon-state migration for the next slice. Date: 2026-07-08.
+- Decision: Make `retry_scheduler` timer-only and store retry refresh generation ownership in `transition_types.State.retry_refresh_generations`. Rationale: timers and process cancellation are shell concerns, while duplicate/stale refresh suppression is transition-owned logical state. Date: 2026-07-08.
+- Decision: Move session sequence ownership out of `worker_registry.Registry` into `transition_types.State.next_session_sequence`. Rationale: session identifiers are reserved by transition decisions, while the registry should only track live worker handles and process resources. Date: 2026-07-08.
 
 ## Outcomes & Retrospective
 
-This planning issue produced a self-contained implementation direction for removing the daemon/transition copy-merge layer. Implementation outcomes remain to be filled in by the follow-up implementation task after each milestone, with special attention to whether merge-semantics risks were fully retired without changing operator-visible behavior.
+This planning issue produced a self-contained implementation direction for removing the daemon/transition copy-merge layer, and the follow-up implementation is now complete in the retained LIV-1455 workspace. The daemon embeds `state.core` as the single transition-owned record; `daemon_transition_shell` synchronizes that core message by message; the old copy/merge helpers and duplicated top-level daemon fields are gone; retry refresh generations and session sequencing now live in the core state; and `retry_scheduler`/`worker_registry` retain only shell-owned timer and process resources.
+
+Validation passed through direnv on 2026-07-08: `gleam format --check src test`, `gleam test -- --suite unit` with 2315 passing tests, `gleam test -- --suite contract` with 1006 passing tests, `gleam run -m glinter` with 0 errors, and `gleam run -m scherzo_lint` with 0 errors. Scherzo retained-run verifier recovery remains blocked by run state rather than by implementation evidence: the retry prepared attempt 2 and then cancelled before the verifier step started.
 
 ## Validation and Acceptance
 

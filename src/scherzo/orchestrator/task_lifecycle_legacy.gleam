@@ -145,9 +145,9 @@ fn fail_closed_pending_count_for_error(
 
 pub fn from_legacy_state(
   state: transition_types.State,
-  retries: retry_scheduler.State(timer),
+  _retries: retry_scheduler.State(timer),
 ) -> Result(task_lifecycle.TaskDirectory, task_lifecycle.LifecycleError) {
-  from_transition_sources(state, retry_scheduler.refresh_generations(retries))
+  from_transition_state(state)
 }
 
 pub fn from_transition_state(

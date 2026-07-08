@@ -15,9 +15,9 @@ const service_path = "src/scherzo/orchestrator/service.gleam"
 
 const daemon_module = "scherzo/orchestrator/daemon"
 
-const max_daemon_lines = 10_889
+const max_daemon_lines = 10_836
 
-const max_daemon_lines_source_literal = "10_889"
+const max_daemon_lines_source_literal = "10_836"
 
 type ShellException {
   ShellException(name: String)

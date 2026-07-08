@@ -1138,19 +1138,36 @@ fn handle_retry_tick(
                 ),
               )
             True ->
-              transition_types.Outcome(
-                state: transition_types.State(
-                  ..state,
-                  retry_refresh_generations: dict.insert(
-                    state.retry_refresh_generations,
-                    identity,
-                    generation,
-                  ),
-                ),
-                effects: list.append(accepted_effects, [
-                  effects_types.BeginRetryRefresh(issue_id, generation),
-                ]),
-              )
+              case dict.has_key(state.retry_refresh_generations, identity) {
+                True ->
+                  transition_types.Outcome(
+                    state: state,
+                    effects: list.append(accepted_effects, [
+                      effects_types.Log(
+                        "info",
+                        "retry_refresh_already_in_flight",
+                        [
+                          #("issue_id", issue_id),
+                          #("generation", int.to_string(generation)),
+                        ],
+                      ),
+                    ]),
+                  )
+                False ->
+                  transition_types.Outcome(
+                    state: transition_types.State(
+                      ..state,
+                      retry_refresh_generations: dict.insert(
+                        state.retry_refresh_generations,
+                        identity,
+                        generation,
+                      ),
+                    ),
+                    effects: list.append(accepted_effects, [
+                      effects_types.BeginRetryRefresh(issue_id, generation),
+                    ]),
+                  )
+              }
           }
         }
       }

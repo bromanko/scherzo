@@ -340,6 +340,38 @@ pub fn retry_tick_while_paused_uses_backoff_without_warn_spin_test() {
   })
 }
 
+pub fn duplicate_retry_tick_does_not_begin_second_refresh_test() {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let task_identity = orchestrator_state.issue_identity(issue)
+  let state =
+    transition_types.State(
+      ..state_with_retry(issue),
+      retry_refresh_generations: dict.from_list([#(task_identity, 1)]),
+    )
+
+  let transition_types.Outcome(state: next, effects: effects) =
+    transition.handle(
+      transition_types.RetryTick(
+        issue.id,
+        1,
+        orchestrator_transition_test.fixture_context(),
+      ),
+      state,
+    )
+
+  assert next.retry_refresh_generations == state.retry_refresh_generations
+  assert !list.any(effects, fn(effect) {
+    effect == effects_types.BeginRetryRefresh(issue.id, 1)
+  })
+  assert list.any(effects, fn(effect) {
+    effect
+    == effects_types.Log("info", "retry_refresh_already_in_flight", [
+      #("issue_id", issue.id),
+      #("generation", "1"),
+    ])
+  })
+}
+
 pub fn retry_refresh_without_retry_state_is_treated_as_stale_test() {
   let issue = orchestrator_transition_test.fixture_issue()
 

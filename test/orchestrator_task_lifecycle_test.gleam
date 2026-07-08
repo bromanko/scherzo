@@ -208,16 +208,20 @@ pub fn adapter_projects_legacy_sources_into_typed_lifecycle_test() {
         transition_types.WorkerRunning,
       ),
     )
-  let retries = retry_scheduler.new()
-  let assert Ok(retries) =
-    retry_scheduler.begin_task_refresh(
-      retries,
-      task.from_legacy_issue(retry_issue).ref,
-      7,
+  let state =
+    transition_types.State(
+      ..state,
+      retry_refresh_generations: dict.from_list([
+        #(
+          task.from_legacy_issue(retry_issue).ref
+            |> orchestrator_state.task_ref_identity,
+          7,
+        ),
+      ]),
     )
 
   let assert Ok(directory) =
-    task_lifecycle_legacy.from_legacy_state(state, retries)
+    task_lifecycle_legacy.from_legacy_state(state, retry_scheduler.new())
   let counts = task_lifecycle.counts(directory)
   assert counts.validating == 1
   assert counts.claiming == 1
@@ -329,19 +333,20 @@ pub fn completed_and_active_conflict_returns_explicit_error_test() {
 
 pub fn stale_refresh_without_retry_waiting_returns_explicit_error_test() {
   let issue = orchestrator_transition_test.fixture_issue()
-  let retries = retry_scheduler.new()
-  let assert Ok(retries) =
-    retry_scheduler.begin_task_refresh(
-      retries,
-      task.from_legacy_issue(issue).ref,
-      9,
+  let state =
+    transition_types.State(
+      ..orchestrator_transition_test.fixture_state(),
+      retry_refresh_generations: dict.from_list([
+        #(
+          task.from_legacy_issue(issue).ref
+            |> orchestrator_state.task_ref_identity,
+          9,
+        ),
+      ]),
     )
 
   let assert Error(error) =
-    task_lifecycle_legacy.from_legacy_state(
-      orchestrator_transition_test.fixture_state(),
-      retries,
-    )
+    task_lifecycle_legacy.from_legacy_state(state, retry_scheduler.new())
   assert task_lifecycle.error_code(error) == "missing_retry_waiting_for_refresh"
 }
 
