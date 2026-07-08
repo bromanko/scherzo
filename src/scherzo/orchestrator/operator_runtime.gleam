@@ -89,7 +89,7 @@ pub opaque type ShellHandlers(state) {
   )
 }
 
-pub fn shell_handlers(
+pub fn command_routes(
   reload_workflow_for_operator reload_workflow_for_operator: fn(
     state,
     command.OperatorCommand,

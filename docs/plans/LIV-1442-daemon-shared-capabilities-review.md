@@ -49,14 +49,26 @@ Milestone 6 migrates effect completion handling and removes remaining capability
 ## Progress
 
 - [x] (2026-07-08) Read the repo-local ExecPlan workflow guidance and the prepared output target.
-- [x] (2026-07-08) Verified current daemon-boundary, dependency, context-builder, and test-import facts from the repository.
-- [x] (2026-07-08) Wrote this review document as the planning artifact for LIV-1442.
-- [x] (2026-07-08) Incorporated review feedback by making negative/error-path, duplicate/idempotence, and guardrail-update obligations explicit in the handoff.
-- [ ] Follow-up implementation task materialized by Scherzo has not yet started.
+- [x] (2026-07-08) Re-inventoried the implementation branch and confirmed the prepared review doc still validates.
+- [x] (2026-07-08) Introduced `src/scherzo/orchestrator/daemon_capabilities.gleam` plus daemon `State.capabilities` wiring as the Milestone 1 shared seam.
+- [x] (2026-07-08) Added `test/orchestrator_daemon_capabilities_test.gleam` coverage for fake clock, logger, timers, ledger, and effect-queue capabilities.
+- [x] (2026-07-08) Migrated worker and scheduled-worker lifecycle contexts to carry shared `DaemonCapabilities` instead of individual clock/logger/events/ledger fields.
+- [x] (2026-07-08) Migrated transition-shell now/log/ledger wiring to shared capabilities and reduced daemon transition-shell assembly to daemon-owned callbacks.
+- [x] (2026-07-08) Migrated YAML workflow lifecycle dependency construction to shared capabilities while leaving only daemon-owned step routing in the actor shell.
+- [x] (2026-07-08) Migrated scheduled retry timers and scheduled failure ledger appends through shared timer/ledger capabilities.
+- [x] (2026-07-08) Migrated effect-completion crash logging through shared logger capabilities and kept only explicit daemon result routes.
+- [x] (2026-07-08) Renamed operator runtime route construction to reflect daemon-owned command routes rather than generic shell capability plumbing.
+- [x] (2026-07-08) Lowered the daemon ratchet to the validated `10_694` line count and updated boundary/source guardrails.
 
 ## Surprises & Discoveries
 
-The current daemon line-count ratchet exactly matches `src/scherzo/orchestrator/daemon.gleam` at 10,869 lines, so every successful shrink must update both documentation and source guardrail baselines. Current grep output also shows fewer direct daemon test importers than the issue description's approximate count, so the implementation must re-inventory tests in the target branch rather than depend on a fixed number.
+The target branch had already drifted from the planning baseline before edits: `python workflows/dogfood/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-1442-daemon-shared-capabilities-review.md` still reports `REVIEW_DOC_VALID=ok`, but `wc -l src/scherzo/orchestrator/daemon.gleam` initially reported 10,889 lines rather than the 10,869 lines captured in the handoff, and direct daemon test imports also differed from the earlier inventory.
+
+After the seam-first milestone, fake-adapter daemon tests exposed a startup-recovery readiness race. The tests now wait for startup recovery readiness after `daemon.start`, preserving behavior while making the adapter assertions deterministic.
+
+The transition-shell capability migration moved generic now/log/ledger mechanics out of the daemon, but it necessarily raised the `daemon_transition_shell.gleam` source-guardrail baseline because the capability adapter now owns ledger-record conversion and capability-backed interpreter callbacks.
+
+Final local validation for the implementation workspace is green: `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint` completed successfully.
 
 ## Decision Log
 
@@ -68,7 +80,9 @@ The current daemon line-count ratchet exactly matches `src/scherzo/orchestrator/
 
 ## Outcomes & Retrospective
 
-The planning artifact is complete once Scherzo captures the implementation pack and materializes the follow-up implementation task. Implementation outcomes remain to be recorded in the follow-up task; success means the daemon is smaller, the exact exception list in the boundary document is shorter or replaced by capability ownership language, and all public daemon behavior remains unchanged.
+The behavior-preserving capability refactor now has a green local validation story in the retained LIV-1454 implementation workspace. `RuntimeDependencies` remains the public composition-root/test seam, while daemon-owned runtime effects flow through `DaemonCapabilities(State, Message, TimerHandle)` at migrated subsystem boundaries. Worker lifecycle, transition shell, scheduled timer/ledger paths, YAML workflow dependency construction, operator command route construction, and effect-completion crash logging no longer depend on bespoke daemon capability records for clock/logger/events/ledger/timer plumbing.
+
+The validated daemon line count is 10,694 lines, and the daemon-boundary/source guardrails were lowered to that value. The transition-shell module grew because it now owns the capability-backed interpreter adapter for now/log/ledger behavior; this is recorded in the source guardrail as the extracted owner of that wiring.
 
 ## Validation and Acceptance
 

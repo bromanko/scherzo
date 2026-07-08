@@ -252,6 +252,7 @@ pub fn daemon_dispatch_emits_tracker_and_workflow_invalidation_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 5000)
 
   process.send(started.data, daemon.PollTick(1))
 
@@ -297,6 +298,7 @@ pub fn fake_non_linear_adapter_dispatches_validates_and_hands_off_test() {
       },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 5000)
 
   process.send(started.data, daemon.PollTick(1))
 
