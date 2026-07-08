@@ -11,7 +11,10 @@ import scherzo/control/query/codec as query_codec
 import scherzo/control/query/types as query_types
 import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/session/event
+import scherzo/terminal/sanitize as terminal_sanitize
 import scherzo/work_item_invalidation
+
+pub const max_activity_label_chars = 64
 
 pub type SessionSnapshot {
   SessionSnapshot(
@@ -20,7 +23,23 @@ pub type SessionSnapshot {
     issue_identifier: String,
     status: String,
     current_turn: Int,
+    started_at_ms: Int,
     last_event_at_ms: Int,
+    activity_label: Option(String),
+    current_step_id: Option(String),
+    current_step_label: Option(String),
+  )
+}
+
+pub type ActiveIssueWorkSnapshot {
+  ActiveIssueWorkSnapshot(
+    issue_identifier: String,
+    status: String,
+    started_at_ms: Int,
+    last_event_at_ms: Int,
+    activity_label: Option(String),
+    current_step_id: Option(String),
+    current_step_label: Option(String),
   )
 }
 
@@ -127,6 +146,16 @@ pub type DecodeError {
   DecodeError(code: String, message: String)
 }
 
+type ActivityStatus {
+  StatusPreparing
+  StatusProbing
+  StatusRunning
+  StatusWaitingUi
+  StatusStopping
+  StatusExited
+  StatusUnknown
+}
+
 type ServerMessageFields {
   ServerMessageFields(
     type_: Option(String),
@@ -143,14 +172,351 @@ type ServerMessageFields {
 }
 
 pub fn session_from_summary(summary: event.SessionSummary) -> SessionSnapshot {
+  let activity_status = activity_status_from_event(summary.status)
+  let current_step_id = current_step_id_from_summary(summary)
+  let current_step_label = option_map(current_step_id, humanize_identifier)
   SessionSnapshot(
     session_id: summary.session_id,
     display_name: summary.display_name,
     issue_identifier: summary.issue_identifier,
-    status: event.status_to_string(summary.status),
+    status: activity_status_to_string(activity_status),
     current_turn: summary.current_turn,
+    started_at_ms: summary.started_at_ms,
     last_event_at_ms: summary.last_event_at_ms,
+    activity_label: activity_label_from_status(
+      activity_status,
+      current_step_label,
+    ),
+    current_step_id: current_step_id,
+    current_step_label: current_step_label,
   )
+}
+
+pub fn active_issue_work_from_sessions(
+  sessions: List(SessionSnapshot),
+) -> List(ActiveIssueWorkSnapshot) {
+  active_issue_work_loop(sessions, [])
+}
+
+fn current_step_id_from_summary(
+  summary: event.SessionSummary,
+) -> Option(String) {
+  case summary.recovery {
+    Some(recovery) -> normalize_optional_text(recovery.workflow_step_id)
+    None -> None
+  }
+}
+
+fn activity_status_from_event(status: event.SessionStatus) -> ActivityStatus {
+  case status {
+    event.Preparing -> StatusPreparing
+    event.Probing -> StatusProbing
+    event.Running -> StatusRunning
+    event.WaitingUi -> StatusWaitingUi
+    event.Stopping -> StatusStopping
+    event.Exited(_) -> StatusExited
+  }
+}
+
+fn activity_status_from_string(status: String) -> ActivityStatus {
+  case status {
+    "preparing" -> StatusPreparing
+    "probing" -> StatusProbing
+    "running" -> StatusRunning
+    "waiting_ui" -> StatusWaitingUi
+    "stopping" -> StatusStopping
+    "exited" -> StatusExited
+    _ -> StatusUnknown
+  }
+}
+
+fn activity_status_to_string(status: ActivityStatus) -> String {
+  case status {
+    StatusPreparing -> "preparing"
+    StatusProbing -> "probing"
+    StatusRunning -> "running"
+    StatusWaitingUi -> "waiting_ui"
+    StatusStopping -> "stopping"
+    StatusExited -> "exited"
+    StatusUnknown -> "unknown"
+  }
+}
+
+fn activity_label_from_status(
+  status: ActivityStatus,
+  current_step_label: Option(String),
+) -> Option(String) {
+  let label = case status, current_step_label {
+    StatusWaitingUi, _ -> Some("Waiting for operator input")
+    StatusStopping, _ -> Some("Stopping workflow")
+    StatusPreparing, Some(step_label) -> Some("Preparing " <> step_label)
+    StatusProbing, Some(step_label) -> Some("Starting " <> step_label)
+    StatusRunning, Some(step_label) -> Some(step_label)
+    StatusExited, Some(step_label) -> Some(step_label)
+    StatusPreparing, None -> Some("Preparing workflow")
+    StatusProbing, None -> Some("Starting agent")
+    StatusRunning, None -> Some("Running workflow")
+    StatusExited, None -> None
+    StatusUnknown, _ -> None
+  }
+  option_then(label, sanitize_activity_label)
+}
+
+fn sanitize_optional_activity_label(value: Option(String)) -> Option(String) {
+  option_then(value, sanitize_activity_label)
+}
+
+fn sanitize_activity_label(value: String) -> Option(String) {
+  let compact =
+    value
+    |> collapse_ascii_whitespace
+    |> string.trim
+    |> terminal_sanitize.text
+    |> truncate_activity_label
+  case compact == "" {
+    True -> None
+    False -> Some(compact)
+  }
+}
+
+fn truncate_activity_label(value: String) -> String {
+  case string.length(value) > max_activity_label_chars {
+    True -> string.slice(value, at_index: 0, length: max_activity_label_chars)
+    False -> value
+  }
+}
+
+fn collapse_ascii_whitespace(value: String) -> String {
+  collapse_whitespace_loop(string.to_graphemes(value), False, [])
+  |> list.reverse
+  |> string.concat
+}
+
+fn collapse_whitespace_loop(
+  graphemes: List(String),
+  previous_was_space: Bool,
+  acc: List(String),
+) -> List(String) {
+  case graphemes {
+    [] -> acc
+    [grapheme, ..rest] -> {
+      let is_space = is_ascii_whitespace(grapheme)
+      case is_space, previous_was_space {
+        True, True -> collapse_whitespace_loop(rest, True, acc)
+        True, False -> collapse_whitespace_loop(rest, True, [" ", ..acc])
+        False, _ -> collapse_whitespace_loop(rest, False, [grapheme, ..acc])
+      }
+    }
+  }
+}
+
+fn is_ascii_whitespace(value: String) -> Bool {
+  value == " " || value == "\n" || value == "\r" || value == "\t"
+}
+
+fn humanize_identifier(value: String) -> String {
+  let label =
+    value
+    |> string.split(on: "_")
+    |> list.filter(fn(part) { part != "" })
+    |> string.join(with: " ")
+    |> capitalize_first
+  case sanitize_activity_label(label) {
+    Some(label) -> label
+    None -> "Workflow step"
+  }
+}
+
+fn capitalize_first(value: String) -> String {
+  case string.to_graphemes(value) {
+    [] -> value
+    [first, ..rest] -> string.uppercase(first) <> string.concat(rest)
+  }
+}
+
+fn normalize_optional_text(value: Option(String)) -> Option(String) {
+  option_then(value, fn(raw) {
+    let trimmed = string.trim(raw)
+    case trimmed == "" {
+      True -> None
+      False -> Some(trimmed)
+    }
+  })
+}
+
+fn option_map(value: Option(a), transform: fn(a) -> b) -> Option(b) {
+  case value {
+    Some(value) -> Some(transform(value))
+    None -> None
+  }
+}
+
+fn option_then(value: Option(a), transform: fn(a) -> Option(b)) -> Option(b) {
+  case value {
+    Some(value) -> transform(value)
+    None -> None
+  }
+}
+
+fn active_issue_work_loop(
+  sessions: List(SessionSnapshot),
+  acc: List(ActiveIssueWorkSnapshot),
+) -> List(ActiveIssueWorkSnapshot) {
+  case sessions {
+    [] -> acc
+    [session, ..rest] ->
+      case active_session_status(session.status) {
+        True ->
+          active_issue_work_loop(
+            rest,
+            upsert_active_issue_work(acc, issue_work_from_session(session)),
+          )
+        False -> active_issue_work_loop(rest, acc)
+      }
+  }
+}
+
+fn issue_work_from_session(
+  session: SessionSnapshot,
+) -> ActiveIssueWorkSnapshot {
+  ActiveIssueWorkSnapshot(
+    issue_identifier: session.issue_identifier,
+    status: session.status,
+    started_at_ms: session.started_at_ms,
+    last_event_at_ms: session.last_event_at_ms,
+    activity_label: sanitize_optional_activity_label(session.activity_label),
+    current_step_id: session.current_step_id,
+    current_step_label: session.current_step_label,
+  )
+}
+
+fn upsert_active_issue_work(
+  acc: List(ActiveIssueWorkSnapshot),
+  next: ActiveIssueWorkSnapshot,
+) -> List(ActiveIssueWorkSnapshot) {
+  case acc {
+    [] -> [next]
+    [existing, ..rest] ->
+      case existing.issue_identifier == next.issue_identifier {
+        True -> [merge_active_issue_work(existing, next), ..rest]
+        False -> [existing, ..upsert_active_issue_work(rest, next)]
+      }
+  }
+}
+
+fn merge_active_issue_work(
+  existing: ActiveIssueWorkSnapshot,
+  next: ActiveIssueWorkSnapshot,
+) -> ActiveIssueWorkSnapshot {
+  let status_source = choose_status_source(existing, next)
+  let activity_source =
+    choose_rollup_activity_source(status_source, existing, next)
+  ActiveIssueWorkSnapshot(
+    issue_identifier: existing.issue_identifier,
+    status: status_source.status,
+    started_at_ms: earliest_ms(existing.started_at_ms, next.started_at_ms),
+    last_event_at_ms: latest_ms(
+      existing.last_event_at_ms,
+      next.last_event_at_ms,
+    ),
+    activity_label: activity_source.activity_label,
+    current_step_id: activity_source.current_step_id,
+    current_step_label: activity_source.current_step_label,
+  )
+}
+
+fn choose_status_source(
+  existing: ActiveIssueWorkSnapshot,
+  next: ActiveIssueWorkSnapshot,
+) -> ActiveIssueWorkSnapshot {
+  case status_rank(next.status) > status_rank(existing.status) {
+    True -> next
+    False -> existing
+  }
+}
+
+fn choose_rollup_activity_source(
+  status_source: ActiveIssueWorkSnapshot,
+  existing: ActiveIssueWorkSnapshot,
+  next: ActiveIssueWorkSnapshot,
+) -> ActiveIssueWorkSnapshot {
+  case status_details_override_activity(status_source.status) {
+    True -> status_source
+    False -> choose_activity_source(existing, next)
+  }
+}
+
+fn choose_activity_source(
+  existing: ActiveIssueWorkSnapshot,
+  next: ActiveIssueWorkSnapshot,
+) -> ActiveIssueWorkSnapshot {
+  let existing_rank = activity_rank(existing)
+  let next_rank = activity_rank(next)
+  case next_rank > existing_rank {
+    True -> next
+    False ->
+      case
+        next_rank == existing_rank
+        && next.last_event_at_ms > existing.last_event_at_ms
+      {
+        True -> next
+        False -> existing
+      }
+  }
+}
+
+fn active_session_status(status: String) -> Bool {
+  case activity_status_from_string(status) {
+    StatusExited -> False
+    _ -> True
+  }
+}
+
+fn status_details_override_activity(status: String) -> Bool {
+  case activity_status_from_string(status) {
+    StatusWaitingUi -> True
+    StatusStopping -> True
+    _ -> False
+  }
+}
+
+fn activity_rank(work: ActiveIssueWorkSnapshot) -> Int {
+  case work.current_step_id, work.activity_label {
+    Some(_), Some(_) -> 3
+    Some(_), None -> 2
+    None, Some(_) -> 1
+    None, None -> 0
+  }
+}
+
+fn status_rank(status: String) -> Int {
+  activity_status_rank(activity_status_from_string(status))
+}
+
+fn activity_status_rank(status: ActivityStatus) -> Int {
+  case status {
+    StatusWaitingUi -> 5
+    StatusStopping -> 4
+    StatusRunning -> 3
+    StatusProbing -> 2
+    StatusPreparing -> 1
+    StatusExited -> 0
+    StatusUnknown -> 0
+  }
+}
+
+fn earliest_ms(left: Int, right: Int) -> Int {
+  case left <= right {
+    True -> left
+    False -> right
+  }
+}
+
+fn latest_ms(left: Int, right: Int) -> Int {
+  case left >= right {
+    True -> left
+    False -> right
+  }
 }
 
 pub fn runtime_daemon_label(metadata: RuntimeMetadata) -> Option(String) {
@@ -318,6 +684,13 @@ pub fn encode_daemon_state(
     #("dispatchPaused", json.bool(dispatch_paused)),
     #("state", daemon_runtime_state_to_json(state)),
     #("sessions", json.array(sessions, of: session_to_json)),
+    #(
+      "activeIssues",
+      json.array(
+        active_issue_work_from_sessions(sessions),
+        of: active_issue_work_to_json,
+      ),
+    ),
   ]
   |> with_optional_daemon_label(daemon_label)
   |> json.object
@@ -945,13 +1318,48 @@ fn daemon_event_to_json(event: DaemonEvent) -> json.Json {
   ])
 }
 
+fn active_issue_work_to_json(work: ActiveIssueWorkSnapshot) -> json.Json {
+  [
+    #("issueIdentifier", json.string(work.issue_identifier)),
+    #("status", json.string(work.status)),
+    #("startedAtMs", json.int(work.started_at_ms)),
+    #("lastEventAtMs", json.int(work.last_event_at_ms)),
+  ]
+  |> with_optional_json_string(
+    "activityLabel",
+    sanitize_optional_activity_label(work.activity_label),
+  )
+  |> with_optional_json_string("currentStepId", work.current_step_id)
+  |> with_optional_json_string("currentStepLabel", work.current_step_label)
+  |> json.object
+}
+
 fn session_to_json(session: SessionSnapshot) -> json.Json {
-  json.object([
+  [
     #("sessionId", json.string(session.session_id)),
     #("displayName", json.string(session.display_name)),
     #("issueIdentifier", json.string(session.issue_identifier)),
     #("status", json.string(session.status)),
     #("currentTurn", json.int(session.current_turn)),
+    #("startedAtMs", json.int(session.started_at_ms)),
     #("lastEventAtMs", json.int(session.last_event_at_ms)),
-  ])
+  ]
+  |> with_optional_json_string(
+    "activityLabel",
+    sanitize_optional_activity_label(session.activity_label),
+  )
+  |> with_optional_json_string("currentStepId", session.current_step_id)
+  |> with_optional_json_string("currentStepLabel", session.current_step_label)
+  |> json.object
+}
+
+fn with_optional_json_string(
+  fields: List(#(String, json.Json)),
+  name: String,
+  value: Option(String),
+) -> List(#(String, json.Json)) {
+  case value {
+    Some(value) -> [#(name, json.string(value)), ..fields]
+    None -> fields
+  }
 }

@@ -19,7 +19,11 @@ pub fn remote_harness_runs_live_loopback_and_updates_liveness_test() {
       issue_identifier: "LIV-686",
       status: "running",
       current_turn: 1,
+      started_at_ms: Some(100),
       last_event_at_ms: 101,
+      activity_label: Some("Running workflow"),
+      current_step_id: None,
+      current_step_label: None,
     ),
   ]
   let scenario =
