@@ -4,14 +4,11 @@ import scherzo/runtime/state as orchestrator_state
 import scherzo/task
 
 pub opaque type State(timer) {
-  State(
-    timers: Dict(identity.TaskIdentity, timer),
-    refreshes_in_flight: Dict(identity.TaskIdentity, Int),
-  )
+  State(timers: Dict(identity.TaskIdentity, timer))
 }
 
 pub fn new() -> State(timer) {
-  State(timers: dict.new(), refreshes_in_flight: dict.new())
+  State(timers: dict.new())
 }
 
 pub fn schedule_timer(
@@ -39,7 +36,7 @@ pub fn schedule_task_timer(
     Ok(existing_timer) -> cancel(existing_timer)
     Error(Nil) -> Nil
   }
-  State(..state, timers: dict.insert(state.timers, identity, timer))
+  State(timers: dict.insert(state.timers, identity, timer))
 }
 
 pub fn cancel_timer(
@@ -64,7 +61,7 @@ pub fn cancel_task_timer(
     Ok(timer) -> cancel(timer)
     Error(Nil) -> Nil
   }
-  State(..state, timers: dict.delete(state.timers, identity))
+  State(timers: dict.delete(state.timers, identity))
 }
 
 pub fn remove_timer(state: State(timer), issue_id: String) -> State(timer) {
@@ -75,61 +72,10 @@ pub fn remove_task_timer(
   state: State(timer),
   ref: task.TaskRef,
 ) -> State(timer) {
-  State(
-    ..state,
-    timers: dict.delete(state.timers, orchestrator_state.task_ref_identity(ref)),
-  )
-}
-
-pub fn begin_refresh(
-  state: State(timer),
-  issue_id: String,
-  generation: Int,
-) -> Result(State(timer), Nil) {
-  begin_task_refresh(
-    state,
-    orchestrator_state.linear_issue_id_ref(issue_id),
-    generation,
-  )
-}
-
-pub fn begin_task_refresh(
-  state: State(timer),
-  ref: task.TaskRef,
-  generation: Int,
-) -> Result(State(timer), Nil) {
-  let identity = orchestrator_state.task_ref_identity(ref)
-  case dict.get(state.refreshes_in_flight, identity) {
-    Ok(_) -> Error(Nil)
-    Error(Nil) ->
-      Ok(
-        State(
-          ..state,
-          refreshes_in_flight: dict.insert(
-            state.refreshes_in_flight,
-            identity,
-            generation,
-          ),
-        ),
-      )
-  }
-}
-
-pub fn finish_refresh(state: State(timer), issue_id: String) -> State(timer) {
-  finish_task_refresh(state, orchestrator_state.linear_issue_id_ref(issue_id))
-}
-
-pub fn finish_task_refresh(
-  state: State(timer),
-  ref: task.TaskRef,
-) -> State(timer) {
-  State(
-    ..state,
-    refreshes_in_flight: dict.delete(
-      state.refreshes_in_flight,
-      orchestrator_state.task_ref_identity(ref),
-    ),
-  )
+  State(timers: dict.delete(
+    state.timers,
+    orchestrator_state.task_ref_identity(ref),
+  ))
 }
 
 pub fn cancel_all(
@@ -144,16 +90,6 @@ pub fn timer_count(state: State(timer)) -> Int {
   dict.size(state.timers)
 }
 
-pub fn refresh_in_flight_count(state: State(timer)) -> Int {
-  dict.size(state.refreshes_in_flight)
-}
-
-pub fn refresh_generations(
-  state: State(timer),
-) -> List(#(identity.TaskIdentity, Int)) {
-  dict.to_list(state.refreshes_in_flight)
-}
-
 pub fn timer_for_issue(
   state: State(timer),
   issue_id: String,
@@ -166,21 +102,4 @@ pub fn timer_for_task_ref(
   ref: task.TaskRef,
 ) -> Result(timer, Nil) {
   dict.get(state.timers, orchestrator_state.task_ref_identity(ref))
-}
-
-pub fn refresh_generation(
-  state: State(timer),
-  issue_id: String,
-) -> Result(Int, Nil) {
-  refresh_generation_for_task_ref(
-    state,
-    orchestrator_state.linear_issue_id_ref(issue_id),
-  )
-}
-
-pub fn refresh_generation_for_task_ref(
-  state: State(timer),
-  ref: task.TaskRef,
-) -> Result(Int, Nil) {
-  dict.get(state.refreshes_in_flight, orchestrator_state.task_ref_identity(ref))
 }

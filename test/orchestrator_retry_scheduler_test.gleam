@@ -77,37 +77,6 @@ pub fn retry_scheduler_distinguishes_duplicate_remote_ids_by_backend_test() {
   test_async.assert_no_extra_message_within(cancelled, 50)
 }
 
-pub fn retry_scheduler_distinguishes_duplicate_refreshes_by_backend_test() {
-  let linear = task_ref("linear", "shared", "ABC-1")
-  let memory = task_ref("test-memory", "shared", "MEM-1")
-  let state = retry_scheduler.new()
-  let assert Ok(state) = retry_scheduler.begin_task_refresh(state, linear, 7)
-  let assert Ok(state) = retry_scheduler.begin_task_refresh(state, memory, 8)
-
-  assert retry_scheduler.refresh_generation_for_task_ref(state, linear) == Ok(7)
-  assert retry_scheduler.refresh_generation_for_task_ref(state, memory) == Ok(8)
-  assert retry_scheduler.begin_task_refresh(state, linear, 9) == Error(Nil)
-
-  let state = retry_scheduler.finish_task_refresh(state, linear)
-  assert retry_scheduler.refresh_generation_for_task_ref(state, linear)
-    == Error(Nil)
-  assert retry_scheduler.refresh_generation_for_task_ref(state, memory) == Ok(8)
-}
-
-pub fn retry_scheduler_tracks_one_refresh_per_issue_test() {
-  let state = retry_scheduler.new()
-  let assert Ok(state) = retry_scheduler.begin_refresh(state, "issue-1", 7)
-
-  assert retry_scheduler.refresh_generation(state, "issue-1") == Ok(7)
-  assert retry_scheduler.begin_refresh(state, "issue-1", 8) == Error(Nil)
-
-  let state = retry_scheduler.finish_refresh(state, "issue-1")
-  assert retry_scheduler.refresh_generation(state, "issue-1") == Error(Nil)
-
-  let assert Ok(state) = retry_scheduler.begin_refresh(state, "issue-1", 8)
-  assert retry_scheduler.refresh_generation(state, "issue-1") == Ok(8)
-}
-
 pub fn retry_scheduler_remove_timer_does_not_cancel_test() {
   let cancelled = process.new_subject()
   let state =
@@ -121,7 +90,7 @@ pub fn retry_scheduler_remove_timer_does_not_cancel_test() {
   test_async.assert_no_extra_message_within(cancelled, 50)
 }
 
-pub fn retry_scheduler_cancel_all_clears_timers_and_refreshes_test() {
+pub fn retry_scheduler_cancel_all_clears_timers_test() {
   let cancelled = process.new_subject()
   let state =
     retry_scheduler.new()
@@ -131,7 +100,6 @@ pub fn retry_scheduler_cancel_all_clears_timers_and_refreshes_test() {
     |> retry_scheduler.schedule_timer("issue-2", 202, fn(timer) {
       process.send(cancelled, timer)
     })
-  let assert Ok(state) = retry_scheduler.begin_refresh(state, "issue-1", 1)
 
   let state =
     retry_scheduler.cancel_all(state, fn(timer) {
@@ -145,5 +113,4 @@ pub fn retry_scheduler_cancel_all_clears_timers_and_refreshes_test() {
   assert first != second
   assert retry_scheduler.timer_for_issue(state, "issue-1") == Error(Nil)
   assert retry_scheduler.timer_for_issue(state, "issue-2") == Error(Nil)
-  assert retry_scheduler.refresh_generation(state, "issue-1") == Error(Nil)
 }

@@ -157,6 +157,29 @@ pub fn run_one_message_with_operator_reply_logs_exhaustion_test() {
   assert next.exhausted_limits == [0]
 }
 
+pub fn run_one_message_with_operator_reply_preserves_finish_hook_core_updates_test() {
+  let transition_state = orchestrator_transition_test.fixture_state()
+  let state = shell_state(transition_state)
+  let request = retry_request("missing-issue")
+  let next =
+    daemon_transition_shell.run_one_message_with_operator_reply(
+      context: context(
+        ShellState(..state, finish_hook_updates_pending_claim: True),
+        daemon_transition_shell.default_message_limit(),
+      ),
+      message: operator_message(request),
+      operator_command: request.operator_command,
+      send_reply: fn(_) { Nil },
+    )
+
+  assert next.events == ["finish_operator:retry:rejected", "snapshot"]
+  assert dict.get(
+      next.transition_state.pending_claims,
+      orchestrator_state.linear_issue_id_identity("issue-1"),
+    )
+    == Ok(finish_hook_pending_claim())
+}
+
 pub fn interpret_effects_covers_callback_surface_test() {
   let issue = orchestrator_transition_test.fixture_issue()
   let transition_state = orchestrator_transition_test.fixture_state()
@@ -392,6 +415,7 @@ type ShellState {
     transition_state: transition_types.State,
     events: List(String),
     exhausted_limits: List(Int),
+    finish_hook_updates_pending_claim: Bool,
   )
 }
 
@@ -400,6 +424,7 @@ fn shell_state(transition_state: transition_types.State) -> ShellState {
     transition_state: transition_state,
     events: [],
     exhausted_limits: [],
+    finish_hook_updates_pending_claim: False,
   )
 }
 
@@ -480,12 +505,26 @@ fn context_with_invariant_checker(
   invariant_mode: daemon_transition_shell.InvariantMode,
   invariant_checker: daemon_transition_shell.InvariantChecker,
 ) -> daemon_transition_shell.Context(ShellState, Nil, Nil) {
+  context_with_handlers(
+    state,
+    max_messages,
+    invariant_mode,
+    invariant_checker,
+    handlers(),
+  )
+}
+
+fn context_with_handlers(
+  state: ShellState,
+  max_messages: Int,
+  invariant_mode: daemon_transition_shell.InvariantMode,
+  invariant_checker: daemon_transition_shell.InvariantChecker,
+  handlers: daemon_transition_shell.ShellHandlers(ShellState, Nil, Nil),
+) -> daemon_transition_shell.Context(ShellState, Nil, Nil) {
   daemon_transition_shell.context(
     state: state,
-    transition_state_from_state: fn(state) { state.transition_state },
-    merge_transition_state: fn(state, _input_transition_state, transition_state) {
-      ShellState(..state, transition_state: transition_state)
-    },
+    get_transition_state: fn(state) { state.transition_state },
+    put_transition_state: put_transition_state,
     log_exhausted: fn(state, max_messages) {
       ShellState(
         ..state,
@@ -498,7 +537,7 @@ fn context_with_invariant_checker(
     invariant_mode: invariant_mode,
     invariant_checker: invariant_checker,
     max_messages: max_messages,
-    handlers: handlers(),
+    handlers: handlers,
   )
 }
 
@@ -757,16 +796,30 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState, Nil, Nil) {
       )
     },
     finish_operator_command: fn(state, request, result) {
-      #(
+      let state =
         append_event(
           state,
           "finish_operator:"
             <> command.command_name(request.operator_command)
             <> ":"
             <> command.status_to_string(result.status),
-        ),
-        [transition_types.SnapshotRequested],
-      )
+        )
+      let state = case state.finish_hook_updates_pending_claim {
+        True ->
+          put_transition_state(
+            state,
+            transition_types.State(
+              ..state.transition_state,
+              pending_claims: dict.insert(
+                state.transition_state.pending_claims,
+                orchestrator_state.linear_issue_id_identity("issue-1"),
+                finish_hook_pending_claim(),
+              ),
+            ),
+          )
+        False -> state
+      }
+      #(state, [transition_types.SnapshotRequested])
     },
     report_park_effect: fn(state, issue_id, _, _, _, _) {
       append_event(state, "report_park_effect:" <> issue_id)
@@ -1004,6 +1057,24 @@ fn worker_failure() -> agent_types.WorkerFailure {
 
 fn append_event(state: ShellState, event: String) -> ShellState {
   ShellState(..state, events: list.append(state.events, [event]))
+}
+
+fn put_transition_state(
+  state: ShellState,
+  transition_state: transition_types.State,
+) -> ShellState {
+  ShellState(..state, transition_state: transition_state)
+}
+
+fn finish_hook_pending_claim() -> transition_types.PendingClaim {
+  let issue = orchestrator_transition_test.fixture_issue()
+  let state = orchestrator_transition_test.state_with_pending_claim(issue)
+  let assert Ok(pending_claim) =
+    dict.get(
+      state.pending_claims,
+      orchestrator_state.linear_issue_id_identity("issue-1"),
+    )
+  pending_claim
 }
 
 fn handoff_claim_succeeded() -> transition_types.Message {

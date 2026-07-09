@@ -80,7 +80,6 @@ pub opaque type Registry {
     yaml_step_runs: Dict(String, String),
     yaml_step_handles: Dict(String, YamlStepHandle),
     stopped_yaml_runs: Dict(String, session_reason.WorkerExitReason),
-    next_session_sequence: Int,
   )
 }
 
@@ -102,17 +101,6 @@ pub fn new() -> Registry {
     yaml_step_runs: dict.new(),
     yaml_step_handles: dict.new(),
     stopped_yaml_runs: dict.new(),
-    next_session_sequence: 1,
-  )
-}
-
-pub fn reserve_session_sequence(registry: Registry) -> #(Registry, Int) {
-  #(
-    Registry(
-      ..registry,
-      next_session_sequence: registry.next_session_sequence + 1,
-    ),
-    registry.next_session_sequence,
   )
 }
 
@@ -120,10 +108,6 @@ pub type WorkerRunResolution {
   WorkerMissing
   WorkerCurrent(WorkerHandle)
   WorkerStale(WorkerHandle)
-}
-
-pub fn next_session_sequence(registry: Registry) -> Int {
-  registry.next_session_sequence
 }
 
 pub fn resolve_worker_run(
@@ -876,7 +860,7 @@ pub fn remove_all(registry: Registry) -> Registry {
   dict.each(registry.step_command_subject_monitors, fn(_, monitor) {
     process.demonitor_process(monitor)
   })
-  Registry(..new(), next_session_sequence: registry.next_session_sequence)
+  new()
 }
 
 fn delete_yaml_step_session(
