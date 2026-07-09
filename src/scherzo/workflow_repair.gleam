@@ -726,11 +726,6 @@ fn repairable_run_status_info(
       ..,
     ) ->
       case workflow_outcome.is_terminal_failure(outcome) {
-        False ->
-          Error(RepairError(
-            "no_failed_workflow_run",
-            Some("workflow run is not repairable"),
-          ))
         True ->
           Ok(RepairableRunStatusInfo(
             finished_at_ms,
@@ -740,6 +735,26 @@ fn repairable_run_status_info(
             },
             True,
           ))
+        False ->
+          case
+            outcome == workflow_outcome.cancelled
+            && cancelled_run_has_repairable_boundary(projection_state, run_id)
+          {
+            True ->
+              Ok(RepairableRunStatusInfo(
+                finished_at_ms,
+                recovery.step_recovery_evidence_for_run(
+                  projection_state,
+                  run_id,
+                ),
+                False,
+              ))
+            False ->
+              Error(RepairError(
+                "no_failed_workflow_run",
+                Some("workflow run is not repairable"),
+              ))
+          }
       }
     projection.WorkflowRunInterrupted(interrupted_at_ms: interrupted_at_ms, ..) ->
       Ok(RepairableRunStatusInfo(
@@ -752,6 +767,16 @@ fn repairable_run_status_info(
         "no_failed_workflow_run",
         Some("workflow run is not repairable"),
       ))
+  }
+}
+
+fn cancelled_run_has_repairable_boundary(
+  projection_state: projection.Projection,
+  run_id: String,
+) -> Bool {
+  case repair_boundaries(attempts_for_run(projection_state, run_id)) {
+    [] -> False
+    _ -> True
   }
 }
 

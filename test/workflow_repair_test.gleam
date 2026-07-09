@@ -518,6 +518,29 @@ pub fn retry_step_rejects_non_failed_terminal_outcomes_test() {
     == "no_failed_workflow_run"
 }
 
+pub fn retry_step_repairs_cancelled_run_with_interrupted_step_test() {
+  let projection =
+    projection.fold([
+      base_workflow_started_record("workflow-cancelled-after-interruption"),
+      prepared_attempt_record_for_run("run-1", "first", 3, "main", 10),
+      workflow_finished_record_for_run("run-1", workflow_outcome.cancelled, 20),
+      interrupted_attempt_record("run-1", "first", 3, 21),
+    ])
+  let assert Ok(dag) = workflow_dag.parse(single_step_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("first"),
+      current_workflow(dag),
+    )
+
+  assert plan.selected_step_id == "first"
+  assert plan.failed_attempt_index == 3
+  assert plan.next_attempt_index == 4
+}
+
 pub fn retry_step_selected_repeated_step_boundary_uses_latest_attempt_test() {
   let projection = projection.fold(same_step_repeated_boundary_run_records())
   let assert Ok(dag) = workflow_dag.parse(multiple_boundary_workflow_yaml())
