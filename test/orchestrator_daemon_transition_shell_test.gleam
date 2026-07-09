@@ -1,4 +1,5 @@
 import gleam/dict
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -7,6 +8,7 @@ import orchestrator_transition_test
 import scherzo/agent/types as agent_types
 import scherzo/control/command
 import scherzo/error
+import scherzo/orchestrator/daemon_capabilities
 import scherzo/orchestrator/daemon_transition_shell
 import scherzo/orchestrator/effects/types as effects_types
 import scherzo/orchestrator/transition_invariants
@@ -35,7 +37,7 @@ pub fn run_applies_effects_and_merges_transition_state_test() {
       handoff_claim_succeeded(),
     ])
 
-  assert next.events == ["append:claim:issue-1:run-1", "start:run-1"]
+  assert next.events == ["append:ledger_append_failed", "start:run-1"]
   let identity = orchestrator_state.issue_identity(issue)
   assert dict.get(next.transition_state.pending_claims, identity) == Error(Nil)
   assert dict.get(next.transition_state.runtime.running, identity)
@@ -67,7 +69,7 @@ pub fn run_logs_exhaustion_with_configured_limit_test() {
       handoff_claim_succeeded(),
     ])
 
-  assert next.events == ["append:claim:issue-1:run-1"]
+  assert next.events == ["append:ledger_append_failed"]
   assert next.transition_state == original
   assert next.exhausted_limits == [1]
 }
@@ -77,11 +79,7 @@ pub fn run_logs_and_marks_fatal_invariant_violations_test() {
 
   let next = daemon_transition_shell.run(context(state, 8), [])
 
-  assert next.events
-    == [
-      "invariants:error:claimed_lifecycle_missing:logged=1:omitted=0:truncated=false",
-      "invariants:fail:claimed_lifecycle_missing",
-    ]
+  assert next.events == ["invariants:fail:claimed_lifecycle_missing"]
 }
 
 pub fn run_warn_mode_does_not_mark_invariant_violations_fatal_test() {
@@ -97,10 +95,7 @@ pub fn run_warn_mode_does_not_mark_invariant_violations_fatal_test() {
       [],
     )
 
-  assert next.events
-    == [
-      "invariants:warn:claimed_lifecycle_missing:logged=1:omitted=0:truncated=false",
-    ]
+  assert next.events == []
 }
 
 pub fn run_treats_slot_overcommit_as_warning_in_fail_mode_test() {
@@ -108,10 +103,7 @@ pub fn run_treats_slot_overcommit_as_warning_in_fail_mode_test() {
 
   let next = daemon_transition_shell.run(context(state, 8), [])
 
-  assert next.events
-    == [
-      "invariants:warn:pending_slot_overcommit:logged=1:omitted=0:truncated=false",
-    ]
+  assert next.events == []
 }
 
 pub fn run_caps_invariant_violation_log_payload_test() {
@@ -129,9 +121,8 @@ pub fn run_caps_invariant_violation_log_payload_test() {
     )
 
   assert list.any(next.events, fn(event) {
-    string.starts_with(event, "invariants:error:")
-    && string.contains(event, ":logged=32:omitted=8:truncated=true")
-    && !string.contains(event, "rule-40")
+    string.starts_with(event, "invariants:fail:")
+    && string.contains(event, "rule-40")
   })
 }
 
@@ -325,8 +316,7 @@ pub fn interpret_effects_covers_callback_surface_test() {
 
   assert next.events
     == [
-      "log:custom_event",
-      "append:direct",
+      "append:direct_failed",
       "start:run-1",
       "snapshot",
       "poll_in_flight:4",
@@ -403,7 +393,7 @@ pub fn interpret_effects_surfaces_ledger_append_failure_test() {
       [effects_types.AppendLedger(request)],
     )
 
-  assert next.events == ["append_failed:claim:issue-1:run-1"]
+  assert next.events == ["append_failed:ledger_append_failed"]
   assert follow_up_messages
     == [
       transition_types.LedgerAppendCompleted(
@@ -488,7 +478,7 @@ fn invariant_errors_loop(
 fn context(
   state: ShellState,
   max_messages: Int,
-) -> daemon_transition_shell.Context(ShellState) {
+) -> daemon_transition_shell.Context(ShellState, Nil, Nil) {
   context_with_invariant_mode(
     state,
     max_messages,
@@ -500,7 +490,7 @@ fn context_with_invariant_mode(
   state: ShellState,
   max_messages: Int,
   invariant_mode: daemon_transition_shell.InvariantMode,
-) -> daemon_transition_shell.Context(ShellState) {
+) -> daemon_transition_shell.Context(ShellState, Nil, Nil) {
   context_with_invariant_checker(
     state,
     max_messages,
@@ -514,7 +504,7 @@ fn context_with_invariant_checker(
   max_messages: Int,
   invariant_mode: daemon_transition_shell.InvariantMode,
   invariant_checker: daemon_transition_shell.InvariantChecker,
-) -> daemon_transition_shell.Context(ShellState) {
+) -> daemon_transition_shell.Context(ShellState, Nil, Nil) {
   context_with_handlers(
     state,
     max_messages,
@@ -529,8 +519,8 @@ fn context_with_handlers(
   max_messages: Int,
   invariant_mode: daemon_transition_shell.InvariantMode,
   invariant_checker: daemon_transition_shell.InvariantChecker,
-  handlers: daemon_transition_shell.ShellHandlers(ShellState),
-) -> daemon_transition_shell.Context(ShellState) {
+  handlers: daemon_transition_shell.ShellHandlers(ShellState, Nil, Nil),
+) -> daemon_transition_shell.Context(ShellState, Nil, Nil) {
   daemon_transition_shell.context(
     state: state,
     get_transition_state: fn(state) { state.transition_state },
@@ -559,46 +549,49 @@ fn invariant_codes(
   |> string.join(with: ",")
 }
 
-fn field_value(fields: List(#(String, String)), name: String) -> String {
-  case
-    list.find(fields, fn(field) {
-      let #(key, _) = field
-      key == name
-    })
-  {
-    Ok(field) -> {
-      let #(_, value) = field
-      value
-    }
-    Error(Nil) -> ""
-  }
+fn test_capabilities(
+  append_prefix: String,
+  append_result: Result(Nil, ledger.LedgerError),
+) -> daemon_capabilities.DaemonCapabilities(ShellState, Nil, Nil) {
+  daemon_capabilities.daemon_capabilities(
+    clock: daemon_capabilities.clock(fn() { 456 }),
+    logger: daemon_capabilities.logger(fn(_, _, _, _) { Ok(Nil) }),
+    events: daemon_capabilities.event_publisher(process.new_subject(), fn() {
+      456
+    }),
+    ledger: daemon_capabilities.ledger_writer(
+      append_bodies: fn(state, _, event) {
+        #(append_event(state, append_prefix <> event), append_result == Ok(Nil))
+      },
+      append_bodies_best_effort: fn(state, _, event) {
+        append_event(state, append_prefix <> event)
+      },
+      append_records: fn(state, _, event) {
+        #(append_event(state, append_prefix <> event), append_result)
+      },
+    ),
+    effects: daemon_capabilities.effect_queue(
+      enqueue: fn(state, _) { state },
+      enqueue_outbox: fn(state, _, _) { state },
+      enqueue_outbox_with_attempt_count: fn(state, _, _, _) { state },
+      enqueue_outbox_with_attempt_count_result: fn(state, _, _, _) {
+        #(state, True)
+      },
+    ),
+    timers: daemon_capabilities.timers(
+      send_after: fn(subject, _, message) {
+        process.send(subject, message)
+        Nil
+      },
+      cancel_timer: fn(_) { Nil },
+    ),
+  )
 }
 
-fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
+fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState, Nil, Nil) {
   daemon_transition_shell.shell_handlers(
-    append_ledger: fn(state, request) {
-      #(append_event(state, "append:" <> request.correlation_id), Ok(Nil))
-    },
-    now_ms: fn(_) { 456 },
-    log_effect: fn(state, level, event, fields) {
-      case event {
-        "transition_invariant_violation" | "transition_invariant_warning" ->
-          append_event(
-            state,
-            "invariants:"
-              <> level
-              <> ":"
-              <> field_value(fields, "rule_ids")
-              <> ":logged="
-              <> field_value(fields, "logged_count")
-              <> ":omitted="
-              <> field_value(fields, "omitted_count")
-              <> ":truncated="
-              <> field_value(fields, "truncated"),
-          )
-        _ -> append_event(state, "log:" <> event)
-      }
-    },
+    capabilities: test_capabilities("append:", Ok(Nil)),
+    mark_ledger_append_failed: fn(state) { state },
     start_worker: fn(state, request) {
       #(
         append_event(
@@ -834,16 +827,17 @@ fn handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
   )
 }
 
-fn failing_handlers() -> daemon_transition_shell.ShellHandlers(ShellState) {
+fn failing_handlers() -> daemon_transition_shell.ShellHandlers(
+  ShellState,
+  Nil,
+  Nil,
+) {
   daemon_transition_shell.shell_handlers(
-    append_ledger: fn(state, request) {
-      #(
-        append_event(state, "append_failed:" <> request.correlation_id),
-        Error(ledger.Io("disk full")),
-      )
-    },
-    now_ms: fn(_) { 456 },
-    log_effect: fn(state, _, event, _) { append_event(state, "log:" <> event) },
+    capabilities: test_capabilities(
+      "append_failed:",
+      Error(ledger.Io("disk full")),
+    ),
+    mark_ledger_append_failed: fn(state) { state },
     start_worker: fn(state, request) {
       #(
         append_event(

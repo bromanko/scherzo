@@ -87,7 +87,7 @@ pub fn apply_shell_operator_command_routes_recollect_outputs_test() {
 fn handlers(
   worker_subject: process.Subject(worker_command.Command),
 ) -> operator_runtime.ShellHandlers(Int) {
-  operator_runtime.shell_handlers(
+  operator_runtime.command_routes(
     reload_workflow_for_operator: fn(state, _) {
       #(state, command.applied(command.ReloadWorkflow, None), [])
     },

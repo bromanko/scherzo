@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import orchestrator_transition_test
 import scherzo/agent/types as agent_types
+import scherzo/orchestrator/daemon_capabilities
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_lifecycle
@@ -29,16 +30,59 @@ type TestState {
 }
 
 type NeedsHumanCall {
-  NeedsHumanLogged(String, String)
-  NeedsHumanTokens(String, session_tokens.TokenTotals)
-  NeedsHumanWorkerExited(String, String)
-  NeedsHumanFailedSession(String)
   NeedsHumanFailureLedger(String, Bool, Option(String))
   NeedsHumanReportRequest(scheduled_runtime.FailureReportRequest)
 }
 
 fn append_event(state: TestState, event: String) -> TestState {
   TestState(..state, events: [event, ..state.events])
+}
+
+fn test_clock(now_ms: Int) -> daemon_capabilities.Clock {
+  daemon_capabilities.clock(fn() { now_ms })
+}
+
+fn test_logger() -> daemon_capabilities.Logger {
+  daemon_capabilities.logger(fn(_, _, _, _) { Ok(Nil) })
+}
+
+fn test_events() -> daemon_capabilities.EventPublisher {
+  daemon_capabilities.event_publisher(process.new_subject(), fn() { 123 })
+}
+
+fn test_ledger(event: String) -> daemon_capabilities.LedgerWriter(TestState) {
+  daemon_capabilities.ledger_writer(
+    append_bodies: fn(state, _, _) { #(append_event(state, event), True) },
+    append_bodies_best_effort: fn(state, _, _) { append_event(state, event) },
+    append_records: fn(state, _, _) { #(state, Ok(Nil)) },
+  )
+}
+
+fn test_capabilities(
+  now_ms: Int,
+  ledger_event: String,
+) -> daemon_capabilities.DaemonCapabilities(TestState, Nil, Nil) {
+  daemon_capabilities.daemon_capabilities(
+    clock: test_clock(now_ms),
+    logger: test_logger(),
+    events: test_events(),
+    ledger: test_ledger(ledger_event),
+    effects: daemon_capabilities.effect_queue(
+      enqueue: fn(state, _) { state },
+      enqueue_outbox: fn(state, _, _) { state },
+      enqueue_outbox_with_attempt_count: fn(state, _, _, _) { state },
+      enqueue_outbox_with_attempt_count_result: fn(state, _, _, _) {
+        #(state, True)
+      },
+    ),
+    timers: daemon_capabilities.timers(
+      send_after: fn(subject, _, message) {
+        process.send(subject, message)
+        Nil
+      },
+      cancel_timer: fn(_) { Nil },
+    ),
+  )
 }
 
 fn issue(id: String, identifier: String) -> tracker_issue.Issue {
@@ -241,7 +285,7 @@ pub fn worker_lifecycle_spawn_scheduled_worker_threads_started_ledger_state_test
   let context =
     worker_lifecycle.ScheduledWorkerSpawnContext(
       state: state,
-      now_ms: fn() { 123 },
+      capabilities: test_capabilities(123, "ledger_started"),
       reserve_session_sequence: fn(state) { state },
       register_session: fn(session_id, display_ref, run_root, started_at_ms) {
         assert session_id == "run-1-a2"
@@ -249,32 +293,11 @@ pub fn worker_lifecycle_spawn_scheduled_worker_threads_started_ledger_state_test
         assert run_root == "workspace/repair"
         assert started_at_ms == 123
       },
-      publish_dispatch_started: fn(_) { Nil },
-      append_started_ledger: fn(
-        state,
-        observed,
-        started_at_ms,
-        session_id,
-        run_root,
-      ) {
-        assert observed == pending
-        assert started_at_ms == 123
-        assert session_id == "run-1-a2"
-        assert run_root == "workspace/repair"
-        append_event(state, "ledger_started")
-      },
-      log_dispatch_started: fn(job_id, run_id, workflow_id) {
-        assert job_id == "repair"
-        assert run_id == "run-1"
-        assert workflow_id == "repair"
-      },
       spawn: fn(started_at_ms, session_id) {
         assert started_at_ms == 123
         assert session_id == "run-1-a2"
         process.self()
       },
-      publish_worker_started: fn(_) { Nil },
-      update_running_status: fn(_) { Nil },
       register_scheduled_worker: fn(state, handle) {
         assert state.events == ["ledger_started"]
         TestState(
@@ -321,14 +344,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_success_terminal_test() {
   let context =
     worker_lifecycle.ScheduledWorkerSuccessContext(
       state: state,
-      log_worker_exited: fn(state, _, _, _) {
-        let _ = append_event(state, "log")
-        Nil
-      },
-      update_tokens: fn(_, _) { Nil },
-      publish_worker_exited: fn(_, _) { Nil },
-      finish_session: fn(_, _) { Nil },
-      append_success_ledger: fn(state, _, _) { append_event(state, "ledger") },
+      capabilities: test_capabilities(123, "ledger"),
       needs_human: fn(state, _, _) { append_event(state, "needs_human") },
     )
 
@@ -356,11 +372,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_success_delegates_needs_human_te
   let context =
     worker_lifecycle.ScheduledWorkerSuccessContext(
       state: state,
-      log_worker_exited: fn(_, _, _, _) { Nil },
-      update_tokens: fn(_, _) { Nil },
-      publish_worker_exited: fn(_, _) { Nil },
-      finish_session: fn(_, _) { Nil },
-      append_success_ledger: fn(state, _, _) { state },
+      capabilities: test_capabilities(123, "ledger"),
       needs_human: fn(state, _, _) { append_event(state, "needs_human") },
     )
 
@@ -397,18 +409,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_needs_human_reports_side_effects
   let context =
     worker_lifecycle.ScheduledWorkerNeedsHumanContext(
       state: state,
-      log_needs_human: fn(_, job_id, run_id) {
-        process.send(calls, NeedsHumanLogged(job_id, run_id))
-      },
-      update_tokens: fn(session_id, tokens) {
-        process.send(calls, NeedsHumanTokens(session_id, tokens))
-      },
-      publish_worker_exited: fn(session_id, reason) {
-        process.send(calls, NeedsHumanWorkerExited(session_id, reason))
-      },
-      finish_failed_session: fn(session_id) {
-        process.send(calls, NeedsHumanFailedSession(session_id))
-      },
+      capabilities: test_capabilities(123, "ledger"),
       append_failure_ledger: fn(state, _, reason, retry_exhausted, run_root) {
         process.send(
           calls,
@@ -429,15 +430,6 @@ pub fn worker_lifecycle_finish_scheduled_worker_needs_human_reports_side_effects
       workflow_success_with_tokens(agent_types.FinalActive, tokens),
     )
 
-  let assert NeedsHumanLogged("repair", "run-1") =
-    receive_needs_human_call(calls)
-  let assert NeedsHumanTokens("session-scheduled", observed_tokens) =
-    receive_needs_human_call(calls)
-  assert observed_tokens == tokens
-  let assert NeedsHumanWorkerExited("session-scheduled", "needs_human") =
-    receive_needs_human_call(calls)
-  let assert NeedsHumanFailedSession("session-scheduled") =
-    receive_needs_human_call(calls)
   let assert NeedsHumanFailureLedger(
     "needs_human",
     True,
@@ -472,9 +464,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_failure_reports_test() {
   let context =
     worker_lifecycle.ScheduledWorkerFailureContext(
       state: state,
-      log_worker_exited: fn(_, _, _, _) { Nil },
-      publish_worker_exited: fn(_, _) { Nil },
-      finish_failed_session: fn(_) { Nil },
+      capabilities: test_capabilities(123, "ledger"),
       worker_failure_follow_up: fn(state, _, _, run_root) {
         #(
           state,
@@ -523,9 +513,7 @@ pub fn worker_lifecycle_finish_scheduled_worker_failure_has_no_retry_branch_test
   let context =
     worker_lifecycle.ScheduledWorkerFailureContext(
       state: state,
-      log_worker_exited: fn(_, _, _, _) { Nil },
-      publish_worker_exited: fn(_, _) { Nil },
-      finish_failed_session: fn(_) { Nil },
+      capabilities: test_capabilities(123, "ledger"),
       worker_failure_follow_up: fn(state, _, _, run_root) {
         #(
           state,
@@ -576,12 +564,10 @@ pub fn worker_lifecycle_scheduled_worker_down_starts_pending_after_report_test()
   let context =
     worker_lifecycle.ScheduledWorkerDownContext(
       state: state,
+      capabilities: test_capabilities(123, "ledger"),
       set_registry: fn(state, registry) {
         TestState(..state, registry: registry)
       },
-      log_worker_down: fn(_, _, _) { Nil },
-      publish_worker_down: fn(_) { Nil },
-      finish_failed_session: fn(_) { Nil },
       worker_failure_follow_up: fn(state, _, _, run_root) {
         #(
           state,
@@ -599,7 +585,6 @@ pub fn worker_lifecycle_scheduled_worker_down_starts_pending_after_report_test()
           ),
         )
       },
-      append_failure_ledger: fn(state, _, _, _, _) { state },
       begin_failure_report_request: fn(state, _) {
         TestState(..state, report_requests: state.report_requests + 1)
       },

@@ -2,7 +2,7 @@
 
 `src/scherzo/orchestrator/daemon.gleam` remains Scherzo's public daemon actor shell. It may own public actor startup, public message receipt, compatibility types, dependency injection, control-plane/process/timer edges, top-level logging/redaction context, and handoff between subsystem outcomes. It also owns the actor-side reply bridge for operator commands whose worker acknowledgements arrive asynchronously. It must not regrow extracted subsystem helpers without an explicit update to this document and the matching source guardrail.
 
-The daemon line-count ratchet is `max_daemon_lines: 10836`. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
+The daemon line-count ratchet is `max_daemon_lines: 10641`. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
 
 `src/scherzo/orchestrator/service.gleam` is the only documented startup-edge import exception for `scherzo/orchestrator/daemon`. It may import the daemon because it is the process edge that starts the public actor. Extracted orchestrator subsystem modules must not import `scherzo/orchestrator/daemon`.
 
@@ -16,8 +16,9 @@ Exact daemon shell exceptions:
 
 - `scheduled_failure_paths`: the daemon shell still maps configured scheduled-failure routes into scheduled-runtime input lists.
 - `scheduled_job_by_id`: the daemon shell still resolves a scheduled job from the loaded workflow before handing work off.
-- `scheduled_resumption_context`: the daemon shell still rebuilds actor-owned retry timer inputs while replaying retained scheduled state.
-- `scheduled_retry_context_values`: the daemon shell still resolves retained scheduled-run retry state from the actor projection before timer handoff.
+- `scheduled_resumption_from_recovery`: the daemon shell still rebuilds actor-owned retry timer inputs while replaying retained scheduled state.
+- `scheduled_capability_now`: the daemon shell still reads shared daemon time while shaping scheduled recovery inputs.
+- `scheduled_retry_values_from_projection`: the daemon shell still resolves retained scheduled-run retry state from the actor projection before timer handoff.
 - `scheduled_retry_step_observation`: the daemon shell still validates retained schedule-run retry-step requests against the loaded workflow bundle before queueing actor recovery.
 - `scheduled_retry_placeholder_issue`: the daemon shell still shapes the placeholder issue used to satisfy issue-centric retry-step planning for scheduled runs.
 - `scheduled_job_quarantined`: the daemon shell still checks projected quarantine state before admitting actor-owned schedule firings.
@@ -30,7 +31,7 @@ Exact daemon shell exceptions:
 - `scheduled_worker_needs_human_context`: the daemon shell still formats daemon-owned follow-up log context after scheduled-runtime decisions.
 - `scheduled_worker_failure_context`: the daemon shell still formats daemon-owned failure log context after scheduled-runtime decisions.
 - `scheduled_worker_failure_follow_up`: the daemon shell still translates scheduled-runtime failure output into daemon-owned transition messages.
-- `scheduled_failure_ledger_append`: the daemon shell still appends daemon-owned ledger records after scheduled failure reporting.
+- `scheduled_failure_ledger_via_capabilities`: the daemon shell still appends daemon-owned ledger records through shared capabilities after scheduled failure reporting.
 - `scheduled_failure_dedupe_key`: the daemon shell still computes daemon-owned report dedupe keys at the orchestration edge.
 - `scheduled_failure_issue_id_for_state`: the daemon shell still resolves daemon-owned issue identity while reporting scheduled failures.
 
@@ -70,9 +71,7 @@ Exact daemon shell exceptions:
 - `handle_yaml_step_started`: the daemon shell still records daemon-owned session-start side effects for YAML steps.
 - `handle_yaml_step_finished`: the daemon shell still applies daemon-owned cleanup after YAML step completion.
 - `yaml_child_recovery_info`: the daemon shell still derives daemon-owned recovery metadata for orphan YAML children.
-- `yaml_step_callbacks`: the daemon shell still assembles daemon-owned actor callbacks before delegating step execution.
-- `yaml_scheduled_workflow_dependencies`: the daemon shell still wires daemon-owned scheduled workflow dependencies.
-- `yaml_workflow_dependencies`: the daemon shell still wires daemon-owned ad hoc workflow dependencies.
+- `yaml_step_routes`: the daemon shell still assembles daemon-owned actor callbacks before delegating step execution.
 - `yaml_worker_failure`: the daemon shell still translates workflow-lifecycle failures into daemon transition messages.
 - `yaml_workflow_failure`: the daemon shell still translates workflow-level failures into daemon transition messages.
 - `log_yaml_step_update`: the daemon shell still formats top-level logging for YAML step updates.

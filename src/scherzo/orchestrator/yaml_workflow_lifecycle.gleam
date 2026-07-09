@@ -5,6 +5,7 @@ import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/orchestrator/daemon_capabilities
 import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/schedule_core
 import scherzo/orchestrator/yaml_step_session
@@ -35,8 +36,7 @@ pub fn scheduled_workflow_dependencies(
   base: workflow_run.Dependencies,
   scheduled: schedule_core.ScheduledRunContext,
   callbacks: LifecycleCallbacks,
-  event_hub: process.Subject(hub.Message),
-  now_ms: fn() -> Int,
+  capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
 ) -> workflow_run.Dependencies {
   workflow_dependencies(
     base,
@@ -44,8 +44,7 @@ pub fn scheduled_workflow_dependencies(
     scheduled.run_id,
     scheduled_session_id(scheduled.run_id, scheduled.attempt),
     callbacks,
-    event_hub,
-    now_ms,
+    capabilities,
   )
 }
 
@@ -55,9 +54,15 @@ pub fn workflow_dependencies(
   run_id: String,
   parent_session_id: String,
   callbacks: LifecycleCallbacks,
-  event_hub: process.Subject(hub.Message),
-  now_ms: fn() -> Int,
+  capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
 ) -> workflow_run.Dependencies {
+  let event_hub =
+    daemon_capabilities.event_hub(daemon_capabilities.daemon_events(
+      capabilities,
+    ))
+  let now_ms = fn() {
+    daemon_capabilities.now_ms(daemon_capabilities.daemon_clock(capabilities))
+  }
   workflow_run.Dependencies(
     ..base,
     command_step: fn(context, command, timeout_ms, secrets, limits) {

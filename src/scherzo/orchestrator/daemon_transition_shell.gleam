@@ -5,6 +5,7 @@ import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/control/command
 import scherzo/log
+import scherzo/orchestrator/daemon_capabilities
 import scherzo/orchestrator/effects/interpreter as transition_interpreter
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/task_lifecycle
@@ -17,6 +18,8 @@ import scherzo/runtime/reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/reason as session_reason
 import scherzo/state/ledger
+import scherzo/state/ledger_batch
+import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/task
 import scherzo/tracker/adapter
@@ -65,12 +68,10 @@ fn projection_failed(error: task_lifecycle_legacy.LifecycleError) -> Bool {
   }
 }
 
-pub opaque type ShellHandlers(state) {
+pub opaque type ShellHandlers(state, message, timer) {
   ShellHandlers(
-    append_ledger: fn(state, transition_effects.LedgerAppend) ->
-      #(state, Result(Nil, ledger.LedgerError)),
-    now_ms: fn(state) -> Int,
-    log_effect: fn(state, String, String, List(log.Field)) -> state,
+    capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
+    mark_ledger_append_failed: fn(state) -> state,
     start_worker: fn(state, transition_effects.WorkerStart) ->
       #(state, Result(Nil, String)),
     reply_snapshot: fn(state, orchestrator_state.RuntimeState) -> state,
@@ -178,10 +179,12 @@ pub opaque type ShellHandlers(state) {
 }
 
 pub fn shell_handlers(
-  append_ledger append_ledger: fn(state, transition_effects.LedgerAppend) ->
-    #(state, Result(Nil, ledger.LedgerError)),
-  now_ms now_ms: fn(state) -> Int,
-  log_effect log_effect: fn(state, String, String, List(log.Field)) -> state,
+  capabilities capabilities: daemon_capabilities.DaemonCapabilities(
+    state,
+    message,
+    timer,
+  ),
+  mark_ledger_append_failed mark_ledger_append_failed: fn(state) -> state,
   start_worker start_worker: fn(state, transition_effects.WorkerStart) ->
     #(state, Result(Nil, String)),
   reply_snapshot reply_snapshot: fn(state, orchestrator_state.RuntimeState) ->
@@ -318,11 +321,10 @@ pub fn shell_handlers(
     String,
     Option(String),
   ) -> state,
-) -> ShellHandlers(state) {
+) -> ShellHandlers(state, message, timer) {
   ShellHandlers(
-    append_ledger: append_ledger,
-    now_ms: now_ms,
-    log_effect: log_effect,
+    capabilities: capabilities,
+    mark_ledger_append_failed: mark_ledger_append_failed,
     start_worker: start_worker,
     reply_snapshot: reply_snapshot,
     mark_poll_in_flight: mark_poll_in_flight,
@@ -367,7 +369,7 @@ pub fn shell_handlers(
   )
 }
 
-pub opaque type Context(state) {
+pub opaque type Context(state, message, timer) {
   Context(
     state: state,
     get_transition_state: fn(state) -> transition_types.State,
@@ -380,7 +382,7 @@ pub opaque type Context(state) {
     invariant_mode: InvariantMode,
     invariant_checker: InvariantChecker,
     max_messages: Int,
-    handlers: ShellHandlers(state),
+    handlers: ShellHandlers(state, message, timer),
   )
 }
 
@@ -397,8 +399,8 @@ pub fn context(
   invariant_mode invariant_mode: InvariantMode,
   invariant_checker invariant_checker: InvariantChecker,
   max_messages max_messages: Int,
-  handlers handlers: ShellHandlers(state),
-) -> Context(state) {
+  handlers handlers: ShellHandlers(state, message, timer),
+) -> Context(state, message, timer) {
   Context(
     state: state,
     get_transition_state: get_transition_state,
@@ -413,7 +415,7 @@ pub fn context(
 }
 
 pub fn run(
-  context: Context(state),
+  context: Context(state, message, timer),
   messages: List(transition_types.Message),
 ) -> state {
   let #(state, exhausted) =
@@ -425,7 +427,7 @@ pub fn run(
   }
 }
 
-pub fn check_invariants(context: Context(state)) -> state {
+pub fn check_invariants(context: Context(state, message, timer)) -> state {
   let transition_state = context.get_transition_state(context.state)
   case context.invariant_checker(transition_state) {
     Ok(Nil) -> context.state
@@ -434,7 +436,7 @@ pub fn check_invariants(context: Context(state)) -> state {
 }
 
 fn apply_invariant_violations(
-  context: Context(state),
+  context: Context(state, message, timer),
   errors: List(transition_invariants.InvariantError),
 ) -> state {
   let #(warning_errors, failure_errors) =
@@ -455,17 +457,18 @@ fn apply_invariant_violations(
 }
 
 fn log_invariant_violations(
-  context: Context(state),
+  context: Context(state, message, timer),
   state: state,
   level: String,
   errors: List(transition_invariants.InvariantError),
 ) -> state {
-  context.handlers.log_effect(
-    state,
+  write_log(
+    context.handlers.capabilities,
     level,
     invariant_violation_event(level),
     invariant_violation_fields(errors),
   )
+  state
 }
 
 fn invariant_violation_event(level: String) -> String {
@@ -546,7 +549,7 @@ pub fn default_message_limit() -> Int {
 }
 
 pub fn run_one_message_with_operator_reply(
-  context context: Context(state),
+  context context: Context(state, message, timer),
   message message: transition_types.Message,
   operator_command operator_command: command.OperatorCommand,
   send_reply send_reply: fn(command.CommandResult) -> Nil,
@@ -628,7 +631,7 @@ fn split_operator_command_finish_loop(
 }
 
 fn run_messages(
-  context: Context(state),
+  context: Context(state, message, timer),
   state: state,
   messages: List(transition_types.Message),
   remaining: Int,
@@ -657,9 +660,80 @@ fn run_messages(
   }
 }
 
+fn write_log(
+  capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
+  level: String,
+  event: String,
+  fields: List(log.Field),
+) -> Nil {
+  case
+    daemon_capabilities.write(
+      daemon_capabilities.daemon_logger(capabilities),
+      level,
+      event,
+      fields,
+      [],
+    )
+  {
+    Ok(Nil) -> Nil
+    Error(Nil) -> Nil
+  }
+}
+
+fn append_ledger_with_capabilities(
+  state: state,
+  handlers: ShellHandlers(state, message, timer),
+  request: transition_effects.LedgerAppend,
+) -> #(state, Result(Nil, ledger.LedgerError)) {
+  let records =
+    ledger_records_for_bodies(
+      daemon_capabilities.now_ms(daemon_capabilities.daemon_clock(
+        handlers.capabilities,
+      )),
+      ledger_batch.to_bodies(request.batch),
+    )
+  let #(state, result) =
+    daemon_capabilities.append_records(
+      daemon_capabilities.daemon_ledger(handlers.capabilities),
+      state,
+      records,
+      request.failure_event,
+    )
+  case result != Ok(Nil), request.policy {
+    True, transition_effects.StopBatchOnFailure -> #(
+      handlers.mark_ledger_append_failed(state),
+      result,
+    )
+    _, _ -> #(state, result)
+  }
+}
+
+fn ledger_records_for_bodies(
+  now_ms: Int,
+  bodies: List(record.RecordBody),
+) -> List(record.LedgerRecord) {
+  ledger_records_for_bodies_loop(bodies, now_ms, 1, [])
+}
+
+fn ledger_records_for_bodies_loop(
+  bodies: List(record.RecordBody),
+  now_ms: Int,
+  sequence: Int,
+  acc: List(record.LedgerRecord),
+) -> List(record.LedgerRecord) {
+  case bodies {
+    [] -> list.reverse(acc)
+    [body, ..rest] ->
+      ledger_records_for_bodies_loop(rest, now_ms, sequence + 1, [
+        record.new(now_ms, sequence, body),
+        ..acc
+      ])
+  }
+}
+
 pub fn interpret_effects(
   state: state,
-  handlers: ShellHandlers(state),
+  handlers: ShellHandlers(state, message, timer),
   effects: List(transition_effects.Effect),
 ) -> #(state, List(transition_types.Message)) {
   let shell = transition_shell(state, handlers)
@@ -672,13 +746,22 @@ pub fn interpret_effects(
 
 fn transition_shell(
   state: state,
-  handlers: ShellHandlers(state),
+  handlers: ShellHandlers(state, message, timer),
 ) -> transition_interpreter.ShellState(state) {
   transition_interpreter.new_production_shell_state(
     data: state,
-    append_ledger: handlers.append_ledger,
-    now_ms: handlers.now_ms,
-    log_effect: handlers.log_effect,
+    append_ledger: fn(state, request) {
+      append_ledger_with_capabilities(state, handlers, request)
+    },
+    now_ms: fn(_) {
+      daemon_capabilities.now_ms(daemon_capabilities.daemon_clock(
+        handlers.capabilities,
+      ))
+    },
+    log_effect: fn(state, level, event, fields) {
+      write_log(handlers.capabilities, level, event, fields)
+      state
+    },
     start_worker: handlers.start_worker,
     reply_snapshot: handlers.reply_snapshot,
     mark_poll_in_flight: handlers.mark_poll_in_flight,

@@ -15,9 +15,9 @@ const service_path = "src/scherzo/orchestrator/service.gleam"
 
 const daemon_module = "scherzo/orchestrator/daemon"
 
-const max_daemon_lines = 10_836
+const max_daemon_lines = 10_641
 
-const max_daemon_lines_source_literal = "10_836"
+const max_daemon_lines_source_literal = "10_641"
 
 type ShellException {
   ShellException(name: String)
@@ -455,8 +455,9 @@ fn owner_rules() -> List(OwnerRule) {
       exceptions: [
         ShellException(name: "scheduled_failure_paths"),
         ShellException(name: "scheduled_job_by_id"),
-        ShellException(name: "scheduled_resumption_context"),
-        ShellException(name: "scheduled_retry_context_values"),
+        ShellException(name: "scheduled_resumption_from_recovery"),
+        ShellException(name: "scheduled_capability_now"),
+        ShellException(name: "scheduled_retry_values_from_projection"),
         ShellException(name: "scheduled_retry_step_observation"),
         ShellException(name: "scheduled_retry_placeholder_issue"),
         ShellException(name: "scheduled_job_quarantined"),
@@ -469,7 +470,7 @@ fn owner_rules() -> List(OwnerRule) {
         ShellException(name: "scheduled_worker_needs_human_context"),
         ShellException(name: "scheduled_worker_failure_context"),
         ShellException(name: "scheduled_worker_failure_follow_up"),
-        ShellException(name: "scheduled_failure_ledger_append"),
+        ShellException(name: "scheduled_failure_ledger_via_capabilities"),
         ShellException(name: "scheduled_failure_dedupe_key"),
         ShellException(name: "scheduled_failure_issue_id_for_state"),
       ],
@@ -506,9 +507,7 @@ fn owner_rules() -> List(OwnerRule) {
         ShellException(name: "handle_yaml_step_started"),
         ShellException(name: "handle_yaml_step_finished"),
         ShellException(name: "yaml_child_recovery_info"),
-        ShellException(name: "yaml_step_callbacks"),
-        ShellException(name: "yaml_scheduled_workflow_dependencies"),
-        ShellException(name: "yaml_workflow_dependencies"),
+        ShellException(name: "yaml_step_routes"),
         ShellException(name: "yaml_worker_failure"),
         ShellException(name: "yaml_workflow_failure"),
         ShellException(name: "log_yaml_step_update"),

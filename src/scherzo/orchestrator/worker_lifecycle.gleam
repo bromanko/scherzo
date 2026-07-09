@@ -5,7 +5,8 @@ import gleam/option.{type Option, None, Some}
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config/types as config_types
-import scherzo/orchestrator/event_publisher
+import scherzo/log
+import scherzo/orchestrator/daemon_capabilities
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/worker_registry
@@ -16,6 +17,7 @@ import scherzo/session/event as session_event
 import scherzo/session/hub
 import scherzo/session/reason as session_reason
 import scherzo/session/tokens as session_tokens
+import scherzo/state/record
 import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
@@ -27,10 +29,10 @@ pub type WorkflowSnapshot =
 pub type WorkflowSnapshotError =
   workflow_snapshot.SnapshotError
 
-pub type WorkerSpawnContext(state) {
+pub type WorkerSpawnContext(state, message, timer) {
   WorkerSpawnContext(
     state: state,
-    now_ms: fn() -> Int,
+    capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
     register_session: fn(
       String,
       tracker_issue.Issue,
@@ -38,15 +40,9 @@ pub type WorkerSpawnContext(state) {
       Option(session_event.RecoveryInfo),
       Int,
     ) -> Nil,
-    publish_recovery_lifecycle: fn(String, Option(session_event.RecoveryInfo)) ->
-      Nil,
-    publish_dispatch_started: fn(String) -> Nil,
-    log_dispatch_started: fn(tracker_issue.Issue, String, String) -> Nil,
     apply_task_ref_start: fn(state, task.TaskRef, tracker_issue.Issue, String) ->
       state,
     spawn: fn(tracker_issue.Issue, String, String) -> process.Pid,
-    publish_worker_started: fn(String) -> Nil,
-    update_running_status: fn(String) -> Nil,
     register_worker: fn(state, worker_registry.WorkerHandle) -> state,
     clear_recovery: fn(state, String) -> state,
   )
@@ -97,7 +93,7 @@ pub fn workflow_snapshot_run_root(snapshot: WorkflowSnapshot) -> String {
 }
 
 pub fn spawn_worker(
-  context: WorkerSpawnContext(state),
+  context: WorkerSpawnContext(state, message, timer),
   ref: task.TaskRef,
   issue: tracker_issue.Issue,
   workspace_path: String,
@@ -105,7 +101,8 @@ pub fn spawn_worker(
   session_id: String,
   recovery: Option(session_event.RecoveryInfo),
 ) -> state {
-  let started_at_ms = context.now_ms()
+  let capabilities = context.capabilities
+  let started_at_ms = daemon_capabilities.now_ms(cap_clock(capabilities))
   context.register_session(
     session_id,
     issue,
@@ -113,15 +110,33 @@ pub fn spawn_worker(
     recovery,
     started_at_ms,
   )
-  context.publish_recovery_lifecycle(session_id, recovery)
-  context.publish_dispatch_started(session_id)
-  context.log_dispatch_started(issue, run_id, workspace_path)
+  daemon_capabilities.recovery_lifecycle(
+    cap_events(capabilities),
+    session_id,
+    recovery,
+  )
+  daemon_capabilities.lifecycle(
+    cap_events(capabilities),
+    session_id,
+    session_event.DispatchStarted,
+    None,
+  )
+  log_dispatch_started(cap_logger(capabilities), issue, run_id, workspace_path)
   let state =
     context.apply_task_ref_start(context.state, ref, issue, workspace_path)
   let pid = context.spawn(issue, run_id, session_id)
   let monitor = process.monitor(pid)
-  context.publish_worker_started(session_id)
-  context.update_running_status(session_id)
+  daemon_capabilities.lifecycle(
+    cap_events(capabilities),
+    session_id,
+    session_event.WorkerStarted,
+    None,
+  )
+  daemon_capabilities.update_status(
+    cap_events(capabilities),
+    session_id,
+    session_event.Running,
+  )
   let handle =
     worker_registry.WorkerHandle(
       task_ref: ref,
@@ -139,24 +154,13 @@ pub fn spawn_worker(
   |> context.clear_recovery(issue.id)
 }
 
-pub type ScheduledWorkerSpawnContext(state) {
+pub type ScheduledWorkerSpawnContext(state, message, timer) {
   ScheduledWorkerSpawnContext(
     state: state,
-    now_ms: fn() -> Int,
+    capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
     reserve_session_sequence: fn(state) -> state,
     register_session: fn(String, String, String, Int) -> Nil,
-    publish_dispatch_started: fn(String) -> Nil,
-    append_started_ledger: fn(
-      state,
-      scheduled_runtime.PendingStart,
-      Int,
-      String,
-      String,
-    ) -> state,
-    log_dispatch_started: fn(String, String, String) -> Nil,
     spawn: fn(Int, String) -> process.Pid,
-    publish_worker_started: fn(String) -> Nil,
-    update_running_status: fn(String) -> Nil,
     register_scheduled_worker: fn(state, worker_registry.ScheduledWorkerHandle) ->
       state,
     remove_pending_start: fn(state, String) -> state,
@@ -164,33 +168,59 @@ pub type ScheduledWorkerSpawnContext(state) {
 }
 
 pub fn spawn_scheduled_worker(
-  context: ScheduledWorkerSpawnContext(state),
+  context: ScheduledWorkerSpawnContext(state, message, timer),
   pending: scheduled_runtime.PendingStart,
   run_root: String,
 ) -> state {
+  let capabilities = context.capabilities
   let state = context.reserve_session_sequence(context.state)
   let session_id = scheduled_session_id(pending.run_id, pending.attempt)
-  let started_at_ms = context.now_ms()
+  let started_at_ms = daemon_capabilities.now_ms(cap_clock(capabilities))
   let display_ref = "scheduled-" <> pending.job_id
   context.register_session(session_id, display_ref, run_root, started_at_ms)
-  context.publish_dispatch_started(session_id)
+  daemon_capabilities.lifecycle(
+    cap_events(capabilities),
+    session_id,
+    session_event.DispatchStarted,
+    Some("scheduled"),
+  )
   let state =
-    context.append_started_ledger(
+    daemon_capabilities.append_bodies_best_effort(
+      cap_ledger(capabilities),
       state,
-      pending,
-      started_at_ms,
-      session_id,
-      run_root,
+      [
+        record.ScheduledRunStarted(
+          pending.job_id,
+          pending.workflow_id,
+          pending.due_at_ms,
+          started_at_ms,
+          pending.run_id,
+          pending.attempt,
+          session_id,
+          run_root,
+        ),
+      ],
+      "scheduled_started_append_failed",
     )
-  context.log_dispatch_started(
+  log_scheduled_dispatch_started(
+    cap_logger(capabilities),
     pending.job_id,
     pending.run_id,
     pending.workflow_id,
   )
   let pid = context.spawn(started_at_ms, session_id)
   let monitor = process.monitor(pid)
-  context.publish_worker_started(session_id)
-  context.update_running_status(session_id)
+  daemon_capabilities.lifecycle(
+    cap_events(capabilities),
+    session_id,
+    session_event.WorkerStarted,
+    Some("scheduled"),
+  )
+  daemon_capabilities.update_status(
+    cap_events(capabilities),
+    session_id,
+    session_event.Running,
+  )
   let handle =
     worker_registry.ScheduledWorkerHandle(
       job_id: pending.job_id,
@@ -242,24 +272,30 @@ pub fn handle_worker_command_ready(
   )
 }
 
-pub type WorkerUpdateContext(state) {
+pub type WorkerUpdateContext(state, message, timer) {
   WorkerUpdateContext(
     state: state,
+    capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
     registry: fn(state) -> worker_registry.Registry,
-    publish_worker_update: fn(String, agent_types.RunnerUpdate) -> Nil,
     log_worker_update: fn(state, String, agent_types.RunnerUpdate) -> state,
   )
 }
 
 pub fn handle_worker_update(
-  context: WorkerUpdateContext(state),
+  context: WorkerUpdateContext(state, message, timer),
   issue_id: String,
   update: agent_types.RunnerUpdate,
 ) -> state {
+  let capabilities = context.capabilities
   case
     worker_registry.worker_for_issue(context.registry(context.state), issue_id)
   {
-    Ok(handle) -> context.publish_worker_update(handle.session_id, update)
+    Ok(handle) ->
+      daemon_capabilities.worker_update(
+        cap_events(capabilities),
+        handle.session_id,
+        update,
+      )
     Error(Nil) -> Nil
   }
   context.log_worker_update(context.state, issue_id, update)
@@ -317,18 +353,10 @@ pub fn handle_scheduled_worker_finished(
   }
 }
 
-pub type ScheduledWorkerSuccessContext(state) {
+pub type ScheduledWorkerSuccessContext(state, message, timer) {
   ScheduledWorkerSuccessContext(
     state: state,
-    log_worker_exited: fn(state, String, String, String) -> Nil,
-    update_tokens: fn(String, session_tokens.TokenTotals) -> Nil,
-    publish_worker_exited: fn(String, String) -> Nil,
-    finish_session: fn(String, session_reason.WorkerExitReason) -> Nil,
-    append_success_ledger: fn(
-      state,
-      worker_registry.ScheduledWorkerHandle,
-      workflow_run.WorkflowRunSuccess,
-    ) -> state,
+    capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
     needs_human: fn(
       state,
       worker_registry.ScheduledWorkerHandle,
@@ -338,35 +366,62 @@ pub type ScheduledWorkerSuccessContext(state) {
 }
 
 pub fn finish_scheduled_worker_success(
-  context: ScheduledWorkerSuccessContext(state),
+  context: ScheduledWorkerSuccessContext(state, message, timer),
   handle: worker_registry.ScheduledWorkerHandle,
   success: workflow_run.WorkflowRunSuccess,
 ) -> state {
+  let capabilities = context.capabilities
   case success.worker_success.final_classification {
     agent_types.FinalTerminal -> {
-      context.log_worker_exited(
-        context.state,
+      log_scheduled_worker_exited(
+        cap_logger(capabilities),
+        "info",
         handle.job_id,
         handle.run_id,
         "normal",
       )
-      context.update_tokens(handle.session_id, success.worker_success.tokens)
-      context.publish_worker_exited(handle.session_id, "normal")
-      context.finish_session(handle.session_id, session_reason.Normal)
-      context.append_success_ledger(context.state, handle, success)
+      update_tokens(
+        cap_events(capabilities),
+        handle.session_id,
+        success.worker_success.tokens,
+      )
+      publish_worker_exited(
+        cap_events(capabilities),
+        handle.session_id,
+        "normal",
+      )
+      finish_session(
+        cap_events(capabilities),
+        handle.session_id,
+        session_reason.Normal,
+      )
+      daemon_capabilities.append_bodies_best_effort(
+        cap_ledger(capabilities),
+        context.state,
+        [
+          record.ScheduledRunSucceeded(
+            handle.job_id,
+            handle.workflow_id,
+            handle.due_at_ms,
+            handle.run_id,
+            handle.attempt,
+            daemon_capabilities.now_ms(cap_clock(capabilities)),
+            success.worker_success.tokens.total,
+            success.worker_success.turns,
+          ),
+        ],
+        "scheduled_success_append_failed",
+      )
     }
     agent_types.FinalActive | agent_types.FinalNonActive ->
       context.needs_human(context.state, handle, success)
   }
 }
 
-pub type ScheduledWorkerNeedsHumanContext(state) {
+pub type ScheduledWorkerNeedsHumanContext(state, message, timer) {
   ScheduledWorkerNeedsHumanContext(
     state: state,
-    log_needs_human: fn(state, String, String) -> Nil,
-    update_tokens: fn(String, session_tokens.TokenTotals) -> Nil,
-    publish_worker_exited: fn(String, String) -> Nil,
-    finish_failed_session: fn(String) -> Nil,
+    capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
     append_failure_ledger: fn(
       state,
       worker_registry.ScheduledWorkerHandle,
@@ -382,14 +437,27 @@ pub type ScheduledWorkerNeedsHumanContext(state) {
 }
 
 pub fn finish_scheduled_worker_needs_human(
-  context: ScheduledWorkerNeedsHumanContext(state),
+  context: ScheduledWorkerNeedsHumanContext(state, message, timer),
   handle: worker_registry.ScheduledWorkerHandle,
   success: workflow_run.WorkflowRunSuccess,
 ) -> state {
-  context.log_needs_human(context.state, handle.job_id, handle.run_id)
-  context.update_tokens(handle.session_id, success.worker_success.tokens)
-  context.publish_worker_exited(handle.session_id, "needs_human")
-  context.finish_failed_session(handle.session_id)
+  let capabilities = context.capabilities
+  log_scheduled_worker_needs_human(
+    cap_logger(capabilities),
+    handle.job_id,
+    handle.run_id,
+  )
+  update_tokens(
+    cap_events(capabilities),
+    handle.session_id,
+    success.worker_success.tokens,
+  )
+  publish_worker_exited(
+    cap_events(capabilities),
+    handle.session_id,
+    "needs_human",
+  )
+  finish_failed_session(cap_events(capabilities), handle.session_id)
   let state =
     context.append_failure_ledger(
       context.state,
@@ -412,12 +480,10 @@ pub fn finish_scheduled_worker_needs_human(
   )
 }
 
-pub type ScheduledWorkerFailureContext(state) {
+pub type ScheduledWorkerFailureContext(state, message, timer) {
   ScheduledWorkerFailureContext(
     state: state,
-    log_worker_exited: fn(state, String, String, String) -> Nil,
-    publish_worker_exited: fn(String, String) -> Nil,
-    finish_failed_session: fn(String) -> Nil,
+    capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
     worker_failure_follow_up: fn(
       state,
       worker_registry.ScheduledWorkerHandle,
@@ -439,14 +505,21 @@ pub type ScheduledWorkerFailureContext(state) {
 }
 
 pub fn finish_scheduled_worker_failure(
-  context: ScheduledWorkerFailureContext(state),
+  context: ScheduledWorkerFailureContext(state, message, timer),
   handle: worker_registry.ScheduledWorkerHandle,
   failure: workflow_run.WorkflowRunFailure,
 ) -> state {
+  let capabilities = context.capabilities
   let reason = workflow_run.failure_report(failure)
-  context.log_worker_exited(context.state, handle.job_id, handle.run_id, reason)
-  context.publish_worker_exited(handle.session_id, reason)
-  context.finish_failed_session(handle.session_id)
+  log_scheduled_worker_exited(
+    cap_logger(capabilities),
+    "warn",
+    handle.job_id,
+    handle.run_id,
+    reason,
+  )
+  publish_worker_exited(cap_events(capabilities), handle.session_id, reason)
+  finish_failed_session(cap_events(capabilities), handle.session_id)
   let run_root = case failure.run_root {
     Some(root) -> Some(root)
     None -> Some(handle.run_root)
@@ -604,37 +677,28 @@ pub fn worker_down_message(
 }
 
 pub fn publish_worker_down(
-  event_hub: process.Subject(hub.Message),
+  events: daemon_capabilities.EventPublisher,
   session_id: String,
 ) -> Nil {
-  event_publisher.lifecycle(
-    event_hub,
+  daemon_capabilities.lifecycle(
+    events,
     session_id,
     session_event.WorkerDown,
     None,
   )
 }
 
-pub type ScheduledWorkerDownContext(state) {
+pub type ScheduledWorkerDownContext(state, message, timer) {
   ScheduledWorkerDownContext(
     state: state,
+    capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
     set_registry: fn(state, worker_registry.Registry) -> state,
-    log_worker_down: fn(state, String, String) -> Nil,
-    publish_worker_down: fn(String) -> Nil,
-    finish_failed_session: fn(String) -> Nil,
     worker_failure_follow_up: fn(
       state,
       worker_registry.ScheduledWorkerHandle,
       String,
       Option(String),
     ) -> #(state, scheduled_runtime.WorkerFailureFollowUp),
-    append_failure_ledger: fn(
-      state,
-      worker_registry.ScheduledWorkerHandle,
-      String,
-      Bool,
-      Option(String),
-    ) -> state,
     begin_failure_report_request: fn(
       state,
       scheduled_runtime.FailureReportRequest,
@@ -644,15 +708,16 @@ pub type ScheduledWorkerDownContext(state) {
 }
 
 pub fn scheduled_worker_down(
-  context: ScheduledWorkerDownContext(state),
+  context: ScheduledWorkerDownContext(state, message, timer),
   registry: worker_registry.Registry,
   run_id: String,
   handle: worker_registry.ScheduledWorkerHandle,
 ) -> state {
+  let capabilities = context.capabilities
   let state = context.set_registry(context.state, registry)
-  context.log_worker_down(state, handle.job_id, run_id)
-  context.publish_worker_down(handle.session_id)
-  context.finish_failed_session(handle.session_id)
+  log_scheduled_worker_down(cap_logger(capabilities), handle.job_id, run_id)
+  publish_worker_down(cap_events(capabilities), handle.session_id)
+  finish_failed_session(cap_events(capabilities), handle.session_id)
   let #(state, follow_up) =
     context.worker_failure_follow_up(
       state,
@@ -661,12 +726,23 @@ pub fn scheduled_worker_down(
       Some(handle.run_root),
     )
   let state =
-    context.append_failure_ledger(
+    daemon_capabilities.append_bodies_best_effort(
+      cap_ledger(capabilities),
       state,
-      handle,
-      "worker_down",
-      True,
-      Some(handle.run_root),
+      [
+        record.ScheduledRunFailed(
+          handle.job_id,
+          handle.workflow_id,
+          handle.due_at_ms,
+          handle.run_id,
+          handle.attempt,
+          daemon_capabilities.now_ms(cap_clock(capabilities)),
+          "worker_down",
+          True,
+          Some(handle.run_root),
+        ),
+      ],
+      "scheduled_worker_down_append_failed",
     )
   let state =
     continue_scheduled_failure_follow_up(
@@ -689,6 +765,141 @@ fn continue_scheduled_failure_follow_up(
     scheduled_runtime.WorkerFailureReport(request) ->
       begin_failure_report_request(state, request)
   }
+}
+
+fn cap_clock(
+  capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
+) -> daemon_capabilities.Clock {
+  daemon_capabilities.daemon_clock(capabilities)
+}
+
+fn cap_logger(
+  capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
+) -> daemon_capabilities.Logger {
+  daemon_capabilities.daemon_logger(capabilities)
+}
+
+fn cap_events(
+  capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
+) -> daemon_capabilities.EventPublisher {
+  daemon_capabilities.daemon_events(capabilities)
+}
+
+fn cap_ledger(
+  capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
+) -> daemon_capabilities.LedgerWriter(state) {
+  daemon_capabilities.daemon_ledger(capabilities)
+}
+
+fn log_dispatch_started(
+  logger: daemon_capabilities.Logger,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  workspace_path: String,
+) -> Nil {
+  write_log(logger, "info", "dispatch_started", [
+    #("issue_id", issue.id),
+    #("issue_identifier", issue.identifier),
+    #("run_id", run_id),
+    #("workspace_path", workspace_path),
+  ])
+}
+
+fn log_scheduled_dispatch_started(
+  logger: daemon_capabilities.Logger,
+  job_id: String,
+  run_id: String,
+  workflow_id: String,
+) -> Nil {
+  write_log(logger, "info", "scheduled_dispatch_started", [
+    #("job_id", job_id),
+    #("run_id", run_id),
+    #("workflow_id", workflow_id),
+  ])
+}
+
+fn log_scheduled_worker_exited(
+  logger: daemon_capabilities.Logger,
+  level: String,
+  job_id: String,
+  run_id: String,
+  reason: String,
+) -> Nil {
+  write_log(logger, level, "scheduled_worker_exited", [
+    #("job_id", job_id),
+    #("run_id", run_id),
+    #("reason", log.truncate(reason, 200)),
+  ])
+}
+
+fn log_scheduled_worker_needs_human(
+  logger: daemon_capabilities.Logger,
+  job_id: String,
+  run_id: String,
+) -> Nil {
+  write_log(logger, "warn", "scheduled_worker_needs_human", [
+    #("job_id", job_id),
+    #("run_id", run_id),
+  ])
+}
+
+fn log_scheduled_worker_down(
+  logger: daemon_capabilities.Logger,
+  job_id: String,
+  run_id: String,
+) -> Nil {
+  write_log(logger, "warn", "scheduled_worker_down", [
+    #("job_id", job_id),
+    #("run_id", run_id),
+  ])
+}
+
+fn write_log(
+  logger: daemon_capabilities.Logger,
+  level: String,
+  event: String,
+  fields: List(log.Field),
+) -> Nil {
+  case daemon_capabilities.write(logger, level, event, fields, []) {
+    Ok(Nil) -> Nil
+    Error(Nil) -> Nil
+  }
+}
+
+fn update_tokens(
+  events: daemon_capabilities.EventPublisher,
+  session_id: String,
+  tokens: session_tokens.TokenTotals,
+) -> Nil {
+  hub.update_tokens(daemon_capabilities.event_hub(events), session_id, tokens)
+}
+
+fn publish_worker_exited(
+  events: daemon_capabilities.EventPublisher,
+  session_id: String,
+  reason: String,
+) -> Nil {
+  daemon_capabilities.lifecycle(
+    events,
+    session_id,
+    session_event.WorkerExited,
+    Some(log.truncate(reason, 200)),
+  )
+}
+
+fn finish_session(
+  events: daemon_capabilities.EventPublisher,
+  session_id: String,
+  reason: session_reason.WorkerExitReason,
+) -> Nil {
+  hub.finish_session(daemon_capabilities.event_hub(events), session_id, reason)
+}
+
+fn finish_failed_session(
+  events: daemon_capabilities.EventPublisher,
+  session_id: String,
+) -> Nil {
+  finish_session(events, session_id, session_reason.Failed)
 }
 
 fn scheduled_session_id(run_id: String, attempt: Int) -> String {
