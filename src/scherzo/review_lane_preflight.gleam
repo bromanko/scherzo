@@ -54,6 +54,10 @@ pub type PreflightResult {
   )
 }
 
+pub fn policy_from_env() -> review_lane_preflight_policy.Policy {
+  review_lane_preflight_policy.from_env()
+}
+
 pub fn for_workflow(
   workflow_id: String,
   dag: workflow_dag.WorkflowDag,

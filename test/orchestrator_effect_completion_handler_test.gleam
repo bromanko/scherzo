@@ -1,10 +1,12 @@
 import birl
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import orchestrator_transition_test
 import scherzo/agent/types as agent_types
 import scherzo/config
 import scherzo/error
+import scherzo/orchestrator/daemon_capabilities
 import scherzo/orchestrator/effect_completion_handler
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/effects/types as transition_effects
@@ -205,7 +207,7 @@ pub fn handle_completed_logs_crashes_before_dispatch_test() {
       ),
     )
 
-  assert state.events == ["crashed", "handoff_failure"]
+  assert state.events == ["handoff_failure"]
 }
 
 pub fn handle_completed_crash_paths_match_daemon_error_outcomes_test() {
@@ -261,9 +263,9 @@ pub fn handle_completed_crash_paths_match_daemon_error_outcomes_test() {
       ),
     )
 
-  assert success_state.events == ["crashed", "handoff_success_failed"]
-  assert failure_state.events == ["crashed", "handoff_failure_failed"]
-  assert park_state.events == ["crashed", "handoff_park_failed"]
+  assert success_state.events == ["handoff_success_failed"]
+  assert failure_state.events == ["handoff_failure_failed"]
+  assert park_state.events == ["handoff_park_failed"]
 }
 
 pub fn handle_completed_invalid_workflow_outcomes_match_daemon_behavior_test() {
@@ -635,11 +637,47 @@ fn apply_daemon_completion(
   effect_completion_handler.handle_completed(daemon_context(state), completion)
 }
 
-fn context(state: TestState) -> effect_completion_handler.Context(TestState) {
+fn test_capabilities() -> daemon_capabilities.DaemonCapabilities(
+  TestState,
+  Nil,
+  Nil,
+) {
+  daemon_capabilities.daemon_capabilities(
+    clock: daemon_capabilities.clock(fn() { 123 }),
+    logger: daemon_capabilities.logger(fn(_, _, _, _) { Ok(Nil) }),
+    events: daemon_capabilities.event_publisher(process.new_subject(), fn() {
+      123
+    }),
+    ledger: daemon_capabilities.ledger_writer(
+      append_bodies: fn(state, _, _) { #(state, True) },
+      append_bodies_best_effort: fn(state, _, _) { state },
+      append_records: fn(state, _, _) { #(state, Ok(Nil)) },
+    ),
+    effects: daemon_capabilities.effect_queue(
+      enqueue: fn(state, _) { state },
+      enqueue_outbox: fn(state, _, _) { state },
+      enqueue_outbox_with_attempt_count: fn(state, _, _, _) { state },
+      enqueue_outbox_with_attempt_count_result: fn(state, _, _, _) {
+        #(state, True)
+      },
+    ),
+    timers: daemon_capabilities.timers(
+      send_after: fn(subject, _, message) {
+        process.send(subject, message)
+        Nil
+      },
+      cancel_timer: fn(_) { Nil },
+    ),
+  )
+}
+
+fn context(
+  state: TestState,
+) -> effect_completion_handler.Context(TestState, Nil, Nil) {
   effect_completion_handler.context(
     state: state,
-    log_side_effect_crashed: fn(state, _, _) { append_event(state, "crashed") },
-    result_handlers: effect_completion_handler.result_handlers(
+    capabilities: test_capabilities(),
+    result_handlers: effect_completion_handler.result_routes(
       candidate_fetch_finished: fn(state, _, _) {
         append_event(state, "candidate_fetch")
       },
@@ -683,11 +721,11 @@ fn context(state: TestState) -> effect_completion_handler.Context(TestState) {
 
 fn daemon_context(
   state: TestState,
-) -> effect_completion_handler.Context(TestState) {
+) -> effect_completion_handler.Context(TestState, Nil, Nil) {
   effect_completion_handler.context(
     state: state,
-    log_side_effect_crashed: fn(state, _, _) { append_event(state, "crashed") },
-    result_handlers: effect_completion_handler.result_handlers(
+    capabilities: test_capabilities(),
+    result_handlers: effect_completion_handler.result_routes(
       candidate_fetch_finished: fn(state, _, _) { state },
       running_refresh_finished: fn(state, _, _) { state },
       retry_refresh_finished: fn(state, _, _, _) { state },

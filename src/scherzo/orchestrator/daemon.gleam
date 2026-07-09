@@ -27,6 +27,7 @@ import scherzo/orchestrator/abandoned_claim
 import scherzo/orchestrator/artifact_publication_retry_control
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
+import scherzo/orchestrator/daemon_capabilities
 import scherzo/orchestrator/daemon_transition_shell
 import scherzo/orchestrator/dispatch_recovery
 import scherzo/orchestrator/effect_completion_handler
@@ -57,7 +58,6 @@ import scherzo/orchestrator/workflow_reloader
 import scherzo/orchestrator/yaml_step_orphans
 import scherzo/orchestrator/yaml_workflow_lifecycle
 import scherzo/review_lane_preflight
-import scherzo/review_lane_preflight_policy
 import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
@@ -308,6 +308,11 @@ type State {
       process.Subject(Result(Nil, Nil)),
     ),
     transition_invariant_violation_pending: Bool,
+    capabilities: daemon_capabilities.DaemonCapabilities(
+      State,
+      Message,
+      TimerHandle,
+    ),
     dependencies: RuntimeDependencies,
   )
 }
@@ -391,6 +396,33 @@ pub fn default_dependencies() -> RuntimeDependencies {
       }
     },
     check_transition_invariants: daemon_transition_shell.default_invariant_checker,
+  )
+}
+
+fn build_daemon_capabilities(
+  event_hub: process.Subject(hub.Message),
+  _effect_runner_handle: effect_runner.Handle,
+  dependencies: RuntimeDependencies,
+) -> daemon_capabilities.DaemonCapabilities(State, Message, TimerHandle) {
+  daemon_capabilities.daemon_capabilities(
+    clock: daemon_capabilities.clock(dependencies.now_ms),
+    logger: daemon_capabilities.logger(dependencies.logger),
+    events: daemon_capabilities.event_publisher(event_hub, dependencies.now_ms),
+    ledger: daemon_capabilities.ledger_writer(
+      append_bodies: append_ledger_bodies,
+      append_bodies_best_effort: append_ledger_bodies_best_effort,
+      append_records: append_ledger_records,
+    ),
+    effects: daemon_capabilities.effect_queue(
+      enqueue: enqueue_side_effect,
+      enqueue_outbox: enqueue_outbox_side_effect,
+      enqueue_outbox_with_attempt_count: enqueue_outbox_side_effect_with_attempt_count,
+      enqueue_outbox_with_attempt_count_result: enqueue_outbox_side_effect_with_attempt_count_result,
+    ),
+    timers: daemon_capabilities.timers(
+      send_after: dependencies.send_after,
+      cancel_timer: dependencies.cancel_timer,
+    ),
   )
 }
 
@@ -1147,6 +1179,12 @@ fn start_with_managed_launch_and_initialiser_timeout(
                       )
                       let control_server_monitor =
                         monitor_control_server(control_plane.handle)
+                      let capabilities =
+                        build_daemon_capabilities(
+                          event_hub,
+                          effect_runner_handle,
+                          dependencies,
+                        )
                       let state =
                         State(
                           subject: subject,
@@ -1193,6 +1231,7 @@ fn start_with_managed_launch_and_initialiser_timeout(
                           next_startup_recovery_waiter_id: 1,
                           pending_startup_recovery_waiters: dict.new(),
                           transition_invariant_violation_pending: False,
+                          capabilities: capabilities,
                           dependencies: dependencies,
                         )
                         |> log_startup_invariant_warn_mode
@@ -1667,7 +1706,7 @@ fn spawn_retry_step_resumption(
   state: State,
   recovered: recovery.RecoveredWorkflowRun,
 ) -> State {
-  case scheduled_resumption_context(state, recovered) {
+  case scheduled_resumption_from_recovery(state, recovered) {
     Ok(#(scheduled, dag)) ->
       spawn_recovered_scheduled_workflow_resumption(
         state,
@@ -1679,7 +1718,7 @@ fn spawn_retry_step_resumption(
   }
 }
 
-fn scheduled_resumption_context(
+fn scheduled_resumption_from_recovery(
   state: State,
   recovered: recovery.RecoveredWorkflowRun,
 ) -> Result(#(schedule_core.ScheduledRunContext, workflow_dag.WorkflowDag), Nil) {
@@ -1696,13 +1735,19 @@ fn scheduled_resumption_context(
             Error(_) -> Error(Nil)
             Ok(#(_, dag)) -> {
               let #(due_at_ms, attempt) =
-                scheduled_retry_context_values(state, job_id, recovered.run_id)
+                scheduled_retry_values_from_projection(
+                  state,
+                  job_id,
+                  recovered.run_id,
+                )
               Ok(#(
                 schedule_core.ScheduledRunContext(
                   job_id: job.id,
                   workflow_id: job.workflow,
                   due_at_ms: due_at_ms,
-                  started_at_ms: state.dependencies.now_ms(),
+                  started_at_ms: daemon_capabilities.now_ms(
+                    daemon_capabilities.daemon_clock(state.capabilities),
+                  ),
                   run_id: recovered.run_id,
                   attempt: attempt,
                   trigger: "retry-step",
@@ -1716,7 +1761,13 @@ fn scheduled_resumption_context(
   }
 }
 
-fn scheduled_retry_context_values(
+fn scheduled_capability_now(state: State) -> Int {
+  daemon_capabilities.now_ms(daemon_capabilities.daemon_clock(
+    state.capabilities,
+  ))
+}
+
+fn scheduled_retry_values_from_projection(
   state: State,
   job_id: String,
   run_id: String,
@@ -1731,9 +1782,9 @@ fn scheduled_retry_context_values(
             False -> run.attempt + 1
           },
         )
-        _ -> #(state.dependencies.now_ms(), 1)
+        _ -> #(scheduled_capability_now(state), 1)
       }
-    Error(Nil) -> #(state.dependencies.now_ms(), 1)
+    Error(Nil) -> #(scheduled_capability_now(state), 1)
   }
 }
 
@@ -1823,7 +1874,7 @@ fn spawn_recovered_scheduled_workflow_resumption(
       let tracker_client = state.tracker_client
       let bundle = state.workflow.bundle
       let secrets = state.workflow.secrets
-      let event_hub = state.event_hub
+      let capabilities = state.capabilities
       let pid =
         process.spawn_unlinked(fn() {
           let result =
@@ -1836,7 +1887,7 @@ fn spawn_recovered_scheduled_workflow_resumption(
               secrets,
               dependencies.workflow_run_dependencies,
               subject,
-              event_hub,
+              capabilities,
               session_id,
               dependencies.now_ms,
             )
@@ -1926,7 +1977,11 @@ fn spawn_recovered_workflow_resumption(
           token_totals: session_tokens.zero_token_totals(),
         ),
       )
-      publish_recovery_lifecycle(state.event_hub, session_id, recovery)
+      daemon_capabilities.recovery_lifecycle(
+        daemon_capabilities.daemon_events(state.capabilities),
+        session_id,
+        recovery,
+      )
       event_publisher.lifecycle(
         state.event_hub,
         session_id,
@@ -1949,7 +2004,7 @@ fn spawn_recovered_workflow_resumption(
       let tracker_client = state.tracker_client
       let bundle = state.workflow.bundle
       let secrets = state.workflow.secrets
-      let event_hub = state.event_hub
+      let capabilities = state.capabilities
       let pid =
         process.spawn_unlinked(fn() {
           let result =
@@ -1960,7 +2015,7 @@ fn spawn_recovered_workflow_resumption(
               secrets,
               dependencies.workflow_run_dependencies,
               subject,
-              event_hub,
+              capabilities,
               session_id,
               dependencies.now_ms,
             )
@@ -2042,7 +2097,11 @@ fn run_recovered_workflow_worker(
   secrets: List(String),
   workflow_dependencies: workflow_run.Dependencies,
   daemon_subject: process.Subject(Message),
-  event_hub: process.Subject(hub.Message),
+  capabilities: daemon_capabilities.DaemonCapabilities(
+    State,
+    Message,
+    TimerHandle,
+  ),
   session_id: String,
   now_ms: fn() -> Int,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
@@ -2089,21 +2148,22 @@ fn run_recovered_workflow_worker(
           tracker_client,
           secrets,
           recovered.run_id,
-          yaml_workflow_dependencies(
+          yaml_workflow_lifecycle.workflow_dependencies(
             workflow_dependencies,
             recovered.issue,
             recovered.run_id,
             session_id,
-            daemon_subject,
-            event_hub,
-            now_ms,
+            yaml_step_routes(daemon_subject),
+            capabilities,
           ),
           resume,
         )
       {
         Ok(success) -> {
           publish_post_success_cleanup_warning(
-            event_hub,
+            daemon_capabilities.event_hub(daemon_capabilities.daemon_events(
+              capabilities,
+            )),
             session_id,
             success.cleanup_warning,
           )
@@ -2124,7 +2184,11 @@ fn run_recovered_scheduled_workflow_worker(
   secrets: List(String),
   workflow_dependencies: workflow_run.Dependencies,
   daemon_subject: process.Subject(Message),
-  event_hub: process.Subject(hub.Message),
+  capabilities: daemon_capabilities.DaemonCapabilities(
+    State,
+    Message,
+    TimerHandle,
+  ),
   session_id: String,
   now_ms: fn() -> Int,
 ) -> Result(workflow_run.WorkflowRunSuccess, workflow_run.WorkflowRunFailure) {
@@ -2162,19 +2226,20 @@ fn run_recovered_scheduled_workflow_worker(
       bundle.orchestrator,
       tracker_client,
       secrets,
-      yaml_scheduled_workflow_dependencies(
+      yaml_workflow_lifecycle.scheduled_workflow_dependencies(
         workflow_dependencies,
         scheduled,
-        daemon_subject,
-        event_hub,
-        now_ms,
+        yaml_step_routes(daemon_subject),
+        capabilities,
       ),
       resume,
     )
   {
     Ok(success) -> {
       publish_post_success_cleanup_warning(
-        event_hub,
+        daemon_capabilities.event_hub(daemon_capabilities.daemon_events(
+          capabilities,
+        )),
         session_id,
         success.cleanup_warning,
       )
@@ -2889,7 +2954,10 @@ fn handle_known_worker_down(
     True -> {
       let state =
         append_workflow_interrupted_terminal(state, handle, "worker_down")
-      worker_lifecycle.publish_worker_down(state.event_hub, handle.session_id)
+      worker_lifecycle.publish_worker_down(
+        daemon_capabilities.daemon_events(state.capabilities),
+        handle.session_id,
+      )
       state
     }
   }
@@ -2904,47 +2972,12 @@ fn handle_known_worker_down(
 
 fn scheduled_worker_down_context(
   state: State,
-) -> worker_lifecycle.ScheduledWorkerDownContext(State) {
+) -> worker_lifecycle.ScheduledWorkerDownContext(State, Message, TimerHandle) {
   worker_lifecycle.ScheduledWorkerDownContext(
     state: state,
+    capabilities: state.capabilities,
     set_registry: fn(state, registry) { State(..state, registry: registry) },
-    log_worker_down: fn(state, job_id, run_id) {
-      log_state(state, "warn", "scheduled_worker_down", [
-        #("job_id", job_id),
-        #("run_id", run_id),
-      ])
-    },
-    publish_worker_down: fn(session_id) {
-      event_publisher.lifecycle(
-        state.event_hub,
-        session_id,
-        session_event.WorkerDown,
-        None,
-      )
-    },
-    finish_failed_session: fn(session_id) {
-      hub.finish_session(state.event_hub, session_id, session_reason.Failed)
-    },
     worker_failure_follow_up: scheduled_worker_failure_follow_up,
-    append_failure_ledger: fn(state, handle, reason, retry_exhausted, run_root) {
-      append_ledger_bodies_best_effort(
-        state,
-        [
-          record.ScheduledRunFailed(
-            handle.job_id,
-            handle.workflow_id,
-            handle.due_at_ms,
-            handle.run_id,
-            handle.attempt,
-            state.dependencies.now_ms(),
-            reason,
-            retry_exhausted,
-            run_root,
-          ),
-        ],
-        "scheduled_worker_down_append_failed",
-      )
-    },
     begin_failure_report_request: begin_scheduled_failure_report_request,
     start_pending_scheduled_runs: start_pending_scheduled_runs,
   )
@@ -3277,7 +3310,7 @@ fn apply_shell_operator_command(
   operator_runtime.apply_shell_operator_command(
     state,
     request,
-    operator_runtime.shell_handlers(
+    operator_runtime.command_routes(
       reload_workflow_for_operator: reload_workflow_for_operator,
       retry_workflow_step_for_operator: fn(
         state,
@@ -4971,8 +5004,8 @@ fn record_orphaned_yaml_children_from_plan(
                 recommended_action: Some("cleanup_orphan_steps"),
               )
             hub.update_recovery(state.event_hub, session_id, Some(recovery))
-            publish_recovery_lifecycle(
-              state.event_hub,
+            daemon_capabilities.recovery_lifecycle(
+              daemon_capabilities.daemon_events(state.capabilities),
               session_id,
               Some(recovery),
             )
@@ -6263,7 +6296,7 @@ fn transition_dispatch_context(
     state.dependencies.now_ms(),
     state.recovery_by_issue,
     state.workflow.bundle.orchestrator.config_dir,
-    review_lane_preflight_policy.from_env(),
+    review_lane_preflight.policy_from_env(),
   )
 }
 
@@ -6358,7 +6391,7 @@ fn run_transition_messages(
 
 fn transition_shell_context(
   state: State,
-) -> daemon_transition_shell.Context(State) {
+) -> daemon_transition_shell.Context(State, Message, TimerHandle) {
   daemon_transition_shell.context(
     state: state,
     transition_state_from_state: transition_state_from_daemon,
@@ -6375,7 +6408,7 @@ fn transition_shell_context(
     invariant_mode: transition_invariant_mode_from_env(),
     invariant_checker: state.dependencies.check_transition_invariants,
     max_messages: daemon_transition_shell.default_message_limit(),
-    handlers: transition_shell_handlers(),
+    handlers: transition_shell_boundary(state.capabilities),
   )
 }
 
@@ -6386,13 +6419,17 @@ fn transition_invariant_mode_from_env() -> daemon_transition_shell.InvariantMode
   }
 }
 
-fn transition_shell_handlers() -> daemon_transition_shell.ShellHandlers(State) {
+fn transition_shell_boundary(
+  capabilities: daemon_capabilities.DaemonCapabilities(
+    State,
+    Message,
+    TimerHandle,
+  ),
+) -> daemon_transition_shell.ShellHandlers(State, Message, TimerHandle) {
   daemon_transition_shell.shell_handlers(
-    append_ledger: transition_append_ledger,
-    now_ms: fn(state) { state.dependencies.now_ms() },
-    log_effect: fn(state, level, event, fields) {
-      log_state(state, level, event, fields)
-      state
+    capabilities: capabilities,
+    mark_ledger_append_failed: fn(state) {
+      State(..state, transition_invariant_violation_pending: True)
     },
     start_worker: transition_start_worker,
     reply_snapshot: fn(state, _) { state },
@@ -7359,26 +7396,6 @@ fn adapter_error_message(err: adapter.TrackerError) -> String {
   }
 }
 
-fn transition_append_ledger(
-  state: State,
-  request: transition_effects.LedgerAppend,
-) -> #(State, Result(Nil, ledger.LedgerError)) {
-  let bodies = ledger_batch.to_bodies(request.batch)
-  let #(state, result) =
-    append_ledger_records(
-      state,
-      ledger_records_for_bodies(state.dependencies.now_ms(), bodies),
-      request.failure_event,
-    )
-  case result != Ok(Nil), request.policy {
-    True, transition_effects.StopBatchOnFailure -> #(
-      State(..state, transition_invariant_violation_pending: True),
-      result,
-    )
-    _, _ -> #(state, result)
-  }
-}
-
 fn transition_start_worker(
   state: State,
   request: transition_effects.WorkerStart,
@@ -8239,8 +8256,10 @@ fn schedule_scheduled_retry_timer(
   generation: Int,
   delay_ms: Int,
 ) -> State {
+  let timers = daemon_capabilities.daemon_timers(state.capabilities)
   let timer =
-    state.dependencies.send_after(
+    daemon_capabilities.send_after(
+      timers,
       state.subject,
       delay_ms,
       ScheduledRetryTick(run_id, generation),
@@ -8251,7 +8270,7 @@ fn schedule_scheduled_retry_timer(
       state.scheduled_retry_timers,
       run_id,
       timer,
-      state.dependencies.cancel_timer,
+      fn(timer) { daemon_capabilities.cancel_timer(timers, timer) },
     ),
   )
 }
@@ -8262,8 +8281,10 @@ fn schedule_scheduled_report_retry_timer(
   generation: Int,
   delay_ms: Int,
 ) -> State {
+  let timers = daemon_capabilities.daemon_timers(state.capabilities)
   let timer =
-    state.dependencies.send_after(
+    daemon_capabilities.send_after(
+      timers,
       state.subject,
       delay_ms,
       ScheduledReportRetryTick(run_id, generation),
@@ -8274,7 +8295,7 @@ fn schedule_scheduled_report_retry_timer(
       state.scheduled_report_retry_timers,
       run_id,
       timer,
-      state.dependencies.cancel_timer,
+      fn(timer) { daemon_capabilities.cancel_timer(timers, timer) },
     ),
   )
 }
@@ -8468,24 +8489,6 @@ fn workflow_run_started_body_for_claim(
   )
 }
 
-fn publish_recovery_lifecycle(
-  event_hub: process.Subject(hub.Message),
-  session_id: String,
-  recovery: Option(session_event.RecoveryInfo),
-) -> Nil {
-  case recovery {
-    None -> Nil
-    Some(info) ->
-      event_publisher.lifecycle_with_recovery(
-        event_hub,
-        session_id,
-        lifecycle_name_for_recovery(info.status),
-        info.message,
-        Some(info),
-      )
-  }
-}
-
 fn publish_post_success_cleanup_warning(
   event_hub: process.Subject(hub.Message),
   session_id: String,
@@ -8514,38 +8517,21 @@ fn publish_post_success_cleanup_warning(
   }
 }
 
-fn lifecycle_name_for_recovery(
-  status: session_event.RecoveryStatus,
-) -> session_event.LifecycleEventName {
-  case status {
-    session_event.Interrupted -> session_event.RecoveryInterrupted
-    session_event.Parked -> session_event.RecoveryParked
-    session_event.Cleanup -> session_event.RecoveryCleanup
-    session_event.OldStateResetRequired ->
-      session_event.OldStateResetRequiredEvent
-    session_event.Recovered
-    | session_event.Resumed
-    | session_event.InspectionNeeded
-    | session_event.Blocked
-    | session_event.DriftDetected -> session_event.RecoveryDetected
-  }
-}
-
 fn worker_spawn_context(
   state: State,
   issue: tracker_issue.Issue,
   run_id: String,
   session_id: String,
   snapshot: worker_lifecycle.WorkflowSnapshot,
-) -> worker_lifecycle.WorkerSpawnContext(State) {
+) -> worker_lifecycle.WorkerSpawnContext(State, Message, TimerHandle) {
   let subject = state.subject
   let dependencies = state.dependencies
   let tracker_client = state.tracker_client
   let secrets = state.workflow.secrets
-  let event_hub = state.event_hub
+  let capabilities = state.capabilities
   worker_lifecycle.WorkerSpawnContext(
     state: state,
-    now_ms: state.dependencies.now_ms,
+    capabilities: state.capabilities,
     register_session: fn(
       session_id,
       issue,
@@ -8578,25 +8564,6 @@ fn worker_spawn_context(
         ),
       )
     },
-    publish_recovery_lifecycle: fn(session_id, recovery) {
-      publish_recovery_lifecycle(state.event_hub, session_id, recovery)
-    },
-    publish_dispatch_started: fn(session_id) {
-      event_publisher.lifecycle(
-        state.event_hub,
-        session_id,
-        session_event.DispatchStarted,
-        None,
-      )
-    },
-    log_dispatch_started: fn(issue, run_id, workspace_path) {
-      log_state(state, "info", "dispatch_started", [
-        #("issue_id", issue.id),
-        #("issue_identifier", issue.identifier),
-        #("run_id", run_id),
-        #("workspace_path", workspace_path),
-      ])
-    },
     apply_task_ref_start: fn(state, ref, issue, workspace_path) {
       State(
         ..state,
@@ -8619,23 +8586,12 @@ fn worker_spawn_context(
             secrets,
             dependencies.workflow_run_dependencies,
             subject,
-            event_hub,
+            capabilities,
             session_id,
             dependencies.now_ms,
           )
         process.send(subject, WorkerFinished(issue.id, run_id, result))
       })
-    },
-    publish_worker_started: fn(session_id) {
-      event_publisher.lifecycle(
-        state.event_hub,
-        session_id,
-        session_event.WorkerStarted,
-        None,
-      )
-    },
-    update_running_status: fn(session_id) {
-      hub.update_status(state.event_hub, session_id, session_event.Running)
     },
     register_worker: fn(state, handle) {
       State(
@@ -8656,16 +8612,16 @@ fn scheduled_worker_spawn_context(
   state: State,
   pending: scheduled_runtime.PendingStart,
   dag: workflow_dag.WorkflowDag,
-) -> worker_lifecycle.ScheduledWorkerSpawnContext(State) {
+) -> worker_lifecycle.ScheduledWorkerSpawnContext(State, Message, TimerHandle) {
   let subject = state.subject
   let dependencies = state.dependencies
   let tracker_client = state.tracker_client
   let bundle = state.workflow.bundle
   let secrets = state.workflow.secrets
-  let event_hub = state.event_hub
+  let capabilities = state.capabilities
   worker_lifecycle.ScheduledWorkerSpawnContext(
     state: state,
-    now_ms: state.dependencies.now_ms,
+    capabilities: state.capabilities,
     reserve_session_sequence: fn(state) {
       let #(registry, _session_sequence) =
         worker_registry.reserve_session_sequence(state.registry)
@@ -8697,45 +8653,6 @@ fn scheduled_worker_spawn_context(
         ),
       )
     },
-    publish_dispatch_started: fn(session_id) {
-      event_publisher.lifecycle(
-        state.event_hub,
-        session_id,
-        session_event.DispatchStarted,
-        Some("scheduled"),
-      )
-    },
-    append_started_ledger: fn(
-      state,
-      pending,
-      started_at_ms,
-      session_id,
-      run_root,
-    ) {
-      append_ledger_bodies_best_effort(
-        state,
-        [
-          record.ScheduledRunStarted(
-            pending.job_id,
-            pending.workflow_id,
-            pending.due_at_ms,
-            started_at_ms,
-            pending.run_id,
-            pending.attempt,
-            session_id,
-            run_root,
-          ),
-        ],
-        "scheduled_started_append_failed",
-      )
-    },
-    log_dispatch_started: fn(job_id, run_id, workflow_id) {
-      log_state(state, "info", "scheduled_dispatch_started", [
-        #("job_id", job_id),
-        #("run_id", run_id),
-        #("workflow_id", workflow_id),
-      ])
-    },
     spawn: fn(started_at_ms, session_id) {
       let scheduled =
         schedule_core.ScheduledRunContext(
@@ -8757,23 +8674,12 @@ fn scheduled_worker_spawn_context(
             secrets,
             dependencies.workflow_run_dependencies,
             subject,
-            event_hub,
+            capabilities,
             session_id,
             dependencies.now_ms,
           )
         process.send(subject, ScheduledWorkerFinished(pending.run_id, result))
       })
-    },
-    publish_worker_started: fn(session_id) {
-      event_publisher.lifecycle(
-        state.event_hub,
-        session_id,
-        session_event.WorkerStarted,
-        Some("scheduled"),
-      )
-    },
-    update_running_status: fn(session_id) {
-      hub.update_status(state.event_hub, session_id, session_event.Running)
     },
     register_scheduled_worker: fn(state, handle) {
       State(
@@ -8804,7 +8710,11 @@ fn run_scheduled_workflow_worker(
   secrets: List(String),
   workflow_dependencies: workflow_run.Dependencies,
   daemon_subject: process.Subject(Message),
-  event_hub: process.Subject(hub.Message),
+  capabilities: daemon_capabilities.DaemonCapabilities(
+    State,
+    Message,
+    TimerHandle,
+  ),
   session_id: String,
   now_ms: fn() -> Int,
 ) -> Result(workflow_run.WorkflowRunSuccess, workflow_run.WorkflowRunFailure) {
@@ -8823,18 +8733,19 @@ fn run_scheduled_workflow_worker(
       bundle.orchestrator,
       tracker_client,
       secrets,
-      yaml_scheduled_workflow_dependencies(
+      yaml_workflow_lifecycle.scheduled_workflow_dependencies(
         workflow_dependencies,
         scheduled,
-        daemon_subject,
-        event_hub,
-        now_ms,
+        yaml_step_routes(daemon_subject),
+        capabilities,
       ),
     )
   {
     Ok(success) -> {
       publish_post_success_cleanup_warning(
-        event_hub,
+        daemon_capabilities.event_hub(daemon_capabilities.daemon_events(
+          capabilities,
+        )),
         session_id,
         success.cleanup_warning,
       )
@@ -8852,7 +8763,11 @@ fn run_workflow_worker(
   secrets: List(String),
   workflow_dependencies: workflow_run.Dependencies,
   daemon_subject: process.Subject(Message),
-  event_hub: process.Subject(hub.Message),
+  capabilities: daemon_capabilities.DaemonCapabilities(
+    State,
+    Message,
+    TimerHandle,
+  ),
   session_id: String,
   now_ms: fn() -> Int,
 ) -> Result(agent_types.WorkerSuccess, agent_types.WorkerFailure) {
@@ -8879,20 +8794,21 @@ fn run_workflow_worker(
         supplied_contract_values: workflow_run.empty_contract_run_values(),
         scheduled_context: None,
       )),
-      yaml_workflow_dependencies(
+      yaml_workflow_lifecycle.workflow_dependencies(
         workflow_dependencies,
         issue,
         run_id,
         session_id,
-        daemon_subject,
-        event_hub,
-        now_ms,
+        yaml_step_routes(daemon_subject),
+        capabilities,
       ),
     )
   {
     Ok(success) -> {
       publish_post_success_cleanup_warning(
-        event_hub,
+        daemon_capabilities.event_hub(daemon_capabilities.daemon_events(
+          capabilities,
+        )),
         session_id,
         success.cleanup_warning,
       )
@@ -8902,7 +8818,7 @@ fn run_workflow_worker(
   }
 }
 
-fn yaml_step_callbacks(
+fn yaml_step_routes(
   daemon_subject: process.Subject(Message),
 ) -> yaml_workflow_lifecycle.LifecycleCallbacks {
   yaml_workflow_lifecycle.LifecycleCallbacks(
@@ -8924,42 +8840,6 @@ fn yaml_step_callbacks(
     step_finished: fn(session_id, tokens) {
       process.send(daemon_subject, YamlStepFinished(session_id, tokens))
     },
-  )
-}
-
-fn yaml_scheduled_workflow_dependencies(
-  base: workflow_run.Dependencies,
-  scheduled: schedule_core.ScheduledRunContext,
-  daemon_subject: process.Subject(Message),
-  event_hub: process.Subject(hub.Message),
-  now_ms: fn() -> Int,
-) -> workflow_run.Dependencies {
-  yaml_workflow_lifecycle.scheduled_workflow_dependencies(
-    base,
-    scheduled,
-    yaml_step_callbacks(daemon_subject),
-    event_hub,
-    now_ms,
-  )
-}
-
-fn yaml_workflow_dependencies(
-  base: workflow_run.Dependencies,
-  issue: tracker_issue.Issue,
-  run_id: String,
-  parent_session_id: String,
-  daemon_subject: process.Subject(Message),
-  event_hub: process.Subject(hub.Message),
-  now_ms: fn() -> Int,
-) -> workflow_run.Dependencies {
-  yaml_workflow_lifecycle.workflow_dependencies(
-    base,
-    issue,
-    run_id,
-    parent_session_id,
-    yaml_step_callbacks(daemon_subject),
-    event_hub,
-    now_ms,
   )
 }
 
@@ -9047,13 +8927,11 @@ fn log_pi_update(
 
 fn worker_update_context(
   state: State,
-) -> worker_lifecycle.WorkerUpdateContext(State) {
+) -> worker_lifecycle.WorkerUpdateContext(State, Message, TimerHandle) {
   worker_lifecycle.WorkerUpdateContext(
     state: state,
+    capabilities: state.capabilities,
     registry: fn(state) { state.registry },
-    publish_worker_update: fn(session_id, update) {
-      event_publisher.worker_update(state.event_hub, session_id, update)
-    },
     log_worker_update: log_worker_update,
   )
 }
@@ -9102,48 +8980,10 @@ fn scheduled_worker_finished_context(
 
 fn scheduled_worker_success_context(
   state: State,
-) -> worker_lifecycle.ScheduledWorkerSuccessContext(State) {
+) -> worker_lifecycle.ScheduledWorkerSuccessContext(State, Message, TimerHandle) {
   worker_lifecycle.ScheduledWorkerSuccessContext(
     state: state,
-    log_worker_exited: fn(state, job_id, run_id, reason) {
-      log_state(state, "info", "scheduled_worker_exited", [
-        #("job_id", job_id),
-        #("run_id", run_id),
-        #("reason", reason),
-      ])
-    },
-    update_tokens: fn(session_id, tokens) {
-      hub.update_tokens(state.event_hub, session_id, tokens)
-    },
-    publish_worker_exited: fn(session_id, reason) {
-      event_publisher.lifecycle(
-        state.event_hub,
-        session_id,
-        session_event.WorkerExited,
-        Some(log.truncate(reason, 200)),
-      )
-    },
-    finish_session: fn(session_id, reason) {
-      hub.finish_session(state.event_hub, session_id, reason)
-    },
-    append_success_ledger: fn(state, handle, success) {
-      append_ledger_bodies_best_effort(
-        state,
-        [
-          record.ScheduledRunSucceeded(
-            handle.job_id,
-            handle.workflow_id,
-            handle.due_at_ms,
-            handle.run_id,
-            handle.attempt,
-            state.dependencies.now_ms(),
-            success.worker_success.tokens.total,
-            success.worker_success.turns,
-          ),
-        ],
-        "scheduled_success_append_failed",
-      )
-    },
+    capabilities: state.capabilities,
     needs_human: fn(state, handle, success) {
       worker_lifecycle.finish_scheduled_worker_needs_human(
         scheduled_worker_needs_human_context(state),
@@ -9156,59 +8996,27 @@ fn scheduled_worker_success_context(
 
 fn scheduled_worker_needs_human_context(
   state: State,
-) -> worker_lifecycle.ScheduledWorkerNeedsHumanContext(State) {
+) -> worker_lifecycle.ScheduledWorkerNeedsHumanContext(
+  State,
+  Message,
+  TimerHandle,
+) {
   worker_lifecycle.ScheduledWorkerNeedsHumanContext(
     state: state,
-    log_needs_human: fn(state, job_id, run_id) {
-      log_state(state, "warn", "scheduled_worker_needs_human", [
-        #("job_id", job_id),
-        #("run_id", run_id),
-      ])
-    },
-    update_tokens: fn(session_id, tokens) {
-      hub.update_tokens(state.event_hub, session_id, tokens)
-    },
-    publish_worker_exited: fn(session_id, reason) {
-      event_publisher.lifecycle(
-        state.event_hub,
-        session_id,
-        session_event.WorkerExited,
-        Some(reason),
-      )
-    },
-    finish_failed_session: fn(session_id) {
-      hub.finish_session(state.event_hub, session_id, session_reason.Failed)
-    },
-    append_failure_ledger: scheduled_failure_ledger_append,
+    capabilities: state.capabilities,
+    append_failure_ledger: scheduled_failure_ledger_via_capabilities,
     begin_failure_report_request: begin_scheduled_failure_report_request,
   )
 }
 
 fn scheduled_worker_failure_context(
   state: State,
-) -> worker_lifecycle.ScheduledWorkerFailureContext(State) {
+) -> worker_lifecycle.ScheduledWorkerFailureContext(State, Message, TimerHandle) {
   worker_lifecycle.ScheduledWorkerFailureContext(
     state: state,
-    log_worker_exited: fn(state, job_id, run_id, reason) {
-      log_state(state, "warn", "scheduled_worker_exited", [
-        #("job_id", job_id),
-        #("run_id", run_id),
-        #("reason", log.truncate(reason, 200)),
-      ])
-    },
-    publish_worker_exited: fn(session_id, reason) {
-      event_publisher.lifecycle(
-        state.event_hub,
-        session_id,
-        session_event.WorkerExited,
-        Some(log.truncate(reason, 200)),
-      )
-    },
-    finish_failed_session: fn(session_id) {
-      hub.finish_session(state.event_hub, session_id, session_reason.Failed)
-    },
+    capabilities: state.capabilities,
     worker_failure_follow_up: scheduled_worker_failure_follow_up,
-    append_failure_ledger: scheduled_failure_ledger_append,
+    append_failure_ledger: scheduled_failure_ledger_via_capabilities,
     begin_failure_report_request: begin_scheduled_failure_report_request,
   )
 }
@@ -9234,14 +9042,15 @@ fn scheduled_worker_failure_follow_up(
   #(State(..state, scheduled_runtime: runtime), follow_up)
 }
 
-fn scheduled_failure_ledger_append(
+fn scheduled_failure_ledger_via_capabilities(
   state: State,
   handle: worker_registry.ScheduledWorkerHandle,
   reason: String,
   retry_exhausted: Bool,
   run_root: Option(String),
 ) -> State {
-  append_ledger_bodies_best_effort(
+  daemon_capabilities.append_bodies_best_effort(
+    daemon_capabilities.daemon_ledger(state.capabilities),
     state,
     [
       record.ScheduledRunFailed(
@@ -9250,7 +9059,9 @@ fn scheduled_failure_ledger_append(
         handle.due_at_ms,
         handle.run_id,
         handle.attempt,
-        state.dependencies.now_ms(),
+        daemon_capabilities.now_ms(daemon_capabilities.daemon_clock(
+          state.capabilities,
+        )),
         reason,
         retry_exhausted,
         run_root,
@@ -9857,24 +9668,18 @@ fn handle_side_effect_completed(
   completion: effect_runner.Completion,
 ) -> State {
   effect_completion_handler.handle_completed(
-    effect_completion_context(state),
+    effect_completion_boundary(state),
     completion,
   )
 }
 
-fn effect_completion_context(
+fn effect_completion_boundary(
   state: State,
-) -> effect_completion_handler.Context(State) {
+) -> effect_completion_handler.Context(State, Message, TimerHandle) {
   effect_completion_handler.context(
     state: state,
-    log_side_effect_crashed: fn(state, effect, reason) {
-      log_state(state, "warn", "side_effect_crashed", [
-        #("effect", effect_runner.effect_kind(effect)),
-        #("reason", reason),
-      ])
-      state
-    },
-    result_handlers: effect_completion_handler.result_handlers(
+    capabilities: state.capabilities,
+    result_handlers: effect_completion_handler.result_routes(
       candidate_fetch_finished: handle_candidate_fetch_finished,
       running_refresh_finished: handle_running_refresh_finished,
       retry_refresh_finished: handle_retry_refresh_finished,

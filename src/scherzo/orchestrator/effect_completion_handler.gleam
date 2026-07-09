@@ -1,4 +1,5 @@
 import scherzo/error
+import scherzo/orchestrator/daemon_capabilities
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/outbox_effects
 import scherzo/review_lane_preflight
@@ -89,7 +90,7 @@ pub opaque type ResultHandlers(state) {
   )
 }
 
-pub fn result_handlers(
+pub fn result_routes(
   candidate_fetch_finished candidate_fetch_finished: fn(
     state,
     Int,
@@ -188,44 +189,64 @@ pub fn result_handlers(
   )
 }
 
-pub opaque type Context(state) {
+pub opaque type Context(state, message, timer) {
   Context(
     state: state,
-    log_side_effect_crashed: fn(state, effect_runner.Effect, String) -> state,
+    capabilities: daemon_capabilities.DaemonCapabilities(state, message, timer),
     result_handlers: ResultHandlers(state),
   )
 }
 
 pub fn context(
   state state: state,
-  log_side_effect_crashed log_side_effect_crashed: fn(
+  capabilities capabilities: daemon_capabilities.DaemonCapabilities(
     state,
-    effect_runner.Effect,
-    String,
-  ) -> state,
+    message,
+    timer,
+  ),
   result_handlers result_handlers: ResultHandlers(state),
-) -> Context(state) {
+) -> Context(state, message, timer) {
   Context(
     state: state,
-    log_side_effect_crashed: log_side_effect_crashed,
+    capabilities: capabilities,
     result_handlers: result_handlers,
   )
 }
 
 pub fn handle_completed(
-  context: Context(state),
+  context: Context(state, message, timer),
   completion: effect_runner.Completion,
 ) -> state {
   case completion {
     effect_runner.Finished(_, result) -> handle_result(context, result)
     effect_runner.Crashed(_, effect, reason) -> {
-      let state = context.log_side_effect_crashed(context.state, effect, reason)
+      let state = log_side_effect_crashed(context, effect, reason)
       handle_result(
         Context(..context, state: state),
         crash_result_for_effect(effect, reason),
       )
     }
   }
+}
+
+fn log_side_effect_crashed(
+  context: Context(state, message, timer),
+  effect: effect_runner.Effect,
+  reason: String,
+) -> state {
+  case
+    daemon_capabilities.write(
+      daemon_capabilities.daemon_logger(context.capabilities),
+      "warn",
+      "side_effect_crashed",
+      [#("effect", effect_runner.effect_kind(effect)), #("reason", reason)],
+      [],
+    )
+  {
+    Ok(Nil) -> Nil
+    Error(Nil) -> Nil
+  }
+  context.state
 }
 
 pub fn crash_result_for_effect(
@@ -337,7 +358,7 @@ pub fn crash_result_for_effect(
 }
 
 fn handle_result(
-  context: Context(state),
+  context: Context(state, message, timer),
   result: effect_runner.EffectResult,
 ) -> state {
   let handlers = context.result_handlers
