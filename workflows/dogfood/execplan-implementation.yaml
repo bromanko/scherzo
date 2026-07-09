@@ -73,7 +73,43 @@ steps:
     prompt: prompts/execplan-implementation-implement.md
     model: openai-codex/gpt-5.4
     thinking: medium
+    structured_output:
+      format: json
+      artifact_name: implementation_completion_submission
+      required: true
+      validation_retries: 0
+      source:
+        type: pi_tool_call
+        tool_name: submit_implementation_completion
+        parameters_schema_path: .scherzo/workflows/schemas/provider/implementation-completion-submission.v1.schema.json
+      validators:
+        - name: implementation_completion_submission_provider_shape
+          type: json_schema
+          path: .scherzo/workflows/schemas/provider/implementation-completion-submission.v1.schema.json
+          draft: "2020-12"
+        - name: implementation_completion_submission_schema
+          type: json_schema
+          path: .scherzo/workflows/schemas/implementation-completion-submission.v1.schema.json
+          draft: "2020-12"
+        - name: implementation_completion_gate_from_submission
+          type: command
+          argv:
+            - python3
+            - .scherzo/workflows/scripts/scherzo-implementation
+            - gate-implementation-completion
+          working_directory: workspace
+          timeout: 30s
+      schema:
+        type: object
+        required:
+          - ready_for_verification
+          - changed_files
+          - remaining_required_work
+          - blockers
     run_in: main
+    # Incomplete/no-op implementation requires operator action, not bounded failed-step recovery.
+    recovery:
+      enabled: false
 
   - id: gate_no_conflict
     kind: command

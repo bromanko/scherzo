@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scherzo.local/workflows/schemas/implementation-completion-submission.v1.schema.json",
+  "title": "Scherzo broad implementation completion submission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ready_for_verification",
+    "changed_files",
+    "remaining_required_work",
+    "blockers"
+  ],
+  "properties": {
+    "ready_for_verification": { "type": "boolean" },
+    "changed_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+      },
+      "uniqueItems": true
+    },
+    "remaining_required_work": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "description"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "conflict",
+              "missing_input",
+              "unsafe_ambiguity",
+              "required_decision",
+              "infrastructure",
+              "other"
+            ]
+          },
+          "description": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

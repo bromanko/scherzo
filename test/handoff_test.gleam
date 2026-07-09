@@ -452,6 +452,33 @@ pub fn workflow_command_failure_handoff_renders_step_batch_timeout_unrecovered_a
   assert !string.contains(failure_comment, "pi_protocol_error")
 }
 
+pub fn workflow_command_failure_handoff_renders_incomplete_implementation_action_test() {
+  let failure =
+    worker_failure(
+      error.WorkflowCommandFailed(
+        code: "implementation_incomplete_noop",
+        step_id: "implement_plan",
+        detail: "SCHERZO_FAILURE_CODE=implementation_incomplete_noop\ncompletion rejected before analyze_changes",
+      ),
+      Some(".scherzo/workspaces/execplan-implementation/ABC-1/run-1"),
+    )
+
+  let failure_comment =
+    capture_failure_comment(failure, "run-implementation-incomplete")
+
+  assert string.contains(
+    failure_comment,
+    "| Error | `implementation_incomplete_noop` |",
+  )
+  assert string.contains(failure_comment, "| Step | `implement_plan` |")
+  assert string.contains(
+    failure_comment,
+    "scherzo-implementation-completion-diagnostic.json",
+  )
+  assert string.contains(failure_comment, "operator-directed `implement_plan`")
+  assert string.contains(failure_comment, "do not retry `analyze_changes`")
+}
+
 pub fn workflow_command_failure_handoff_renders_plan_completion_recovery_action_test() {
   let relative_workspace =
     "test/tmp/handoff-plan-completion/.scherzo/workspaces/implementation/ABC-1/run-1"

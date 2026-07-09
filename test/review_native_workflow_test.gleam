@@ -13,6 +13,12 @@ const submit_dispositions_tool = "submit_review_finding_dispositions"
 
 const submit_plan_completion_tool = "submit_plan_completion_verdict"
 
+const submit_implementation_completion_tool = "submit_implementation_completion"
+
+const implementation_completion_provider_schema_path = ".scherzo/workflows/schemas/provider/implementation-completion-submission.v1.schema.json"
+
+const implementation_completion_schema_path = ".scherzo/workflows/schemas/implementation-completion-submission.v1.schema.json"
+
 const disposition_provider_schema_path = ".scherzo/workflows/schemas/provider/review-finding-dispositions.v1.schema.json"
 
 const plan_completion_provider_schema_path = ".scherzo/workflows/schemas/provider/plan-completion-verdict-submission.v1.schema.json"
@@ -134,6 +140,34 @@ fn expected_plan_completion_validators() -> List(
   ]
 }
 
+fn expected_implementation_completion_validators() -> List(
+  workflow_dag.StructuredOutputValidator,
+) {
+  [
+    workflow_dag.JsonSchemaValidator(
+      name: "implementation_completion_submission_provider_shape",
+      path: implementation_completion_provider_schema_path,
+      draft: Some("2020-12"),
+    ),
+    workflow_dag.JsonSchemaValidator(
+      name: "implementation_completion_submission_schema",
+      path: implementation_completion_schema_path,
+      draft: Some("2020-12"),
+    ),
+    workflow_dag.CommandValidator(
+      name: "implementation_completion_gate_from_submission",
+      argv: [
+        "python3",
+        ".scherzo/workflows/scripts/scherzo-implementation",
+        "gate-implementation-completion",
+      ],
+      timeout_ms: 30_000,
+      working_directory: workflow_dag.ValidatorInWorkspace,
+      env: [],
+    ),
+  ]
+}
+
 fn expected_disposition_validators() -> List(
   workflow_dag.StructuredOutputValidator,
 ) {
@@ -179,6 +213,30 @@ fn assert_disposition_structured_output(
     ])
   assert_disposition_tool_source(spec)
   assert spec.validators == expected_disposition_validators()
+}
+
+fn assert_implementation_completion_structured_output(
+  dag: workflow_dag.WorkflowDag,
+) -> Nil {
+  let spec = lane_spec(dag, "implement_plan")
+  assert spec.artifact_name == "implementation_completion_submission"
+  assert spec.required == True
+  assert spec.validation_retries == 0
+  assert spec.source
+    == structured_output_source.PiToolCallSource(
+      tool_name: submit_implementation_completion_tool,
+      parameters_schema_path: Some(
+        implementation_completion_provider_schema_path,
+      ),
+    )
+  assert spec.schema
+    == workflow_dag.StructuredObjectSchema([
+      "ready_for_verification",
+      "changed_files",
+      "remaining_required_work",
+      "blockers",
+    ])
+  assert spec.validators == expected_implementation_completion_validators()
 }
 
 fn assert_plan_completion_structured_output(
@@ -269,6 +327,7 @@ fn plan_completion_submission_json(
 
 fn workflow_schema_files() -> List(String) {
   [
+    "implementation-completion-submission.v1.schema.json",
     "plan-completion-verdict-submission.v1.schema.json",
     "review-artifacts.v1.schema.json",
     "review-finding-disposition-input.v1.schema.json",
@@ -282,6 +341,7 @@ fn workflow_schema_files() -> List(String) {
 
 fn provider_schema_files() -> List(String) {
   [
+    "implementation-completion-submission.v1.schema.json",
     "plan-completion-verdict-submission.v1.schema.json",
     "review-finding-dispositions.v1.schema.json",
     "review-lane-draft.correctness.v1.schema.json",
@@ -616,6 +676,45 @@ pub fn execplan_implementation_workflow_finalizes_dispositions_before_publish_te
       "Write `tmp/review-finding-dispositions.v1.json`",
     )
   })
+}
+
+pub fn execplan_implementation_completion_blocks_downstream_and_disables_recovery_test() {
+  let dag = execplan_implementation_dag()
+  assert_implementation_completion_structured_output(dag)
+
+  let assert Ok(implement_plan) = workflow_dag.step_by_id(dag, "implement_plan")
+  let assert Ok(None) =
+    workflow_dag.effective_recovery_config(dag, implement_plan)
+  let assert Ok(gate_no_conflict) =
+    workflow_dag.step_by_id(dag, "gate_no_conflict")
+  assert gate_no_conflict.depends_on == ["implement_plan"]
+  let assert Ok(analyze_changes) =
+    workflow_dag.step_by_id(dag, "analyze_changes")
+  assert analyze_changes.depends_on == ["gate_no_conflict"]
+  let assert Ok(verify_plan_completion) =
+    workflow_dag.step_by_id(dag, "verify_plan_completion")
+  assert verify_plan_completion.depends_on == ["analyze_changes"]
+}
+
+pub fn liv_1469_final_response_without_completion_submission_fails_test() {
+  let spec = lane_spec(execplan_implementation_dag(), "implement_plan")
+  let liv_1469_response =
+    result_artifact.from_final_response_with_tool_calls(
+      Some(
+        "Changed files: None\nReady for verify_plan_completion: No\nRemaining required work: implement required milestones and tests.",
+      ),
+      False,
+      "review_native_workflow_test",
+      [],
+    )
+
+  let assert Error(error) = validate_result(spec, liv_1469_response)
+  assert structured_output.error_code(error)
+    == "structured_output_tool_call_missing"
+  assert_contains(
+    structured_output.error_message(error),
+    submit_implementation_completion_tool,
+  )
 }
 
 pub fn execplan_plan_completion_verifiers_use_structured_output_test() {
