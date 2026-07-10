@@ -13,7 +13,7 @@ This directory contains checked-in Scherzo workflow definitions for dogfooding t
 - Populate Scherzo workspaces with `jj workspace add`, not separate `git clone` checkouts. New root workspaces use the canonical `SCHERZO_JJ_WORKSPACE_*` driver env configured under `.scherzo/scherzo.yaml` (`main@scherzo-agent` for this dogfood profile) and fall back through the selected local base branch and finally `@` only when no canonical base remote/branch is configured; set `SCHERZO_JJ_WORKSPACE_BASE` to override this for deliberate local dogfooding.
 - Keep dogfood workspace lifecycle policy explicit: `.scherzo/scherzo.yaml` defines `workspace.drivers.dogfood-jj` as the documented default, and implementation/review workflows select it with top-level `workspace.driver: dogfood-jj`. Command-only root-maintenance schedules use no-op drivers and explicitly resolve `SCHERZO_REPO_ROOT` before touching the root checkout; `origin-sync` has its own no-op driver so its configured remote is not launcher-only environment.
 - The `dogfood-jj` workspace driver uses the trusted command `$SCHERZO_REPO_ROOT/scripts/scherzo-workspace-jj` for lifecycle operations and self-describes the dogfood capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-commit-stack` from `describe --json`. The legacy `publish-change` name has been removed; checked-in dogfood workflows that publish to GitHub must require `publish-commit-stack`. The normative driver contract is [`docs/specs/WORKSPACE_DRIVER_SPEC.md`](../docs/specs/WORKSPACE_DRIVER_SPEC.md); hook-backed profile configuration and `publish-change` migration guidance are covered by [`docs/runbooks/workspace-driver-migration.md`](../docs/runbooks/workspace-driver-migration.md). Do not add new dogfood hook snippets as the current convention.
-- Use `scripts/scherzo-pi` through the checked-in `agents.runtime.pi.executable`/`args` wrapper so workflows such as research and bundle-based ExecPlan can select `openai-codex/gpt-5.5:xhigh` while other workflows keep the default pi model.
+- Use `scripts/scherzo-pi` through the checked-in `agents.runtime.pi.executable`/`args` wrapper so workflows such as research and bundle-based ExecPlan can select `openai-codex/gpt-5.6-sol:xhigh` while other workflows keep the default pi model.
 - Keep machine-specific variants as `.scherzo/workflows/**/*.local.yaml`, `.scherzo/workflows/**/*.local.yml`, `.scherzo/scherzo.local.yaml`, or `.scherzo/scherzo.local.yml`; they are ignored by git.
 - Do not put secrets in workflow files. Use environment variables for secrets and deployment-specific values.
 
@@ -51,10 +51,10 @@ The checked-in workflow expects:
 export LINEAR_API_KEY=lin_api_...
 # Optional. Defaults to Scherzo Core in devenv; used by the repo-local linear wrapper when creating issues without --project.
 export LINEAR_DEFAULT_PROJECT="Scherzo Core"
-# Optional. Defaults to openai-codex/gpt-5.5:xhigh for workflow:research.
-export SCHERZO_RESEARCH_PI_MODEL=openai-codex/gpt-5.5:xhigh
-# Optional. Defaults to openai-codex/gpt-5.5:xhigh for bundle-based ExecPlan drafting, revision, and implementation workflows.
-export SCHERZO_EXECPLAN_PI_MODEL=openai-codex/gpt-5.5:xhigh
+# Optional. Defaults to openai-codex/gpt-5.6-sol:xhigh for workflow:research.
+export SCHERZO_RESEARCH_PI_MODEL=openai-codex/gpt-5.6-sol:xhigh
+# Optional. Defaults to openai-codex/gpt-5.6-sol:xhigh for bundle-based ExecPlan drafting, revision, and implementation workflows.
+export SCHERZO_EXECPLAN_PI_MODEL=openai-codex/gpt-5.6-sol:xhigh
 # Optional. Defaults to the GitHub owner/repo configured in workspace driver env.
 # Set this only when running a local override profile or workflow bundle outside this checked-in config.
 export SCHERZO_GITHUB_REPO=scherzo-systems/scherzo
@@ -183,7 +183,7 @@ Use `tracker-contract`; the old Linear-named doctor check alias is retired.
 
 The checked-in workflows are:
 
-- `workflow:research` — investigates with `openai-codex/gpt-5.5:xhigh`, writes `research-findings.md`, verifies the file, and uses that Markdown as the inline Linear result text.
+- `workflow:research` — investigates with `openai-codex/gpt-5.6-sol:xhigh`, writes `research-findings.md`, verifies the file, and uses that Markdown as the inline Linear result text.
 - `workflow:implementation` — fetches Linear-backed task context directly, implements without requiring an ExecPlan, detects changed files across the full workflow diff, generates a local schema-versioned review brief under `$SCHERZO_RUN_ROOT/artifacts/review/`, runs repo-local staged review lanes through `.scherzo/workflows/scripts/scherzo-review`, validates format and tests through direnv, publishes a final jj bookmark as a GitHub PR, and lets Scherzo delete the workspace only after publication. If the workflow stops before publication, a `.scherzo-keep-workspace` marker keeps the run directory for operator recovery instead of deleting unpushed work.
 - `workflow:one-shot` — implements a small, well-specified task directly from Linear-fetched ticket context in a single agent pass. The implement agent chooses its own in-flight validation (no separate review lanes or feedback steps), then one deterministic validation gate (`scherzo-implementation validate`: format, tests, production lint) must pass before the same jj commit-stack publish path used by `workflow:implementation` opens a GitHub PR. A bounded single-attempt recovery agent may repair mechanical validation failures; anything needing a second implementation pass fails to `Triage`. Use it for tickets where the full reviewed `workflow:implementation` pipeline is overkill; the agent stops instead of sprawling when the task exceeds one-shot scope.
 - `workflow:execplan` — drafts a concise human-reviewable ExecPlan Markdown review document under `docs/plans/` by default, or under a repository-relative destination requested by the task (for example, `Create an execplan at doobar/docs/plans`), retains the mechanical implementation pack as a structured Scherzo artifact, publishes only the review surface for humans, and creates or reuses a Linear-backed implementation task in `Backlog` that references the retained bundle.

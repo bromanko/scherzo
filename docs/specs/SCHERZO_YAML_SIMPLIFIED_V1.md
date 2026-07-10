@@ -142,8 +142,8 @@ agents:
   max_turns: 1
   sessions_per_task: 2
 
-  model: openai-codex/gpt-5.5
-  thinking: high
+  model: openai-codex/gpt-5.6-sol
+  thinking: xhigh
 
   recovery:
     attempts: 1

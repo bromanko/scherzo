@@ -4,7 +4,7 @@ id: one-shot
 description: Implement a small, well-specified task directly from ticket context in a single agent pass with self-directed validation, gate on one deterministic validation run, publish a PR, and report the PR URL.
 # The implement step is the only agent pass before the deterministic gate, so pin
 # a strong model here instead of inheriting the launcher's machine-specific default.
-model: openai-codex/gpt-5.5
+model: openai-codex/gpt-5.6-sol
 thinking: xhigh
 workspace:
   driver: dogfood-jj

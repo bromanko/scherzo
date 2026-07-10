@@ -8,8 +8,8 @@
 set -eu
 
 cwd=$(pwd -P)
-research_model=${SCHERZO_RESEARCH_PI_MODEL:-openai-codex/gpt-5.5:xhigh}
-execplan_model=${SCHERZO_EXECPLAN_PI_MODEL:-openai-codex/gpt-5.5:xhigh}
+research_model=${SCHERZO_RESEARCH_PI_MODEL:-openai-codex/gpt-5.6-sol:xhigh}
+execplan_model=${SCHERZO_EXECPLAN_PI_MODEL:-openai-codex/gpt-5.6-sol:xhigh}
 
 resolve_pi_bin() {
   if [ -n "${SCHERZO_PI_BIN:-}" ]; then
