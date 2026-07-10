@@ -238,21 +238,22 @@ while IFS= read -r line; do
         while true; do sleep 60; done
       fi
       if [[ -n "${FAKE_PI_AUTO_RETRY_SUCCESS:-}" ]]; then
-        jq -cn '{type:"message_update",delta:"first attempt"}'
-        jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"first attempt failed"}]}}'
-        jq -cn '{type:"auto_retry_start",attempt:1,maxAttempts:3,delayMs:1,errorMessage:"WebSocket error"}'
+        jq -cn '{type:"message_start",message:{role:"assistant",provider:"openai-codex-responses",stopReason:"error",errorMessage:"Codex SSE response headers timed out after 10000ms",content:[]}}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",willRetry:true,turns:($turns|tonumber)}'
+        jq -cn '{type:"auto_retry_start",attempt:1,maxAttempts:3,delayMs:1,errorMessage:"Codex SSE response headers timed out after 10000ms"}'
         jq -cn '{type:"turn_start"}'
         jq -cn '{type:"message_update",delta:"POPULATED"}'
         jq -cn '{type:"turn_end",message:{role:"assistant",content:[{type:"text",text:"POPULATED"}]}}'
-        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",messages:[{role:"assistant",content:"done after retry"}],turns:($turns|tonumber)}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",willRetry:false,messages:[{role:"assistant",content:"done after retry"}],turns:($turns|tonumber)}'
         jq -cn '{type:"auto_retry_end",success:true,attempt:1}'
         continue
       fi
       if [[ -n "${FAKE_PI_AUTO_RETRY_EARLY_END_WITH_TOOL_EVENTS:-}" ]]; then
         jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"first attempt failed"}]}}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",willRetry:true,turns:($turns|tonumber)}'
         jq -cn '{type:"auto_retry_start",attempt:1,maxAttempts:3,delayMs:1,errorMessage:"WebSocket error"}'
         jq -cn '{type:"turn_start"}'
-        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",turns:($turns|tonumber)}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",willRetry:false,turns:($turns|tonumber)}'
         jq -cn '{type:"message_update",delta:"retry produced tool call"}'
         jq -cn '{type:"message_end",message:{role:"assistant",content:[{type:"toolCall",id:"call_fake",name:"read",arguments:{path:"README.md"}}],stopReason:"toolUse"}}'
         jq -cn '{type:"auto_retry_end",success:true,attempt:1}'
@@ -261,20 +262,21 @@ while IFS= read -r line; do
         done
         jq -cn '{type:"tool_execution_end",toolCallId:"call_fake",toolName:"read",result:{content:[{type:"text",text:"tool done"}]},isError:false}'
         jq -cn '{type:"turn_end",message:{role:"assistant",content:[{type:"text",text:"retry completed after tool"}]}}'
-        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",messages:[{role:"assistant",content:"retry completed after tool"}],turns:($turns|tonumber)}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",willRetry:false,messages:[{role:"assistant",content:"retry completed after tool"}],turns:($turns|tonumber)}'
         continue
       fi
       if [[ -n "${FAKE_PI_AUTO_RETRY_EXHAUSTED:-}" ]]; then
         jq -cn '{type:"message_update",delta:"first attempt"}'
         jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"first attempt failed"}]}}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",willRetry:true,turns:($turns|tonumber)}'
         jq -cn '{type:"auto_retry_start",attempt:1,maxAttempts:2,delayMs:1,errorMessage:"WebSocket error"}'
         jq -cn '{type:"turn_start"}'
         jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: ECONNRESET",message:{role:"assistant",content:[{type:"text",text:"retry failed"}]}}'
-        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",turns:($turns|tonumber)}'
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",willRetry:false,turns:($turns|tonumber)}'
         jq -cn '{type:"auto_retry_end",success:false,attempt:2,finalError:"provider_transport_failure"}'
         continue
       fi
-      if [[ -n "${FAKE_PI_RETRYABLE_ERROR_NO_RETRY_EVENT:-}" ]]; then
+      if [[ -n "${FAKE_PI_ERROR_AGENT_END_WITHOUT_WILL_RETRY:-}" ]]; then
         jq -cn '{type:"turn_end",stopReason:"error",errorMessage:"provider_transport_failure: WebSocket error",message:{role:"assistant",content:[{type:"text",text:"provider failed"}]}}'
         jq -cn --arg turns "$prompt_seen" '{type:"agent_end",turns:($turns|tonumber)}'
         continue
@@ -332,7 +334,9 @@ while IFS= read -r line; do
       if [[ -n "${FAKE_PI_NO_AGENT_END:-}" ]]; then
         while true; do sleep 60; done
       fi
-      if [[ -n "${FAKE_PI_NO_AGENT_END_MESSAGES:-}" ]]; then
+      if [[ -n "${FAKE_PI_STOP_REASON_ERROR:-}" ]]; then
+        jq -cn --arg turns "$prompt_seen" '{type:"agent_end",willRetry:false,messages:[{role:"assistant",content:"done"}],turns:($turns|tonumber)}'
+      elif [[ -n "${FAKE_PI_NO_AGENT_END_MESSAGES:-}" ]]; then
         jq -cn --arg turns "$prompt_seen" '{type:"agent_end",turns:($turns|tonumber)}'
       else
         jq -cn --arg turns "$prompt_seen" '{type:"agent_end",messages:[{role:"assistant",content:"done"}],turns:($turns|tonumber)}'

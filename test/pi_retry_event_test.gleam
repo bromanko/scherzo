@@ -1,6 +1,5 @@
 import gleam/option.{None, Some}
 import scherzo/agent/pi_event
-import scherzo/error
 import scherzo/pi/protocol
 import scherzo/pi/retry_event
 
@@ -16,27 +15,13 @@ pub fn pi_event_maps_auto_retry_events_test() {
   assert pi_event.to_string(pi_event.AutoRetryEnd) == "auto_retry_end"
 }
 
-pub fn retryable_pi_error_classifies_provider_transport_protocol_errors_test() {
-  assert retry_event.retryable_pi_error(error.PiProtocolError(
-    "provider_transport_failure: WebSocket error",
-  ))
-  assert retry_event.retryable_pi_error(error.PiProtocolError("ECONNRESET"))
-  assert retry_event.retryable_pi_error(error.PiProtocolError("provider 503"))
-  assert retry_event.retryable_pi_error(error.PiProtocolError("429 rate limit"))
-}
+pub fn retry_event_parses_agent_end_will_retry_test() {
+  let retrying = decoded_record("{\"type\":\"agent_end\",\"willRetry\":true}")
+  let not_retrying =
+    decoded_record("{\"type\":\"agent_end\",\"willRetry\":false}")
 
-pub fn retryable_pi_error_rejects_local_and_context_failures_test() {
-  assert !retry_event.retryable_pi_error(error.PiReadTimeout)
-  assert !retry_event.retryable_pi_error(error.PiTurnTimeout)
-  assert !retry_event.retryable_pi_error(error.PiStallTimeout)
-  assert !retry_event.retryable_pi_error(error.PiMalformedJson("bad"))
-  assert !retry_event.retryable_pi_error(error.PiLaunchFailed("bad"))
-  assert !retry_event.retryable_pi_error(error.PiExited(2))
-  assert !retry_event.retryable_pi_error(error.PiContextWindowExhausted(
-    provider: None,
-    provider_code: None,
-    detail: "context",
-  ))
+  assert retry_event.agent_end_will_retry(retrying) == Some(True)
+  assert retry_event.agent_end_will_retry(not_retrying) == Some(False)
 }
 
 pub fn retry_event_parses_auto_retry_start_record_test() {

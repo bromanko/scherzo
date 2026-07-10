@@ -562,7 +562,7 @@ fn handle_turn_record(
     None ->
       case turn_check.stop_reason_failure(record) {
         Some(err) ->
-          case auto_retry.should_defer(context.config.pi, err) {
+          case auto_retry.awaits_pi_terminal_decision(err) {
             True ->
               active_turn_loop(
                 context,
@@ -590,6 +590,7 @@ fn handle_turn_record(
               handle_agent_end_record(
                 context,
                 session,
+                record,
                 prompt_queue,
                 stop_after_turn,
                 pending_ui,
@@ -627,6 +628,7 @@ fn handle_turn_record(
 fn handle_agent_end_record(
   context: Context,
   session: client.Session,
+  record: protocol.RpcRecord,
   prompt_queue: List(String),
   stop_after_turn: Bool,
   pending_ui: Option(operator_control.PendingUi),
@@ -668,6 +670,7 @@ fn handle_agent_end_record(
             monotonic_ms() + context.config.pi.stall_timeout_ms,
             auto_retry.mark_agent_end(
               pending_auto_retry,
+              retry_event.agent_end_will_retry(record),
               auto_retry.decision_deadline_ms(
                 monotonic_ms(),
                 context.config.pi.read_timeout_ms,

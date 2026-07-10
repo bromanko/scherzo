@@ -1,8 +1,6 @@
 import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
-import scherzo/config/types as config_types
 import scherzo/error
-import scherzo/pi/retry_event
 
 const decision_grace_max_ms = 1000
 
@@ -21,11 +19,17 @@ pub fn initial() -> State {
   NoPendingAutoRetry
 }
 
-pub fn should_defer(
-  config: config_types.PiConfig,
-  err: error.PiRpcError,
-) -> Bool {
-  config.auto_retry && retry_event.retryable_pi_error(err)
+pub fn awaits_pi_terminal_decision(err: error.PiRpcError) -> Bool {
+  case err {
+    error.PiProtocolError(_) -> True
+    error.PiLaunchFailed(_)
+    | error.PiMalformedJson(_)
+    | error.PiReadTimeout
+    | error.PiTurnTimeout
+    | error.PiStallTimeout
+    | error.PiExited(_)
+    | error.PiContextWindowExhausted(..) -> False
+  }
 }
 
 pub fn defer_failure(
@@ -119,9 +123,15 @@ pub fn mark_output_event(
   }
 }
 
-pub fn mark_agent_end(pending_auto_retry: State, deadline_ms: Int) -> State {
+pub fn mark_agent_end(
+  pending_auto_retry: State,
+  will_retry: Option(Bool),
+  deadline_ms: Int,
+) -> State {
   case pending_auto_retry {
     NoPendingAutoRetry -> NoPendingAutoRetry
+    PendingAutoRetry(started: False, error: err, ..) ->
+      mark_initial_agent_end(err, will_retry, deadline_ms)
     PendingAutoRetry(retry_output_seen: False, ..) -> pending_auto_retry
     PendingAutoRetry(error: err, started: started, ..) ->
       PendingAutoRetry(
@@ -132,6 +142,44 @@ pub fn mark_agent_end(pending_auto_retry: State, deadline_ms: Int) -> State {
         retry_output_seen: True,
       )
   }
+}
+
+fn mark_initial_agent_end(
+  err: Option(error.PiRpcError),
+  will_retry: Option(Bool),
+  deadline_ms: Int,
+) -> State {
+  case will_retry {
+    Some(True) ->
+      PendingAutoRetry(
+        error: err,
+        started: False,
+        decision_deadline_ms: Some(deadline_ms),
+        agent_end_seen: True,
+        retry_output_seen: False,
+      )
+    Some(False) -> terminal_pending_retry(err, deadline_ms)
+    None ->
+      terminal_pending_retry(
+        Some(error.PiProtocolError(
+          "pi agent_end missing willRetry after stopReason=error",
+        )),
+        deadline_ms,
+      )
+  }
+}
+
+fn terminal_pending_retry(
+  err: Option(error.PiRpcError),
+  deadline_ms: Int,
+) -> State {
+  PendingAutoRetry(
+    error: err,
+    started: False,
+    decision_deadline_ms: Some(deadline_ms - decision_grace_max_ms),
+    agent_end_seen: True,
+    retry_output_seen: False,
+  )
 }
 
 pub fn agent_end_seen(pending_auto_retry: State) -> Bool {

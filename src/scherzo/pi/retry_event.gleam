@@ -1,7 +1,5 @@
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import scherzo/error
 import scherzo/json_value.{type JsonValue}
 import scherzo/pi/protocol
 
@@ -23,60 +21,12 @@ pub fn from_record(record: protocol.RpcRecord) -> Option(AutoRetryEvent) {
   }
 }
 
-pub fn retryable_pi_error(error: error.PiRpcError) -> Bool {
-  case error {
-    error.PiProtocolError(detail) -> retryable_detail(detail)
-    error.PiLaunchFailed(_)
-    | error.PiMalformedJson(_)
-    | error.PiReadTimeout
-    | error.PiTurnTimeout
-    | error.PiStallTimeout
-    | error.PiExited(_)
-    | error.PiContextWindowExhausted(..) -> False
+pub fn agent_end_will_retry(record: protocol.RpcRecord) -> Option(Bool) {
+  case record.type_ {
+    "agent_end" ->
+      parsed_raw_json(record.raw_json) |> optional_bool_at("willRetry")
+    _ -> None
   }
-}
-
-pub fn retryable_agent_error(error: error.AgentRunnerError) -> Bool {
-  case error {
-    error.PiFailed(pi_error) -> retryable_pi_error(pi_error)
-    error.ProbeFailed(pi_error) -> retryable_pi_error(pi_error)
-    _ -> False
-  }
-}
-
-fn retryable_detail(detail: String) -> Bool {
-  let normalized = detail |> string.lowercase
-  list.any(retryable_needles(), fn(needle) {
-    string.contains(normalized, needle)
-  })
-}
-
-fn retryable_needles() -> List(String) {
-  [
-    "provider_transport_failure",
-    "websocket error",
-    "websocket closed",
-    "connection reset",
-    "connection refused",
-    "connection lost",
-    "econnreset",
-    "etimedout",
-    "fetch failed",
-    "socket hang up",
-    "ended without",
-    "http2 request did not get a response",
-    "terminated",
-    "overloaded",
-    "rate limit",
-    "too many requests",
-    "429",
-    "500",
-    "502",
-    "503",
-    "504",
-    "service unavailable",
-    "server error",
-  ]
 }
 
 fn auto_retry_start(record: protocol.RpcRecord) -> Option(AutoRetryEvent) {

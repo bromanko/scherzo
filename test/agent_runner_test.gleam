@@ -436,8 +436,8 @@ pub fn runner_completes_after_high_volume_streaming_message_updates_test() {
   assert success.result.source == "completed_assistant_messages"
 }
 
-pub fn runner_allows_pi_auto_retry_to_succeed_in_same_turn_test() {
-  let root = "test/tmp/runner-auto-retry-success"
+pub fn runner_allows_codex_sse_timeout_auto_retry_in_same_turn_test() {
+  let root = "test/tmp/runner-auto-retry-codex-sse-timeout"
   test_helpers.reset_dir(root)
   let transcript_path = root <> "/transcript.jsonl"
   let assert Ok(transcript) = path.absolute(transcript_path)
@@ -530,16 +530,10 @@ pub fn runner_fails_once_when_pi_auto_retry_exhausts_test() {
   let assert Some(_) = find_update(updates, "auto_retry_end")
 }
 
-pub fn runner_retryable_error_without_retry_event_fails_after_grace_test() {
-  let root = "test/tmp/runner-auto-retry-no-event"
+pub fn runner_rejects_errored_agent_end_without_will_retry_test() {
+  let root = "test/tmp/runner-agent-end-missing-will-retry"
   test_helpers.reset_dir(root)
-  let command = "FAKE_PI_RETRYABLE_ERROR_NO_RETRY_EVENT=1 " <> fake_pi()
-  let base = config(root, command, False, 1)
-  let cfg =
-    config_types.EffectiveConfig(
-      ..base,
-      pi: config_types.PiConfig(..base.pi, read_timeout_ms: 500),
-    )
+  let command = "FAKE_PI_ERROR_AGENT_END_WITHOUT_WILL_RETRY=1 " <> fake_pi()
   let update_subject = process.new_subject()
 
   let assert Error(failure) =
@@ -547,14 +541,14 @@ pub fn runner_retryable_error_without_retry_event_fails_after_grace_test() {
       issue("Todo"),
       None,
       workflow("Do it"),
-      cfg,
+      config(root, command, False, 1),
       tracker_returning(issue("Done")),
       fn(_, update) { process.send(update_subject, update) },
     )
 
   assert failure.reason
     == error.PiFailed(error.PiProtocolError(
-      "pi turn_end reported stopReason=error: provider_transport_failure: WebSocket error",
+      "pi agent_end missing willRetry after stopReason=error",
     ))
   let updates = drain_updates(update_subject, [])
   assert turn_event_names(updates) == ["turn_started", "turn_failed"]
