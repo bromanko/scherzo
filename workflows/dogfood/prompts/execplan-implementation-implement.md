@@ -23,8 +23,18 @@ Do not rely on step recovery to finish broad remaining plan work. Recovery is in
 
 Do not create commits, manage workspaces, or open a PR; the workflow publish step owns that.
 
+Required machine completion submission:
+
+- Before your final response, call `submit_implementation_completion` exactly once. A final response without this tool call cannot complete `implement_plan` successfully.
+- Set `ready_for_verification: true` only when the entire required implementation is ready for the unchanged `verify_plan_completion` step. Otherwise set it to `false`.
+- Set `changed_files` to the complete sorted repository-relative changed-file list in the workflow diff from the `base_change_id` recorded in `$SCHERZO_RUN_ROOT/state/implementation/metadata.json` through `@` (equivalent to `jj diff --from <base_change_id> --to @ --name-only --color=never`). Scherzo evaluates that same workflow-baseline diff, rather than only the current `@-..@` change, and rejects an empty, fabricated, or stale list.
+- Set `remaining_required_work` to every known required plan item that remains. Use an empty list only when none remains.
+- Set `blockers` to explicit blockers or conflicts, each with `kind` (`conflict`, `missing_input`, `unsafe_ambiguity`, `required_decision`, `infrastructure`, or `other`) and a concrete `description`. Use an empty list only when unblocked.
+- Submit truthful incomplete/blocker details even though Scherzo will reject the completion and stop for operator action. Never claim readiness merely to pass the gate.
+- This code-change workflow rejects `ready_for_verification: false`, any remaining required work, any blocker, no changed-file evidence, or changed-file evidence that does not match the workspace. It does so before `gate_no_conflict` and `analyze_changes`, with no bounded failed-step recovery for broad unfinished work.
+
 Final response:
 - Summarize changed files.
 - Summarize validation run.
-- State whether the implementation is ready for `verify_plan_completion`.
+- State whether the submitted implementation is ready for `verify_plan_completion`.
 - List known remaining required work as `None` when the verifier should pass, or list concrete blockers if the verifier should not pass.

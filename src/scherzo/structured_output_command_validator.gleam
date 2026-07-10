@@ -7,6 +7,7 @@ import gleam/string
 import scherzo/log
 import scherzo/path
 import scherzo/port
+import scherzo/step_artifact
 import scherzo/structured_output_validator
 import scherzo/workflow_dag
 
@@ -341,17 +342,24 @@ fn finish_process_result(
 ) {
   case status, timed_out {
     0, False -> Ok(structured_output_validator.ValidatorPass)
-    1, False ->
+    1, False -> {
+      let failure_code = case
+        step_artifact.failure_code_from_streams(stdout, stderr.value)
+      {
+        Some(code) -> code
+        None -> "structured_output_command_rejected"
+      }
       Error(failure(
         context,
-        "structured_output_command_rejected",
+        failure_code,
         "command validator rejected payload",
-        True,
+        command_rejection_retryable(failure_code),
         diagnostic_summary(stdout, stderr.value, secrets),
         stdout_truncated,
         stderr.truncated,
         secrets,
       ))
+    }
     2, False ->
       Error(failure(
         context,
@@ -396,6 +404,13 @@ fn finish_timeout(
     stderr.truncated,
     secrets,
   ))
+}
+
+fn command_rejection_retryable(failure_code: String) -> Bool {
+  case failure_code {
+    "implementation_incomplete_noop" -> False
+    _ -> True
+  }
 }
 
 fn diagnostic_summary(

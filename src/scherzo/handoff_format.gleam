@@ -626,6 +626,8 @@ fn suggested_next_action(code: String) -> String {
           "Inspect the post-rebase validation output in the retained workspace, fix the failures, then retry publish."
         "plan_completion_recovery_exhausted" ->
           "Read `state/implementation/scherzo-plan-completion-verdict.json` in the retained workspace, inspect `workflow_step_recovery_history`, salvage the retained work if needed, then use the normal full workflow retry command shown in the recovery artifacts, such as `scherzoctl retry <issue>`."
+        "implementation_incomplete_noop" ->
+          "Read `state/implementation/scherzo-implementation-completion-diagnostic.json` and the retained `implement_plan` final response. Resume broad implementation only with an operator-directed `implement_plan` or whole-workflow retry; do not retry `analyze_changes`."
         _ ->
           "Inspect the retained workspace and command diagnostics, fix the failing command, then retry the workflow."
       }

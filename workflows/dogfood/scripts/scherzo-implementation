@@ -41,6 +41,9 @@ CANONICAL_METADATA_RELATIVE_PATH = Path("state") / "implementation" / "metadata.
 CANONICAL_IMPLEMENTATION_STATE_RELATIVE_DIR = Path("state") / "implementation"
 CANONICAL_PLAN_COMPLETION_CONTEXT_NAME = "scherzo-plan-completion-context.json"
 CANONICAL_PLAN_COMPLETION_VERDICT_NAME = "scherzo-plan-completion-verdict.json"
+CANONICAL_IMPLEMENTATION_COMPLETION_DIAGNOSTIC_NAME = (
+    "scherzo-implementation-completion-diagnostic.json"
+)
 # Legacy compatibility surface for retained workspaces from the pre-step-recovery
 # topology. Checked-in workflows no longer call the old helper directly.
 CANONICAL_PLAN_COMPLETION_RECOVERY_NAME = "scherzo-plan-completion-recovery.json"
@@ -74,7 +77,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 def usage() -> None:
     print(
-        """Usage: scherzo-implementation <prepare|refresh-base|refresh-base-and-validate|analyze|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|languages|ticket-brief>
+        """Usage: scherzo-implementation <prepare|refresh-base|refresh-base-and-validate|analyze|gate-implementation-completion|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|languages|ticket-brief>
 
 
 Run from a Scherzo jj workflow workspace root.
@@ -85,6 +88,10 @@ prepare --source ticket
               retention until a PR is safely published.
 analyze       Diff from the recorded starting parent to @, detect review-
               relevant languages/files, and print review metadata.
+gate-implementation-completion [--submission PATH]
+              Validate the broad ExecPlan implementation agent's completion
+              submission against the workflow-baseline changed-file manifest.
+              Reject incomplete, blocked, or no-op work before conflict analysis.
 plan-completion-context
               Write and print the current ExecPlan implementation patch
               context for diagnostics. Checkpoint/gate commands stamp these
@@ -1719,6 +1726,361 @@ def analyze_command() -> None:
     print_list("REVIEW_COMMANDS", commands)
 
 
+IMPLEMENTATION_COMPLETION_REQUIRED_FIELDS = {
+    "ready_for_verification",
+    "changed_files",
+    "remaining_required_work",
+    "blockers",
+}
+IMPLEMENTATION_COMPLETION_BLOCKER_KINDS = {
+    "conflict",
+    "missing_input",
+    "unsafe_ambiguity",
+    "required_decision",
+    "infrastructure",
+    "other",
+}
+
+
+def implementation_completion_diagnostic_path() -> Path:
+    path = canonical_implementation_state_path(
+        CANONICAL_IMPLEMENTATION_COMPLETION_DIAGNOSTIC_NAME
+    )
+    if path is None:
+        fail(
+            "SCHERZO_RUN_ROOT is required to retain implementation-completion diagnostics",
+            failure_code="implementation_completion_diagnostic_write_failed",
+            exit_code=2,
+        )
+    return path
+
+
+def read_implementation_completion_submission(
+    submission_path: str | None,
+) -> dict[str, Any]:
+    try:
+        raw = (
+            Path(submission_path).read_text(encoding="utf-8")
+            if submission_path is not None
+            else sys.stdin.read()
+        )
+    except OSError as exc:
+        fail(
+            f"could not read implementation-completion submission: {exc}",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail(
+            f"implementation-completion submission must be valid JSON: {exc}",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    if not isinstance(value, dict):
+        fail(
+            "implementation-completion submission must be a JSON object",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    return value
+
+
+def implementation_completion_string_list(
+    submission: dict[str, Any],
+    field: str,
+) -> list[str]:
+    value = submission.get(field)
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
+        fail(
+            f"implementation-completion field {field!r} must be a list of non-empty strings",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    normalized = [item.strip() for item in value]
+    if len(normalized) != len(set(normalized)):
+        fail(
+            f"implementation-completion field {field!r} must not contain duplicates",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    return normalized
+
+
+def valid_implementation_evidence_path(value: str) -> bool:
+    path = Path(value)
+    return (
+        not path.is_absolute()
+        and value not in {"", ".", ".."}
+        and ".." not in path.parts
+        and "\\" not in value
+    )
+
+
+def validate_implementation_completion_submission(
+    submission: dict[str, Any],
+) -> dict[str, Any]:
+    fields = set(submission)
+    if fields != IMPLEMENTATION_COMPLETION_REQUIRED_FIELDS:
+        missing = sorted(IMPLEMENTATION_COMPLETION_REQUIRED_FIELDS - fields)
+        unexpected = sorted(fields - IMPLEMENTATION_COMPLETION_REQUIRED_FIELDS)
+        details: list[str] = []
+        if missing:
+            details.append("missing: " + ", ".join(missing))
+        if unexpected:
+            details.append("unexpected: " + ", ".join(unexpected))
+        fail(
+            "implementation-completion submission fields are invalid ("
+            + "; ".join(details)
+            + ")",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    ready = submission.get("ready_for_verification")
+    if not isinstance(ready, bool):
+        fail(
+            "implementation-completion field 'ready_for_verification' must be boolean",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    changed_files = implementation_completion_string_list(
+        submission, "changed_files"
+    )
+    if any(not valid_implementation_evidence_path(path) for path in changed_files):
+        fail(
+            "implementation-completion changed_files must contain safe repository-relative paths",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    remaining_required_work = implementation_completion_string_list(
+        submission, "remaining_required_work"
+    )
+    blockers = submission.get("blockers")
+    if not isinstance(blockers, list):
+        fail(
+            "implementation-completion field 'blockers' must be a list",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    normalized_blockers: list[dict[str, str]] = []
+    for blocker in blockers:
+        if not isinstance(blocker, dict) or set(blocker) != {"kind", "description"}:
+            fail(
+                "each implementation-completion blocker must contain only kind and description",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        kind = blocker.get("kind")
+        description = blocker.get("description")
+        if kind not in IMPLEMENTATION_COMPLETION_BLOCKER_KINDS:
+            fail(
+                "implementation-completion blocker kind is invalid",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        if not isinstance(description, str) or not description.strip():
+            fail(
+                "implementation-completion blocker description must be non-empty",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        normalized_blockers.append(
+            {"kind": str(kind), "description": description.strip()}
+        )
+    return {
+        "ready_for_verification": ready,
+        "changed_files": sorted(changed_files),
+        "remaining_required_work": remaining_required_work,
+        "blockers": normalized_blockers,
+    }
+
+
+def implementation_completion_plan_references(
+    metadata: dict[str, Any],
+) -> dict[str, str]:
+    fields = {
+        "plan_path": str(metadata.get("plan_path") or "").strip(),
+        "plan_sha256": str(metadata.get("plan_sha256") or "").strip(),
+        "plan_artifact_ref": str(metadata.get("plan_artifact_ref") or "").strip(),
+        "canonical_plan_path": str(metadata.get("canonical_plan_path") or "").strip(),
+        "execplan_bundle_path": str(
+            metadata.get("execplan_v2_bundle_path")
+            or implementation_state_relative_path("execplan-bundle.json")
+        ).strip(),
+        "implementation_pack_path": str(
+            metadata.get("execplan_v2_implementation_pack_path")
+            or implementation_state_relative_path("execplan-implementation-pack.json")
+        ).strip(),
+    }
+    return {key: value for key, value in fields.items() if value}
+
+
+def implementation_completion_workspace_evidence(
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    base_change_id = str(metadata.get("base_change_id") or "").strip()
+    if not base_change_id:
+        fail(
+            "implementation metadata is missing base_change_id",
+            failure_code="implementation_completion_evidence_failed",
+            exit_code=2,
+        )
+    records = [
+        {"path": path, "status": "changed"}
+        for path in sorted(set(changed_files_since(base_change_id)))
+    ]
+    manifest = "\n".join(
+        f"{record['status']}\t{record['path']}" for record in records
+    )
+    encoded_manifest = manifest.encode("utf-8")
+    return {
+        "source": "jj_workflow_diff",
+        "base_change_id": base_change_id,
+        "changed_file_count": len(records),
+        "changed_files": records,
+        "diff": {
+            "evidence_kind": "changed_file_manifest",
+            "sha256": hashlib.sha256(encoded_manifest).hexdigest(),
+            "bytes": len(encoded_manifest),
+            "content_retained": False,
+            "full_diff_materialized": False,
+        },
+    }
+
+
+def write_implementation_completion_diagnostic(
+    *,
+    status: str,
+    submission: dict[str, Any],
+    validation_error: dict[str, Any] | None,
+    workspace: dict[str, Any],
+    metadata: dict[str, Any],
+) -> Path:
+    step_id = os.environ.get("SCHERZO_STEP_ID", "implement_plan").strip()
+    attempt_index = os.environ.get("SCHERZO_ATTEMPT_INDEX", "0").strip()
+    diagnostic = {
+        "schema_version": 1,
+        "artifact_type": "scherzo.implementation_completion_diagnostic.v1",
+        "status": status,
+        "classification": (
+            "implementation_incomplete_noop" if status == "rejected" else None
+        ),
+        "submission": submission,
+        "validation_error": validation_error,
+        "workspace_evidence": workspace,
+        "plan_references": implementation_completion_plan_references(metadata),
+        "agent_final_response": {
+            "retained_by": "scherzo_step_artifact",
+            "step_id": step_id,
+            "attempt_index": attempt_index,
+            "step_artifact_ref": f"{step_id}/attempt-{attempt_index}.json",
+            "field": "final_response",
+        },
+        "operator_action": (
+            "Inspect the retained implementation response, submission, plan references, and workspace evidence. "
+            "Resume broad work only with an operator-directed implement_plan or whole-workflow retry; do not retry analyze_changes."
+            if status == "rejected"
+            else "No operator action required; continue to conflict and semantic completion verification."
+        ),
+    }
+    path = implementation_completion_diagnostic_path()
+    try:
+        write_json(path, diagnostic)
+    except OSError as exc:
+        fail(
+            f"could not write implementation-completion diagnostic {display_path(path)}: {exc}",
+            failure_code="implementation_completion_diagnostic_write_failed",
+            exit_code=2,
+        )
+    return path
+
+
+def parse_implementation_completion_args(args: list[str]) -> str | None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--submission")
+    try:
+        parsed = parser.parse_args(args)
+    except SystemExit:
+        usage()
+        sys.exit(2)
+    return parsed.submission
+
+
+def gate_implementation_completion_command(args: list[str]) -> None:
+    assert_implementation_completion_validator_workspace()
+    submission_path = parse_implementation_completion_args(args)
+    submission = validate_implementation_completion_submission(
+        read_implementation_completion_submission(submission_path)
+    )
+    metadata = load_implementation_metadata()
+    plan_path, _base_change_id = require_execplan_metadata(metadata)
+    validate_prepared_execplan_path(plan_path, Path.cwd())
+    workspace = implementation_completion_workspace_evidence(metadata)
+    actual_files = sorted(
+        str(record.get("path") or "").strip()
+        for record in workspace["changed_files"]
+        if str(record.get("path") or "").strip()
+    )
+    reason_codes: list[str] = []
+    if not submission["ready_for_verification"]:
+        reason_codes.append("not_ready_for_verification")
+    if submission["remaining_required_work"]:
+        reason_codes.append("remaining_required_work")
+    if submission["blockers"]:
+        reason_codes.append("blockers_reported")
+    if not submission["changed_files"]:
+        reason_codes.append("changed_file_evidence_missing")
+    if not actual_files:
+        reason_codes.append("workspace_no_implementation_changes")
+    if submission["changed_files"] != actual_files:
+        reason_codes.append("changed_file_evidence_mismatch")
+
+    if reason_codes:
+        error = {
+            "failure_code": "implementation_incomplete_noop",
+            "reason_codes": reason_codes,
+            "message": (
+                "The broad implementation pass is incomplete, blocked, or has no verified code-change evidence."
+            ),
+        }
+        diagnostic_path = write_implementation_completion_diagnostic(
+            status="rejected",
+            submission=submission,
+            validation_error=error,
+            workspace=workspace,
+            metadata=metadata,
+        )
+        print("IMPLEMENTATION_COMPLETION_GATE=rejected")
+        print("IMPLEMENTATION_COMPLETION_CLASSIFICATION=implementation_incomplete_noop")
+        print("IMPLEMENTATION_COMPLETION_REASON_CODES=" + ",".join(reason_codes))
+        print(
+            "IMPLEMENTATION_COMPLETION_DIAGNOSTIC_PATH="
+            + display_path(diagnostic_path)
+        )
+        fail(
+            "implementation completion rejected before gate_no_conflict/analyze_changes; "
+            f"inspect {display_path(diagnostic_path)} and take operator action",
+            failure_code="implementation_incomplete_noop",
+        )
+
+    diagnostic_path = write_implementation_completion_diagnostic(
+        status="accepted",
+        submission=submission,
+        validation_error=None,
+        workspace=workspace,
+        metadata=metadata,
+    )
+    print("IMPLEMENTATION_COMPLETION_GATE=passed")
+    print(
+        "IMPLEMENTATION_COMPLETION_DIAGNOSTIC_PATH="
+        + display_path(diagnostic_path)
+    )
+    print_list("IMPLEMENTATION_COMPLETION_CHANGED_FILES", actual_files)
+
+
 def require_execplan_metadata(metadata: dict[str, Any]) -> tuple[str, str]:
     source_kind = metadata.get("source_kind")
     if source_kind != "execplan":
@@ -2880,43 +3242,45 @@ def path_contains_or_equals(parent: Path, child: Path) -> bool:
         return False
 
 
+def validator_workspace_error(gate_label: str) -> str | None:
+    for env_key, location_label in [
+        ("SCHERZO_WORKSPACE_PATH", "step workspace"),
+        ("SCHERZO_REPO_ROOT", "repository workspace"),
+    ]:
+        configured_path = os.environ.get(env_key, "").strip()
+        if not configured_path:
+            continue
+        try:
+            expected = Path(configured_path).resolve(strict=False)
+            cwd = Path.cwd().resolve(strict=False)
+        except OSError as exc:
+            return f"could not resolve {gate_label} validator {location_label} paths: {exc}"
+        if not path_contains_or_equals(expected, cwd):
+            return (
+                f"{gate_label} validator is not running in the {location_label}: "
+                f"cwd={cwd} {env_key}={expected}"
+            )
+    return None
+
+
+def assert_implementation_completion_validator_workspace() -> None:
+    error = validator_workspace_error("implementation-completion")
+    if error is not None:
+        fail(
+            error,
+            failure_code="implementation_completion_workspace_mismatch",
+            exit_code=2,
+        )
+
+
 def assert_plan_completion_validator_workspace() -> None:
-    workspace_path = os.environ.get("SCHERZO_WORKSPACE_PATH", "").strip()
-    if workspace_path:
-        try:
-            workspace = Path(workspace_path).resolve(strict=False)
-            cwd = Path.cwd().resolve(strict=False)
-        except OSError as exc:
-            fail_plan_completion_gate(
-                f"could not resolve plan-completion validator workspace paths: {exc}",
-                failure_code="plan_completion_workspace_mismatch",
-                exit_code=2,
-            )
-        if not path_contains_or_equals(workspace, cwd):
-            fail_plan_completion_gate(
-                "plan-completion validator is not running in the step workspace: "
-                f"cwd={cwd} SCHERZO_WORKSPACE_PATH={workspace}",
-                failure_code="plan_completion_workspace_mismatch",
-                exit_code=2,
-            )
-    repo_root = os.environ.get("SCHERZO_REPO_ROOT", "").strip()
-    if repo_root:
-        try:
-            repo = Path(repo_root).resolve(strict=False)
-            cwd = Path.cwd().resolve(strict=False)
-        except OSError as exc:
-            fail_plan_completion_gate(
-                f"could not resolve plan-completion validator repository paths: {exc}",
-                failure_code="plan_completion_workspace_mismatch",
-                exit_code=2,
-            )
-        if not path_contains_or_equals(repo, cwd):
-            fail_plan_completion_gate(
-                "plan-completion validator is not running in the repository workspace: "
-                f"cwd={cwd} SCHERZO_REPO_ROOT={repo}",
-                failure_code="plan_completion_workspace_mismatch",
-                exit_code=2,
-            )
+    error = validator_workspace_error("plan-completion")
+    if error is not None:
+        fail_plan_completion_gate(
+            error,
+            failure_code="plan_completion_workspace_mismatch",
+            exit_code=2,
+        )
 
 
 def stamped_plan_completion_verdict(
@@ -3761,6 +4125,8 @@ def main(argv: list[str]) -> None:
         refresh_base_and_validate_command(args)
     elif command == "analyze" and not args:
         analyze_command()
+    elif command == "gate-implementation-completion":
+        gate_implementation_completion_command(args)
     elif command == "plan-completion-context":
         plan_completion_context_command(args)
     elif command == "checkpoint-plan-completion-verdict":

@@ -2124,6 +2124,238 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   assert !string.contains(workflow, "assert_base_drift_repair")
 }
 
+pub fn implementation_completion_gate_rejects_liv_1469_shaped_submission_test() {
+  let dir = "test/tmp/implementation-completion-gate-liv-1469"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_implementation_completion_submission(
+    dir,
+    "false",
+    "[]",
+    "[\"Implement the remaining required milestones and tests.\"]",
+    "[]",
+  )
+
+  let assert Ok(Nil) = simplifile.write(dir <> "/jj.log", "")
+  let artifact =
+    run_implementation_completion_gate(
+      dir,
+      "SCHERZO_FAKE_DIFF_SECRET=TOP_SECRET_IMPLEMENTATION_VALUE ",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(1)
+  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_COMPLETION_GATE=rejected",
+  )
+  assert string.contains(artifact.stdout, "not_ready_for_verification")
+  assert string.contains(artifact.stdout, "remaining_required_work")
+  assert string.contains(artifact.stdout, "changed_file_evidence_missing")
+  assert string.contains(
+    artifact.stderr,
+    "rejected before gate_no_conflict/analyze_changes",
+  )
+  let assert Ok(diagnostic) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-implementation-completion-diagnostic.json",
+    )
+  assert string.contains(diagnostic, "\"status\": \"rejected\"")
+  assert string.contains(
+    diagnostic,
+    "\"classification\": \"implementation_incomplete_noop\"",
+  )
+  assert string.contains(
+    diagnostic,
+    "Implement the remaining required milestones",
+  )
+  assert string.contains(diagnostic, "\"workspace_evidence\":")
+  assert string.contains(diagnostic, "\"source\": \"jj_workflow_diff\"")
+  assert string.contains(
+    diagnostic,
+    "\"evidence_kind\": \"changed_file_manifest\"",
+  )
+  assert string.contains(diagnostic, "\"content_retained\": false")
+  assert string.contains(diagnostic, "\"full_diff_materialized\": false")
+  assert string.contains(diagnostic, "\"plan_references\":")
+  assert string.contains(diagnostic, "docs/plans/example.md")
+  assert string.contains(diagnostic, "\"field\": \"final_response\"")
+  assert string.contains(diagnostic, "do not retry analyze_changes")
+  assert !string.contains(diagnostic, "TOP_SECRET_IMPLEMENTATION_VALUE")
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert jj_log == "diff --from local-start --to @ --name-only --color=never\n"
+}
+
+pub fn implementation_completion_gate_rejects_remaining_work_even_when_ready_test() {
+  let dir = "test/tmp/implementation-completion-gate-remaining-work"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_implementation_completion_submission(
+    dir,
+    "true",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[\"Add the required error-path test.\"]",
+    "[]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert string.contains(artifact.stdout, "remaining_required_work")
+  assert !string.contains(artifact.stdout, "not_ready_for_verification")
+}
+
+pub fn implementation_completion_gate_rejects_changed_file_mismatch_test() {
+  let dir = "test/tmp/implementation-completion-gate-file-mismatch"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_implementation_completion_submission(
+    dir,
+    "true",
+    "[\"src/fabricated.gleam\"]",
+    "[]",
+    "[]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert string.contains(artifact.stdout, "changed_file_evidence_mismatch")
+  assert !string.contains(artifact.stdout, "changed_file_evidence_missing")
+  assert !string.contains(
+    artifact.stdout,
+    "workspace_no_implementation_changes",
+  )
+  let assert Ok(diagnostic) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-implementation-completion-diagnostic.json",
+    )
+  assert string.contains(diagnostic, "src/fabricated.gleam")
+  assert string.contains(diagnostic, "changed_file_evidence_mismatch")
+}
+
+pub fn implementation_completion_gate_rejects_wrong_workspace_test() {
+  let dir = "test/tmp/implementation-completion-gate-workspace-mismatch"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_implementation_completion_submission(
+    dir,
+    "true",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[]",
+    "[]",
+  )
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "cat implementation-completion-submission.json | SCHERZO_RUN_ROOT=\"$PWD/run-root\" SCHERZO_WORKSPACE_PATH=\"$PWD/other\" SCHERZO_REPO_ROOT=\"$PWD\" PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-implementation-completion",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert artifact.failure_code
+    == Some("implementation_completion_workspace_mismatch")
+  assert string.contains(
+    artifact.stderr,
+    "implementation-completion validator is not running in the step workspace",
+  )
+}
+
+pub fn implementation_completion_gate_rejects_ready_noop_test() {
+  let dir = "test/tmp/implementation-completion-gate-noop"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_implementation_completion_submission(dir, "true", "[]", "[]", "[]")
+
+  let artifact =
+    run_implementation_completion_gate(dir, "SCHERZO_FAKE_NO_CHANGES=1 ")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert string.contains(artifact.stdout, "changed_file_evidence_missing")
+  assert string.contains(artifact.stdout, "workspace_no_implementation_changes")
+  let assert Ok(diagnostic) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-implementation-completion-diagnostic.json",
+    )
+  assert string.contains(diagnostic, "\"changed_file_count\": 0")
+  assert string.contains(diagnostic, "\"bytes\": 0")
+}
+
+pub fn implementation_completion_gate_accepts_matching_changed_implementation_test() {
+  let dir = "test/tmp/implementation-completion-gate-pass"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_implementation_completion_submission(
+    dir,
+    "true",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[]",
+    "[]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_COMPLETION_GATE=passed",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "- .scherzo/workflows/scripts/scherzo-implementation",
+  )
+  let assert Ok(diagnostic) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-implementation-completion-diagnostic.json",
+    )
+  assert string.contains(diagnostic, "\"status\": \"accepted\"")
+  assert string.contains(diagnostic, "\"classification\": null")
+  assert string.contains(diagnostic, "continue to conflict")
+}
+
+fn run_implementation_completion_gate(
+  dir: String,
+  env_prefix: String,
+) -> step_artifact.StepArtifact {
+  run_helper_in(
+    dir,
+    "cat implementation-completion-submission.json | "
+      <> env_prefix
+      <> "SCHERZO_RUN_ROOT=\"$PWD/run-root\" SCHERZO_WORKSPACE_PATH=\"$PWD\" SCHERZO_REPO_ROOT=\"$PWD\" SCHERZO_STEP_ID=implement_plan SCHERZO_ATTEMPT_INDEX=0 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation gate-implementation-completion",
+  )
+}
+
+fn write_implementation_completion_submission(
+  dir: String,
+  ready: String,
+  changed_files_json: String,
+  remaining_required_work_json: String,
+  blockers_json: String,
+) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/implementation-completion-submission.json",
+      "{\n"
+        <> "  \"ready_for_verification\": "
+        <> ready
+        <> ",\n"
+        <> "  \"changed_files\": "
+        <> changed_files_json
+        <> ",\n"
+        <> "  \"remaining_required_work\": "
+        <> remaining_required_work_json
+        <> ",\n"
+        <> "  \"blockers\": "
+        <> blockers_json
+        <> "\n}\n",
+    )
+  Nil
+}
+
 fn assert_workflow_refresh_ordering(
   workflow: String,
   prepare_step: String,
@@ -2515,9 +2747,11 @@ fn write_fake_jj(path: String) -> Nil {
         <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then exit 0; fi\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = push ]; then exit 0; fi\n"
         <> "if [ \"$1\" = diff ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_NO_CHANGES:-}\" = 1 ]; then exit 0; fi\n"
         <> "  summary=0\n"
-        <> "  for arg in \"$@\"; do if [ \"$arg\" = --summary ]; then summary=1; fi; done\n"
-        <> "  if [ \"$summary\" = 1 ]; then echo 'M .scherzo/workflows/scripts/scherzo-implementation'; else echo '.scherzo/workflows/scripts/scherzo-implementation'; fi\n"
+        <> "  name_only=0\n"
+        <> "  for arg in \"$@\"; do if [ \"$arg\" = --summary ]; then summary=1; fi; if [ \"$arg\" = --name-only ]; then name_only=1; fi; done\n"
+        <> "  if [ \"$summary\" = 1 ]; then echo 'M .scherzo/workflows/scripts/scherzo-implementation'; elif [ \"$name_only\" = 1 ]; then echo '.scherzo/workflows/scripts/scherzo-implementation'; elif [ -n \"${SCHERZO_FAKE_DIFF_SECRET:-}\" ]; then echo \"$SCHERZO_FAKE_DIFF_SECRET\"; else echo '.scherzo/workflows/scripts/scherzo-implementation'; fi\n"
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = rebase ]; then\n"

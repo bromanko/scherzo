@@ -1,0 +1,47 @@
+{
+  "type": "object",
+  "description": "Provider-facing completion submission for the broad ExecPlan implementation pass. Scherzo independently verifies changed-file and diff evidence.",
+  "required": [
+    "ready_for_verification",
+    "changed_files",
+    "remaining_required_work",
+    "blockers"
+  ],
+  "properties": {
+    "ready_for_verification": {
+      "type": "boolean",
+      "description": "True only when all required plan scope is implemented and ready for semantic verification."
+    },
+    "changed_files": {
+      "type": "array",
+      "description": "Complete repository-relative changed-file evidence from the current implementation workspace.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+      }
+    },
+    "remaining_required_work": {
+      "type": "array",
+      "description": "Concrete required plan work that remains; empty only when the semantic verifier should pass.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "blockers": {
+      "type": "array",
+      "description": "Explicit conflicts or blockers that prevent completion; empty when unblocked.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "description"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "pattern": "^(conflict|missing_input|unsafe_ambiguity|required_decision|infrastructure|other)$"
+          },
+          "description": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
