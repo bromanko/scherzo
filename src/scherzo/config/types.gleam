@@ -195,6 +195,15 @@ pub type ControlConfig {
   ControlConfig(command_timeout_ms: Int)
 }
 
+pub type LedgerCompactionConfig {
+  LedgerCompactionConfig(
+    enabled: Bool,
+    max_current_records: Int,
+    max_current_bytes: Int,
+    min_interval_ms: Int,
+  )
+}
+
 pub type HooksConfig {
   HooksConfig(
     after_create: Option(String),
@@ -808,6 +817,7 @@ pub type EffectiveConfig {
     polling: PollingConfig,
     workspace: WorkspaceConfig,
     control: ControlConfig,
+    ledger_compaction: LedgerCompactionConfig,
     hooks: HooksConfig,
     agent: AgentConfig,
     pi: PiConfig,

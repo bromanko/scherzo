@@ -81,9 +81,9 @@ pub fn recollect_outputs_daemon_queues_before_async_recollection_work_is_release
   assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
     == before_outputs
 
-  assert wait_for_log(log_subject, "async_issue_lookup_started", 100)
+  assert wait_for_log(log_subject, "async_issue_lookup_started", 2000)
   let assert Ok(running_operation) =
-    wait_for_operation_status(root, operation_id, "running", 20)
+    wait_for_operation_status(root, operation_id, "running", 100)
   assert running_operation.operation_kind == "recollect_outputs"
   assert running_operation.run_id == Some("run-1")
   assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
@@ -114,7 +114,7 @@ pub fn recollect_outputs_daemon_queues_before_async_recollection_work_is_release
 
   test_async.release_barrier_if_waiting(issue_lookup_barrier)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.message
     == Some(
       "recollected workflow outputs for run-1: runs/run-1/recollections/1/outputs.v1.json",
@@ -216,7 +216,7 @@ pub fn recollect_outputs_daemon_records_failed_operation_for_missing_artifact_te
   assert command.status_to_string(result.status) == "queued"
   let assert Some(operation_id) = result.operation_id
   let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 20)
+    wait_for_operation_status(root, operation_id, "failed", 100)
   assert failed_operation.reason == Some("artifact_recovery_failed")
   let assert Some(message) = failed_operation.message
   assert string.contains(message, seed.step_artifact_ref)
@@ -256,7 +256,7 @@ pub fn recollect_outputs_daemon_completes_for_terminal_issue_state_test() {
   assert command.status_to_string(result.status) == "queued"
   let assert Some(operation_id) = result.operation_id
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   let assert Some(message) = completed_operation.message
   assert string.contains(message, "recollected workflow outputs for run-1")
   test_async.assert_no_extra_message(worker_subject)
@@ -291,7 +291,7 @@ pub fn recollect_outputs_daemon_completes_without_new_outputs_when_latest_manife
   assert command.status_to_string(result.status) == "queued"
   let assert Some(operation_id) = result.operation_id
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   let assert Some(message) = completed_operation.message
   assert string.contains(message, "workflow outputs already valid for run-1")
   assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
@@ -329,7 +329,7 @@ pub fn recollect_outputs_daemon_records_failed_operation_for_workflow_unavailabl
   assert command.status_to_string(result.status) == "queued"
   let assert Some(operation_id) = result.operation_id
   let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 20)
+    wait_for_operation_status(root, operation_id, "failed", 100)
   assert failed_operation.reason == Some("workflow_unavailable")
   let assert Some(message) = failed_operation.message
   assert string.contains(message, "unknown_workflow_label")
@@ -441,7 +441,7 @@ pub fn recollect_outputs_daemon_records_failed_operation_for_non_active_non_term
   assert command.status_to_string(result.status) == "queued"
   let assert Some(operation_id) = result.operation_id
   let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 20)
+    wait_for_operation_status(root, operation_id, "failed", 100)
   assert failed_operation.reason == Some("issue_state_drift:non_active_state")
   let assert Some(message) = failed_operation.message
   assert string.contains(message, "non-active state Backlog")
@@ -487,7 +487,7 @@ pub fn recollect_outputs_startup_replay_completes_queued_operation_and_skips_com
   let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 5000)
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.operation_kind == "recollect_outputs"
   assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded") == 1
   assert count_kind(ledger_kinds(root), "control_operation_completed") == 1

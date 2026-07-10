@@ -35,7 +35,8 @@ Milestone 1 adds the ledger primitives needed for safe reporting in `src/scherzo
 - [x] (2026-07-09) Reviewed the repo-local ExecPlan guidance and the current ledger, daemon, config, instance-lock, and `state compact` code paths.
 - [x] (2026-07-09) Chose daemon-owned worker/effect compaction under the existing ledger lock as the plan direction.
 - [x] (2026-07-09) Incorporated review feedback by making the config namespace, startup trigger, duplicate-suppression, failure logging, byte accounting, lock-conflict, and validation obligations explicit.
-- [ ] Implement and validate the plan in a follow-up implementation workflow.
+- [x] (2026-07-10) Added ledger byte stats, locked compaction reports, auto-compaction config parsing/schema, daemon worker triggering, instance-lock guarding, operator runbook, and targeted tests.
+- [x] (2026-07-10) Revalidated with focused tests, full `gleam test`, format, glinter, and `scherzo_lint`.
 
 ## Surprises & Discoveries
 
@@ -49,6 +50,8 @@ Milestone 1 adds the ledger primitives needed for safe reporting in `src/scherzo
   Evidence: `start_daemon_with_lifecycle` in `src/scherzo/orchestrator/service.gleam` calls `acquire_lock_for_workflow` before starting the daemon and releases it during shutdown.
 - Observation: the public config schema is closed to unknown root keys, so a new YAML namespace must be added to both parser and schema.
   Evidence: `RootConfig` in `schemas/scherzo.config.v1.schema.json` has `additionalProperties: false`.
+- Observation: the daemon/source guardrail tests required explicit baseline updates after this implementation increased `src/scherzo/orchestrator/daemon.gleam`, `src/scherzo/orchestrator/effect_runner.gleam`, `src/scherzo/state/ledger.gleam`, and `src/scherzo/config/types.gleam`.
+  Evidence: `test/orchestrator_daemon_boundary_test.gleam` and `test/source_guardrail_test.gleam` failed until their checked-in baselines were raised to the new measured sizes.
 
 ## Decision Log
 
@@ -67,7 +70,7 @@ Milestone 1 adds the ledger primitives needed for safe reporting in `src/scherzo
 
 ## Outcomes & Retrospective
 
-No implementation outcome yet. At completion, record whether scheduled-job steady state kept `current.jsonl` under threshold, whether concurrent-append tests passed, and whether logs and runbook instructions were sufficient for an operator to diagnose compaction.
+The daemon now tracks current-segment record and byte counts, checks auto-compaction thresholds after startup recovery and after successful appends, and runs the actual ledger fold/archive work on the existing effect runner. The offline `state compact` command now refuses to inspect or mutate while `instance.lock` is held, and operators have a dedicated runbook for thresholds, logs, and recovery. Focused tests covered exact byte accounting, compaction reports, startup-triggered compaction, append-triggered compaction, effect-runner execution, config validation, and lock conflicts; the unchanged full `gleam test`, format, glinter, and `scherzo_lint` gates passed after updating the checked-in daemon/source guardrails to the new module sizes.
 
 ## Validation and Acceptance
 

@@ -34,6 +34,7 @@ import scherzo/orchestrator/effect_completion_handler
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/event_publisher
+import scherzo/orchestrator/ledger_compaction
 import scherzo/orchestrator/operator_runtime
 import scherzo/orchestrator/operator_worker_command
 import scherzo/orchestrator/outbox_effects
@@ -147,6 +148,7 @@ pub type Message {
   EffectRunnerDown(process.Down)
   ControlServerDown(process.Down)
   SideEffectCompleted(effect_runner.Completion)
+  LedgerCheckpointAppended
   Shutdown(process.Subject(Nil))
   GetSnapshot(process.Subject(orchestrator_state.RuntimeState))
   GetReadModelSnapshot(process.Subject(read_model.Snapshot))
@@ -277,6 +279,7 @@ type State {
     query_cache: query_snapshot_cache.Handle,
     read_model: read_model.ReadModel,
     ledger_projection: projection.Projection,
+    ledger_compaction: ledger_compaction.State,
     remote_client: Option(remote.Handle),
     remote_client_monitor: Option(process.Monitor),
     managed_launch: Option(managed_launch_grant.Grant),
@@ -1210,6 +1213,13 @@ fn start_with_managed_launch_and_initialiser_timeout(
                           query_cache: query_cache,
                           read_model: initial_read_model,
                           ledger_projection: startup_recovery.projection,
+                          ledger_compaction: ledger_compaction.new(
+                            ledger.CurrentSegmentStats(
+                              record_count: 0,
+                              byte_size: 0,
+                              truncated_tail: False,
+                            ),
+                          ),
                           remote_client: None,
                           remote_client_monitor: None,
                           managed_launch: managed_launch,
@@ -1512,6 +1522,99 @@ fn start_initial_poll(state: State) -> State {
   State(..state, poll: poll)
 }
 
+fn workspace_ledger_path(
+  state: State,
+) -> Result(ledger.LedgerPath, ledger.LedgerError) {
+  ledger.path_for_workspace_root(state.workflow.effective.workspace.root)
+}
+
+fn refresh_ledger_compaction_stats(
+  state: State,
+) -> Result(ledger.CurrentSegmentStats, ledger.LedgerError) {
+  use ledger_path <- result.try(workspace_ledger_path(state))
+  ledger.current_segment_stats(ledger_path)
+}
+
+fn maybe_start_ledger_compaction(state: State) -> State {
+  let now_ms = state.dependencies.now_ms()
+  case
+    ledger_compaction.should_start(
+      state.ledger_compaction,
+      state.workflow.effective.ledger_compaction,
+      now_ms,
+    )
+  {
+    False -> state
+    True ->
+      case workspace_ledger_path(state) {
+        Error(error) -> {
+          log_state(state, "error", "ledger_compaction_failed", [
+            #("error", ledger.ledger_error_to_string(error)),
+          ])
+          State(
+            ..state,
+            ledger_compaction: ledger_compaction.mark_started(
+                state.ledger_compaction,
+                now_ms,
+              )
+              |> fn(compaction) {
+                ledger_compaction.mark_finished(
+                  compaction,
+                  ledger_compaction.current(state.ledger_compaction),
+                )
+              },
+          )
+        }
+        Ok(ledger_path) -> {
+          effect_runner.enqueue(
+            state.effect_runner,
+            effect_runner.CompactLedger(ledger_path, state.dependencies.now_ms),
+          )
+          State(
+            ..state,
+            ledger_compaction: ledger_compaction.mark_started(
+              state.ledger_compaction,
+              now_ms,
+            ),
+          )
+        }
+      }
+  }
+}
+
+fn update_ledger_compaction_after_refresh(
+  state: State,
+  stats: ledger.CurrentSegmentStats,
+) -> State {
+  State(
+    ..state,
+    ledger_compaction: ledger_compaction.mark_finished(
+      state.ledger_compaction,
+      stats,
+    ),
+  )
+}
+
+fn refresh_ledger_compaction_after_external_append(state: State) -> State {
+  case refresh_ledger_compaction_stats(state) {
+    Ok(stats) ->
+      State(
+        ..state,
+        ledger_compaction: ledger_compaction.refresh_current(
+          state.ledger_compaction,
+          stats,
+        ),
+      )
+      |> maybe_start_ledger_compaction
+    Error(error) -> {
+      log_state(state, "error", "ledger_compaction_failed", [
+        #("error", ledger.ledger_error_to_string(error)),
+      ])
+      state
+    }
+  }
+}
+
 fn notify_startup_recovery_waiters(
   waiters: Dict(Int, process.Subject(Result(Nil, Nil))),
   result: Result(Nil, Nil),
@@ -1560,6 +1663,7 @@ fn startup_recovery_should_defer(state: State, message: Message) -> Bool {
         | YamlStepCommandReady(_, _)
         | YamlStepFinished(_, _)
         | SideEffectCompleted(_)
+        | LedgerCheckpointAppended
         | QueuedControlOperationFinished(_, _) -> True
         WorkerCommandCompleted(_, _, _)
         | WorkerCommandTimedOut(_, _)
@@ -1583,6 +1687,17 @@ fn startup_recovery_should_defer(state: State, message: Message) -> Bool {
 
 fn complete_startup_recovery(state: State) -> State {
   let state = refresh_read_model(state)
+  let state = case refresh_ledger_compaction_stats(state) {
+    Ok(stats) ->
+      State(..state, ledger_compaction: ledger_compaction.new(stats))
+      |> maybe_start_ledger_compaction
+    Error(error) -> {
+      log_state(state, "error", "ledger_compaction_failed", [
+        #("error", ledger.ledger_error_to_string(error)),
+      ])
+      state
+    }
+  }
   let waiters = state.pending_startup_recovery_waiters
   let state =
     State(
@@ -2108,9 +2223,10 @@ fn run_recovered_workflow_worker(
       let workflow_dependencies =
         workflow_run.Dependencies(
           ..workflow_dependencies,
-          checkpoint: workflow_checkpoint.ledger_writer(
+          checkpoint: workflow_checkpoint.daemon_ledger_writer(
             bundle.effective.workspace.root,
             now_ms,
+            fn() { process.send(daemon_subject, LedgerCheckpointAppended) },
           ),
         )
       let resume =
@@ -2187,9 +2303,10 @@ fn run_recovered_scheduled_workflow_worker(
   let workflow_dependencies =
     workflow_run.Dependencies(
       ..workflow_dependencies,
-      checkpoint: workflow_checkpoint.ledger_writer(
+      checkpoint: workflow_checkpoint.daemon_ledger_writer(
         bundle.effective.workspace.root,
         now_ms,
+        fn() { process.send(daemon_subject, LedgerCheckpointAppended) },
       ),
     )
   let resume =
@@ -2559,6 +2676,10 @@ fn handle_message(
             session_id,
             tokens,
           ))
+        LedgerCheckpointAppended ->
+          continue_with_refreshed_state(
+            refresh_ledger_compaction_after_external_append(state),
+          )
         WorkerCommandCompleted(operator_command, worker_reply, reply) -> {
           let result =
             operator_worker_command.reply_result(operator_command, worker_reply)
@@ -8635,9 +8756,10 @@ fn run_scheduled_workflow_worker(
   let workflow_dependencies =
     workflow_run.Dependencies(
       ..workflow_dependencies,
-      checkpoint: workflow_checkpoint.corrupt_tolerant_ledger_writer(
+      checkpoint: workflow_checkpoint.corrupt_tolerant_daemon_ledger_writer(
         bundle.effective.workspace.root,
         now_ms,
+        fn() { process.send(daemon_subject, LedgerCheckpointAppended) },
       ),
     )
   case
@@ -8688,9 +8810,10 @@ fn run_workflow_worker(
   let workflow_dependencies =
     workflow_run.Dependencies(
       ..workflow_dependencies,
-      checkpoint: workflow_checkpoint.ledger_writer(
+      checkpoint: workflow_checkpoint.daemon_ledger_writer(
         worker_lifecycle.workflow_snapshot_workspace_root(snapshot),
         now_ms,
+        fn() { process.send(daemon_subject, LedgerCheckpointAppended) },
       ),
     )
   case
@@ -9606,9 +9729,65 @@ fn effect_completion_boundary(
       invalid_workflow_report_finished: handle_invalid_workflow_report_finished,
       outbox_replay_finished: handle_outbox_replay_finished,
       scheduled_failure_report_finished: handle_scheduled_failure_report_finished,
+      ledger_compaction_finished: handle_ledger_compaction_finished,
       cleanup_finished: handle_cleanup_finished,
     ),
   )
+}
+
+fn handle_ledger_compaction_finished(
+  state: State,
+  result: Result(ledger.CompactionReport, ledger.LedgerError),
+) -> State {
+  let refreshed = refresh_ledger_compaction_stats(state)
+  let state = case refreshed {
+    Ok(stats) -> update_ledger_compaction_after_refresh(state, stats)
+    Error(_) ->
+      State(
+        ..state,
+        ledger_compaction: ledger_compaction.clear_in_flight(
+          state.ledger_compaction,
+        ),
+      )
+  }
+  case result {
+    Ok(report) -> {
+      log_state(state, "info", "ledger_compacted", [
+        #(
+          "before_current_records",
+          int.to_string(report.before.current.record_count),
+        ),
+        #(
+          "before_current_bytes",
+          int.to_string(report.before.current.byte_size),
+        ),
+        #(
+          "after_current_records",
+          int.to_string(report.after.current.record_count),
+        ),
+        #("after_current_bytes", int.to_string(report.after.current.byte_size)),
+        #(
+          "after_archive_segment_count",
+          int.to_string(report.after.archive_segment_count),
+        ),
+        #("duration_ms", int.to_string(report.duration_ms)),
+      ])
+      state
+    }
+    Error(error) -> {
+      let fields = [#("error", ledger.ledger_error_to_string(error))]
+      let fields = case refreshed {
+        Ok(stats) -> [
+          #("latest_current_records", int.to_string(stats.record_count)),
+          #("latest_current_bytes", int.to_string(stats.byte_size)),
+          ..fields
+        ]
+        Error(_) -> fields
+      }
+      log_state(state, "error", "ledger_compaction_failed", fields)
+      state
+    }
+  }
 }
 
 fn handle_dispatch_claim_validation_finished(
@@ -10317,16 +10496,22 @@ fn append_ledger_records(
         }
         Ok(ledger_path) ->
           case ledger.append_many(ledger_path, records, True) {
-            Ok(Nil) -> #(
-              State(
-                ..state,
-                ledger_projection: projection.fold_from(
-                  state.ledger_projection,
-                  records,
-                ),
-              ),
-              Ok(Nil),
-            )
+            Ok(Nil) -> {
+              let state =
+                State(
+                  ..state,
+                  ledger_projection: projection.fold_from(
+                    state.ledger_projection,
+                    records,
+                  ),
+                  ledger_compaction: ledger_compaction.after_successful_append(
+                    state.ledger_compaction,
+                    records,
+                  ),
+                )
+                |> maybe_start_ledger_compaction
+              #(state, Ok(Nil))
+            }
             Error(err) -> {
               log_state(state, "error", event, [
                 #("error", ledger.ledger_error_to_string(err)),

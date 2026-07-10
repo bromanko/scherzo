@@ -17,6 +17,7 @@ import scherzo/orchestrator/transition_types
 import scherzo/review_lane_preflight
 import scherzo/runtime/identity
 import scherzo/runtime/state as orchestrator_state
+import scherzo/state/ledger
 import scherzo/state/outbox
 import scherzo/state/recovery
 import scherzo/structured_output
@@ -99,6 +100,7 @@ pub type Effect {
     publication: adapter.ScheduledFailurePublication,
     capability: adapter.ScheduledFailureCapability,
   )
+  CompactLedger(ledger_path: ledger.LedgerPath, now_ms: fn() -> Int)
   CleanupWorkspace(
     root: String,
     workspace_path: String,
@@ -188,6 +190,7 @@ pub type EffectResult {
     publication: adapter.ScheduledFailurePublication,
     result: Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
   )
+  LedgerCompactionFinished(Result(ledger.CompactionReport, ledger.LedgerError))
   CleanupFinished(String, Result(Nil, error.WorkspaceError))
 }
 
@@ -404,6 +407,7 @@ pub fn effect_kind(effect: Effect) -> String {
     ReportInvalidWorkflow(_, _, _, _, _, _, _, _) -> "report_invalid_workflow"
     ReplayOutbox(_, _, _, _) -> "replay_outbox"
     ReportScheduledFailure(_, _, _, _) -> "report_scheduled_failure"
+    CompactLedger(_, _) -> "ledger_compaction"
     CleanupWorkspace(_, _, _, _) -> "cleanup_workspace"
   }
 }
@@ -1115,6 +1119,8 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         publication,
         capability.publish(publication),
       )
+    CompactLedger(ledger_path, now_ms) ->
+      LedgerCompactionFinished(ledger.compact_with_report(ledger_path, now_ms))
     CleanupWorkspace(root, workspace_path, hooks, cleanup) ->
       CleanupFinished(workspace_path, cleanup(root, workspace_path, hooks))
   }

@@ -15,6 +15,7 @@ import scherzo/result_artifact
 import scherzo/review_lane_preflight
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
+import scherzo/state/ledger
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
@@ -615,6 +616,24 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
     )
 }
 
+pub fn compact_ledger_crash_maps_to_io_and_routes_failure_test() {
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root("test/tmp/effect-completion-ledger-crash")
+  let effect = effect_runner.CompactLedger(ledger_path, fn() { 0 })
+
+  assert effect_completion_handler.crash_result_for_effect(effect, "boom")
+    == effect_runner.LedgerCompactionFinished(
+      Error(ledger.Io("side effect crashed: boom")),
+    )
+
+  let state =
+    apply_daemon_completion(
+      new_state(),
+      effect_runner.Crashed(1, effect, "boom"),
+    )
+  assert state.events == ["ledger_compaction_failed"]
+}
+
 type TestState {
   TestState(events: List(String))
 }
@@ -714,6 +733,9 @@ fn context(
       scheduled_failure_report_finished: fn(state, _, _, _, _) {
         append_event(state, "scheduled_failure")
       },
+      ledger_compaction_finished: fn(state, _) {
+        append_event(state, "ledger_compaction")
+      },
       cleanup_finished: fn(state, _, _) { append_event(state, "cleanup") },
     ),
   )
@@ -773,6 +795,12 @@ fn daemon_context(
         case result {
           Ok(_) -> append_event(state, "scheduled_failure_report_finished")
           Error(_) -> append_event(state, "scheduled_failure_report_failed")
+        }
+      },
+      ledger_compaction_finished: fn(state, result) {
+        case result {
+          Ok(_) -> append_event(state, "ledger_compaction_finished")
+          Error(_) -> append_event(state, "ledger_compaction_failed")
         }
       },
       cleanup_finished: fn(state, _, result) {

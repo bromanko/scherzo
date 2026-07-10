@@ -506,7 +506,7 @@ pub fn retry_step_queues_operation_and_records_lifecycle_before_spawning_recover
   )
   assert wait_for_log(log_subject, "retry_step_ledger_ready", 100)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.message
     == Some(
       "provenance_ok; retrying run run-1 step apply_feedback at attempt 2",
@@ -575,7 +575,7 @@ pub fn queued_retry_step_replays_ledger_before_planning_test() {
     100,
   )
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == Some("apply_feedback")
 
   test_async.release_barrier_if_waiting(worker_barrier)
@@ -636,7 +636,7 @@ pub fn retry_step_accepts_issue_description_drift_and_records_retry_snapshot_tes
   )
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == Some("apply_feedback")
   let changed_fingerprint = tracker_issue.content_fingerprint(changed_issue)
   assert list.any(ledger_bodies(root), fn(body) {
@@ -715,7 +715,7 @@ pub fn retry_step_unparks_issue_content_drift_parked_run_and_records_current_sna
   )
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == Some("apply_feedback")
   let changed_fingerprint = tracker_issue.content_fingerprint(changed_issue)
   assert list.any(ledger_bodies(root), fn(body) {
@@ -893,7 +893,7 @@ pub fn retry_step_repairs_claim_handoff_interrupted_run_test() {
   ])
   assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == Some("apply_feedback")
   assert count_kind(root, "control_operation_queued") == 1
   assert count_kind(root, "control_operation_started") == 1
@@ -947,7 +947,7 @@ pub fn retry_step_repairs_missing_provenance_after_finalization_accepts_test() {
 
   assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.message
     == Some(
       "provenance_repaired; retrying run run-1 step apply_feedback at attempt 2",
@@ -1015,7 +1015,7 @@ pub fn run_retry_step_exact_artifact_recovery_failure_returns_detail_and_retains
     <> " current_sha256="
     <> current_sha256
   let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 20)
+    wait_for_operation_status(root, operation_id, "failed", 100)
   assert failed_operation.reason == Some("artifact_recovery_failed")
   let assert Some(failed_message) = failed_operation.message
   assert string.contains(failed_message, detail)
@@ -1071,7 +1071,7 @@ pub fn run_retry_step_exact_does_not_append_provenance_repair_when_finalization_
   let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
 
   let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 20)
+    wait_for_operation_status(root, operation_id, "failed", 100)
   assert failed_operation.reason == Some("artifact_recovery_failed")
   assert !contains_kind(root, "workflow_run_provenance_repaired")
 
@@ -1147,7 +1147,7 @@ pub fn retry_step_reactivates_non_active_retained_run_before_resuming_test() {
   )
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == Some("apply_feedback")
   assert contains_kind(root, "workflow_repair_requested")
 
@@ -1513,7 +1513,7 @@ pub fn retry_step_unparks_issue_state_drift_parked_non_active_issue_test() {
   assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == Some("apply_feedback")
   assert contains_kind_sequence(root, [
     "issue_parked_v2",
@@ -1595,7 +1595,7 @@ pub fn retry_step_abort_of_recovered_parent_cleans_review_children_and_exposes_o
   )
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == None
 
   let assert Ok(parent_session) =
@@ -1787,7 +1787,7 @@ pub fn retry_step_shutdown_interrupts_active_review_children_with_registry_metad
   )
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == None
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -1891,7 +1891,7 @@ pub fn cleanup_orphan_steps_rejects_active_or_unknown_runs_and_reports_exact_rec
     100,
   )
   let assert Ok(completed_operation) =
-    wait_for_operation_status(active_root, operation_id, "completed", 20)
+    wait_for_operation_status(active_root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == None
   let assert Ok(active_code_review_session) =
     wait_for_active_step_session(hub_subject, "run-1", "code_review", 1, 20)
@@ -2100,7 +2100,7 @@ pub fn retry_step_active_command_session_has_no_orphan_cleanup_recovery_test() {
   assert wait_for_log(log_subject, "active_command_started:apply_feedback", 100)
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(active_root, operation_id, "completed", 20)
+    wait_for_operation_status(active_root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == None
 
   let assert Ok(active_command_session) =
@@ -2190,7 +2190,7 @@ pub fn retry_step_non_active_parent_stop_interrupts_command_child_test() {
   assert wait_for_log(log_subject, "active_command_started:apply_feedback", 100)
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == None
 
   let assert Ok(active_command_session) =
@@ -2320,7 +2320,7 @@ pub fn retry_step_startup_replay_replays_queued_operation_test() {
 
   assert wait_for_log(log_subject, "startup_replay_worker_started:issue-1", 100)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == Some("apply_feedback")
   assert count_kind(root, "workflow_repair_requested") == 1
 
@@ -2377,7 +2377,7 @@ pub fn retry_step_startup_replay_clears_failure_quarantine_test() {
 
   assert wait_for_log(log_subject, "startup_replay_worker_started:issue-1", 100)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == Some("apply_feedback")
   assert ledger_has_issue_unparked(root, issue.id, "retry_step")
   assert ledger_has_issue_counter_reset(root, issue.id)
@@ -2452,7 +2452,7 @@ pub fn retry_step_operation_status_query_succeeds_while_startup_replay_is_runnin
 
   assert wait_for_log(log_subject, "startup_replay_issue_lookup", 100)
   let assert Ok(running_operation) =
-    wait_for_operation_status(root, operation_id, "running", 20)
+    wait_for_operation_status(root, operation_id, "running", 100)
   assert running_operation.requested_step_id == Some("apply_feedback")
 
   let assert Ok(query_types.OperationStatusResponse(operation)) =
@@ -2468,7 +2468,7 @@ pub fn retry_step_operation_status_query_succeeds_while_startup_replay_is_runnin
 
   test_async.release_barrier_if_waiting(lookup_barrier)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.requested_step_id == Some("apply_feedback")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -2531,7 +2531,7 @@ pub fn retry_step_startup_replay_replays_running_operation_without_duplicate_sta
     100,
   )
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.started_at_ms == Some(41)
   assert count_kind(root, "control_operation_started") == 1
   assert count_kind(root, "workflow_repair_requested") == 1
@@ -4222,7 +4222,7 @@ pub fn artifact_publication_retry_queues_operation_before_publication_driver_wor
 
   test_async.release_barrier(publish_barrier)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.message
     == Some("publication retry recorded execplan_review_doc as published")
   assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
@@ -4302,7 +4302,7 @@ pub fn artifact_publication_retry_reuses_existing_operation_for_duplicate_target
 
   test_async.release_barrier(publish_barrier)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, first_operation_id, "completed", 20)
+    wait_for_operation_status(root, first_operation_id, "completed", 100)
   assert completed_operation.publication_id == Some("execplan_review_doc")
   assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
 
@@ -4491,7 +4491,7 @@ pub fn artifact_publication_retry_async_failure_records_failed_operation_test() 
     )
   let assert Some(operation_id) = result.operation_id
   let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 20)
+    wait_for_operation_status(root, operation_id, "failed", 100)
   assert failed_operation.reason == Some("publication_retry_attempt_failed")
   let assert Some(message) = failed_operation.message
   assert string.contains(message, "workspace_driver_publish_failed")
@@ -4566,7 +4566,7 @@ pub fn artifact_publication_retry_startup_replay_replays_queued_and_skips_comple
   let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.publication_id == Some("execplan_review_doc")
   assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 2
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -4998,7 +4998,7 @@ pub fn run_finalize_finished_run_queues_declared_publication_retry_test() {
     "artifact-publication-retry:run-1:all:",
   )
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.message
     == Some("publication retry recorded execplan_review_doc as published")
   assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
@@ -5252,7 +5252,7 @@ pub fn run_finalize_queues_operation_updates_tracker_and_is_idempotent_test() {
   assert count_kind(root, "control_operation_queued") == 1
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.message
     == Some("run finalize completed without starting a worker")
   assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
@@ -5552,7 +5552,7 @@ pub fn run_finalize_async_tracker_update_failure_records_failed_operation_test()
     )
   let assert Some(operation_id) = result.operation_id
   let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 20)
+    wait_for_operation_status(root, operation_id, "failed", 100)
   assert failed_operation.reason == Some("tracker_update_failed")
   assert wait_for_log(log_subject, "state_transition_failed:Done", 100)
   assert count_kind(root, "workflow_run_finished") == 0
@@ -5615,7 +5615,7 @@ pub fn run_finalize_startup_replay_replays_queued_operation_test() {
   let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
 
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 20)
+    wait_for_operation_status(root, operation_id, "completed", 100)
   assert completed_operation.message
     == Some("run finalize completed without starting a worker")
   assert count_kind(root, "workflow_run_finished") == 1

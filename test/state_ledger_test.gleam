@@ -1,4 +1,6 @@
+import gleam/bit_array
 import gleam/dict
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -7,6 +9,108 @@ import scherzo/state/projection
 import scherzo/state/record
 import simplifile
 import support/test_helpers
+import test_async
+
+pub fn current_segment_stats_reports_exact_byte_size_test() {
+  let root = "test/tmp/state-ledger/current-segment-stats"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+  let records = [run_started_record(), retry_scheduled_record()]
+  let assert Ok(Nil) = ledger.append_many(path, records, False)
+  let assert Ok(contents) = simplifile.read(path.current_path)
+  let assert Ok(stats) = ledger.current_segment_stats(path)
+
+  assert stats.record_count == 2
+  assert stats.byte_size == bit_array.byte_size(bit_array.from_string(contents))
+  assert stats.truncated_tail == False
+}
+
+pub fn compact_with_report_captures_before_and_after_stats_test() {
+  let root = "test/tmp/state-ledger/compact-with-report"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+  let records = [run_started_record(), retry_scheduled_record()]
+  let assert Ok(Nil) = ledger.append_many(path, records, False)
+
+  let clock = process.new_subject()
+  process.send(clock, 5000)
+  process.send(clock, 5123)
+  let assert Ok(report) =
+    ledger.compact_with_report(path, fn() { process.receive_forever(clock) })
+
+  assert report.before.current.record_count == 2
+  assert report.before.current.byte_size > 0
+  assert report.before.snapshot_size_bytes == 0
+  assert report.before.archive_segment_count == 0
+  assert report.after.current.record_count == 0
+  assert report.after.current.byte_size == 0
+  assert report.after.snapshot_size_bytes > 0
+  assert report.after.archive_segment_count == 1
+  assert report.duration_ms == 123
+}
+
+pub fn compact_with_report_restores_snapshot_when_archive_fails_test() {
+  let root = "test/tmp/state-ledger/compact-with-report-archive-failure"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+  let records = [run_started_record(), retry_scheduled_record()]
+  let assert Ok(Nil) = ledger.append_many(path, records, False)
+  let assert Ok(Nil) = simplifile.delete(path.archive_dir)
+  let assert Ok(Nil) = simplifile.write(path.archive_dir, "blocked")
+
+  let assert Error(ledger.Io(_)) = ledger.compact_with_report(path, fn() { 0 })
+  let assert Ok(stats) = ledger.current_segment_stats(path)
+  assert stats.record_count == 2
+  let assert Ok(projected) = ledger.load_projection(path)
+  assert dict.has_key(projected.runs, "run-1")
+  assert dict.has_key(projected.retries, "issue-1")
+}
+
+pub fn append_during_compaction_remains_in_loaded_projection_test() {
+  let root = "test/tmp/state-ledger/concurrent-append-compaction"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) = ledger.append(path, run_started_record(), False)
+  let clock_calls = process.new_subject()
+  let clock_barrier = test_async.new_barrier()
+  let compaction_result = process.new_subject()
+  let append_started = process.new_subject()
+  let append_result = process.new_subject()
+
+  let _ =
+    process.spawn(fn() {
+      let result =
+        ledger.compact_with_report(path, fn() {
+          process.send(clock_calls, Nil)
+          test_async.block_until_released(clock_barrier)
+          1000
+        })
+      process.send(compaction_result, result)
+    })
+  test_async.expect_message(clock_calls)
+
+  let _ =
+    process.spawn(fn() {
+      process.send(append_started, Nil)
+      process.send(
+        append_result,
+        ledger.append(path, retry_scheduled_record(), False),
+      )
+    })
+  test_async.expect_message(append_started)
+  test_async.assert_no_extra_message(append_result)
+
+  test_async.release_barrier(clock_barrier)
+  test_async.expect_message(clock_calls)
+  test_async.assert_no_extra_message(append_result)
+  test_async.release_barrier(clock_barrier)
+
+  let assert Ok(_) = test_async.expect_message(compaction_result)
+  assert test_async.expect_message(append_result) == Ok(Nil)
+  let assert Ok(projected) = ledger.load_projection(path)
+  assert dict.has_key(projected.runs, "run-1")
+  assert dict.has_key(projected.retries, "issue-1")
+}
 
 pub fn append_and_replay_records_test() {
   let root = "test/tmp/state-ledger/append-replay"

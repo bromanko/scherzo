@@ -5,6 +5,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/ctl/state_handlers
+import scherzo/instance_lock
 import scherzo/path as scherzo_path
 import scherzo/state/ledger
 import scherzo/state/record
@@ -231,6 +232,50 @@ pub fn state_compact_rejects_symlinked_ledger_path_test() {
   assert string.contains(decoded.message, "candidate path includes a symlink")
   assert decoded.before == None
   assert decoded.after == None
+}
+
+pub fn state_compact_dry_run_rejects_held_instance_lock_test() {
+  let root = "test/tmp/ctl-state-compact/lock-held-dry-run"
+  test_helpers.reset_dir(root)
+  let assert Ok(lock) = instance_lock.acquire(root)
+  let subject = process.new_subject()
+
+  assert state_handlers.run_compact(
+      root,
+      json_output: True,
+      dry_run: True,
+      yes: False,
+      line: subject_line(subject),
+    )
+    == Ok(Nil)
+
+  let decoded = expect_compact_json(subject)
+  assert decoded.status == "rejected"
+  assert decoded.reason == Some("instance_lock_held")
+  assert string.contains(decoded.message, "instance lock already exists")
+  instance_lock.release(lock)
+}
+
+pub fn state_compact_yes_rejects_held_instance_lock_test() {
+  let root = "test/tmp/ctl-state-compact/lock-held-yes"
+  test_helpers.reset_dir(root)
+  let assert Ok(lock) = instance_lock.acquire(root)
+  let subject = process.new_subject()
+
+  assert state_handlers.run_compact(
+      root,
+      json_output: False,
+      dry_run: False,
+      yes: True,
+      line: subject_line(subject),
+    )
+    == Ok(Nil)
+
+  let transcript = drain_output(subject)
+  assert string.contains(transcript, "state compact rejected")
+  assert string.contains(transcript, "reason: instance_lock_held")
+  assert string.contains(transcript, "instance lock already exists")
+  instance_lock.release(lock)
 }
 
 pub fn state_compact_dry_run_reports_invalid_snapshot_test() {

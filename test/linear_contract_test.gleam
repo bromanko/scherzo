@@ -173,6 +173,7 @@ fn effective_with_dispatch(
     polling: config.default_polling_config(),
     workspace: config.default_workspace_config("scherzo.yaml"),
     control: config.default_control_config(),
+    ledger_compaction: config.default_ledger_compaction_config(),
     hooks: config.default_hooks_config(),
     agent: config.default_agent_config(),
     pi: config.default_pi_config(),
