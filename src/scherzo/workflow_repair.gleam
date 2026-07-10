@@ -8,7 +8,6 @@ import gleam/result
 import gleam/string
 import scherzo/control/command
 import scherzo/hash
-import scherzo/path
 import scherzo/retry_step_validation
 import scherzo/state/artifact_store
 import scherzo/state/projection
@@ -18,6 +17,7 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_dag
 import scherzo/workflow_interface_snapshot
 import scherzo/workflow_outcome
+import scherzo/workflow_repair_policy.{type RepairBoundary, RepairBoundary}
 import scherzo/workflow_retry_planner
 
 pub const retry_step_auto_repair_mode = "retry_step_auto"
@@ -97,14 +97,6 @@ type SelectedRun {
     recovery_evidence: workflow_outcome.RecoveryEvidence,
     terminal_failed: Bool,
     provenance_repair: Option(RunProvenanceRepairPlan),
-  )
-}
-
-type RepairBoundary {
-  RepairBoundary(
-    step_id: String,
-    attempt_index: Int,
-    normalization_records: List(record.RecordBody),
   )
 }
 
@@ -248,6 +240,7 @@ pub fn retry_dry_run(
       ))
       let attempts = attempts_for_run(projection_state, run.run_id)
       use selected_boundary <- result.try(select_repair_boundary(
+        TotalRetryPlanning,
         run,
         attempts,
         dag,
@@ -345,6 +338,7 @@ fn plan_with_mode(
       ))
       let attempts = attempts_for_run(projection_state, run.run_id)
       use selected_boundary <- result.try(select_repair_boundary(
+        mode,
         run,
         attempts,
         dag,
@@ -774,10 +768,10 @@ fn cancelled_run_has_repairable_boundary(
   projection_state: projection.Projection,
   run_id: String,
 ) -> Bool {
-  case repair_boundaries(attempts_for_run(projection_state, run_id)) {
-    [] -> False
-    _ -> True
-  }
+  workflow_repair_policy.has_repairable_boundary(attempts_for_run(
+    projection_state,
+    run_id,
+  ))
 }
 
 fn selected_run_from_provenance(
@@ -1933,17 +1927,8 @@ fn validate_run_root(
   run_root: String,
   workspace_root: String,
 ) -> Result(Nil, RepairError) {
-  let root_abs = path.absolute(workspace_root) |> result.unwrap(workspace_root)
-  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
-  case invalid_run_root_syntax(run_root, run_root_abs) {
-    True -> invalid_run_root_error(run_id)
-    False ->
-      case path.realpath(root_abs), path.realpath(run_root_abs) {
-        Ok(root_real), Ok(run_root_real) ->
-          validate_run_root_containment(run_id, root_real, run_root_real)
-        _, _ -> validate_run_root_containment(run_id, root_abs, run_root_abs)
-      }
-  }
+  workflow_repair_policy.validate_run_root(run_id, run_root, workspace_root)
+  |> result.map_error(repair_error_from_policy)
 }
 
 fn validate_existing_run_root(
@@ -1951,43 +1936,19 @@ fn validate_existing_run_root(
   run_root: String,
   workspace_root: String,
 ) -> Result(Nil, RepairError) {
-  let root_abs = path.absolute(workspace_root) |> result.unwrap(workspace_root)
-  let run_root_abs = path.absolute(run_root) |> result.unwrap(run_root)
-  case invalid_run_root_syntax(run_root, run_root_abs) {
-    True -> invalid_run_root_error(run_id)
-    False ->
-      case path.realpath(root_abs), path.realpath(run_root_abs) {
-        Ok(root_real), Ok(run_root_real) ->
-          validate_run_root_containment(run_id, root_real, run_root_real)
-        _, _ -> invalid_run_root_error(run_id)
-      }
-  }
+  workflow_repair_policy.validate_existing_run_root(
+    run_id,
+    run_root,
+    workspace_root,
+  )
+  |> result.map_error(repair_error_from_policy)
 }
 
-fn invalid_run_root_syntax(run_root: String, run_root_abs: String) -> Bool {
-  string.trim(run_root) == ""
-  || string.trim(run_root_abs) == ""
-  || path.has_parent_segment(run_root)
-  || path.has_parent_segment(run_root_abs)
-  || path.contains_control_character(run_root)
-}
-
-fn validate_run_root_containment(
-  run_id: String,
-  root: String,
-  run_root: String,
-) -> Result(Nil, RepairError) {
-  case run_root == root || !path.contains(root, run_root) {
-    True -> invalid_run_root_error(run_id)
-    False -> Ok(Nil)
-  }
-}
-
-fn invalid_run_root_error(run_id: String) -> Result(Nil, RepairError) {
-  Error(RepairError(
-    "workspace_recovery_failed",
-    Some("invalid run root for " <> run_id),
-  ))
+fn repair_error_from_policy(
+  error: workflow_repair_policy.SelectionError,
+) -> RepairError {
+  let workflow_repair_policy.SelectionError(reason, message) = error
+  RepairError(reason, message)
 }
 
 fn task_ref_matches_issue(
@@ -2017,209 +1978,24 @@ fn attempts_for_run(
 }
 
 fn select_repair_boundary(
+  mode: RepairPlanningMode,
   run: SelectedRun,
   attempts: List(projection.StepAttemptStatus),
   dag: workflow_dag.WorkflowDag,
   selected_step_id: Option(String),
 ) -> Result(RepairBoundary, RepairError) {
-  let repairable =
-    repair_boundaries(attempts)
-    |> list.sort(by: compare_repair_boundaries_desc)
-  case selected_step_id {
-    Some(step_id) ->
-      case find_repair_boundary(repairable, step_id) {
-        Some(candidate) -> Ok(candidate)
-        None ->
-          case run.terminal_failed {
-            True -> select_stale_active_boundary(attempts, dag, step_id)
-            False ->
-              Error(RepairError(
-                "step_not_repairable",
-                Some("selected step is not failed or interrupted"),
-              ))
-          }
-      }
-    None ->
-      case repairable {
-        [] ->
-          case run.terminal_failed {
-            True ->
-              case stale_active_repair_boundaries(attempts, dag) {
-                [] ->
-                  Error(RepairError(
-                    "no_failed_workflow_run",
-                    Some("workflow run has no failed or interrupted step"),
-                  ))
-                [candidate] -> Ok(candidate)
-                _ ->
-                  Error(RepairError(
-                    "ambiguous_repair_step",
-                    Some("multiple stale active steps match; use --step"),
-                  ))
-              }
-            False ->
-              Error(RepairError(
-                "no_failed_workflow_run",
-                Some("workflow run has no failed or interrupted step"),
-              ))
-          }
-        [candidate] -> Ok(candidate)
-        _ ->
-          Error(RepairError(
-            "ambiguous_repair_step",
-            Some("multiple failed or interrupted steps match; use --step"),
-          ))
-      }
+  let boundary_mode = case mode {
+    TotalRetryPlanning -> workflow_repair_policy.TotalSelection
+    ExactRetryPlanning -> workflow_repair_policy.ExactSelection
   }
-}
-
-fn repair_boundaries(
-  attempts: List(projection.StepAttemptStatus),
-) -> List(RepairBoundary) {
-  attempts
-  |> list.fold([], fn(acc, status) {
-    case status {
-      projection.StepAttemptFinishedStatus(
-        step_id: step_id,
-        attempt_index: attempt_index,
-        outcome: outcome,
-        ..,
-      ) ->
-        case workflow_outcome.is_terminal_failure(outcome) {
-          True -> [RepairBoundary(step_id, attempt_index, []), ..acc]
-          False -> acc
-        }
-      projection.StepAttemptInterruptedStatus(
-        step_id: step_id,
-        attempt_index: attempt_index,
-        ..,
-      ) -> [RepairBoundary(step_id, attempt_index, []), ..acc]
-      _ -> acc
-    }
-  })
-}
-
-fn compare_repair_boundaries_desc(
-  a: RepairBoundary,
-  b: RepairBoundary,
-) -> Order {
-  case int_compare_desc(a.attempt_index, b.attempt_index) {
-    Eq -> string.compare(a.step_id, b.step_id)
-    order -> order
-  }
-}
-
-fn find_repair_boundary(
-  boundaries: List(RepairBoundary),
-  step_id: String,
-) -> Option(RepairBoundary) {
-  case boundaries {
-    [] -> None
-    [candidate, ..rest] ->
-      case candidate.step_id == step_id {
-        True -> Some(candidate)
-        False -> find_repair_boundary(rest, step_id)
-      }
-  }
-}
-
-fn stale_active_repair_boundaries(
-  attempts: List(projection.StepAttemptStatus),
-  dag: workflow_dag.WorkflowDag,
-) -> List(RepairBoundary) {
-  attempts
-  |> list.fold([], fn(acc, status) {
-    case stale_active_repair_boundary(status, dag) {
-      Some(boundary) -> [boundary, ..acc]
-      None -> acc
-    }
-  })
-  |> list.sort(by: compare_repair_boundaries_desc)
-}
-
-fn select_stale_active_boundary(
-  attempts: List(projection.StepAttemptStatus),
-  dag: workflow_dag.WorkflowDag,
-  selected_step_id: String,
-) -> Result(RepairBoundary, RepairError) {
-  case
-    find_repair_boundary(
-      stale_active_repair_boundaries(attempts, dag),
-      selected_step_id,
-    )
-  {
-    Some(candidate) -> Ok(candidate)
-    None ->
-      Error(RepairError(
-        "step_not_repairable",
-        Some("selected step is not safely repairable"),
-      ))
-  }
-}
-
-fn stale_active_repair_boundary(
-  status: projection.StepAttemptStatus,
-  dag: workflow_dag.WorkflowDag,
-) -> Option(RepairBoundary) {
-  case status {
-    projection.StepAttemptPending(
-      run_id,
-      workflow_id,
-      step_id,
-      attempt_index,
-      ..,
-    ) ->
-      stale_active_boundary_for_step(
-        run_id,
-        workflow_id,
-        step_id,
-        attempt_index,
-        dag,
-      )
-    projection.StepAttemptRunning(
-      run_id: run_id,
-      workflow_id: workflow_id,
-      step_id: step_id,
-      attempt_index: attempt_index,
-      ..,
-    ) ->
-      stale_active_boundary_for_step(
-        run_id,
-        workflow_id,
-        step_id,
-        attempt_index,
-        dag,
-      )
-    _ -> None
-  }
-}
-
-fn stale_active_boundary_for_step(
-  run_id: String,
-  workflow_id: String,
-  step_id: String,
-  attempt_index: Int,
-  dag: workflow_dag.WorkflowDag,
-) -> Option(RepairBoundary) {
-  case workflow_dag.step_by_id(dag, step_id) {
-    Ok(workflow_dag.WorkflowStep(kind: workflow_dag.AgentStep(..), ..)) ->
-      Some(
-        RepairBoundary(
-          step_id: step_id,
-          attempt_index: attempt_index,
-          normalization_records: [
-            record.StepAttemptInterrupted(
-              run_id,
-              workflow_id,
-              step_id,
-              attempt_index,
-              "terminal_failure_repair_normalized",
-            ),
-          ],
-        ),
-      )
-    _ -> None
-  }
+  workflow_repair_policy.select(
+    boundary_mode,
+    attempts,
+    dag,
+    selected_step_id,
+    terminal_failed: run.terminal_failed,
+  )
+  |> result.map_error(repair_error_from_policy)
 }
 
 fn descendants_including_self(

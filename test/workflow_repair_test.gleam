@@ -612,6 +612,58 @@ pub fn retry_step_rejects_selected_failed_continued_step_test() {
   assert_selected_non_repairable("failed_continued")
 }
 
+pub fn exact_retry_accepts_terminal_continued_required_output_agent_test() {
+  let projection =
+    projection.fold(terminal_failed_continued_review_run_records())
+  let assert Ok(dag) =
+    workflow_dag.parse(terminal_failed_continued_review_workflow_yaml())
+
+  let assert Ok(plan) =
+    workflow_repair.plan_exact(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("lane_correctness"),
+      current_workflow(dag),
+    )
+
+  assert plan.selected_step_id == "lane_correctness"
+  assert plan.failed_attempt_index == 1
+  assert plan.next_attempt_index == 2
+  assert has_superseded_attempt(
+    plan.records_to_append,
+    "lane_correctness",
+    1,
+    2,
+  )
+  assert list.any(plan.candidate.attempts, fn(status) {
+    case status {
+      projection.StepAttemptFinishedStatus(
+        step_id: "lane_test_quality",
+        outcome: "completed",
+        ..,
+      ) -> True
+      _ -> False
+    }
+  })
+}
+
+pub fn exact_retry_rejects_terminal_continued_command_step_test() {
+  let projection =
+    projection.fold(terminal_failed_continued_review_run_records())
+  let assert Ok(dag) =
+    workflow_dag.parse(terminal_failed_continued_command_workflow_yaml())
+
+  let assert Error(error) =
+    workflow_repair.plan_exact(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("lane_correctness"),
+      current_workflow(dag),
+    )
+
+  assert workflow_repair.describe_error(error) == "step_not_repairable"
+}
+
 pub fn retry_step_rejects_selected_pending_step_test() {
   assert_selected_non_repairable("pending")
 }
@@ -1202,6 +1254,58 @@ steps:
 "
 }
 
+fn terminal_failed_continued_review_workflow_yaml() -> String {
+  "version: 1
+id: implementation
+steps:
+  - id: lane_correctness
+    kind: agent
+    prompt: prompts/review.md
+    on_failure: continue
+    run_in: review-correctness
+    structured_output:
+      source:
+        type: pi_tool_call
+        tool_name: submit_review_lane_draft
+      artifact_name: correctness_submission
+      required: true
+      format: json
+      schema:
+        type: object
+        required: [findings]
+  - id: lane_test_quality
+    kind: command
+    run: review-tests
+    run_in: review-test-quality
+  - id: finalize_lanes
+    kind: command
+    depends_on: [lane_correctness, lane_test_quality]
+    run: finalize
+    run_in: main
+"
+}
+
+fn terminal_failed_continued_command_workflow_yaml() -> String {
+  "version: 1
+id: implementation
+steps:
+  - id: lane_correctness
+    kind: command
+    run: review
+    on_failure: continue
+    run_in: review-correctness
+  - id: lane_test_quality
+    kind: command
+    run: review-tests
+    run_in: review-test-quality
+  - id: finalize_lanes
+    kind: command
+    depends_on: [lane_correctness, lane_test_quality]
+    run: finalize
+    run_in: main
+"
+}
+
 fn recovery_ready_workflow_yaml() -> String {
   "version: 1
 id: implementation
@@ -1646,6 +1750,37 @@ fn same_step_repeated_boundary_run_records() -> List(record.LedgerRecord) {
     prepared_attempt_record_for_run("run-1", "first", 2, "main", 20),
     interrupted_attempt_record("run-1", "first", 2, 21),
     workflow_interrupted_record(30),
+  ]
+}
+
+fn terminal_failed_continued_review_run_records() -> List(record.LedgerRecord) {
+  [
+    base_workflow_started_record("workflow-terminal-continued-review"),
+    finished_attempt_record_for_run(
+      "run-1",
+      "lane_correctness",
+      1,
+      "failed_continued",
+      "review-correctness",
+      10,
+    ),
+    finished_attempt_record_for_run(
+      "run-1",
+      "lane_test_quality",
+      1,
+      "completed",
+      "review-test-quality",
+      11,
+    ),
+    finished_attempt_record_for_run(
+      "run-1",
+      "finalize_lanes",
+      1,
+      workflow_outcome.failed_fatal,
+      "main",
+      20,
+    ),
+    workflow_finished_record_for_run("run-1", workflow_outcome.failed_fatal, 30),
   ]
 }
 

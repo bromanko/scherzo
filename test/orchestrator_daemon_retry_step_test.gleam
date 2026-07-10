@@ -62,6 +62,22 @@ type FetchCounterMessage {
   ArmFetchGate
 }
 
+pub fn step_not_repairable_message_does_not_repeat_rejected_command_test() {
+  let message =
+    retry_step_validation.operation_failure_message(
+      "step_not_repairable",
+      Some("selected step is not safely repairable"),
+      "run-1",
+      Some("lane_correctness"),
+    )
+
+  assert string.contains(
+    message,
+    "Next safe command: scripts/scherzoctl session run-1 --json",
+  )
+  assert !string.contains(message, "run retry-step run-1")
+}
+
 pub fn retry_recovery_rejection_messages_include_next_command_table_test() {
   let cases = [
     #(

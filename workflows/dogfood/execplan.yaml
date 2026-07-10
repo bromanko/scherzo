@@ -125,7 +125,7 @@ steps:
     kind: agent
     depends_on: [validate_review_doc]
     prompt: prompts/execplan-review.md
-    model: anthropic/claude-fable-5
+    model: openai-codex/gpt-5.6-sol
     thinking: xhigh
     run_in: main
 

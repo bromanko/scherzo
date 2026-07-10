@@ -129,7 +129,21 @@ pub fn operation_failure_message(
   <> reason
   <> detail_text
   <> "; no run, park, or tracker state was changed. Next safe command: "
-  <> next_safe_command(run_id, step_id)
+  <> operation_failure_next_safe_command(reason, run_id, step_id)
+}
+
+fn operation_failure_next_safe_command(
+  reason: String,
+  run_id: String,
+  step_id: Option(String),
+) -> String {
+  case stable_rejection_reason(reason) {
+    "step_not_repairable" ->
+      "scripts/scherzoctl session " <> run_id <> " --json"
+    "no_failed_workflow_run" ->
+      "scripts/scherzoctl session " <> run_id <> " --json"
+    _ -> next_safe_command(run_id, step_id)
+  }
 }
 
 pub fn stable_rejection_reason(reason: String) -> String {

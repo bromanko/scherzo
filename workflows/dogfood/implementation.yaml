@@ -76,7 +76,7 @@ steps:
     kind: agent
     depends_on: [prepare_review]
     prompt: prompts/review-native-correctness.md
-    model: anthropic/claude-fable-5
+    model: openai-codex/gpt-5.6-sol
     thinking: xhigh
     on_failure: continue
     run_in:
