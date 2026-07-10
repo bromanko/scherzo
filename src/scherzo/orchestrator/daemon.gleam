@@ -4439,6 +4439,28 @@ fn continue_retry_step_operation(
     observation,
     released_park,
   )
+  |> reactivate_retry_step_resumption(state)
+}
+
+fn reactivate_retry_step_resumption(
+  result: QueuedControlOperationResult,
+  state: State,
+) -> QueuedControlOperationResult {
+  case result {
+    QueuedControlOperationSucceeded(bodies, resumption) ->
+      case
+        retry_step_resumption.reactivate_issue(
+          state.tracker_adapter,
+          state.workflow.effective,
+          resumption,
+        )
+      {
+        Ok(resumption) -> QueuedControlOperationSucceeded(bodies, resumption)
+        Error(#(reason, message)) ->
+          QueuedControlOperationFailed(reason, Some(message))
+      }
+    _ -> result
+  }
 }
 
 fn continue_retry_step_operation_with_observation(
@@ -4785,7 +4807,7 @@ fn run_finalize_transition_tracker(
   workflow_id: String,
 ) -> Result(Nil, String) {
   case
-    publication_recovery_completion_target(
+    dispatch_recovery.publication_recovery_completion_target(
       state.workflow.effective.handoff,
       workflow_id,
     )
@@ -6546,7 +6568,18 @@ fn dispatch_time_recovery_claim_issue(
           state.workflow.bundle,
           issue,
         )
-      case dispatch_recovery.classify(projected, issue, observation) {
+      let pending_recovery = case pending_claim_for_task_ref(state, task_ref) {
+        Ok(pending) -> pending.recovery
+        Error(Nil) -> None
+      }
+      case
+        dispatch_recovery.classify_for_claim(
+          projected,
+          issue,
+          observation,
+          pending_recovery,
+        )
+      {
         dispatch_recovery.FreshDispatch ->
           enqueue_tracker_claim_issue(
             state,
@@ -6973,7 +7006,7 @@ fn apply_dispatch_step_recovery(
             task_ref,
             issue,
             retry_step_operation.rejection_reason(finalization),
-            string.trim(option_with_default(
+            string.trim(option.unwrap(
               retry_step_operation.dispatch_rejection_message(finalization),
               "dispatch recovery rejected",
             )),
@@ -7061,7 +7094,7 @@ fn complete_dispatch_publication_recovery(
       )
   }
   case
-    publication_recovery_completion_target(
+    dispatch_recovery.publication_recovery_completion_target(
       state.workflow.effective.handoff,
       workflow_id,
     )
@@ -7122,51 +7155,13 @@ fn post_dispatch_publication_recovery_comment(
             [
               #("issue_id", issue.id),
               #("run_id", run_id),
-              #("reason", adapter_error_message(error)),
+              #("reason", adapter_legacy.adapter_error_message(error)),
             ],
           )
           state
         }
       }
     }
-  }
-}
-
-fn publication_recovery_completion_target(
-  handoff: config_types.HandoffConfig,
-  workflow_id: String,
-) -> Result(#(Option(String), String), String) {
-  let missing =
-    "publication retry completed but no success or completion state is configured"
-  case handoff.completion_states {
-    Some(policy) ->
-      policy
-      |> workflow_completion_policy.choose_linear_completion_state(
-        workflow_id,
-        workflow_completion_policy.WorkflowCompletionOutcome(
-          workflow_completion_policy.CompletionSucceeded,
-          [],
-          workflow_completion_policy.ReviewUnknown,
-          None,
-          False,
-        ),
-      )
-      |> publication_recovery_decision_target
-    None ->
-      handoff.success_state_id
-      |> option.to_result(missing)
-      |> result.map(linear_state_target)
-  }
-}
-
-fn publication_recovery_decision_target(
-  decision: workflow_completion_policy.CompletionStateDecision,
-) -> Result(#(Option(String), String), String) {
-  case decision {
-    workflow_completion_policy.MoveToState(state, _) ->
-      Ok(linear_state_target(state))
-    workflow_completion_policy.LeaveLinearState(reason) ->
-      Error("publication retry completed but " <> reason)
   }
 }
 
@@ -7205,7 +7200,7 @@ fn transition_issue_state(
           Error(#(
             state,
             "dispatch_recovery_state_transition_failed",
-            adapter_error_message(error),
+            adapter_legacy.adapter_error_message(error),
           ))
       }
   }
@@ -7320,25 +7315,6 @@ fn pending_remaining_candidates(
   case pending_claim_for_task_ref(state, task_ref) {
     Ok(pending) -> pending.remaining_candidates
     Error(Nil) -> []
-  }
-}
-
-fn option_with_default(value: Option(String), fallback: String) -> String {
-  case value {
-    Some(text) -> text
-    None -> fallback
-  }
-}
-
-fn adapter_error_message(err: adapter.TrackerError) -> String {
-  case err {
-    adapter.Unauthorized(message) -> message
-    adapter.NotFound(ref) -> "task not found: " <> ref.remote_id
-    adapter.Transient(message) -> message
-    adapter.Permanent(message) -> message
-    adapter.UnsupportedCapability(capability) ->
-      "unsupported tracker capability: " <> capability
-    adapter.DecodeFailed(message) -> message
   }
 }
 

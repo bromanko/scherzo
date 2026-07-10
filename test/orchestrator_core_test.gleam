@@ -1,9 +1,11 @@
 import birl
 import gleam/dict
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import scherzo/config/types as config_types
 import scherzo/orchestrator/core
+import scherzo/orchestrator/retry_issue_reactivation
 import scherzo/runtime/reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/session/tokens as session_tokens
@@ -11,6 +13,7 @@ import scherzo/task
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/kind as tracker_kind
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_completion_policy
 import scherzo/workflow_policy
 
 fn config() -> config_types.EffectiveConfig {
@@ -459,6 +462,30 @@ pub fn candidate_sorting_and_eligibility_test() {
     config(),
     tracker_issue.Issue(..b, state: issue_state.from_string_unchecked("Done")),
   )
+}
+
+pub fn operator_retry_reactivation_handles_non_active_and_terminal_states_test() {
+  let retry_config =
+    config_types.EffectiveConfig(
+      ..config(),
+      handoff: config_types.HandoffConfig(
+        ..config().handoff,
+        claim_state_id: Some(workflow_completion_policy.StateByName(
+          "In Progress",
+        )),
+      ),
+    )
+  let triage = issue("triage", "ABC-TRIAGE", "Triage", None)
+  let assert Ok(active) =
+    retry_issue_reactivation.for_fresh_claim(retry_config, triage)
+  assert issue_state.to_string(active.state) == "In Progress"
+
+  list.each(["Done", "Canceled", "Duplicate"], fn(state_name) {
+    let terminal = issue("terminal", "ABC-TERMINAL", state_name, None)
+    let assert Error(retry_issue_reactivation.ReactivationError(reason, _)) =
+      retry_issue_reactivation.for_fresh_claim(retry_config, terminal)
+    assert reason == "retry_terminal_state:" <> state_name
+  })
 }
 
 pub fn workflow_policy_rejects_invalid_dispatch_test() {

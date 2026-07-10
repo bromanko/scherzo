@@ -383,6 +383,7 @@ pub type PendingReviewLanePreflight {
     remaining_candidates: List(tracker_issue.Issue),
     generation: Int,
     workflow_id: String,
+    recovery: Option(session_event.RecoveryInfo),
     previous_retry_generation: Int,
     retry_cancellation: Option(RetryCancellation),
   )

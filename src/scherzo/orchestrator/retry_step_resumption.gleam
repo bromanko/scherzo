@@ -1,8 +1,10 @@
 import gleam/result
 import scherzo/config/types as config_types
+import scherzo/orchestrator/retry_issue_reactivation
 import scherzo/retry_step_validation
 import scherzo/runtime_bundle
 import scherzo/state/recovery
+import scherzo/tracker/adapter
 import scherzo/workflow_dag
 import scherzo/workflow_fingerprint
 import scherzo/workspace_profile
@@ -12,6 +14,25 @@ pub type Validation {
     dag: workflow_dag.WorkflowDag,
     profile: config_types.WorkspaceHookProfile,
   )
+}
+
+pub fn reactivate_issue(
+  tracker_adapter: adapter.TrackerAdapter,
+  effective: config_types.EffectiveConfig,
+  recovered: recovery.RecoveredWorkflowRun,
+) -> Result(recovery.RecoveredWorkflowRun, #(String, String)) {
+  case
+    retry_issue_reactivation.for_operator_retry(
+      tracker_adapter,
+      effective,
+      recovered.issue,
+      "operator_retry_step",
+    )
+  {
+    Ok(issue) -> Ok(recovery.RecoveredWorkflowRun(..recovered, issue: issue))
+    Error(retry_issue_reactivation.ReactivationError(reason, message)) ->
+      Error(#(reason, message))
+  }
 }
 
 pub fn validate(

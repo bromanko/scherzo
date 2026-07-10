@@ -357,6 +357,8 @@ fn begin_review_lane_preflight(
           remaining_candidates: remaining_candidates,
           generation: generation,
           workflow_id: workflow_id,
+          recovery: dict.get(context.recovery_by_issue, issue.id)
+            |> option.from_result,
           previous_retry_generation: previous_retry_generation,
           retry_cancellation: retry_cancellation,
         )
@@ -429,12 +431,18 @@ pub fn resume_after_review_lane_preflight(
   result: review_lane_preflight.PreflightResult,
   callbacks: Callbacks,
 ) -> Outcome {
+  let recovery_by_issue = case pending.recovery {
+    Some(recovery) ->
+      dict.insert(context.recovery_by_issue, pending.issue.id, recovery)
+    None -> context.recovery_by_issue
+  }
   handle_review_lane_preflight_result(
     state,
     pending.issue,
     pending.remaining_candidates,
     transition_types.DispatchContext(
       ..context,
+      recovery_by_issue: recovery_by_issue,
       review_lane_preflight: transition_types.ReviewLanePreflightContext(
         ..context.review_lane_preflight,
         override: Some(result),
