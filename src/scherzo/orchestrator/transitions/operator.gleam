@@ -453,13 +453,16 @@ fn retry_issue_start_fresh(
       )
     True ->
       case
-        operator_retry_policy.start_fresh_block_reason(
+        operator_retry_policy.start_fresh_plan(
           state.runtime,
           context,
           issue,
+          reason,
         )
       {
-        Error(block_reason) ->
+        Error(error) -> {
+          let block_reason =
+            operator_retry_policy.start_fresh_plan_error_reason(error)
           finish(
             state,
             request,
@@ -469,7 +472,8 @@ fn retry_issue_start_fresh(
               Some(start_fresh_rejection_message(block_reason)),
             ),
           )
-        Ok(Nil) ->
+        }
+        Ok(start_fresh_plan) ->
           case operator_retry_policy.prepare_start_fresh_issue(context, issue) {
             Error(#(reactivation_reason, message)) ->
               finish(
@@ -537,6 +541,8 @@ fn retry_issue_start_fresh(
                             operator_retry_policy.context_for_start_fresh(
                               context,
                               retry_issue.id,
+                              start_fresh_plan,
+                              reason,
                             )
                           let claim =
                             claims.begin_for_issue(
@@ -557,12 +563,14 @@ fn retry_issue_start_fresh(
                               list.append(claim.effects, [
                                 effects_types.FinishOperatorCommand(
                                   request,
-                                  command.applied(
+                                  start_fresh_applied_result(
                                     request.operator_command,
-                                    Some(
-                                      "retry accepted; starts a fresh run; reason: "
-                                      <> reason,
-                                    ),
+                                    start_fresh_plan,
+                                    claim.state,
+                                    retry_issue,
+                                    context,
+                                    request.correlation_id,
+                                    reason,
                                   ),
                                 ),
                               ]),
@@ -591,11 +599,41 @@ fn retry_issue_start_fresh(
   }
 }
 
+fn start_fresh_applied_result(
+  operator_command: command.OperatorCommand,
+  plan: operator_retry_policy.StartFreshPlan,
+  state: transition_types.State,
+  issue: tracker_issue.Issue,
+  context: transition_types.DispatchContext,
+  correlation_id: String,
+  reason: String,
+) -> command.CommandResult {
+  let task_identity =
+    orchestrator_state.issue_ref_for_backend(
+      issue,
+      context.tracker_backend_kind,
+    )
+    |> orchestrator_state.task_ref_identity
+  let run_description = case dict.get(state.pending_claims, task_identity) {
+    Ok(transition_types.PendingClaim(run_id: run_id, ..)) ->
+      "fresh run " <> run_id
+    Error(Nil) -> "queued fresh claim request " <> correlation_id
+  }
+  command.applied(
+    operator_command,
+    Some(operator_retry_policy.start_fresh_applied_message(
+      plan,
+      run_description,
+      reason,
+    )),
+  )
+}
+
 fn start_fresh_rejection_message(reason: String) -> String {
   case reason {
     "start_fresh_not_allowed" ->
       retry_rejection_with_next_command(
-        "start-fresh retry only clears retained drift or recovery-blocked state",
+        "start-fresh retry requires retained drift, recovery-blocked state, or an eligible terminal failed workflow run",
         "scripts/scherzoctl ps --json",
       )
     _ ->

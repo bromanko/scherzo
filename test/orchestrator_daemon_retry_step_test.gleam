@@ -31,6 +31,7 @@ import scherzo/runtime_bundle
 import scherzo/session/event
 import scherzo/session/hub
 import scherzo/session/reason as session_reason
+import scherzo/session/recovery as session_recovery
 import scherzo/session/tokens as session_tokens
 import scherzo/state/artifact_store
 import scherzo/state/ledger
@@ -1263,6 +1264,204 @@ pub fn start_fresh_retry_reactivates_triage_issue_with_interrupted_run_test() {
   )
 
   test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(issue_subject, IssueSequenceStop)
+  hub.stop(hub_subject)
+}
+
+pub fn start_fresh_retry_supersedes_terminal_no_change_failure_test() {
+  let dir = "test/tmp/daemon-start-fresh-terminal-failure"
+  let issue = issue("issue-1", "LIV-1469", "Triage")
+  let active_issue =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("In Progress"),
+    )
+  let #(workflow_path, root) = write_retry_step_workflow_with_claim_state(dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/workflows/implementation.yaml",
+      "version: 1
+id: implementation
+steps:
+  - id: implement_plan
+    kind: command
+    run: implement
+  - id: analyze_changes
+    kind: command
+    run: analyze
+    depends_on: [implement_plan]
+",
+    )
+  let old_run_id = "LIV-1469-retained-failed"
+  let retained_marker =
+    seed_terminal_failed_no_change_run(workflow_path, root, issue, old_run_id)
+  let log_subject = process.new_subject()
+  let issue_subject = start_issue_sequence(issue)
+  let tracker_client = tracker_issue_sequence(issue_subject)
+  let implement_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let base_deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_client,
+      tracker_adapter_with_retry_reactivation(
+        log_subject,
+        tracker_client,
+        issue_subject,
+        active_issue,
+      ),
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected agent step")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      command_runner.Runner(run: fn(_) {
+        Error(command_runner.command_error("unexpected_publication_retry"))
+      }),
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_deps,
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..base_deps.workflow_run_dependencies,
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _,
+          _,
+          _,
+          limits: config_types.ArtifactLimits,
+        ) {
+          process.send(log_subject, "command_step:" <> context.step_id)
+          case context.step_id == "implement_plan" {
+            True -> test_async.block_until_released(implement_barrier)
+            False -> Nil
+          }
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "done",
+            "",
+            False,
+            [],
+            limits,
+          )
+        },
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let retry_reason = "operator-authorized retry"
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryIssueStartFresh(
+        command.IssueIdentifier(issue.identifier),
+        retry_reason,
+      ),
+      1000,
+    )
+
+  assert command.status_to_string(result.status) == "applied"
+  assert wait_for_log(log_subject, "command_step:implement_plan", 100)
+  assert !wait_for_log(log_subject, "command_step:analyze_changes", 5)
+  let projected = load_projection_or_panic(root)
+  let assert Ok(projection.WorkflowRunSuperseded(
+    superseded_by_run_id: new_run_id,
+    reason: durable_reason,
+    run_root: old_run_root,
+    ..,
+  )) = dict.get(projected.workflow_runs, old_run_id)
+  assert new_run_id != old_run_id
+  assert durable_reason == "operator_start_fresh:" <> retry_reason
+  assert dict.has_key(
+    projected.outbox,
+    "claim:linear:" <> issue.id <> ":" <> new_run_id,
+  )
+  let assert Some(message) = result.message
+  assert string.contains(message, "superseded run " <> old_run_id)
+  case string.contains(message, "fresh run " <> new_run_id) {
+    True -> Nil
+    False -> {
+      assert string.contains(message, "queued fresh claim request ")
+    }
+  }
+  assert old_run_root <> "/workspaces/main/retained.txt" == retained_marker
+  assert simplifile.read(retained_marker) == Ok("unchanged retained workspace")
+  assert count_kind(root, "workflow_run_started") == 2
+  assert count_kind(root, "workflow_run_superseded") == 1
+  assert !contains_kind(root, "workflow_repair_requested")
+
+  let assert Ok(active_duplicate) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryIssueStartFresh(
+        command.IssueIdentifier(issue.identifier),
+        retry_reason,
+      ),
+      1000,
+    )
+  assert command.status_reason(active_duplicate.status)
+    == Some("issue_already_active")
+  assert count_kind(root, "workflow_run_started") == 2
+  assert count_kind(root, "workflow_run_superseded") == 1
+
+  test_async.release_barrier(implement_barrier)
+  assert wait_for_log(log_subject, "command_step:analyze_changes", 100)
+  assert wait_for_log(log_subject, "handoff_success", 100)
+  set_issue_sequence(issue_subject, issue)
+
+  let assert Ok(repeated) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryIssueStartFresh(
+        command.IssueIdentifier(issue.identifier),
+        retry_reason,
+      ),
+      1000,
+    )
+  assert command.status_reason(repeated.status)
+    == Some("start_fresh_already_superseded")
+  assert count_kind(root, "workflow_run_started") == 2
+  assert count_kind(root, "workflow_run_superseded") == 1
+
+  let later_failed_run_id = "LIV-1469-later-failed"
+  seed_terminal_failed_run_status(
+    workflow_path,
+    root,
+    issue,
+    later_failed_run_id,
+    100,
+  )
+  let assert Ok(reused_reason) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryIssueStartFresh(
+        command.IssueIdentifier(issue.identifier),
+        retry_reason,
+      ),
+      1000,
+    )
+  assert command.status_to_string(reused_reason.status) == "applied"
+  assert wait_for_log(log_subject, "command_step:implement_plan", 100)
+  let projected = load_projection_or_panic(root)
+  let assert Ok(projection.WorkflowRunSuperseded(
+    superseded_by_run_id: later_fresh_run_id,
+    reason: later_durable_reason,
+    ..,
+  )) = dict.get(projected.workflow_runs, later_failed_run_id)
+  assert later_fresh_run_id != later_failed_run_id
+  assert later_durable_reason == "operator_start_fresh:" <> retry_reason
+  assert count_kind(root, "workflow_run_superseded") == 2
+
+  test_async.release_barrier(implement_barrier)
+  assert wait_for_log(log_subject, "command_step:analyze_changes", 100)
+  assert wait_for_log(log_subject, "handoff_success", 100)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(issue_subject, IssueSequenceStop)
   hub.stop(hub_subject)
@@ -3065,6 +3264,117 @@ pub fn dispatch_recovery_classifier_reports_existing_superseding_publication_run
       load_projection_or_panic(root),
       issue,
       observation_for(workflow_path, issue),
+    )
+}
+
+pub fn dispatch_recovery_classifier_blocks_duplicate_when_superseding_run_is_not_started_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-superseding-run-pending"
+  let issue = issue("issue-1", "LIV-1474", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let claim_id = "claim:linear:" <> issue.id <> ":run-pending"
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-superseded-run-1",
+          1040,
+          record.WorkflowRunSuperseded(
+            run_id: "run-1",
+            workflow_id: "execplan",
+            issue_id: issue.id,
+            superseded_by_run_id: "run-pending",
+            reason: "operator_start_fresh:operator-authorized retry",
+          ),
+        ),
+        record.with_id(
+          "outbox-pending-run-pending",
+          1040,
+          record.OutboxPendingV2WithTask(
+            outbox_id: claim_id,
+            task_ref: record.linear_task_ref_fields(
+              issue.id,
+              Some(issue.identifier),
+              None,
+            ),
+            outbox_kind: "claim",
+            dedupe_key: claim_id,
+            payload_json: "{}",
+          ),
+        ),
+      ],
+      True,
+    )
+
+  let assert dispatch_recovery.SupersedingRunAlreadyExists(
+    "run-1",
+    "run-pending",
+  ) =
+    dispatch_recovery.classify(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+    )
+}
+
+pub fn dispatch_recovery_classifier_reconciles_orphaned_operator_supersession_test() {
+  let dir = "test/tmp/dispatch-recovery-classifier-orphaned-supersession"
+  let issue = issue("issue-1", "LIV-1474", "Todo")
+  let #(workflow_path, root) = write_retry_publication_workflow(dir)
+  seed_failed_publication_retry_run(
+    root,
+    issue,
+    "run-1",
+    1000,
+    include_output_manifest: True,
+  )
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append(
+      ledger_path,
+      record.with_id(
+        "workflow-superseded-run-1",
+        1040,
+        record.WorkflowRunSuperseded(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          issue_id: issue.id,
+          superseded_by_run_id: "orphaned-run",
+          reason: "operator_start_fresh:operator-authorized retry",
+        ),
+      ),
+      True,
+    )
+  let marker =
+    event.RecoveryInfo(
+      ..session_recovery.base_info(
+        event.Recovered,
+        "operator_start_fresh",
+        Some("operator-authorized retry"),
+        [],
+      ),
+      workflow_run_id: Some("run-1"),
+    )
+
+  let assert dispatch_recovery.FreshSupersedingDispatch(
+    "run-1",
+    "execplan",
+    "operator_start_fresh:operator-authorized retry",
+    _,
+  ) =
+    dispatch_recovery.classify_for_claim(
+      load_projection_or_panic(root),
+      issue,
+      observation_for(workflow_path, issue),
+      Some(marker),
     )
 }
 
@@ -5463,9 +5773,11 @@ fn tracker_adapter_with_retry_reactivation(
               set_issue_sequence(issue_subject, active_issue)
               Ok(Nil)
             }
-            adapter.HandoffSuccess(..)
-            | adapter.HandoffFailure(..)
-            | adapter.HandoffPark(_) -> Ok(Nil)
+            adapter.HandoffSuccess(..) -> {
+              process.send(log_subject, "handoff_success")
+              Ok(Nil)
+            }
+            adapter.HandoffFailure(..) | adapter.HandoffPark(_) -> Ok(Nil)
           }
         }),
       ),
@@ -6848,6 +7160,250 @@ fn append_parked_record(
             release_policy,
             tracker_issue.content_fingerprint(issue),
             at_ms,
+          ),
+        ),
+      ],
+      True,
+    )
+  Nil
+}
+
+fn seed_terminal_failed_no_change_run(
+  config_path: String,
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+) -> String {
+  let run_root = root <> "/implementation/" <> issue.identifier <> "/" <> run_id
+  let workspace_path = run_root <> "/workspaces/main"
+  let retained_marker = workspace_path <> "/retained.txt"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace_path)
+  let assert Ok(Nil) =
+    simplifile.write(retained_marker, "unchanged retained workspace")
+  let store = artifact_store.new(root)
+  let implement_artifact =
+    step_artifact.from_command_result(
+      "implement_plan",
+      0,
+      "reported success without changes",
+      "",
+      False,
+      [],
+      artifact_limits(),
+    )
+  let analyze_artifact =
+    step_artifact.from_command_result(
+      "analyze_changes",
+      1,
+      "",
+      "no changed files",
+      False,
+      [],
+      artifact_limits(),
+    )
+  let assert Ok(written_implement) =
+    artifact_store.write_step_artifact(
+      store,
+      run_id,
+      "implementation",
+      "implement_plan",
+      1,
+      implement_artifact,
+    )
+  let assert Ok(written_analyze) =
+    artifact_store.write_step_artifact(
+      store,
+      run_id,
+      "implementation",
+      "analyze_changes",
+      1,
+      analyze_artifact,
+    )
+  let fingerprint = workflow_fingerprint_for_config(config_path)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started-" <> run_id,
+          1,
+          record.WorkflowRunStartedWithTask(
+            run_id: run_id,
+            workflow_id: "implementation",
+            workflow_fingerprint: fingerprint,
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            task_ref: record.linear_task_ref_fields(
+              issue.id,
+              Some(issue.identifier),
+              None,
+            ),
+            issue_fingerprint: tracker_issue.content_fingerprint(issue),
+            observed_updated_at_ms: 100,
+            run_root: run_root,
+          ),
+        ),
+        record.with_id(
+          "implement-prepared-" <> run_id,
+          2,
+          record.StepAttemptPrepared(
+            run_id,
+            "implementation",
+            "implement_plan",
+            1,
+            "main",
+            workspace_path,
+            run_root,
+            None,
+            None,
+          ),
+        ),
+        record.with_id(
+          "implement-started-" <> run_id,
+          3,
+          record.StepAttemptStarted(
+            run_id,
+            "implementation",
+            "implement_plan",
+            1,
+            "session-implement-plan",
+            None,
+            False,
+          ),
+        ),
+        record.with_id(
+          "implement-finished-" <> run_id,
+          4,
+          record.StepAttemptFinished(
+            run_id,
+            "implementation",
+            "implement_plan",
+            1,
+            "completed",
+            written_implement.ref,
+            written_implement.sha256,
+            "main",
+            workspace_path,
+            0,
+            1,
+          ),
+        ),
+        record.with_id(
+          "analyze-prepared-" <> run_id,
+          5,
+          record.StepAttemptPrepared(
+            run_id,
+            "implementation",
+            "analyze_changes",
+            1,
+            "main",
+            workspace_path,
+            run_root,
+            None,
+            None,
+          ),
+        ),
+        record.with_id(
+          "analyze-started-" <> run_id,
+          6,
+          record.StepAttemptStarted(
+            run_id,
+            "implementation",
+            "analyze_changes",
+            1,
+            "session-analyze-changes",
+            None,
+            False,
+          ),
+        ),
+        record.with_id(
+          "analyze-finished-" <> run_id,
+          7,
+          record.StepAttemptFinished(
+            run_id,
+            "implementation",
+            "analyze_changes",
+            1,
+            "failed_fatal",
+            written_analyze.ref,
+            written_analyze.sha256,
+            "main",
+            workspace_path,
+            0,
+            1,
+          ),
+        ),
+        record.with_id(
+          "workflow-finished-" <> run_id,
+          8,
+          record.WorkflowRunFinishedWithTask(
+            run_id,
+            "implementation",
+            issue.id,
+            record.linear_task_ref_fields(
+              issue.id,
+              Some(issue.identifier),
+              None,
+            ),
+            "failed_fatal",
+            0,
+            2,
+          ),
+        ),
+      ],
+      True,
+    )
+  retained_marker
+}
+
+fn seed_terminal_failed_run_status(
+  config_path: String,
+  root: String,
+  issue: tracker_issue.Issue,
+  run_id: String,
+  at_ms: Int,
+) -> Nil {
+  let run_root = root <> "/implementation/" <> issue.identifier <> "/" <> run_id
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "workflow-started-" <> run_id,
+          at_ms,
+          record.WorkflowRunStartedWithTask(
+            run_id: run_id,
+            workflow_id: "implementation",
+            workflow_fingerprint: workflow_fingerprint_for_config(config_path),
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+            task_ref: record.linear_task_ref_fields(
+              issue.id,
+              Some(issue.identifier),
+              None,
+            ),
+            issue_fingerprint: tracker_issue.content_fingerprint(issue),
+            observed_updated_at_ms: at_ms,
+            run_root: run_root,
+          ),
+        ),
+        record.with_id(
+          "workflow-finished-" <> run_id,
+          at_ms + 1,
+          record.WorkflowRunFinishedWithTask(
+            run_id,
+            "implementation",
+            issue.id,
+            record.linear_task_ref_fields(
+              issue.id,
+              Some(issue.identifier),
+              None,
+            ),
+            "failed_fatal",
+            0,
+            1,
           ),
         ),
       ],

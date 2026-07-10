@@ -2,9 +2,11 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/ctl/artifact_publication_retry
+import scherzo/orchestrator/operator_retry_policy
 import scherzo/session/event
 import scherzo/state/projection
 import scherzo/state/recovery.{
@@ -13,6 +15,7 @@ import scherzo/state/recovery.{
 }
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_completion_policy
+import scherzo/workflow_outcome
 import scherzo/workflow_repair
 
 pub type Outcome {
@@ -41,9 +44,79 @@ pub fn classify_for_claim(
   recovery: Option(event.RecoveryInfo),
 ) -> Outcome {
   case recovery {
+    Some(event.RecoveryInfo(
+      source: "operator_start_fresh",
+      workflow_run_id: Some(superseded_run_id),
+      message: operator_reason,
+      ..,
+    )) ->
+      classify_operator_supersession(
+        projected,
+        issue,
+        superseded_run_id,
+        operator_reason,
+      )
     Some(event.RecoveryInfo(source: "operator_start_fresh", ..)) ->
       FreshDispatch
     _ -> classify(projected, issue, observation)
+  }
+}
+
+fn classify_operator_supersession(
+  projected: projection.Projection,
+  issue: tracker_issue.Issue,
+  superseded_run_id: String,
+  operator_reason: Option(String),
+) -> Outcome {
+  case dict.get(projected.workflow_runs, superseded_run_id) {
+    Ok(projection.WorkflowRunFinished(
+      workflow_id: workflow_id,
+      issue_id: issue_id,
+      outcome: outcome,
+      ..,
+    )) ->
+      case
+        issue_id == issue.id && workflow_outcome.is_terminal_failure(outcome)
+      {
+        True -> {
+          let reason = operator_reason |> option.unwrap("")
+          FreshSupersedingDispatch(
+            superseded_run_id,
+            workflow_id,
+            operator_retry_policy.operator_supersession_reason(reason),
+            "operator-authorized fresh retry: " <> reason,
+          )
+        }
+        False ->
+          RejectRecovery(
+            "start_fresh_not_allowed",
+            "operator fresh retry target is not an eligible terminal failed run: "
+              <> superseded_run_id,
+          )
+      }
+    Ok(projection.WorkflowRunSuperseded(
+      workflow_id: workflow_id,
+      superseded_by_run_id: superseded_by_run_id,
+      reason: reason,
+      ..,
+    )) ->
+      case superseding_run_is_durable(projected, superseded_by_run_id) {
+        True ->
+          SupersedingRunAlreadyExists(superseded_run_id, superseded_by_run_id)
+        False ->
+          FreshSupersedingDispatch(
+            superseded_run_id,
+            workflow_id,
+            reason,
+            "reconciling operator fresh retry whose replacement was not durably queued",
+          )
+      }
+    _ ->
+      RejectRecovery(
+        "start_fresh_not_allowed",
+        "operator fresh retry target is no longer an eligible terminal failed run: "
+          <> superseded_run_id,
+      )
   }
 }
 
@@ -328,11 +401,27 @@ fn superseding_run_for_existing_run(
       superseded_by_run_id: superseded_by_run_id,
       ..,
     )) ->
-      case projection.has_workflow_run(projected, superseded_by_run_id) {
+      case superseding_run_is_durable(projected, superseded_by_run_id) {
         True -> Ok(superseded_by_run_id)
         False -> Error(Nil)
       }
     _ -> Error(Nil)
+  }
+}
+
+fn superseding_run_is_durable(
+  projected: projection.Projection,
+  run_id: String,
+) -> Bool {
+  projection.has_workflow_run(projected, run_id)
+  || {
+    let claim_suffix = ":" <> run_id
+    projected.outbox
+    |> dict.keys
+    |> list.any(fn(outbox_id) {
+      string.starts_with(outbox_id, "claim:")
+      && string.ends_with(outbox_id, claim_suffix)
+    })
   }
 }
 
