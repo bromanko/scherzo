@@ -2,14 +2,17 @@ import gleam/dict
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/ctl/artifact_publication_retry
+import scherzo/session/event
 import scherzo/state/projection
 import scherzo/state/recovery.{
   type CurrentWorkflowObservation, CurrentWorkflow, IssueUnavailable,
   TrackerRefreshUnavailable, WorkflowUnavailable,
 }
 import scherzo/tracker/issue as tracker_issue
+import scherzo/workflow_completion_policy
 import scherzo/workflow_repair
 
 pub type Outcome {
@@ -29,6 +32,19 @@ pub type Outcome {
   PublicationRecovery(run_id: String, workflow_id: String)
   PublicationAlreadyPublished(run_id: String, workflow_id: String)
   RejectRecovery(reason: String, message: String)
+}
+
+pub fn classify_for_claim(
+  projected: projection.Projection,
+  issue: tracker_issue.Issue,
+  observation: CurrentWorkflowObservation,
+  recovery: Option(event.RecoveryInfo),
+) -> Outcome {
+  case recovery {
+    Some(event.RecoveryInfo(source: "operator_start_fresh", ..)) ->
+      FreshDispatch
+    _ -> classify(projected, issue, observation)
+  }
 }
 
 pub fn classify(
@@ -364,5 +380,52 @@ fn option_string(value: Option(String)) -> String {
   case value {
     None -> ""
     Some(text) -> text
+  }
+}
+
+pub fn publication_recovery_completion_target(
+  handoff: config_types.HandoffConfig,
+  workflow_id: String,
+) -> Result(#(Option(String), String), String) {
+  let missing =
+    "publication retry completed but no success or completion state is configured"
+  case handoff.completion_states {
+    Some(policy) ->
+      policy
+      |> workflow_completion_policy.choose_linear_completion_state(
+        workflow_id,
+        workflow_completion_policy.WorkflowCompletionOutcome(
+          workflow_completion_policy.CompletionSucceeded,
+          [],
+          workflow_completion_policy.ReviewUnknown,
+          None,
+          False,
+        ),
+      )
+      |> publication_recovery_decision_target
+    None ->
+      handoff.success_state_id
+      |> option.to_result(missing)
+      |> result.map(linear_state_target)
+  }
+}
+
+fn publication_recovery_decision_target(
+  decision: workflow_completion_policy.CompletionStateDecision,
+) -> Result(#(Option(String), String), String) {
+  case decision {
+    workflow_completion_policy.MoveToState(state, _) ->
+      Ok(linear_state_target(state))
+    workflow_completion_policy.LeaveLinearState(reason) ->
+      Error("publication retry completed but " <> reason)
+  }
+}
+
+fn linear_state_target(
+  state_ref: workflow_completion_policy.LinearStateRef,
+) -> #(Option(String), String) {
+  case state_ref {
+    workflow_completion_policy.StateById(value) -> #(Some(value), value)
+    workflow_completion_policy.StateByName(value) -> #(None, value)
   }
 }

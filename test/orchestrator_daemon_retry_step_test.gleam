@@ -1078,21 +1078,40 @@ pub fn run_retry_step_exact_does_not_append_provenance_repair_when_finalization_
   hub.stop(hub_subject)
 }
 
-pub fn retry_step_accepts_non_active_non_terminal_issue_state_for_retained_run_test() {
+pub fn retry_step_reactivates_non_active_retained_run_before_resuming_test() {
   let dir = "test/tmp/daemon-retry-step-non-active"
   let issue = issue("issue-1", "LIV-510", "Triage")
-  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  let active_issue =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("In Progress"),
+    )
+  let #(workflow_path, root) = write_retry_step_workflow_with_claim_state(dir)
   seed_interrupted_retry_step_run(root, issue, include_parked: False)
   let log_subject = process.new_subject()
+  let issue_subject = start_issue_sequence(issue)
+  let tracker_client = tracker_issue_sequence(issue_subject)
   let worker_barrier = test_async.new_barrier()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
-    in_process_dependencies(
+    in_process_dependencies_with_adapter(
       log_subject,
-      tracker_with_candidate(issue),
+      tracker_client,
+      tracker_adapter_with_retry_reactivation(
+        log_subject,
+        tracker_client,
+        issue_subject,
+        active_issue,
+      ),
       hub_subject,
       fn(issue, context, _) {
-        process.send(log_subject, "recovered_worker_started:" <> issue.id)
+        process.send(
+          log_subject,
+          "recovered_worker_started:"
+            <> issue.id
+            <> ":"
+            <> issue_state.to_string(issue.state),
+        )
         test_async.block_until_released(worker_barrier)
         Error(agent_types.WorkerFailure(
           reason: error.PiFailed(error.PiProtocolError("stopped")),
@@ -1101,14 +1120,13 @@ pub fn retry_step_accepts_non_active_non_terminal_issue_state_for_retained_run_t
           final_issue: None,
         ))
       },
+      command_runner.Runner(run: fn(_) {
+        Error(command_runner.command_error("unexpected_publication_retry"))
+      }),
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
   let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
-
-  process.send(started.data, daemon.PollTick(1))
-  assert wait_for_log(log_subject, "candidates_fetched", 100)
-  assert !wait_for_log(log_subject, "dispatch_started", 5)
 
   let assert Ok(result) =
     daemon.apply_operator_command(
@@ -1120,15 +1138,133 @@ pub fn retry_step_accepts_non_active_non_terminal_issue_state_for_retained_run_t
       1000,
     )
   let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
-  assert wait_for_log(log_subject, "recovered_worker_started:issue-1", 100)
+  assert wait_for_log(log_subject, "state_transition:In Progress", 100)
+  assert wait_for_log(
+    log_subject,
+    "recovered_worker_started:issue-1:In Progress",
+    100,
+  )
 
   let assert Ok(completed_operation) =
     wait_for_operation_status(root, operation_id, "completed", 20)
   assert completed_operation.requested_step_id == Some("apply_feedback")
   assert contains_kind(root, "workflow_repair_requested")
 
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(
+    snapshot.running,
+    orchestrator_state.issue_identity(issue),
+  )
+
   test_async.release_barrier_if_waiting(worker_barrier)
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(issue_subject, IssueSequenceStop)
+  hub.stop(hub_subject)
+}
+
+pub fn start_fresh_retry_reactivates_triage_issue_with_interrupted_run_test() {
+  let dir = "test/tmp/daemon-start-fresh-non-active"
+  let issue = issue("issue-1", "LIV-1472", "Triage")
+  let active_issue =
+    tracker_issue.Issue(
+      ..issue,
+      state: issue_state.from_string_unchecked("In Progress"),
+    )
+  let #(workflow_path, root) = write_retry_step_workflow_with_claim_state(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let issue_subject = start_issue_sequence(issue)
+  let tracker_client = tracker_issue_sequence(issue_subject)
+  let worker_barrier = test_async.new_barrier()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies_with_adapter(
+      log_subject,
+      tracker_client,
+      tracker_adapter_with_retry_reactivation(
+        log_subject,
+        tracker_client,
+        issue_subject,
+        active_issue,
+      ),
+      hub_subject,
+      fn(issue, context, _) {
+        process.send(
+          log_subject,
+          "fresh_retry_worker_started:"
+            <> issue.id
+            <> ":"
+            <> issue_state.to_string(issue.state),
+        )
+        test_async.block_until_released(worker_barrier)
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("stopped")),
+          workspace_path: Some(context.workspace_path),
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+      command_runner.Runner(run: fn(_) {
+        Error(command_runner.command_error("unexpected_publication_retry"))
+      }),
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..deps,
+      workflow_run_dependencies: workflow_run.Dependencies(
+        ..deps.workflow_run_dependencies,
+        command_step: fn(
+          context: workflow_run.StepContext,
+          _,
+          _,
+          _,
+          limits: config_types.ArtifactLimits,
+        ) {
+          step_artifact.from_command_result(
+            context.step_id,
+            0,
+            "done",
+            "",
+            False,
+            [],
+            limits,
+          )
+        },
+      ),
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryIssueStartFresh(
+        command.IssueIdentifier(issue.identifier),
+        "operator recovery from triage",
+      ),
+      1000,
+    )
+
+  assert command.status_reason(result.status) == None
+  assert command.status_to_string(result.status) == "applied"
+  assert wait_for_log(log_subject, "handoff_claim:In Progress", 100)
+  assert wait_for_log(
+    log_subject,
+    "fresh_retry_worker_started:issue-1:In Progress",
+    100,
+  )
+  assert count_kind(root, "workflow_run_started") == 2
+  assert !contains_kind(root, "workflow_repair_requested")
+
+  let assert Ok(snapshot) = daemon.get_snapshot(started.data, 1000)
+  assert dict.has_key(
+    snapshot.running,
+    orchestrator_state.issue_identity(issue),
+  )
+
+  test_async.release_barrier_if_waiting(worker_barrier)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  process.send(issue_subject, IssueSequenceStop)
   hub.stop(hub_subject)
 }
 
@@ -2429,6 +2565,22 @@ pub fn retry_step_replay_is_idempotent_and_queue_append_failure_rejects_without_
 }
 
 fn write_retry_step_workflow(dir: String) -> #(String, String) {
+  write_retry_step_workflow_with_extra_config(dir, "")
+}
+
+fn write_retry_step_workflow_with_claim_state(
+  dir: String,
+) -> #(String, String) {
+  write_retry_step_workflow_with_extra_config(
+    dir,
+    "task_updates:\n  enabled: true\n  states:\n    claim: In Progress\n    failure: Triage\n",
+  )
+}
+
+fn write_retry_step_workflow_with_extra_config(
+  dir: String,
+  extra_config: String,
+) -> #(String, String) {
   test_helpers.reset_dir(dir)
   let assert Ok(root) = path.absolute(dir <> "/workspaces")
   let config_path = dir <> "/scherzo.yaml"
@@ -2443,9 +2595,9 @@ tracker:
     project: TEST
   states:
     ready: [Todo]
-    active: [Todo]
-    terminal: [Done]
-workspace:
+    active: [Todo, In Progress]
+    terminal: [Canceled, Duplicate, Done]
+" <> extra_config <> "workspace:
   root: " <> root <> "
 agents:
   concurrency: 1
@@ -5271,6 +5423,52 @@ fn tracker_adapter_with_transition_logging(
         }),
       ),
       handoff: Some(test_handoff_capability(disabled_handoff())),
+    )
+  }
+}
+
+fn tracker_adapter_with_retry_reactivation(
+  log_subject: process.Subject(String),
+  tracker_client: tracker.Client,
+  issue_subject: process.Subject(IssueSequenceMessage),
+  active_issue: tracker_issue.Issue,
+) -> fn(config_types.EffectiveConfig) -> adapter.TrackerAdapter {
+  fn(_) {
+    let legacy =
+      adapter_legacy.adapter_from_legacy_client(tracker_client, "linear")
+    adapter.TrackerAdapter(
+      ..legacy,
+      state_transitions: Some(
+        adapter.StateTransitionCapability(transition: fn(request) {
+          process.send(
+            log_subject,
+            "state_transition:" <> request.target_state_name,
+          )
+          set_issue_sequence(issue_subject, active_issue)
+          Ok(adapter.StateTransitionReceipt(
+            task: request.task,
+            state: task.TaskState(
+              id: request.target_state_id,
+              name: request.target_state_name,
+              category: task.Active,
+            ),
+          ))
+        }),
+      ),
+      handoff: Some(
+        adapter.HandoffCapability(report: fn(event) {
+          case event {
+            adapter.HandoffClaim(_, _, _) -> {
+              process.send(log_subject, "handoff_claim:In Progress")
+              set_issue_sequence(issue_subject, active_issue)
+              Ok(Nil)
+            }
+            adapter.HandoffSuccess(..)
+            | adapter.HandoffFailure(..)
+            | adapter.HandoffPark(_) -> Ok(Nil)
+          }
+        }),
+      ),
     )
   }
 }

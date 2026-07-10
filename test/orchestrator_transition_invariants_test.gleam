@@ -324,6 +324,7 @@ fn state_with_pending_review_lane_preflight(
           remaining_candidates: [],
           generation: generation,
           workflow_id: "default",
+          recovery: None,
           previous_retry_generation: 0,
           retry_cancellation: None,
         ),

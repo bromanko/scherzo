@@ -7,11 +7,11 @@ import scherzo/control/command
 import scherzo/orchestrator/control_command_handler
 import scherzo/orchestrator/core
 import scherzo/orchestrator/effects/types as effects_types
+import scherzo/orchestrator/operator_retry_policy
 import scherzo/orchestrator/transition_types
 import scherzo/orchestrator/transitions/claims
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
-import scherzo/session/event
 import scherzo/state/ledger
 import scherzo/state/ledger_batch
 import scherzo/state/record
@@ -452,7 +452,13 @@ fn retry_issue_start_fresh(
         ),
       )
     True ->
-      case start_fresh_block_reason(state.runtime, context, issue) {
+      case
+        operator_retry_policy.start_fresh_block_reason(
+          state.runtime,
+          context,
+          issue,
+        )
+      {
         Error(block_reason) ->
           finish(
             state,
@@ -464,177 +470,125 @@ fn retry_issue_start_fresh(
             ),
           )
         Ok(Nil) ->
-          case
-            core.retry_candidate_precondition_failure(
-              state.runtime,
-              context.effective,
-              issue.id,
-              issue,
-            )
-          {
-            Some("retry_issue_parked") | None ->
-              case core.workflow_policy_satisfied(context.effective, issue) {
-                False ->
-                  finish(
-                    state,
-                    request,
-                    command.rejected(
-                      request.operator_command,
-                      "retry_workflow_policy_invalid",
-                      Some(retry_rejection_with_next_command(
-                        "retry rejected: workflow policy is not satisfied",
-                        "scripts/scherzoctl task show "
-                          <> issue.identifier
-                          <> " --json",
-                      )),
-                    ),
-                  )
-                True ->
-                  case can_reserve(state, context, issue) {
+          case operator_retry_policy.prepare_start_fresh_issue(context, issue) {
+            Error(#(reactivation_reason, message)) ->
+              finish(
+                state,
+                request,
+                command.rejected(
+                  request.operator_command,
+                  reactivation_reason,
+                  Some(retry_rejection_with_next_command(
+                    message,
+                    "scripts/scherzoctl query status --json",
+                  )),
+                ),
+              )
+            Ok(retry_issue) ->
+              case
+                core.retry_candidate_precondition_failure(
+                  state.runtime,
+                  context.effective,
+                  retry_issue.id,
+                  retry_issue,
+                )
+              {
+                Some("retry_issue_parked") | None ->
+                  case
+                    core.workflow_policy_satisfied(
+                      context.effective,
+                      retry_issue,
+                    )
+                  {
                     False ->
                       finish(
                         state,
                         request,
                         command.rejected(
                           request.operator_command,
-                          "retry_no_dispatch_slots",
+                          "retry_workflow_policy_invalid",
                           Some(retry_rejection_with_next_command(
-                            "retry deferred: no dispatch slots are available",
-                            "scripts/scherzoctl ps --json",
+                            "retry rejected: workflow policy is not satisfied",
+                            "scripts/scherzoctl task show "
+                              <> retry_issue.identifier
+                              <> " --json",
                           )),
                         ),
                       )
-                    True -> {
-                      let state = reset_issue_for_operator_retry(state, issue)
-                      let claim_context =
-                        context_without_retried_recovery(context, issue.id)
-                      let claim =
-                        claims.begin_for_issue(
-                          state,
-                          issue,
-                          [],
-                          claim_context,
-                          claims.Callbacks(dispatch_candidates: dispatch),
-                        )
-                      transition_types.Outcome(
-                        state: claim.state,
-                        effects: list.append(
-                          start_fresh_retry_effects(
-                            state.runtime,
-                            issue,
-                            context,
-                          ),
-                          list.append(claim.effects, [
-                            effects_types.FinishOperatorCommand(
-                              request,
-                              command.applied(
-                                request.operator_command,
-                                Some(
-                                  "retry accepted; starts a fresh run; reason: "
-                                  <> reason,
-                                ),
-                              ),
+                    True ->
+                      case can_reserve(state, context, retry_issue) {
+                        False ->
+                          finish(
+                            state,
+                            request,
+                            command.rejected(
+                              request.operator_command,
+                              "retry_no_dispatch_slots",
+                              Some(retry_rejection_with_next_command(
+                                "retry deferred: no dispatch slots are available",
+                                "scripts/scherzoctl ps --json",
+                              )),
                             ),
-                          ]),
-                        ),
-                      )
-                    }
+                          )
+                        True -> {
+                          let state =
+                            reset_issue_for_operator_retry(state, retry_issue)
+                          let claim_context =
+                            operator_retry_policy.context_for_start_fresh(
+                              context,
+                              retry_issue.id,
+                            )
+                          let claim =
+                            claims.begin_for_issue(
+                              state,
+                              retry_issue,
+                              [],
+                              claim_context,
+                              claims.Callbacks(dispatch_candidates: dispatch),
+                            )
+                          transition_types.Outcome(
+                            state: claim.state,
+                            effects: list.append(
+                              start_fresh_retry_effects(
+                                state.runtime,
+                                retry_issue,
+                                context,
+                              ),
+                              list.append(claim.effects, [
+                                effects_types.FinishOperatorCommand(
+                                  request,
+                                  command.applied(
+                                    request.operator_command,
+                                    Some(
+                                      "retry accepted; starts a fresh run; reason: "
+                                      <> reason,
+                                    ),
+                                  ),
+                                ),
+                              ]),
+                            ),
+                          )
+                        }
+                      }
                   }
+                Some(other) ->
+                  finish(
+                    state,
+                    request,
+                    command.rejected(
+                      request.operator_command,
+                      other,
+                      Some(retry_rejection_message(
+                        other,
+                        state.runtime,
+                        retry_issue,
+                      )),
+                    ),
+                  )
               }
-            Some(other) ->
-              finish(
-                state,
-                request,
-                command.rejected(
-                  request.operator_command,
-                  other,
-                  Some(retry_rejection_message(other, state.runtime, issue)),
-                ),
-              )
           }
       }
   }
-}
-
-fn start_fresh_block_reason(
-  runtime: orchestrator_state.RuntimeState,
-  context: transition_types.DispatchContext,
-  issue: tracker_issue.Issue,
-) -> Result(Nil, String) {
-  case
-    dict.get(
-      runtime.parked,
-      orchestrator_state.linear_issue_id_identity(issue.id),
-    )
-  {
-    Ok(orchestrator_state.ParkedEntry(reason: reason, ..)) ->
-      case
-        qualifying_start_fresh_reason(orchestrator_reason.park_to_string(reason))
-      {
-        True -> Ok(Nil)
-        False -> Error("start_fresh_not_allowed")
-      }
-    Error(Nil) ->
-      case parked_reason_from_projection(context.workspace_root, issue.id) {
-        Some(reason) ->
-          case qualifying_start_fresh_reason(reason) {
-            True -> Ok(Nil)
-            False -> Error("start_fresh_not_allowed")
-          }
-        None ->
-          case dict.get(context.recovery_by_issue, issue.id) {
-            Ok(recovery) ->
-              case recovery_allows_start_fresh(recovery) {
-                True -> Ok(Nil)
-                False -> Error("start_fresh_not_allowed")
-              }
-            Error(Nil) -> Ok(Nil)
-          }
-      }
-  }
-}
-
-fn parked_reason_from_projection(
-  workspace_root: String,
-  issue_id: String,
-) -> Option(String) {
-  case ledger.path_for_workspace_root(workspace_root) {
-    Ok(ledger_path) ->
-      case ledger.load_projection(ledger_path) {
-        Ok(projected) ->
-          case dict.get(projected.parked_issues, issue_id) {
-            Ok(parked) -> Some(parked.reason)
-            Error(Nil) -> None
-          }
-        Error(_) -> None
-      }
-    Error(_) -> None
-  }
-}
-
-fn recovery_allows_start_fresh(recovery: event.RecoveryInfo) -> Bool {
-  case recovery.park_reason {
-    Some(reason) -> qualifying_start_fresh_reason(reason)
-    None ->
-      case recovery.drift_kind {
-        Some(_) -> True
-        None ->
-          case recovery.status {
-            event.Blocked
-            | event.Parked
-            | event.DriftDetected
-            | event.OldStateResetRequired -> True
-            _ -> False
-          }
-      }
-  }
-}
-
-fn qualifying_start_fresh_reason(reason: String) -> Bool {
-  string.starts_with(reason, "workflow_definition_drift")
-  || string.starts_with(reason, "issue_content_drift")
-  || string.starts_with(reason, "issue_state_drift")
-  || string.starts_with(reason, "dispatch_recovery")
 }
 
 fn start_fresh_rejection_message(reason: String) -> String {
@@ -658,7 +612,11 @@ fn start_fresh_retry_effects(
   context: transition_types.DispatchContext,
 ) -> List(effects_types.Effect) {
   let unpark_effects = case
-    start_fresh_has_recovery_state(runtime, context, issue)
+    operator_retry_policy.start_fresh_has_recovery_state(
+      runtime,
+      context,
+      issue,
+    )
   {
     True -> [
       effects_types.AppendLedger(effects_types.LedgerAppend(
@@ -689,26 +647,6 @@ fn start_fresh_retry_effects(
     effects_types.CancelRetryTimer(issue.id, 0, "operator_retry_start_fresh"),
     effects_types.ClearRecovery(issue.id),
   ])
-}
-
-fn start_fresh_has_recovery_state(
-  runtime: orchestrator_state.RuntimeState,
-  context: transition_types.DispatchContext,
-  issue: tracker_issue.Issue,
-) -> Bool {
-  case
-    dict.get(
-      runtime.parked,
-      orchestrator_state.linear_issue_id_identity(issue.id),
-    )
-  {
-    Ok(_) -> True
-    Error(Nil) ->
-      case parked_reason_from_projection(context.workspace_root, issue.id) {
-        Some(_) -> True
-        None -> dict.has_key(context.recovery_by_issue, issue.id)
-      }
-  }
 }
 
 fn context_without_retried_recovery(
