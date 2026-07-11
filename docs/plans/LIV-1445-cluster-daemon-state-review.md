@@ -66,7 +66,7 @@ Milestone 6 clusters effect-runner process ownership, removes leftover top-level
 - [x] (2026-07-11) Ran formatting and the unit suite after the rebase; 2,339 unit tests passed.
 - [x] (2026-07-11) Ran the contract suite and both required production lint gates after the rebase; 1,025 contract tests passed, and both lint commands exited zero with the existing 292-warning inventory and no errors.
 - [x] (2026-07-11) Described the retained jj change as `Implement LIV-1469: cluster daemon state ownership`.
-- [ ] Publication remains an operator step: retained-run finalization dry-run was rejected because the run-pinned workflow interface fingerprint no longer matches the current publication routes.
+- [x] (2026-07-11) Completed the explicit operator publication path after retained-run finalization was rejected; published PR #655 and moved LIV-1469 to In Review.
 
 ## Surprises & Discoveries
 
@@ -80,7 +80,7 @@ The failed attempt raised the daemon ratchet to 10,711 even though its parent wa
 
 The rebase exposed an existing race in an orphan-cleanup contract assertion: asynchronous outbox completion could append between the test's ledger snapshot and cleanup assertion. The test now waits for the durable `outbox_completed` synchronization point before asserting that cleanup itself appends no records.
 
-A manual retained-run finalization dry-run cannot publish this old run because its pinned workflow-interface fingerprint differs from the current workflow definition. Scherzo rejected it with `publication_route_discovery_unsafe`; the implementation commit remains intact in the retained workspace for an explicit manual publication or supersession decision.
+A manual retained-run finalization dry-run could not publish this old run because its pinned workflow-interface fingerprint differed from the current workflow definition. Scherzo rejected it with `publication_route_discovery_unsafe`; the explicit operator path then used the configured jj commit-stack publisher to create PR #655 without bypassing the stale-route guard.
 
 ## Decision Log
 
@@ -98,7 +98,7 @@ The retained implementation now has one source of truth for every planned runtim
 
 The final changed-surface inventory contains daemon and owner modules, daemon-focused tests, architecture guardrails, and this plan only. `.scherzo/workflows/scripts/*`, workflow schemas and YAML, provider-facing structured-output helpers, review-lane contract files, provider-live probes, cache behavior, and browser/UI surfaces remain unchanged.
 
-Implementation and validation are complete in the retained jj change. Automatic publication is not complete: the old run's interface fingerprint prevents safe route discovery, so publication must use an explicit operator-selected path rather than bypassing that guard.
+Implementation, validation, and manual publication are complete. PR #655 contains the retained jj change, and LIV-1469 is In Review. The old run remains historical failure evidence rather than being rewritten to claim automatic completion.
 
 ## Validation and Acceptance
 
