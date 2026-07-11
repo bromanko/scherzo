@@ -1,24 +1,120 @@
 {
   "type": "object",
-  "description": "Provider-facing completion submission for the broad ExecPlan implementation pass. Scherzo independently verifies changed-file and diff evidence.",
+  "description": "Provider-facing completion submission for the broad ExecPlan implementation pass. Scherzo independently verifies changed files, current-tree acceptance evidence, guardrails, repository checks, and implementation inventory.",
   "required": [
     "ready_for_verification",
     "changed_files",
+    "acceptance_criteria",
+    "guardrail_checks",
+    "absence_checks",
+    "required_references",
+    "implementation_inventory",
     "remaining_required_work",
     "blockers"
   ],
   "properties": {
     "ready_for_verification": {
       "type": "boolean",
-      "description": "True only when all required plan scope is implemented and ready for semantic verification."
+      "description": "True only when every required plan criterion has verified current-tree evidence and the semantic verifier should pass."
     },
     "changed_files": {
       "type": "array",
-      "description": "Complete repository-relative changed-file evidence from the current implementation workspace.",
+      "description": "Complete repository-relative changed-file evidence from the workflow-baseline diff.",
+      "items": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$" }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "description": "One entry per canonical plan acceptance criterion, quoted from the plan and supported by current-tree evidence rather than Progress or Outcomes claims.",
+      "minItems": 1,
       "items": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+        "type": "object",
+        "required": ["criterion", "satisfied", "evidence"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "satisfied": { "type": "boolean" },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["kind", "reference", "observation"],
+              "properties": {
+                "kind": { "type": "string", "pattern": "^(code|test|command|measurement|inventory)$" },
+                "reference": { "type": "string", "minLength": 1 },
+                "observation": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "guardrail_checks": {
+      "type": "array",
+      "description": "Current line/import measurements for every plan-required shrinking guardrail; baseline values must come from the canonical plan.",
+      "items": {
+        "type": "object",
+        "required": ["metric", "path", "baseline", "measured", "requirement"],
+        "properties": {
+          "metric": { "type": "string", "pattern": "^(line_count|import_count)$" },
+          "path": { "type": "string", "minLength": 1 },
+          "baseline": { "type": "integer", "minimum": 1 },
+          "measured": { "type": "integer", "minimum": 0 },
+          "requirement": { "type": "string", "pattern": "^decrease_from_baseline$" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "absence_checks": {
+      "type": "array",
+      "description": "Literal current-tree searches proving replaced legacy fields or helpers are absent where the plan requires removal.",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "pattern", "paths"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "pattern": { "type": "string", "minLength": 1 },
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "required_references": {
+      "type": "array",
+      "description": "Literal current-tree searches proving new owner APIs are consumed and focused tests reference migrated APIs and required paths.",
+      "items": {
+        "type": "object",
+        "required": ["criterion", "pattern", "paths"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "pattern": { "type": "string", "minLength": 1 },
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "implementation_inventory": {
+      "type": "array",
+      "description": "Explicit changed/unchanged/not-applicable surface inventory when required by the plan, with repository globs and evidence.",
+      "items": {
+        "type": "object",
+        "required": ["surface", "path_pattern", "disposition", "evidence"],
+        "properties": {
+          "surface": { "type": "string", "minLength": 1 },
+          "path_pattern": { "type": "string", "minLength": 1 },
+          "disposition": { "type": "string", "pattern": "^(unchanged|changed|not_applicable)$" },
+          "evidence": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
       }
     },
     "remaining_required_work": {
@@ -33,10 +129,7 @@
         "type": "object",
         "required": ["kind", "description"],
         "properties": {
-          "kind": {
-            "type": "string",
-            "pattern": "^(conflict|missing_input|unsafe_ambiguity|required_decision|infrastructure|other)$"
-          },
+          "kind": { "type": "string", "pattern": "^(conflict|missing_input|unsafe_ambiguity|required_decision|infrastructure|other)$" },
           "description": { "type": "string", "minLength": 1 }
         },
         "additionalProperties": false

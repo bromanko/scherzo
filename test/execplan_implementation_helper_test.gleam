@@ -2284,6 +2284,158 @@ pub fn implementation_completion_gate_rejects_ready_noop_test() {
   assert string.contains(diagnostic, "\"bytes\": 0")
 }
 
+pub fn implementation_completion_gate_rejects_historical_plan_claim_as_evidence_test() {
+  let dir = "test/tmp/implementation-completion-gate-historical-claim"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_implementation_completion_submission_with_evidence(
+    dir,
+    "true",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[{\"criterion\":\"Required work.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"code\",\"reference\":\"docs/plans/example.md\",\"observation\":\"Progress marks this complete.\"}]}]",
+    "[]",
+    "[]",
+    "[]",
+    "[]",
+    "[]",
+    "[]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(
+    artifact.stdout,
+    "criterion_not_in_canonical_acceptance",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "historical_plan_claim_used_as_evidence",
+  )
+  let assert Ok(diagnostic) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-implementation-completion-diagnostic.json",
+    )
+  assert string.contains(diagnostic, "outside the plan Progress/Outcomes")
+}
+
+pub fn implementation_completion_gate_rejects_general_gates_as_semantic_evidence_test() {
+  let dir = "test/tmp/implementation-completion-gate-general-only"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_implementation_completion_submission_with_evidence(
+    dir,
+    "true",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[{\"criterion\":\"Required implementation behavior is present.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"command\",\"reference\":\"direnv exec . gleam test\",\"observation\":\"All tests passed.\"},{\"kind\":\"command\",\"reference\":\"direnv exec . gleam run -m glinter\",\"observation\":\"Lint passed.\"}]}]",
+    "[]",
+    "[]",
+    "[]",
+    "[]",
+    "[]",
+    "[]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert string.contains(artifact.stdout, "criterion_semantic_evidence_missing")
+  let assert Ok(diagnostic) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-implementation-completion-diagnostic.json",
+    )
+  assert string.contains(diagnostic, "general format/test/lint gates")
+  assert string.contains(diagnostic, "Required implementation behavior")
+}
+
+pub fn implementation_completion_gate_rejects_current_tree_contradictions_test() {
+  let dir = "test/tmp/implementation-completion-gate-contradictions"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/fixture")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/fixture/daemon.txt",
+      "import owner\nNewOwner legacy_field\nruntime\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/example.md",
+      "# Example\n\n## Validation and Acceptance\n\nThe owner migration is complete.\n\nThe `fixture/daemon.txt` line-count guardrail must be fewer than the `3` line ratchet. Remove legacy fields after the owner record is consumed. Include an explicit inventory stating unchanged workflow surfaces.\n",
+    )
+  write_implementation_completion_submission_with_evidence(
+    dir,
+    "true",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[{\"criterion\":\"The owner migration is complete.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"code\",\"reference\":\"fixture/daemon.txt\",\"observation\":\"Owner fields were inspected.\"}]}]",
+    "[{\"metric\":\"line_count\",\"path\":\"fixture/daemon.txt\",\"baseline\":3,\"measured\":3,\"requirement\":\"decrease_from_baseline\"}]",
+    "[{\"criterion\":\"Remove legacy fields\",\"pattern\":\"legacy_field\",\"paths\":[\"fixture/daemon.txt\"]}]",
+    "[{\"criterion\":\"Consume owner record\",\"pattern\":\"NewOwner\",\"paths\":[\"fixture/daemon.txt\"]}]",
+    "[{\"surface\":\"workflow helpers\",\"path_pattern\":\".scherzo/workflows/**\",\"disposition\":\"unchanged\",\"evidence\":\"Inspected workflow diff.\"}]",
+    "[]",
+    "[]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert string.contains(artifact.stdout, "guardrail_reduction_not_met")
+  assert string.contains(artifact.stdout, "retained_legacy_reference")
+  assert string.contains(
+    artifact.stdout,
+    "implementation_inventory_contradiction",
+  )
+  let assert Ok(diagnostic) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-implementation-completion-diagnostic.json",
+    )
+  assert string.contains(diagnostic, "do not raise the ratchet")
+  assert string.contains(diagnostic, "legacy_field")
+}
+
+pub fn implementation_completion_gate_accepts_structured_current_tree_evidence_test() {
+  let dir = "test/tmp/implementation-completion-gate-structured-pass"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/fixture")
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/fixture/daemon.txt",
+      "import owner\nNewOwner\nruntime\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/fixture/owner_test.txt",
+      "NewOwner focused path\n",
+    )
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/example.md",
+      "# Example\n\n## Validation and Acceptance\n\nThe owner migration is complete.\n\nThe `fixture/daemon.txt` line-count guardrail must be lower than the `4` line ratchet. Remove legacy fields after the owner record is consumed. Include an explicit inventory stating unchanged documentation surfaces.\n",
+    )
+  write_implementation_completion_submission_with_evidence(
+    dir,
+    "true",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[{\"criterion\":\"The owner migration is complete.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"code\",\"reference\":\"fixture/daemon.txt\",\"observation\":\"NewOwner is consumed by runtime state.\"},{\"kind\":\"test\",\"reference\":\"fixture/owner_test.txt\",\"observation\":\"Focused owner path is directly exercised.\"}]}]",
+    "[{\"metric\":\"line_count\",\"path\":\"fixture/daemon.txt\",\"baseline\":4,\"measured\":3,\"requirement\":\"decrease_from_baseline\"}]",
+    "[{\"criterion\":\"Remove legacy fields\",\"pattern\":\"legacy_field\",\"paths\":[\"fixture/daemon.txt\"]}]",
+    "[{\"criterion\":\"Consume and test owner record\",\"pattern\":\"NewOwner\",\"paths\":[\"fixture/daemon.txt\",\"fixture/owner_test.txt\"]}]",
+    "[{\"surface\":\"documentation\",\"path_pattern\":\"docs/**\",\"disposition\":\"unchanged\",\"evidence\":\"The workflow-baseline diff contains no documentation changes.\"}]",
+    "[]",
+    "[]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_COMPLETION_GATE=passed",
+  )
+}
+
 pub fn implementation_completion_gate_accepts_matching_changed_implementation_test() {
   let dir = "test/tmp/implementation-completion-gate-pass"
   let _fingerprint = setup_plan_completion_gate_fixture(dir)
@@ -2336,6 +2488,32 @@ fn write_implementation_completion_submission(
   remaining_required_work_json: String,
   blockers_json: String,
 ) -> Nil {
+  write_implementation_completion_submission_with_evidence(
+    dir,
+    ready,
+    changed_files_json,
+    "[{\"criterion\":\"Required implementation behavior is present.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"code\",\"reference\":\".scherzo/workflows/scripts/scherzo-implementation\",\"observation\":\"The workflow-baseline diff contains the implementation.\"}]}]",
+    "[]",
+    "[]",
+    "[]",
+    "[]",
+    remaining_required_work_json,
+    blockers_json,
+  )
+}
+
+fn write_implementation_completion_submission_with_evidence(
+  dir: String,
+  ready: String,
+  changed_files_json: String,
+  acceptance_criteria_json: String,
+  guardrail_checks_json: String,
+  absence_checks_json: String,
+  required_references_json: String,
+  implementation_inventory_json: String,
+  remaining_required_work_json: String,
+  blockers_json: String,
+) -> Nil {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/implementation-completion-submission.json",
@@ -2345,6 +2523,21 @@ fn write_implementation_completion_submission(
         <> ",\n"
         <> "  \"changed_files\": "
         <> changed_files_json
+        <> ",\n"
+        <> "  \"acceptance_criteria\": "
+        <> acceptance_criteria_json
+        <> ",\n"
+        <> "  \"guardrail_checks\": "
+        <> guardrail_checks_json
+        <> ",\n"
+        <> "  \"absence_checks\": "
+        <> absence_checks_json
+        <> ",\n"
+        <> "  \"required_references\": "
+        <> required_references_json
+        <> ",\n"
+        <> "  \"implementation_inventory\": "
+        <> implementation_inventory_json
         <> ",\n"
         <> "  \"remaining_required_work\": "
         <> remaining_required_work_json
@@ -2391,7 +2584,7 @@ fn setup_plan_completion_gate_fixture(dir: String) -> String {
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/docs/plans/example.md",
-      "# Example ExecPlan\n\n## Progress\n\n- [x] Required work.\n",
+      "# Example ExecPlan\n\n## Progress\n\n- [x] Required work.\n\n## Outcomes & Retrospective\n\nClaimed complete.\n\n## Validation and Acceptance\n\nRequired implementation behavior is present.\n",
     )
   let assert Ok(Nil) =
     simplifile.write(

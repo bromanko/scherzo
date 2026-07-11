@@ -16,6 +16,7 @@ running final validation, and materializing declarative commit_stack publication
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -1729,6 +1730,11 @@ def analyze_command() -> None:
 IMPLEMENTATION_COMPLETION_REQUIRED_FIELDS = {
     "ready_for_verification",
     "changed_files",
+    "acceptance_criteria",
+    "guardrail_checks",
+    "absence_checks",
+    "required_references",
+    "implementation_inventory",
     "remaining_required_work",
     "blockers",
 }
@@ -1740,6 +1746,35 @@ IMPLEMENTATION_COMPLETION_BLOCKER_KINDS = {
     "infrastructure",
     "other",
 }
+IMPLEMENTATION_COMPLETION_EVIDENCE_KINDS = {
+    "code",
+    "test",
+    "command",
+    "measurement",
+    "inventory",
+}
+IMPLEMENTATION_COMPLETION_INVENTORY_DISPOSITIONS = {
+    "unchanged",
+    "changed",
+    "not_applicable",
+}
+GENERAL_REGRESSION_COMMAND_RE = re.compile(
+    r"(?:gleam\s+(?:format|test)|glinter|scherzo_lint)", re.IGNORECASE
+)
+PLAN_REDUCTION_RE = re.compile(
+    r"(?:guardrail|ratchet).{0,180}(?:lower|fewer|shrink|reduc)|"
+    r"(?:lower|fewer|shrink|reduc).{0,180}(?:guardrail|ratchet)",
+    re.IGNORECASE | re.DOTALL,
+)
+PLAN_INVENTORY_RE = re.compile(
+    r"(?:explicit\s+inventory|helper\s+inventory|touched-surface\s+inventory|"
+    r"unchanged-surface\s+inventory|inventory\s+stating)",
+    re.IGNORECASE,
+)
+PLAN_OWNER_MIGRATION_RE = re.compile(
+    r"(?:owner\s+(?:record|api)|remove(?:s|d)?\s+(?:leftover|legacy).{0,40}field)",
+    re.IGNORECASE,
+)
 
 
 def implementation_completion_diagnostic_path() -> Path:
@@ -1820,6 +1855,229 @@ def valid_implementation_evidence_path(value: str) -> bool:
     )
 
 
+def implementation_completion_non_empty_string(
+    value: Any, field: str
+) -> str:
+    if not isinstance(value, str) or not value.strip():
+        fail(
+            f"implementation-completion field {field!r} must be a non-empty string",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    return value.strip()
+
+
+def implementation_completion_repo_path(value: Any, field: str) -> str:
+    normalized = implementation_completion_non_empty_string(value, field)
+    if not valid_implementation_evidence_path(normalized):
+        fail(
+            f"implementation-completion field {field!r} must be a safe repository-relative path",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    return normalized
+
+
+def normalize_repository_checks(value: Any, field: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        fail(
+            f"implementation-completion field {field!r} must be a list",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    checks: list[dict[str, Any]] = []
+    for index, check in enumerate(value):
+        if not isinstance(check, dict) or set(check) != {"criterion", "pattern", "paths"}:
+            fail(
+                f"each {field} entry must contain only criterion, pattern, and paths",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        paths = check.get("paths")
+        if not isinstance(paths, list) or not paths:
+            fail(
+                f"implementation-completion field {field}[{index}].paths must be non-empty",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        normalized_paths = [
+            implementation_completion_repo_path(path, f"{field}[{index}].paths")
+            for path in paths
+        ]
+        if len(normalized_paths) != len(set(normalized_paths)):
+            fail(
+                f"implementation-completion field {field}[{index}].paths must not contain duplicates",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        checks.append(
+            {
+                "criterion": implementation_completion_non_empty_string(
+                    check.get("criterion"), f"{field}[{index}].criterion"
+                ),
+                "pattern": implementation_completion_non_empty_string(
+                    check.get("pattern"), f"{field}[{index}].pattern"
+                ),
+                "paths": normalized_paths,
+            }
+        )
+    return checks
+
+
+def normalize_acceptance_criteria(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        fail(
+            "implementation-completion field 'acceptance_criteria' must be a non-empty list",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    criteria: list[dict[str, Any]] = []
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict) or set(entry) != {"criterion", "satisfied", "evidence"}:
+            fail(
+                "each acceptance_criteria entry must contain only criterion, satisfied, and evidence",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        satisfied = entry.get("satisfied")
+        evidence = entry.get("evidence")
+        if not isinstance(satisfied, bool) or not isinstance(evidence, list) or not evidence:
+            fail(
+                f"acceptance_criteria[{index}] requires boolean satisfied and non-empty evidence",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        normalized_evidence: list[dict[str, str]] = []
+        for evidence_index, item in enumerate(evidence):
+            if not isinstance(item, dict) or set(item) != {"kind", "reference", "observation"}:
+                fail(
+                    "each acceptance evidence entry must contain only kind, reference, and observation",
+                    failure_code="implementation_completion_submission_malformed",
+                    exit_code=2,
+                )
+            kind = item.get("kind")
+            if kind not in IMPLEMENTATION_COMPLETION_EVIDENCE_KINDS:
+                fail(
+                    f"acceptance_criteria[{index}].evidence[{evidence_index}] has invalid kind",
+                    failure_code="implementation_completion_submission_malformed",
+                    exit_code=2,
+                )
+            normalized_evidence.append(
+                {
+                    "kind": str(kind),
+                    "reference": implementation_completion_non_empty_string(
+                        item.get("reference"), "acceptance evidence reference"
+                    ),
+                    "observation": implementation_completion_non_empty_string(
+                        item.get("observation"), "acceptance evidence observation"
+                    ),
+                }
+            )
+        criteria.append(
+            {
+                "criterion": implementation_completion_non_empty_string(
+                    entry.get("criterion"), f"acceptance_criteria[{index}].criterion"
+                ),
+                "satisfied": satisfied,
+                "evidence": normalized_evidence,
+            }
+        )
+    return criteria
+
+
+def normalize_guardrail_checks(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        fail(
+            "implementation-completion field 'guardrail_checks' must be a list",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    checks: list[dict[str, Any]] = []
+    expected_fields = {"metric", "path", "baseline", "measured", "requirement"}
+    for index, check in enumerate(value):
+        if not isinstance(check, dict) or set(check) != expected_fields:
+            fail(
+                "each guardrail_checks entry must contain metric, path, baseline, measured, and requirement",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        metric = check.get("metric")
+        baseline = check.get("baseline")
+        measured = check.get("measured")
+        if metric not in {"line_count", "import_count"}:
+            fail(
+                f"guardrail_checks[{index}].metric is invalid",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        if (
+            not isinstance(baseline, int)
+            or isinstance(baseline, bool)
+            or baseline < 1
+            or not isinstance(measured, int)
+            or isinstance(measured, bool)
+            or measured < 0
+            or check.get("requirement") != "decrease_from_baseline"
+        ):
+            fail(
+                f"guardrail_checks[{index}] requires positive baseline, non-negative measured, and decrease_from_baseline",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        checks.append(
+            {
+                "metric": str(metric),
+                "path": implementation_completion_repo_path(
+                    check.get("path"), f"guardrail_checks[{index}].path"
+                ),
+                "baseline": baseline,
+                "measured": measured,
+                "requirement": "decrease_from_baseline",
+            }
+        )
+    return checks
+
+
+def normalize_implementation_inventory(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        fail(
+            "implementation-completion field 'implementation_inventory' must be a list",
+            failure_code="implementation_completion_submission_malformed",
+            exit_code=2,
+        )
+    inventory: list[dict[str, str]] = []
+    expected_fields = {"surface", "path_pattern", "disposition", "evidence"}
+    for index, entry in enumerate(value):
+        if not isinstance(entry, dict) or set(entry) != expected_fields:
+            fail(
+                "each implementation_inventory entry must contain surface, path_pattern, disposition, and evidence",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        disposition = entry.get("disposition")
+        if disposition not in IMPLEMENTATION_COMPLETION_INVENTORY_DISPOSITIONS:
+            fail(
+                f"implementation_inventory[{index}].disposition is invalid",
+                failure_code="implementation_completion_submission_malformed",
+                exit_code=2,
+            )
+        inventory.append(
+            {
+                "surface": implementation_completion_non_empty_string(
+                    entry.get("surface"), f"implementation_inventory[{index}].surface"
+                ),
+                "path_pattern": implementation_completion_repo_path(
+                    entry.get("path_pattern"), f"implementation_inventory[{index}].path_pattern"
+                ),
+                "disposition": str(disposition),
+                "evidence": implementation_completion_non_empty_string(
+                    entry.get("evidence"), f"implementation_inventory[{index}].evidence"
+                ),
+            }
+        )
+    return inventory
+
+
 def validate_implementation_completion_submission(
     submission: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1846,9 +2104,7 @@ def validate_implementation_completion_submission(
             failure_code="implementation_completion_submission_malformed",
             exit_code=2,
         )
-    changed_files = implementation_completion_string_list(
-        submission, "changed_files"
-    )
+    changed_files = implementation_completion_string_list(submission, "changed_files")
     if any(not valid_implementation_evidence_path(path) for path in changed_files):
         fail(
             "implementation-completion changed_files must contain safe repository-relative paths",
@@ -1881,18 +2137,32 @@ def validate_implementation_completion_submission(
                 failure_code="implementation_completion_submission_malformed",
                 exit_code=2,
             )
-        if not isinstance(description, str) or not description.strip():
-            fail(
-                "implementation-completion blocker description must be non-empty",
-                failure_code="implementation_completion_submission_malformed",
-                exit_code=2,
-            )
         normalized_blockers.append(
-            {"kind": str(kind), "description": description.strip()}
+            {
+                "kind": str(kind),
+                "description": implementation_completion_non_empty_string(
+                    description, "blocker description"
+                ),
+            }
         )
     return {
         "ready_for_verification": ready,
         "changed_files": sorted(changed_files),
+        "acceptance_criteria": normalize_acceptance_criteria(
+            submission.get("acceptance_criteria")
+        ),
+        "guardrail_checks": normalize_guardrail_checks(
+            submission.get("guardrail_checks")
+        ),
+        "absence_checks": normalize_repository_checks(
+            submission.get("absence_checks"), "absence_checks"
+        ),
+        "required_references": normalize_repository_checks(
+            submission.get("required_references"), "required_references"
+        ),
+        "implementation_inventory": normalize_implementation_inventory(
+            submission.get("implementation_inventory")
+        ),
         "remaining_required_work": remaining_required_work,
         "blockers": normalized_blockers,
     }
@@ -1949,6 +2219,276 @@ def implementation_completion_workspace_evidence(
             "full_diff_materialized": False,
         },
     }
+
+
+def execplan_acceptance_text(plan_text: str) -> str:
+    lines = plan_text.splitlines()
+    selected: list[str] = []
+    capture_level: int | None = None
+    for line in lines:
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if heading:
+            level = len(heading.group(1))
+            title = heading.group(2).strip().casefold()
+            if title in {"validation and acceptance", "acceptance criteria"}:
+                capture_level = level
+                selected.append(line)
+                continue
+            if capture_level is not None and level <= capture_level:
+                capture_level = None
+        if capture_level is not None:
+            selected.append(line)
+    return "\n".join(selected)
+
+
+def normalized_prose(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def plan_mentions_baseline(plan_text: str, path: str, baseline: int) -> bool:
+    path_present = path in plan_text or Path(path).name in plan_text
+    baseline_forms = {
+        str(baseline),
+        f"{baseline:,}",
+        f"{baseline:_}",
+    }
+    return path_present and any(form in plan_text for form in baseline_forms)
+
+
+def measured_guardrail_value(path: Path, metric: str) -> int:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return -1
+    if metric == "line_count":
+        return len(text.splitlines())
+    return sum(1 for line in text.splitlines() if re.match(r"^\s*import\s+", line))
+
+
+def repository_check_failures(
+    checks: list[dict[str, Any]], *, expect_absent: bool
+) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    for check in checks:
+        pattern = str(check["pattern"])
+        for path_value in check["paths"]:
+            path = Path(path_value)
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                failures.append(
+                    {
+                        "criterion": str(check["criterion"]),
+                        "needed_evidence": f"readable current-tree file {path_value}",
+                    }
+                )
+                continue
+            present = pattern in text
+            if present == expect_absent:
+                expectation = "absent" if expect_absent else "present"
+                failures.append(
+                    {
+                        "criterion": str(check["criterion"]),
+                        "needed_evidence": (
+                            f"literal {pattern!r} must be {expectation} in {path_value}"
+                        ),
+                    }
+                )
+    return failures
+
+
+def implementation_completion_semantic_failures(
+    submission: dict[str, Any],
+    *,
+    plan_path: str,
+    actual_files: list[str],
+) -> tuple[list[str], list[dict[str, str]]]:
+    resolved_plan_path = resolve_prepared_execplan_path(plan_path, Path.cwd())
+    try:
+        plan_text = resolved_plan_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(
+            f"could not read canonical ExecPlan for completion checks: {exc}",
+            failure_code="implementation_completion_evidence_failed",
+            exit_code=2,
+        )
+    acceptance_text = normalized_prose(execplan_acceptance_text(plan_text))
+    reason_codes: list[str] = []
+    failures: list[dict[str, str]] = []
+
+    for entry in submission["acceptance_criteria"]:
+        criterion = str(entry["criterion"])
+        normalized_criterion = normalized_prose(criterion)
+        if normalized_criterion not in acceptance_text:
+            reason_codes.append("criterion_not_in_canonical_acceptance")
+            failures.append(
+                {
+                    "criterion": criterion,
+                    "needed_evidence": (
+                        "quote an exact current canonical criterion from Validation and Acceptance or Acceptance Criteria"
+                    ),
+                }
+            )
+        if not entry["satisfied"]:
+            reason_codes.append("criterion_unsatisfied")
+            failures.append(
+                {
+                    "criterion": criterion,
+                    "needed_evidence": "complete the criterion and attach current-tree code, test, measurement, or inventory evidence",
+                }
+            )
+        semantic_evidence = False
+        for evidence in entry["evidence"]:
+            kind = str(evidence["kind"])
+            reference = str(evidence["reference"])
+            if kind in {"code", "test", "inventory"}:
+                if not valid_implementation_evidence_path(reference):
+                    reason_codes.append("criterion_evidence_path_invalid")
+                    failures.append(
+                        {
+                            "criterion": criterion,
+                            "needed_evidence": f"safe repository-relative {kind} evidence path instead of {reference!r}",
+                        }
+                    )
+                    continue
+                if Path(reference).resolve(strict=False) == resolved_plan_path.resolve(
+                    strict=False
+                ):
+                    reason_codes.append("historical_plan_claim_used_as_evidence")
+                    failures.append(
+                        {
+                            "criterion": criterion,
+                            "needed_evidence": "current-tree implementation evidence outside the plan Progress/Outcomes prose",
+                        }
+                    )
+                    continue
+                if reference not in actual_files and not Path(reference).exists():
+                    reason_codes.append("criterion_evidence_path_missing")
+                    failures.append(
+                        {
+                            "criterion": criterion,
+                            "needed_evidence": f"existing current-tree evidence path {reference}",
+                        }
+                    )
+                    continue
+                semantic_evidence = True
+            elif kind == "measurement":
+                semantic_evidence = True
+            elif kind == "command" and not GENERAL_REGRESSION_COMMAND_RE.search(reference):
+                semantic_evidence = True
+        if not semantic_evidence:
+            reason_codes.append("criterion_semantic_evidence_missing")
+            failures.append(
+                {
+                    "criterion": criterion,
+                    "needed_evidence": (
+                        "current-tree code, focused test, measurement, inventory, or a criterion-specific command; general format/test/lint gates prove regression safety only"
+                    ),
+                }
+            )
+
+    if PLAN_REDUCTION_RE.search(plan_text) and not submission["guardrail_checks"]:
+        reason_codes.append("required_guardrail_evidence_missing")
+        failures.append(
+            {
+                "criterion": "plan-required shrinking guardrail",
+                "needed_evidence": "guardrail_checks with plan baseline and current line/import measurement",
+            }
+        )
+    for check in submission["guardrail_checks"]:
+        path = str(check["path"])
+        baseline = int(check["baseline"])
+        measured = int(check["measured"])
+        actual = measured_guardrail_value(Path(path), str(check["metric"]))
+        if not plan_mentions_baseline(plan_text, path, baseline):
+            reason_codes.append("guardrail_baseline_not_in_plan")
+            failures.append(
+                {
+                    "criterion": f"{check['metric']} guardrail for {path}",
+                    "needed_evidence": "use the path and baseline stated in the canonical plan",
+                }
+            )
+        if actual < 0 or measured != actual:
+            reason_codes.append("guardrail_measurement_mismatch")
+            failures.append(
+                {
+                    "criterion": f"{check['metric']} guardrail for {path}",
+                    "needed_evidence": f"current-tree measurement {actual if actual >= 0 else 'from a readable file'}",
+                }
+            )
+        if actual >= baseline:
+            reason_codes.append("guardrail_reduction_not_met")
+            failures.append(
+                {
+                    "criterion": f"{check['metric']} guardrail for {path}",
+                    "needed_evidence": f"current measurement below canonical baseline {baseline}; do not raise the ratchet",
+                }
+            )
+
+    absence_failures = repository_check_failures(
+        submission["absence_checks"], expect_absent=True
+    )
+    reference_failures = repository_check_failures(
+        submission["required_references"], expect_absent=False
+    )
+    if absence_failures:
+        reason_codes.append("retained_legacy_reference")
+        failures.extend(absence_failures)
+    if reference_failures:
+        reason_codes.append("required_owner_or_test_reference_missing")
+        failures.extend(reference_failures)
+    if PLAN_OWNER_MIGRATION_RE.search(plan_text):
+        if not submission["absence_checks"]:
+            reason_codes.append("required_absence_checks_missing")
+            failures.append(
+                {
+                    "criterion": "owner/legacy migration",
+                    "needed_evidence": "literal absence_checks for replaced legacy fields or helpers",
+                }
+            )
+        if not submission["required_references"]:
+            reason_codes.append("required_reference_checks_missing")
+            failures.append(
+                {
+                    "criterion": "owner/legacy migration",
+                    "needed_evidence": "literal required_references proving owner consumption and focused-test use",
+                }
+            )
+
+    if PLAN_INVENTORY_RE.search(plan_text) and not submission["implementation_inventory"]:
+        reason_codes.append("required_implementation_inventory_missing")
+        failures.append(
+            {
+                "criterion": "plan-required implementation inventory",
+                "needed_evidence": "explicit per-surface implementation_inventory entries with path globs and dispositions",
+            }
+        )
+    for entry in submission["implementation_inventory"]:
+        matches = [
+            path
+            for path in actual_files
+            if fnmatch.fnmatch(path, str(entry["path_pattern"]))
+        ]
+        disposition = entry["disposition"]
+        if disposition == "unchanged" and matches:
+            reason_codes.append("implementation_inventory_contradiction")
+            failures.append(
+                {
+                    "criterion": str(entry["surface"]),
+                    "needed_evidence": "mark the surface changed or remove the contradictory workflow-diff changes: "
+                    + ", ".join(matches),
+                }
+            )
+        if disposition == "changed" and not matches:
+            reason_codes.append("implementation_inventory_contradiction")
+            failures.append(
+                {
+                    "criterion": str(entry["surface"]),
+                    "needed_evidence": f"a changed file matching {entry['path_pattern']}",
+                }
+            )
+
+    return list(dict.fromkeys(reason_codes)), failures
 
 
 def write_implementation_completion_diagnostic(
@@ -2024,7 +2564,11 @@ def gate_implementation_completion_command(args: list[str]) -> None:
         for record in workspace["changed_files"]
         if str(record.get("path") or "").strip()
     )
-    reason_codes: list[str] = []
+    reason_codes, criterion_failures = implementation_completion_semantic_failures(
+        submission,
+        plan_path=plan_path,
+        actual_files=actual_files,
+    )
     if not submission["ready_for_verification"]:
         reason_codes.append("not_ready_for_verification")
     if submission["remaining_required_work"]:
@@ -2037,13 +2581,15 @@ def gate_implementation_completion_command(args: list[str]) -> None:
         reason_codes.append("workspace_no_implementation_changes")
     if submission["changed_files"] != actual_files:
         reason_codes.append("changed_file_evidence_mismatch")
+    reason_codes = list(dict.fromkeys(reason_codes))
 
     if reason_codes:
         error = {
             "failure_code": "implementation_incomplete_noop",
             "reason_codes": reason_codes,
+            "criterion_failures": criterion_failures,
             "message": (
-                "The broad implementation pass is incomplete, blocked, or has no verified code-change evidence."
+                "The broad implementation pass is incomplete, blocked, or contradicts required current-tree acceptance evidence."
             ),
         }
         diagnostic_path = write_implementation_completion_diagnostic(
