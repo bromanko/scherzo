@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -43,7 +44,23 @@ pub type ReadRecordsResult {
 }
 
 pub type CurrentSegmentStats {
-  CurrentSegmentStats(record_count: Int, truncated_tail: Bool)
+  CurrentSegmentStats(record_count: Int, byte_size: Int, truncated_tail: Bool)
+}
+
+pub type LedgerStorageStats {
+  LedgerStorageStats(
+    current: CurrentSegmentStats,
+    snapshot_size_bytes: Int,
+    archive_segment_count: Int,
+  )
+}
+
+pub type CompactionReport {
+  CompactionReport(
+    before: LedgerStorageStats,
+    after: LedgerStorageStats,
+    duration_ms: Int,
+  )
 }
 
 pub type ReplayResult {
@@ -338,6 +355,15 @@ pub fn current_segment_stats(
   })
 }
 
+pub fn storage_stats(
+  ledger_path: LedgerPath,
+) -> Result(LedgerStorageStats, LedgerError) {
+  with_ledger_lock(ledger_path.ledger_dir, fn() {
+    use _snapshot_projection <- result.try(read_snapshot(ledger_path))
+    storage_stats_unlocked(ledger_path)
+  })
+}
+
 pub fn replay(ledger_path: LedgerPath) -> Result(ReplayResult, LedgerError) {
   with_ledger_lock(ledger_path.ledger_dir, fn() { replay_unlocked(ledger_path) })
 }
@@ -351,8 +377,31 @@ pub fn load_projection(
 }
 
 pub fn compact(ledger_path: LedgerPath) -> Result(Nil, LedgerError) {
+  compact_with_report(ledger_path, fn() { 0 }) |> result.map(fn(_) { Nil })
+}
+
+pub fn compact_with_report(
+  ledger_path: LedgerPath,
+  now_ms: fn() -> Int,
+) -> Result(CompactionReport, LedgerError) {
   use Nil <- result.try(ensure_layout(ledger_path))
-  with_ledger_lock(ledger_path.ledger_dir, fn() { compact_locked(ledger_path) })
+  with_ledger_lock(ledger_path.ledger_dir, fn() {
+    compact_locked(ledger_path, now_ms)
+  })
+}
+
+pub fn records_jsonl_byte_size(records: List(record.LedgerRecord)) -> Int {
+  case records {
+    [] -> 0
+    _ -> {
+      let contents =
+        records
+        |> list.map(record.to_string)
+        |> string.join(with: "\n")
+
+      bit_array.byte_size(bit_array.from_string(contents <> "\n"))
+    }
+  }
 }
 
 fn replay_unlocked(
@@ -374,7 +423,12 @@ fn load_projection_unlocked(
   fold_current_segment_streaming(ledger_path.current_path, snapshot_projection)
 }
 
-fn compact_locked(ledger_path: LedgerPath) -> Result(Nil, LedgerError) {
+fn compact_locked(
+  ledger_path: LedgerPath,
+  now_ms: fn() -> Int,
+) -> Result(CompactionReport, LedgerError) {
+  let started_at_ms = now_ms()
+  use before <- result.try(storage_stats_unlocked(ledger_path))
   use snapshot_projection <- result.try(read_snapshot(ledger_path))
   use compacted_projection <- result.try(fold_current_segment_streaming(
     ledger_path.current_path,
@@ -384,7 +438,34 @@ fn compact_locked(ledger_path: LedgerPath) -> Result(Nil, LedgerError) {
     ledger_path,
     compacted_projection,
   ))
-  archive_current_segment(ledger_path)
+  case archive_current_segment(ledger_path, before.archive_segment_count + 1) {
+    Ok(archived_nonempty_current) -> {
+      use current <- result.try(current_segment_stats_unlocked(
+        ledger_path.current_path,
+      ))
+      use snapshot_size_bytes <- result.try(file_size_bytes_or_zero(
+        ledger_path.snapshot_path,
+        "inspect ledger snapshot",
+      ))
+      let after =
+        LedgerStorageStats(
+          current: current,
+          snapshot_size_bytes: snapshot_size_bytes,
+          archive_segment_count: before.archive_segment_count
+            + archived_segment_delta(archived_nonempty_current),
+        )
+      Ok(CompactionReport(
+        before: before,
+        after: after,
+        duration_ms: now_ms() - started_at_ms,
+      ))
+    }
+    Error(error) ->
+      case restore_snapshot(ledger_path, snapshot_projection) {
+        Ok(Nil) -> Error(error)
+        Error(restore_error) -> Error(restore_error)
+      }
+  }
 }
 
 fn ensure_layout(ledger_path: LedgerPath) -> Result(Nil, LedgerError) {
@@ -607,6 +688,55 @@ fn append_prepared(
   }
 }
 
+fn storage_stats_unlocked(
+  ledger_path: LedgerPath,
+) -> Result(LedgerStorageStats, LedgerError) {
+  use current <- result.try(current_segment_stats_unlocked(
+    ledger_path.current_path,
+  ))
+  use snapshot_size_bytes <- result.try(file_size_bytes_or_zero(
+    ledger_path.snapshot_path,
+    "inspect ledger snapshot",
+  ))
+  use archive_segment_count <- result.try(archive_segment_count_unlocked(
+    ledger_path.archive_dir,
+  ))
+  Ok(LedgerStorageStats(
+    current: current,
+    snapshot_size_bytes: snapshot_size_bytes,
+    archive_segment_count: archive_segment_count,
+  ))
+}
+
+fn file_size_bytes_or_zero(
+  file_path: String,
+  operation: String,
+) -> Result(Int, LedgerError) {
+  case simplifile.file_info(file_path) {
+    Ok(info) -> Ok(info.size)
+    Error(simplifile.Enoent) -> Ok(0)
+    Error(error) -> Error(Io(file_error(operation, error)))
+  }
+}
+
+fn archive_segment_count_unlocked(
+  archive_dir: String,
+) -> Result(Int, LedgerError) {
+  case simplifile.read_directory(archive_dir) {
+    Ok(entries) ->
+      entries
+      |> list.filter(fn(entry) {
+        string.starts_with(entry, "segment-")
+        && string.ends_with(entry, ".jsonl")
+      })
+      |> list.length
+      |> Ok
+    Error(simplifile.Enoent) -> Ok(0)
+    Error(error) ->
+      Error(Io(file_error("read ledger archive directory", error)))
+  }
+}
+
 fn read_records_unlocked(
   ledger_path: LedgerPath,
 ) -> Result(ReadRecordsResult, LedgerError) {
@@ -643,17 +773,28 @@ fn fold_current_segment_streaming(
 fn current_segment_stats_unlocked(
   current_path: String,
 ) -> Result(CurrentSegmentStats, LedgerError) {
+  let byte_size_result = case simplifile.file_info(current_path) {
+    Ok(info) -> Ok(Some(info.size))
+    Error(simplifile.Enoent) -> Ok(None)
+    Error(error) -> Error(Io(file_error("inspect current ledger", error)))
+  }
+  use byte_size <- result.try(byte_size_result)
   let initial = JsonlFold(value: 0, error: None, truncated_tail: False)
   case fold_lines(current_path, initial, current_segment_stats_fold_step) {
     Ok(JsonlFold(value: count, error: None, truncated_tail: truncated_tail)) ->
       Ok(CurrentSegmentStats(
         record_count: count,
+        byte_size: byte_size |> option.unwrap(0),
         truncated_tail: truncated_tail,
       ))
     Ok(JsonlFold(value: _, error: Some(error), truncated_tail: _)) ->
       Error(error)
     Error(OpenFailed("enoent")) ->
-      Ok(CurrentSegmentStats(record_count: 0, truncated_tail: False))
+      Ok(CurrentSegmentStats(
+        record_count: 0,
+        byte_size: 0,
+        truncated_tail: False,
+      ))
     Error(error) -> Error(LedgerFfiFailed(error))
   }
 }
@@ -821,13 +962,29 @@ fn write_snapshot_atomically(
   }
 }
 
+fn restore_snapshot(
+  ledger_path: LedgerPath,
+  snapshot_projection: projection.Projection,
+) -> Result(Nil, LedgerError) {
+  write_snapshot_atomically(ledger_path, snapshot_projection)
+}
+
+fn archived_segment_delta(archived_nonempty_current: Bool) -> Int {
+  case archived_nonempty_current {
+    True -> 1
+    False -> 0
+  }
+}
+
 fn archive_current_segment(
   ledger_path: LedgerPath,
-) -> Result(Nil, LedgerError) {
+  next_archive_segment_number: Int,
+) -> Result(Bool, LedgerError) {
   case simplifile.file_info(ledger_path.current_path) {
     Error(simplifile.Enoent) ->
       simplifile.write(ledger_path.current_path, "")
       |> map_io("create empty current ledger")
+      |> result.map(fn(_) { False })
     Error(error) ->
       Error(Io(file_error("inspect current ledger for archive", error)))
     Ok(info) ->
@@ -835,30 +992,34 @@ fn archive_current_segment(
         True ->
           simplifile.write(ledger_path.current_path, "")
           |> map_io("truncate current ledger")
+          |> result.map(fn(_) { False })
         False -> {
-          use archive_path <- result.try(next_archive_path(ledger_path))
+          let archive_path =
+            archive_path_for_segment_number(
+              ledger_path,
+              next_archive_segment_number,
+            )
           case simplifile.rename(ledger_path.current_path, archive_path) {
             Error(error) ->
               Error(Io(file_error("archive current ledger", error)))
             Ok(Nil) ->
               simplifile.write(ledger_path.current_path, "")
               |> map_io("create new current ledger")
+              |> result.map(fn(_) { True })
           }
         }
       }
   }
 }
 
-fn next_archive_path(ledger_path: LedgerPath) -> Result(String, LedgerError) {
-  case simplifile.read_directory(ledger_path.archive_dir) {
-    Ok(entries) ->
-      Ok(path.join(
-        ledger_path.archive_dir,
-        "segment-" <> int.to_string(list.length(entries) + 1) <> ".jsonl",
-      ))
-    Error(error) ->
-      Error(Io(file_error("read ledger archive directory", error)))
-  }
+fn archive_path_for_segment_number(
+  ledger_path: LedgerPath,
+  segment_number: Int,
+) -> String {
+  path.join(
+    ledger_path.archive_dir,
+    "segment-" <> int.to_string(segment_number) <> ".jsonl",
+  )
 }
 
 fn map_io(

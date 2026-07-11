@@ -7,6 +7,7 @@ import gleam/string
 import scherzo/agent/pi_event
 import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
+import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/error
@@ -14,6 +15,7 @@ import scherzo/handoff_format
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/daemon_transition_shell
+import scherzo/orchestrator/ledger_compaction
 import scherzo/orchestrator/poll_jitter
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/transition_invariants
@@ -48,6 +50,7 @@ import simplifile
 import support/expected_crash
 import support/test_helpers
 import test_async
+import test_clock
 
 fn workspace_source(
   from: Option(String),
@@ -150,6 +153,18 @@ fn bool_to_yaml(value: Bool) -> String {
 fn write_workflow(dir: String, max_concurrent: Int) -> String {
   test_helpers.reset_dir(dir)
   write_workflow_files(dir, workflow_text(dir <> "/workspaces", max_concurrent))
+}
+
+fn write_workflow_with_extra_config(
+  dir: String,
+  max_concurrent: Int,
+  extra_config: String,
+) -> String {
+  test_helpers.reset_dir(dir)
+  write_workflow_files(
+    dir,
+    workflow_text(dir <> "/workspaces", max_concurrent) <> extra_config,
+  )
 }
 
 fn write_workflow_with_absolute_root(
@@ -2641,6 +2656,304 @@ pub fn daemon_shutdown_uses_cached_state_after_post_start_ledger_corruption_test
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   let logs = test_async.drain_subject(log_subject)
   assert !list.contains(logs, "workflow_shutdown_projection_unavailable")
+}
+
+pub fn daemon_compacts_oversized_current_segment_on_startup_test() {
+  let root = "test/tmp/daemon-ledger-compaction-startup"
+  let workflow_path =
+    write_workflow_with_extra_config(
+      root,
+      1,
+      "state_ledger:\n  auto_compaction:\n    max_current_records: 1\n    max_current_bytes: 1\n    min_interval: 1ms\n",
+    )
+  let client = empty_tracker_client()
+  let log_subject = process.new_subject()
+  let log_fields_subject = process.new_subject()
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(bundle.effective.workspace.root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "run-started-1",
+          1000,
+          record.RunStarted(
+            run_id: "run-1",
+            issue_id: "issue-1",
+            issue_identifier: "SCH-1",
+            workspace_path: "workspace/main",
+          ),
+        ),
+      ],
+      False,
+    )
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      logger: fn(_, event, fields, _) {
+        process.send(log_subject, event)
+        process.send(log_fields_subject, #(event, fields))
+        Ok(Nil)
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let assert Ok(fields) =
+    wait_for_log_fields(log_fields_subject, "ledger_compacted", 20)
+  let assert Ok(stats) = ledger.current_segment_stats(ledger_path)
+  assert stats.record_count == 0
+  let field_map = dict.from_list(fields)
+  assert dict.get(field_map, "before_current_records") == Ok("2")
+  assert dict.has_key(field_map, "before_current_bytes")
+  assert dict.get(field_map, "after_current_records") == Ok("0")
+  assert dict.get(field_map, "after_current_bytes") == Ok("0")
+  assert dict.get(field_map, "after_archive_segment_count") == Ok("1")
+  assert dict.get(field_map, "duration_ms") == Ok("0")
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_compacts_after_dispatch_append_threshold_test() {
+  let root = "test/tmp/daemon-ledger-compaction-append"
+  let workflow_path =
+    write_workflow_with_extra_config(
+      root,
+      1,
+      "state_ledger:\n  auto_compaction:\n    max_current_records: 1\n    max_current_bytes: 1048576\n    min_interval: 1ms\n",
+    )
+  let candidate = issue("issue-id", "ABC-1", "Todo")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
+    )
+  let log_subject = process.new_subject()
+  let deps = base_dependencies(client, log_subject)
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(log_subject, "dispatch_started", 20)
+  assert wait_for_event(log_subject, "ledger_compacted", 8)
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(root <> "/workspaces")
+  let assert Ok(stats) = ledger.current_segment_stats(ledger_path)
+  assert stats.record_count == 0
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_compacts_after_checkpoint_append_threshold_test() {
+  let root = "test/tmp/daemon-ledger-compaction-checkpoint"
+  test_helpers.reset_dir(root)
+  let assert Ok(workspace_root) = path.absolute(root <> "/workspaces")
+  let workflow_path =
+    write_workflow_files(
+      root,
+      workflow_text(workspace_root, 1)
+        <> "state_ledger:\n  auto_compaction:\n    max_current_records: 1\n    max_current_bytes: 1048576\n    min_interval: 1ms\n",
+    )
+  let log_subject = process.new_subject()
+  let clock = test_clock.new(1000)
+  let deps = base_dependencies(empty_tracker_client(), log_subject)
+  let deps =
+    daemon.RuntimeDependencies(..deps, now_ms: fn() { test_clock.now_ms(clock) })
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+  let assert Ok(_) = daemon.get_snapshot(started.data, 1000)
+  test_clock.advance(clock, 2)
+
+  let writer =
+    workflow_checkpoint.ledger_writer(workspace_root, fn() {
+      test_clock.now_ms(clock)
+    })
+  let assert Ok(Nil) =
+    writer.workflow_started(workflow_checkpoint.WorkflowStarted(
+      run_id: "checkpoint-run",
+      workflow_id: "implementation",
+      workflow_fingerprint: "fingerprint",
+      issue_id: "issue-checkpoint",
+      issue_identifier: "ABC-2",
+      task_ref: None,
+      issue_fingerprint: "issue-fingerprint",
+      observed_updated_at_ms: 1000,
+      run_root: root <> "/run-root",
+    ))
+  let assert Ok(checkpoint_ledger_path) =
+    ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(checkpoint_stats) =
+    ledger.current_segment_stats(checkpoint_ledger_path)
+  assert checkpoint_stats.record_count >= 1
+  process.send(started.data, daemon.LedgerCheckpointAppended)
+  let assert Ok(_) = daemon.get_snapshot(started.data, 1000)
+
+  assert wait_for_event(log_subject, "ledger_compacted", 8)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(stats) = ledger.current_segment_stats(ledger_path)
+  assert stats.record_count == 0
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_compacts_on_independent_byte_threshold_test() {
+  let root = "test/tmp/daemon-ledger-compaction-byte-threshold"
+  let workflow_path =
+    write_workflow_with_extra_config(
+      root,
+      1,
+      "state_ledger:\n  auto_compaction:\n    max_current_records: 1000\n    max_current_bytes: 1\n    min_interval: 1ms\n",
+    )
+  let candidate = issue("issue-id", "ABC-1", "Todo")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(started) =
+    daemon.start(Some(workflow_path), base_dependencies(client, log_subject))
+  wait_until_startup_recovery_ready(started.data)
+
+  process.send(started.data, daemon.PollTick(1))
+
+  assert wait_for_event(log_subject, "dispatch_started", 20)
+  assert wait_for_event(log_subject, "ledger_compacted", 8)
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(root <> "/workspaces")
+  let assert Ok(stats) = ledger.current_segment_stats(ledger_path)
+  assert stats.record_count == 0
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_disabled_auto_compaction_leaves_oversized_segment_test() {
+  let root = "test/tmp/daemon-ledger-compaction-disabled"
+  let workflow_path =
+    write_workflow_with_extra_config(
+      root,
+      1,
+      "state_ledger:\n  auto_compaction:\n    enabled: false\n    max_current_records: 1\n    max_current_bytes: 1\n    min_interval: 1ms\n",
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(bundle.effective.workspace.root)
+  let assert Ok(Nil) =
+    ledger.append(
+      ledger_path,
+      record.with_id(
+        "run-started-disabled",
+        1000,
+        record.RunStarted(
+          run_id: "run-disabled",
+          issue_id: "issue-disabled",
+          issue_identifier: "SCH-disabled",
+          workspace_path: "workspace/main",
+        ),
+      ),
+      False,
+    )
+  let assert Ok(started) =
+    daemon.start(
+      Some(workflow_path),
+      base_dependencies(empty_tracker_client(), log_subject),
+    )
+  wait_until_startup_recovery_ready(started.data)
+  let assert Ok(_) = daemon.get_snapshot(started.data, 1000)
+
+  let assert Ok(stats) = ledger.current_segment_stats(ledger_path)
+  assert stats.record_count >= 1
+  assert stats.byte_size > 1
+  assert !list.contains(
+    test_async.drain_subject(log_subject),
+    "ledger_compacted",
+  )
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn ledger_compaction_state_suppresses_duplicates_and_throttles_retries_test() {
+  let stats =
+    ledger.CurrentSegmentStats(
+      record_count: 1,
+      byte_size: 10,
+      truncated_tail: False,
+    )
+  let compaction_config =
+    config_types.LedgerCompactionConfig(
+      enabled: True,
+      max_current_records: 1,
+      max_current_bytes: 1000,
+      min_interval_ms: 1000,
+    )
+  let state = ledger_compaction.new(stats)
+  assert ledger_compaction.should_start(state, compaction_config, 42)
+
+  let started = ledger_compaction.mark_started(state, 42)
+  assert !ledger_compaction.should_start(started, compaction_config, 42)
+
+  let failed = ledger_compaction.mark_finished(started, stats)
+  assert !ledger_compaction.should_start(failed, compaction_config, 1041)
+  assert ledger_compaction.should_start(failed, compaction_config, 1042)
+}
+
+pub fn daemon_compaction_failure_preserves_current_data_and_is_throttled_test() {
+  let root = "test/tmp/daemon-ledger-compaction-failure"
+  let workflow_path =
+    write_workflow_with_extra_config(
+      root,
+      1,
+      "state_ledger:\n  auto_compaction:\n    max_current_records: 1\n    max_current_bytes: 1048576\n    min_interval: 1h\n",
+    )
+  let candidate = issue("issue-id", "ABC-1", "Todo")
+  let client =
+    tracker.Client(
+      fetch_candidate_issues: fn() { Ok([candidate]) },
+      fetch_issues_by_states: fn(_) { Ok([]) },
+      fetch_issue_states_by_ids: fn(_) { Ok([candidate]) },
+    )
+  let log_subject = process.new_subject()
+  let log_fields_subject = process.new_subject()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(client, log_subject),
+      logger: fn(_, event, fields, _) {
+        process.send(log_subject, event)
+        process.send(log_fields_subject, #(event, fields))
+        Ok(Nil)
+      },
+    )
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(bundle.effective.workspace.root)
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(ledger_path.snapshot_path <> ".tmp")
+
+  process.send(started.data, daemon.PollTick(1))
+
+  let assert Ok(fields) =
+    wait_for_log_fields(log_fields_subject, "ledger_compaction_failed", 20)
+  let field_map = dict.from_list(fields)
+  assert dict.has_key(field_map, "error")
+  assert dict.has_key(field_map, "latest_current_records")
+  assert dict.has_key(field_map, "latest_current_bytes")
+  let assert Ok(stats) = ledger.current_segment_stats(ledger_path)
+  assert stats.record_count > 0
+  assert stats.byte_size > 0
+  let assert Ok(records) = ledger.read_records(ledger_path)
+  assert !list.is_empty(records.records)
+  let assert Ok(_) = ledger.load_projection(ledger_path)
+
+  let assert Ok(_) = daemon.get_snapshot(started.data, 1000)
+  let later_logs = test_async.drain_subject(log_fields_subject)
+  assert list.all(later_logs, fn(entry) {
+    let #(event, _) = entry
+    event != "ledger_compaction_failed"
+  })
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
 pub fn daemon_skips_invalid_workflow_candidate_and_reports_once_test() {

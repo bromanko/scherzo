@@ -419,10 +419,24 @@ pub fn noop_writer() -> Writer {
 }
 
 pub fn ledger_writer(workspace_root: String, now_ms: fn() -> Int) -> Writer {
-  ledger_writer_with_artifact_store(
+  ledger_writer_with_artifact_store_and_observer(
     workspace_root,
     now_ms,
     artifact_store.new(workspace_root),
+    fn() { Nil },
+  )
+}
+
+pub fn daemon_ledger_writer(
+  workspace_root: String,
+  now_ms: fn() -> Int,
+  append_observer: fn() -> Nil,
+) -> Writer {
+  ledger_writer_with_artifact_store_and_observer(
+    workspace_root,
+    now_ms,
+    artifact_store.new(workspace_root),
+    append_observer,
   )
 }
 
@@ -529,52 +543,149 @@ pub fn corrupt_tolerant_ledger_writer(
   }
 }
 
+pub fn corrupt_tolerant_daemon_ledger_writer(
+  workspace_root: String,
+  now_ms: fn() -> Int,
+  append_observer: fn() -> Nil,
+) -> Writer {
+  case ledger.path_for_workspace_root(workspace_root) {
+    Error(error) -> {
+      let _message = describe_ledger_error(error)
+      daemon_ledger_writer(workspace_root, now_ms, append_observer)
+    }
+    Ok(ledger_path) ->
+      case ledger.load_projection(ledger_path) {
+        Ok(_) -> daemon_ledger_writer(workspace_root, now_ms, append_observer)
+        Error(ledger.CorruptRecord(..)) -> noop_writer()
+        Error(error) -> {
+          let _message = describe_ledger_error(error)
+          daemon_ledger_writer(workspace_root, now_ms, append_observer)
+        }
+      }
+  }
+}
+
 pub fn ledger_writer_with_artifact_store(
   workspace_root: String,
   now_ms: fn() -> Int,
   store: artifact_store.Store,
 ) -> Writer {
+  ledger_writer_with_artifact_store_and_observer(
+    workspace_root,
+    now_ms,
+    store,
+    fn() { Nil },
+  )
+}
+
+fn ledger_writer_with_artifact_store_and_observer(
+  workspace_root: String,
+  now_ms: fn() -> Int,
+  store: artifact_store.Store,
+  append_observer: fn() -> Nil,
+) -> Writer {
+  let append_body_and_observe = fn(body) {
+    append_body(workspace_root, now_ms, body)
+    |> result.map(fn(_) {
+      append_observer()
+      Nil
+    })
+  }
+  let append_batch_and_observe = fn(batch) {
+    append_batch(workspace_root, now_ms, batch)
+    |> result.map(fn(_) {
+      append_observer()
+      Nil
+    })
+  }
+  let append_workstream_record_idempotent = fn(ledger_record) {
+    use ledger_path <- result.try(
+      ledger.path_for_workspace_root(workspace_root)
+      |> result.map_error(fn(error) {
+        CheckpointAppendFailed(describe_ledger_error(error))
+      }),
+    )
+    ledger.append_idempotent(ledger_path, ledger_record, True)
+    |> result.map(fn(result) {
+      case result {
+        ledger.Appended -> append_observer()
+        ledger.AlreadyRecorded(_) -> Nil
+      }
+      result
+    })
+    |> result.map_error(fn(error) {
+      case error {
+        ledger.AppendLedgerError(ledger_error) ->
+          CheckpointAppendFailed(describe_ledger_error(ledger_error))
+        ledger.RecordIdConflict(record_id) ->
+          CheckpointAppendFailed("record_id_conflict:" <> record_id)
+      }
+    })
+  }
+  let append_workstream_start_records = fn(records, queued_record) {
+    use ledger_path <- result.try(
+      ledger.path_for_workspace_root(workspace_root)
+      |> result.map_error(fn(error) {
+        CheckpointAppendFailed(describe_ledger_error(error))
+      }),
+    )
+    ledger.append_workstream_start_records(
+      ledger_path,
+      records,
+      queued_record,
+      True,
+    )
+    |> result.map(fn(result) {
+      case result {
+        ledger.WorkstreamStartRecordsAppended -> append_observer()
+        ledger.WorkstreamStartRecordsDuplicate(_)
+        | ledger.WorkstreamStartRecordsConflict(_) -> Nil
+      }
+      result
+    })
+    |> result.map_error(fn(error) {
+      case error {
+        ledger.AppendStartLedgerError(ledger_error) ->
+          CheckpointAppendFailed(describe_ledger_error(ledger_error))
+        ledger.AppendStartRecordIdConflict(record_id) ->
+          CheckpointAppendFailed("record_id_conflict:" <> record_id)
+        ledger.AppendStartInvalidQueueRecord ->
+          CheckpointAppendFailed("invalid_workstream_start_queue_record")
+      }
+    })
+  }
   Writer(
     now_ms: now_ms,
     workflow_started: fn(started) {
       use projection_state <- result.try(load_projection(workspace_root))
       case projection.has_workflow_run(projection_state, started.run_id) {
         True -> Ok(Nil)
-        False ->
-          append_body(workspace_root, now_ms, workflow_started_body(started))
+        False -> append_body_and_observe(workflow_started_body(started))
       }
     },
     workflow_finished: fn(finished) {
-      append_body(workspace_root, now_ms, workflow_finished_body(finished))
+      append_body_and_observe(workflow_finished_body(finished))
     },
     workflow_diagnostic: fn(diagnostic) {
-      append_body(
-        workspace_root,
-        now_ms,
-        record.WorkflowRunDiagnostic(
-          diagnostic.run_id,
-          diagnostic.workflow_id,
-          diagnostic.issue_id,
-          diagnostic.reason,
-        ),
-      )
+      append_body_and_observe(record.WorkflowRunDiagnostic(
+        diagnostic.run_id,
+        diagnostic.workflow_id,
+        diagnostic.issue_id,
+        diagnostic.reason,
+      ))
     },
     step_prepared: fn(run_id, workflow_id, step_id, workspace) {
-      append_batch(
-        workspace_root,
-        now_ms,
-        ledger_batch.step_attempt_prepared(
-          run_id,
-          workflow_id,
-          step_id,
-          workspace.attempt_index,
-          workspace.workspace_name,
-          workspace.path,
-          workspace.run_root,
-          workspace_core.source_name(workspace.source),
-          workspace_core.source_path(workspace.source),
-        ),
-      )
+      append_batch_and_observe(ledger_batch.step_attempt_prepared(
+        run_id,
+        workflow_id,
+        step_id,
+        workspace.attempt_index,
+        workspace.workspace_name,
+        workspace.path,
+        workspace.run_root,
+        workspace_core.source_name(workspace.source),
+        workspace_core.source_path(workspace.source),
+      ))
     },
     step_started: fn(
       run_id,
@@ -585,19 +696,15 @@ pub fn ledger_writer_with_artifact_store(
       external_session_ref,
       continuation_capable,
     ) {
-      append_batch(
-        workspace_root,
-        now_ms,
-        ledger_batch.step_attempt_started(
-          run_id,
-          workflow_id,
-          step_id,
-          attempt_index,
-          operator_session_id,
-          external_session_ref,
-          continuation_capable,
-        ),
-      )
+      append_batch_and_observe(ledger_batch.step_attempt_started(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        operator_session_id,
+        external_session_ref,
+        continuation_capable,
+      ))
     },
     step_continuation_started: fn(
       run_id,
@@ -606,22 +713,16 @@ pub fn ledger_writer_with_artifact_store(
       attempt_index,
       session_id,
     ) {
-      append_batch(
-        workspace_root,
-        now_ms,
-        ledger_batch.step_attempt_continuation_started(
-          run_id,
-          workflow_id,
-          step_id,
-          attempt_index,
-          session_id,
-        ),
-      )
+      append_batch_and_observe(ledger_batch.step_attempt_continuation_started(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        session_id,
+      ))
     },
     step_pi_session_recorded: fn(observation) {
-      append_batch(
-        workspace_root,
-        now_ms,
+      append_batch_and_observe(
         ledger_batch.step_attempt_pi_session_recorded_with_task(
           observation.run_id,
           observation.issue_id,
@@ -748,47 +849,8 @@ pub fn ledger_writer_with_artifact_store(
         CheckpointArtifactFailed(describe_workstream_snapshot_error(error))
       })
     },
-    append_workstream_record_idempotent: fn(ledger_record) {
-      use ledger_path <- result.try(
-        ledger.path_for_workspace_root(workspace_root)
-        |> result.map_error(fn(error) {
-          CheckpointAppendFailed(describe_ledger_error(error))
-        }),
-      )
-      ledger.append_idempotent(ledger_path, ledger_record, True)
-      |> result.map_error(fn(error) {
-        case error {
-          ledger.AppendLedgerError(ledger_error) ->
-            CheckpointAppendFailed(describe_ledger_error(ledger_error))
-          ledger.RecordIdConflict(record_id) ->
-            CheckpointAppendFailed("record_id_conflict:" <> record_id)
-        }
-      })
-    },
-    append_workstream_start_records: fn(records, queued_record) {
-      use ledger_path <- result.try(
-        ledger.path_for_workspace_root(workspace_root)
-        |> result.map_error(fn(error) {
-          CheckpointAppendFailed(describe_ledger_error(error))
-        }),
-      )
-      ledger.append_workstream_start_records(
-        ledger_path,
-        records,
-        queued_record,
-        True,
-      )
-      |> result.map_error(fn(error) {
-        case error {
-          ledger.AppendStartLedgerError(ledger_error) ->
-            CheckpointAppendFailed(describe_ledger_error(ledger_error))
-          ledger.AppendStartRecordIdConflict(record_id) ->
-            CheckpointAppendFailed("record_id_conflict:" <> record_id)
-          ledger.AppendStartInvalidQueueRecord ->
-            CheckpointAppendFailed("invalid_workstream_start_queue_record")
-        }
-      })
-    },
+    append_workstream_record_idempotent: append_workstream_record_idempotent,
+    append_workstream_start_records: append_workstream_start_records,
     write_workflow_inputs_manifest: fn(run_id, contents) {
       use existing <- result.try(existing_input_record(workspace_root, run_id))
       case existing {
@@ -814,18 +876,14 @@ pub fn ledger_writer_with_artifact_store(
       case existing {
         Some(_) -> Ok(Nil)
         None ->
-          append_body(
-            workspace_root,
-            now_ms,
-            record.WorkflowRunInputsRecorded(
-              recorded.run_id,
-              recorded.workflow_id,
-              recorded.workflow_fingerprint,
-              recorded.artifact.ref,
-              recorded.artifact.sha256,
-              recorded.artifact.bytes,
-            ),
-          )
+          append_body_and_observe(record.WorkflowRunInputsRecorded(
+            recorded.run_id,
+            recorded.workflow_id,
+            recorded.workflow_fingerprint,
+            recorded.artifact.ref,
+            recorded.artifact.sha256,
+            recorded.artifact.bytes,
+          ))
       }
     },
     write_workflow_interface_snapshot: fn(run_id, contents) {
@@ -855,18 +913,14 @@ pub fn ledger_writer_with_artifact_store(
       case existing {
         Some(_) -> Ok(Nil)
         None ->
-          append_body(
-            workspace_root,
-            now_ms,
-            record.WorkflowInterfaceSnapshotRecorded(
-              recorded.run_id,
-              recorded.workflow_id,
-              recorded.workflow_fingerprint,
-              recorded.artifact.ref,
-              recorded.artifact.sha256,
-              recorded.artifact.bytes,
-            ),
-          )
+          append_body_and_observe(record.WorkflowInterfaceSnapshotRecorded(
+            recorded.run_id,
+            recorded.workflow_id,
+            recorded.workflow_fingerprint,
+            recorded.artifact.ref,
+            recorded.artifact.sha256,
+            recorded.artifact.bytes,
+          ))
       }
     },
     write_workflow_outputs_manifest: fn(run_id, contents) {
@@ -911,18 +965,14 @@ pub fn ledger_writer_with_artifact_store(
       case existing {
         Some(_) -> Ok(Nil)
         None ->
-          append_body(
-            workspace_root,
-            now_ms,
-            record.WorkflowRunOutputsRecorded(
-              recorded.run_id,
-              recorded.workflow_id,
-              recorded.workflow_fingerprint,
-              recorded.artifact.ref,
-              recorded.artifact.sha256,
-              recorded.artifact.bytes,
-            ),
-          )
+          append_body_and_observe(record.WorkflowRunOutputsRecorded(
+            recorded.run_id,
+            recorded.workflow_id,
+            recorded.workflow_fingerprint,
+            recorded.artifact.ref,
+            recorded.artifact.sha256,
+            recorded.artifact.bytes,
+          ))
       }
     },
     write_publication_manifest: fn(write) {
@@ -963,23 +1013,7 @@ pub fn ledger_writer_with_artifact_store(
         Error(error) -> Error(error)
       }
     },
-    publication_attempt_recorded: fn(ledger_record) {
-      use ledger_path <- result.try(
-        ledger.path_for_workspace_root(workspace_root)
-        |> result.map_error(fn(error) {
-          CheckpointAppendFailed(describe_ledger_error(error))
-        }),
-      )
-      ledger.append_idempotent(ledger_path, ledger_record, True)
-      |> result.map_error(fn(error) {
-        case error {
-          ledger.AppendLedgerError(ledger_error) ->
-            CheckpointAppendFailed(describe_ledger_error(ledger_error))
-          ledger.RecordIdConflict(record_id) ->
-            CheckpointAppendFailed("record_id_conflict:" <> record_id)
-        }
-      })
-    },
+    publication_attempt_recorded: append_workstream_record_idempotent,
     write_workflow_output_blob: fn(write) {
       use repair_generation <- result.try(current_repair_generation(
         workspace_root,
@@ -999,70 +1033,54 @@ pub fn ledger_writer_with_artifact_store(
       })
     },
     step_finished: fn(finished, artifact_ref) {
-      append_batch(
-        workspace_root,
-        now_ms,
-        ledger_batch.step_attempt_finished(
-          finished.run_id,
-          finished.workflow_id,
-          finished.step_id,
-          finished.attempt_index,
-          finished.outcome,
-          artifact_ref.ref,
-          artifact_ref.sha256,
-          finished.workspace_name,
-          finished.workspace_path,
-          finished.token_total,
-          finished.turns,
-        ),
-      )
+      append_batch_and_observe(ledger_batch.step_attempt_finished(
+        finished.run_id,
+        finished.workflow_id,
+        finished.step_id,
+        finished.attempt_index,
+        finished.outcome,
+        artifact_ref.ref,
+        artifact_ref.sha256,
+        finished.workspace_name,
+        finished.workspace_path,
+        finished.token_total,
+        finished.turns,
+      ))
     },
     step_recovery_started: fn(started) {
-      append_batch(
-        workspace_root,
-        now_ms,
-        ledger_batch.workflow_step_recovery_started(
-          started.run_id,
-          started.workflow_id,
-          started.step_id,
-          started.failed_attempt_index,
-          started.recovery_attempt_number,
-          started.recovery_session_id,
-          started.model,
-          started.prompt_ref,
-        ),
-      )
+      append_batch_and_observe(ledger_batch.workflow_step_recovery_started(
+        started.run_id,
+        started.workflow_id,
+        started.step_id,
+        started.failed_attempt_index,
+        started.recovery_attempt_number,
+        started.recovery_session_id,
+        started.model,
+        started.prompt_ref,
+      ))
     },
     step_recovery_finished: fn(finished) {
-      append_batch(
-        workspace_root,
-        now_ms,
-        ledger_batch.workflow_step_recovery_finished(
-          finished.run_id,
-          finished.workflow_id,
-          finished.step_id,
-          finished.failed_attempt_index,
-          finished.recovery_attempt_number,
-          finished.recovery_session_id,
-          finished.result,
-          finished.summary,
-          finished.reason,
-          finished.retry_attempt_index,
-        ),
-      )
+      append_batch_and_observe(ledger_batch.workflow_step_recovery_finished(
+        finished.run_id,
+        finished.workflow_id,
+        finished.step_id,
+        finished.failed_attempt_index,
+        finished.recovery_attempt_number,
+        finished.recovery_session_id,
+        finished.result,
+        finished.summary,
+        finished.reason,
+        finished.retry_attempt_index,
+      ))
     },
     step_interrupted: fn(run_id, workflow_id, step_id, attempt_index, reason) {
-      append_batch(
-        workspace_root,
-        now_ms,
-        ledger_batch.step_attempt_interrupted(
-          run_id,
-          workflow_id,
-          step_id,
-          attempt_index,
-          reason,
-        ),
-      )
+      append_batch_and_observe(ledger_batch.step_attempt_interrupted(
+        run_id,
+        workflow_id,
+        step_id,
+        attempt_index,
+        reason,
+      ))
     },
   )
 }

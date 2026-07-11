@@ -754,6 +754,23 @@
         "command_timeout": { "$ref": "#/$defs/Duration" }
       }
     },
+    "LedgerAutoCompaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "max_current_records": { "type": "integer", "minimum": 1 },
+        "max_current_bytes": { "type": "integer", "minimum": 1 },
+        "min_interval": { "$ref": "#/$defs/Duration" }
+      }
+    },
+    "StateLedger": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auto_compaction": { "$ref": "#/$defs/LedgerAutoCompaction" }
+      }
+    },
     "UiServer": {
       "type": "object",
       "additionalProperties": false,
@@ -800,6 +817,7 @@
         "workspace": { "$ref": "#/$defs/WorkspaceRoot" },
         "agents": { "$ref": "#/$defs/Agents" },
         "control": { "$ref": "#/$defs/Control" },
+        "state_ledger": { "$ref": "#/$defs/StateLedger" },
         "ui_server": { "$ref": "#/$defs/UiServer" },
         "task_updates": { "$ref": "#/$defs/TaskUpdates" },
         "schedules": { "$ref": "#/$defs/Schedules" },

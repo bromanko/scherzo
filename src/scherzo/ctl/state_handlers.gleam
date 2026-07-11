@@ -3,7 +3,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
+import scherzo/instance_lock
 import scherzo/state/ledger
 import scherzo/state/local_artifacts
 import scherzo/state/projection
@@ -54,7 +54,6 @@ type StateCompactResult {
 type StateCompactInspectError {
   CompactLedgerReadFailed(error: ledger.LedgerError)
   CompactFileInfoFailed(path: String, error: simplifile.FileError)
-  CompactArchiveReadFailed(path: String, error: simplifile.FileError)
 }
 
 pub fn run_status(
@@ -143,30 +142,32 @@ fn inspect_state_compact(root: String) -> StateCompactResult {
   case compact_ledger_path(root) {
     Error(result) -> result
     Ok(ledger_path) ->
-      case inspect_compaction_details(ledger_path) {
-        Error(error) ->
-          failed_state_compact_result(
-            ledger_path,
-            None,
-            None,
-            "ledger_inspect_failed",
-            compact_inspect_error_message(error),
-          )
-        Ok(before) ->
-          StateCompactResult(
-            status: "dry_run",
-            workspace_root: ledger_path.workspace_root,
-            ledger_dir: ledger_path.ledger_dir,
-            current_path: ledger_path.current_path,
-            snapshot_path: ledger_path.snapshot_path,
-            archive_dir: ledger_path.archive_dir,
-            before: Some(before),
-            after: None,
-            would_archive_current: Some(before.current_size_bytes > 0),
-            reason: None,
-            message: "dry-run; ledger files were not modified",
-          )
-      }
+      with_state_compact_lock(ledger_path, fn() {
+        case inspect_compaction_details(ledger_path) {
+          Error(error) ->
+            failed_state_compact_result(
+              ledger_path,
+              None,
+              None,
+              "ledger_inspect_failed",
+              compact_inspect_error_message(error),
+            )
+          Ok(before) ->
+            StateCompactResult(
+              status: "dry_run",
+              workspace_root: ledger_path.workspace_root,
+              ledger_dir: ledger_path.ledger_dir,
+              current_path: ledger_path.current_path,
+              snapshot_path: ledger_path.snapshot_path,
+              archive_dir: ledger_path.archive_dir,
+              before: Some(before),
+              after: None,
+              would_archive_current: Some(before.current_size_bytes > 0),
+              reason: None,
+              message: "dry-run; ledger files were not modified",
+            )
+        }
+      })
   }
 }
 
@@ -174,59 +175,61 @@ fn apply_state_compact(root: String) -> StateCompactResult {
   case compact_ledger_path(root) {
     Error(result) -> result
     Ok(ledger_path) ->
-      case inspect_compaction_details(ledger_path) {
-        Error(error) ->
-          failed_state_compact_result(
-            ledger_path,
-            None,
-            None,
-            "ledger_inspect_failed",
-            compact_inspect_error_message(error),
-          )
-        Ok(before) ->
-          case ledger.compact(ledger_path) {
-            Error(error) ->
-              failed_state_compact_result(
-                ledger_path,
-                Some(before),
-                Some(before.current_size_bytes > 0),
-                ledger.ledger_error_code(error),
-                ledger_error_message(error),
-              )
-            Ok(Nil) ->
-              case inspect_compaction_details(ledger_path) {
-                Error(error) ->
-                  StateCompactResult(
-                    status: "compacted",
-                    workspace_root: ledger_path.workspace_root,
-                    ledger_dir: ledger_path.ledger_dir,
-                    current_path: ledger_path.current_path,
-                    snapshot_path: ledger_path.snapshot_path,
-                    archive_dir: ledger_path.archive_dir,
-                    before: Some(before),
-                    after: None,
-                    would_archive_current: Some(before.current_size_bytes > 0),
-                    reason: Some("post_compaction_inspect_failed"),
-                    message: "ledger compaction completed; failed to inspect after details: "
-                      <> compact_inspect_error_message(error),
-                  )
-                Ok(after) ->
-                  StateCompactResult(
-                    status: "compacted",
-                    workspace_root: ledger_path.workspace_root,
-                    ledger_dir: ledger_path.ledger_dir,
-                    current_path: ledger_path.current_path,
-                    snapshot_path: ledger_path.snapshot_path,
-                    archive_dir: ledger_path.archive_dir,
-                    before: Some(before),
-                    after: Some(after),
-                    would_archive_current: Some(before.current_size_bytes > 0),
-                    reason: None,
-                    message: "ledger compaction completed",
-                  )
-              }
-          }
-      }
+      with_state_compact_lock(ledger_path, fn() {
+        case inspect_compaction_details(ledger_path) {
+          Error(error) ->
+            failed_state_compact_result(
+              ledger_path,
+              None,
+              None,
+              "ledger_inspect_failed",
+              compact_inspect_error_message(error),
+            )
+          Ok(before) ->
+            case ledger.compact(ledger_path) {
+              Error(error) ->
+                failed_state_compact_result(
+                  ledger_path,
+                  Some(before),
+                  Some(before.current_size_bytes > 0),
+                  ledger.ledger_error_code(error),
+                  ledger_error_message(error),
+                )
+              Ok(Nil) ->
+                case inspect_compaction_details(ledger_path) {
+                  Error(error) ->
+                    StateCompactResult(
+                      status: "compacted",
+                      workspace_root: ledger_path.workspace_root,
+                      ledger_dir: ledger_path.ledger_dir,
+                      current_path: ledger_path.current_path,
+                      snapshot_path: ledger_path.snapshot_path,
+                      archive_dir: ledger_path.archive_dir,
+                      before: Some(before),
+                      after: None,
+                      would_archive_current: Some(before.current_size_bytes > 0),
+                      reason: Some("post_compaction_inspect_failed"),
+                      message: "ledger compaction completed; failed to inspect after details: "
+                        <> compact_inspect_error_message(error),
+                    )
+                  Ok(after) ->
+                    StateCompactResult(
+                      status: "compacted",
+                      workspace_root: ledger_path.workspace_root,
+                      ledger_dir: ledger_path.ledger_dir,
+                      current_path: ledger_path.current_path,
+                      snapshot_path: ledger_path.snapshot_path,
+                      archive_dir: ledger_path.archive_dir,
+                      before: Some(before),
+                      after: Some(after),
+                      would_archive_current: Some(before.current_size_bytes > 0),
+                      reason: None,
+                      message: "ledger compaction completed",
+                    )
+                }
+            }
+        }
+      })
   }
 }
 
@@ -234,24 +237,20 @@ fn inspect_compaction_details(
   ledger_path: ledger.LedgerPath,
 ) -> Result(StateCompactDetails, StateCompactInspectError) {
   use current_file <- result.try(file_size(ledger_path.current_path))
-  use snapshot_file <- result.try(file_size(ledger_path.snapshot_path))
-  use current_stats <- result.try(
-    ledger.current_segment_stats(ledger_path)
+  use storage_stats <- result.try(
+    ledger.storage_stats(ledger_path)
     |> result.map_error(CompactLedgerReadFailed),
   )
-  use archive_segment_count <- result.try(archive_segment_count(
-    ledger_path.archive_dir,
-  ))
   let #(current_exists, current_size_bytes) = current_file
-  let #(snapshot_exists, snapshot_size_bytes) = snapshot_file
+  let snapshot_exists = storage_stats.snapshot_size_bytes > 0
   Ok(StateCompactDetails(
     current_exists: current_exists,
     current_size_bytes: current_size_bytes,
-    current_record_count: current_stats.record_count,
-    current_truncated_tail: current_stats.truncated_tail,
+    current_record_count: storage_stats.current.record_count,
+    current_truncated_tail: storage_stats.current.truncated_tail,
     snapshot_exists: snapshot_exists,
-    snapshot_size_bytes: snapshot_size_bytes,
-    archive_segment_count: archive_segment_count,
+    snapshot_size_bytes: storage_stats.snapshot_size_bytes,
+    archive_segment_count: storage_stats.archive_segment_count,
   ))
 }
 
@@ -262,23 +261,6 @@ fn file_size(
     Ok(info) -> Ok(#(True, info.size))
     Error(simplifile.Enoent) -> Ok(#(False, 0))
     Error(error) -> Error(CompactFileInfoFailed(file_path, error))
-  }
-}
-
-fn archive_segment_count(
-  archive_dir: String,
-) -> Result(Int, StateCompactInspectError) {
-  case simplifile.read_directory(archive_dir) {
-    Ok(entries) ->
-      entries
-      |> list.filter(fn(entry) {
-        string.starts_with(entry, "segment-")
-        && string.ends_with(entry, ".jsonl")
-      })
-      |> list.length
-      |> Ok
-    Error(simplifile.Enoent) -> Ok(0)
-    Error(error) -> Error(CompactArchiveReadFailed(archive_dir, error))
   }
 }
 
@@ -299,6 +281,47 @@ fn compact_ledger_path(
           unsafe_state_compact_result(ledger_path, reason) |> Error
         None -> Ok(ledger_path)
       }
+  }
+}
+
+fn with_state_compact_lock(
+  ledger_path: ledger.LedgerPath,
+  action: fn() -> StateCompactResult,
+) -> StateCompactResult {
+  case instance_lock.acquire(ledger_path.workspace_root) {
+    Ok(lock) -> {
+      let result = action()
+      instance_lock.release(lock)
+      result
+    }
+    Error(instance_lock.LockAlreadyHeld(message)) ->
+      StateCompactResult(
+        status: "rejected",
+        workspace_root: ledger_path.workspace_root,
+        ledger_dir: ledger_path.ledger_dir,
+        current_path: ledger_path.current_path,
+        snapshot_path: ledger_path.snapshot_path,
+        archive_dir: ledger_path.archive_dir,
+        before: None,
+        after: None,
+        would_archive_current: None,
+        reason: Some("instance_lock_held"),
+        message: message,
+      )
+    Error(error) ->
+      StateCompactResult(
+        status: "rejected",
+        workspace_root: ledger_path.workspace_root,
+        ledger_dir: ledger_path.ledger_dir,
+        current_path: ledger_path.current_path,
+        snapshot_path: ledger_path.snapshot_path,
+        archive_dir: ledger_path.archive_dir,
+        before: None,
+        after: None,
+        would_archive_current: None,
+        reason: Some("instance_lock_failed"),
+        message: instance_lock.error_message(error),
+      )
   }
 }
 
@@ -331,11 +354,6 @@ fn compact_inspect_error_message(error: StateCompactInspectError) -> String {
     CompactFileInfoFailed(file_path, error) ->
       "inspect ledger file "
       <> file_path
-      <> ": "
-      <> simplifile.describe_error(error)
-    CompactArchiveReadFailed(archive_dir, error) ->
-      "read ledger archive directory "
-      <> archive_dir
       <> ": "
       <> simplifile.describe_error(error)
   }

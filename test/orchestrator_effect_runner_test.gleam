@@ -8,12 +8,16 @@ import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/outbox_effects
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
+import scherzo/state/ledger
+import scherzo/state/record
 import scherzo/task
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
 import scherzo/workflow_policy
+import simplifile
 import support/expected_crash
+import support/test_helpers
 import test_async
 
 fn hooks() -> config_types.HooksConfig {
@@ -405,6 +409,46 @@ pub fn effect_runner_uses_legacy_invalid_workflow_state_ids_when_explicit_test()
     ),
   )) = process.receive(completions, within: 1000)
 
+  assert effect_runner.shutdown(runner, 1000) == Ok(Nil)
+}
+
+pub fn effect_runner_runs_ledger_compaction_test() {
+  let completions = process.new_subject()
+  let runner = start_runner(completions)
+  let root = "test/tmp/orchestrator-effect-runner/ledger-compaction"
+  test_helpers.reset_dir(root)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "run-started-1",
+          1000,
+          record.RunStarted(
+            run_id: "run-1",
+            issue_id: "issue-1",
+            issue_identifier: "SCH-1",
+            workspace_path: "workspace/main",
+          ),
+        ),
+      ],
+      False,
+    )
+
+  effect_runner.enqueue(
+    runner,
+    effect_runner.CompactLedger(ledger_path, fn() { 5000 }),
+  )
+
+  let assert Ok(effect_runner.Finished(
+    _,
+    effect_runner.LedgerCompactionFinished(Ok(report)),
+  )) = process.receive(completions, within: 1000)
+  assert report.before.current.record_count == 1
+  assert report.after.current.record_count == 0
+  let assert Ok(current_contents) = simplifile.read(ledger_path.current_path)
+  assert current_contents == ""
   assert effect_runner.shutdown(runner, 1000) == Ok(Nil)
 }
 

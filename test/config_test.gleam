@@ -143,6 +143,12 @@ pub fn default_values_test() {
   assert control.command_timeout_ms == control_server.default_command_timeout_ms
   assert control.command_timeout_ms == 60_000
 
+  let ledger_compaction = config.default_ledger_compaction_config()
+  assert ledger_compaction.enabled == True
+  assert ledger_compaction.max_current_records == 10_000
+  assert ledger_compaction.max_current_bytes == 8 * 1024 * 1024
+  assert ledger_compaction.min_interval_ms == 300_000
+
   let agent = config.default_agent_config()
   assert agent.max_concurrent_agents == 1
   assert agent.max_turns == 20
@@ -166,6 +172,115 @@ pub fn default_values_test() {
   assert ui_server_config.endpoint(ui_server) == None
   assert ui_server_config.credential_ref(ui_server) == None
   assert ui_server_config.daemon_label(ui_server) == None
+}
+
+pub fn state_ledger_auto_compaction_defaults_test() {
+  let assert Ok(configured) =
+    config.resolve_with_env(
+      definition(minimal_front()),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+
+  assert configured.ledger_compaction.enabled == True
+  assert configured.ledger_compaction.max_current_records == 10_000
+  assert configured.ledger_compaction.max_current_bytes == 8 * 1024 * 1024
+  assert configured.ledger_compaction.min_interval_ms == 300_000
+}
+
+pub fn state_ledger_auto_compaction_custom_values_test() {
+  let front =
+    minimal_front()
+    <> "state_ledger:\n  auto_compaction:\n    enabled: false\n    max_current_records: 123\n    max_current_bytes: 456\n    min_interval: 7m\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.ledger_compaction.enabled == False
+  assert configured.ledger_compaction.max_current_records == 123
+  assert configured.ledger_compaction.max_current_bytes == 456
+  assert configured.ledger_compaction.min_interval_ms == 420_000
+}
+
+pub fn state_ledger_auto_compaction_invalid_values_test() {
+  let wrong_enabled =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  auto_compaction:\n    enabled: nope\n",
+    )
+  assert string.contains(
+    wrong_enabled,
+    "state_ledger.auto_compaction.enabled must be a boolean",
+  )
+
+  let wrong_records =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  auto_compaction:\n    max_current_records: nope\n",
+    )
+  assert string.contains(
+    wrong_records,
+    "state_ledger.auto_compaction.max_current_records must be an integer",
+  )
+
+  let zero_records =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  auto_compaction:\n    max_current_records: 0\n",
+    )
+  assert string.contains(
+    zero_records,
+    "state_ledger.auto_compaction.max_current_records must be positive",
+  )
+
+  let negative_records =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  auto_compaction:\n    max_current_records: -1\n",
+    )
+  assert string.contains(
+    negative_records,
+    "state_ledger.auto_compaction.max_current_records must be positive",
+  )
+
+  let zero_bytes =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  auto_compaction:\n    max_current_bytes: 0\n",
+    )
+  assert string.contains(
+    zero_bytes,
+    "state_ledger.auto_compaction.max_current_bytes must be positive",
+  )
+
+  let negative_bytes =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  auto_compaction:\n    max_current_bytes: -1\n",
+    )
+  assert string.contains(
+    negative_bytes,
+    "state_ledger.auto_compaction.max_current_bytes must be positive",
+  )
+
+  let zero_interval =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  auto_compaction:\n    min_interval: 0ms\n",
+    )
+  assert string.contains(
+    zero_interval,
+    "state_ledger.auto_compaction.min_interval must be positive",
+  )
+
+  let negative_interval =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  auto_compaction:\n    min_interval: -1ms\n",
+    )
+  assert string.contains(
+    negative_interval,
+    "state_ledger.auto_compaction.min_interval",
+  )
 }
 
 pub fn duration_string_fields_parse_to_milliseconds_test() {

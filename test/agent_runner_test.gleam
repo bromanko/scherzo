@@ -67,6 +67,12 @@ fn config(
     polling: config_types.PollingConfig(interval_ms: 30_000),
     workspace: config_types.WorkspaceConfig(root: root),
     control: config_types.ControlConfig(command_timeout_ms: 60_000),
+    ledger_compaction: config_types.LedgerCompactionConfig(
+      enabled: True,
+      max_current_records: 10_000,
+      max_current_bytes: 8 * 1024 * 1024,
+      min_interval_ms: 300_000,
+    ),
     hooks: config_types.HooksConfig(
       after_create: Some("printf populated > POPULATED"),
       before_run: Some("test -f POPULATED"),
@@ -384,6 +390,12 @@ pub fn after_run_failure_is_emitted_without_overriding_success_test() {
     config_types.EffectiveConfig(
       ..base,
       control: config_types.ControlConfig(command_timeout_ms: 60_000),
+      ledger_compaction: config_types.LedgerCompactionConfig(
+        enabled: True,
+        max_current_records: 10_000,
+        max_current_bytes: 8 * 1024 * 1024,
+        min_interval_ms: 300_000,
+      ),
       hooks: config_types.HooksConfig(
         ..base.hooks,
         after_run: Some("echo cleanup failed >&2; exit 23"),
@@ -451,6 +463,12 @@ pub fn runner_allows_codex_sse_timeout_auto_retry_in_same_turn_test() {
     config_types.EffectiveConfig(
       ..base,
       control: config_types.ControlConfig(command_timeout_ms: 60_000),
+      ledger_compaction: config_types.LedgerCompactionConfig(
+        enabled: True,
+        max_current_records: 10_000,
+        max_current_bytes: 8 * 1024 * 1024,
+        min_interval_ms: 300_000,
+      ),
       hooks: config_types.HooksConfig(
         ..base.hooks,
         after_run: Some("printf after >> AFTER_RUN"),
@@ -1114,6 +1132,12 @@ pub fn before_run_and_probe_failures_abort_before_prompt_test() {
     config_types.EffectiveConfig(
       ..config(root, fake_pi(), True, 3),
       control: config_types.ControlConfig(command_timeout_ms: 60_000),
+      ledger_compaction: config_types.LedgerCompactionConfig(
+        enabled: True,
+        max_current_records: 10_000,
+        max_current_bytes: 8 * 1024 * 1024,
+        min_interval_ms: 300_000,
+      ),
       hooks: bad_hooks,
     )
   let assert Error(_) =

@@ -63,6 +63,7 @@ pub fn fixture_effective() -> config_types.EffectiveConfig {
     polling: config.default_polling_config(),
     workspace: config_types.WorkspaceConfig(root: "test/tmp/workspaces"),
     control: config.default_control_config(),
+    ledger_compaction: config.default_ledger_compaction_config(),
     hooks: config.default_hooks_config(),
     agent: config_types.AgentConfig(
       ..config.default_agent_config(),

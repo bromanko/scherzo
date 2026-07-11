@@ -47,7 +47,7 @@ fold_open_device(IoDevice, Initial, Step) ->
     end.
 
 with_ledger_lock(Key, Operation) ->
-    global:trans({scherzo_ledger, to_binary(Key)}, Operation).
+    global:trans({{scherzo_ledger, to_binary(Key)}, self()}, Operation).
 
 system_time_millisecond() ->
     erlang:system_time(millisecond).

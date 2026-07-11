@@ -4,6 +4,7 @@ import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/outbox_effects
 import scherzo/review_lane_preflight
 import scherzo/runtime/identity
+import scherzo/state/ledger
 import scherzo/state/recovery
 import scherzo/tracker/adapter
 import scherzo/tracker/issue as tracker_issue
@@ -84,6 +85,10 @@ pub opaque type ResultHandlers(state) {
       Int,
       adapter.ScheduledFailurePublication,
       Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
+    ) -> state,
+    ledger_compaction_finished: fn(
+      state,
+      Result(ledger.CompactionReport, ledger.LedgerError),
     ) -> state,
     cleanup_finished: fn(state, String, Result(Nil, error.WorkspaceError)) ->
       state,
@@ -166,6 +171,10 @@ pub fn result_routes(
     adapter.ScheduledFailurePublication,
     Result(adapter.ScheduledFailureReceipt, adapter.TrackerError),
   ) -> state,
+  ledger_compaction_finished ledger_compaction_finished: fn(
+    state,
+    Result(ledger.CompactionReport, ledger.LedgerError),
+  ) -> state,
   cleanup_finished cleanup_finished: fn(
     state,
     String,
@@ -185,6 +194,7 @@ pub fn result_routes(
     invalid_workflow_report_finished: invalid_workflow_report_finished,
     outbox_replay_finished: outbox_replay_finished,
     scheduled_failure_report_finished: scheduled_failure_report_finished,
+    ledger_compaction_finished: ledger_compaction_finished,
     cleanup_finished: cleanup_finished,
   )
 }
@@ -349,6 +359,10 @@ pub fn crash_result_for_effect(
         publication,
         Error(adapter.Transient(reason)),
       )
+    effect_runner.CompactLedger(_, _) ->
+      effect_runner.LedgerCompactionFinished(
+        Error(ledger.Io("side effect crashed: " <> reason)),
+      )
     effect_runner.CleanupWorkspace(_, workspace_path, _, _) ->
       effect_runner.CleanupFinished(
         workspace_path,
@@ -440,6 +454,8 @@ fn handle_result(
         request,
         result,
       )
+    effect_runner.LedgerCompactionFinished(result) ->
+      handlers.ledger_compaction_finished(context.state, result)
     effect_runner.CleanupFinished(workspace_path, result) ->
       handlers.cleanup_finished(context.state, workspace_path, result)
   }

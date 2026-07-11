@@ -409,6 +409,46 @@ pub fn config_parser_schema_parity_edge_cases_are_accepted_test() {
   })
 }
 
+pub fn config_state_ledger_auto_compaction_schema_matches_parser_test() {
+  let valid =
+    minimal_config()
+    <> "state_ledger:\n"
+    <> "  auto_compaction:\n"
+    <> "    enabled: false\n"
+    <> "    max_current_records: 123\n"
+    <> "    max_current_bytes: 456\n"
+    <> "    min_interval: 7m\n"
+  assert_config_source_parses(valid)
+  validate_yaml_source_against_schema(
+    "public_config_schema",
+    "schemas/scherzo.config.v1.schema.json",
+    valid,
+  )
+
+  let invalid = [
+    minimal_config()
+      <> "state_ledger:\n  auto_compaction:\n    max_current_records: 0\n",
+    minimal_config()
+      <> "state_ledger:\n  auto_compaction:\n    max_current_records: -1\n",
+    minimal_config()
+      <> "state_ledger:\n  auto_compaction:\n    max_current_bytes: 0\n",
+    minimal_config()
+      <> "state_ledger:\n  auto_compaction:\n    max_current_bytes: -1\n",
+    minimal_config()
+      <> "state_ledger:\n  auto_compaction:\n    min_interval: 0ms\n",
+    minimal_config()
+      <> "state_ledger:\n  auto_compaction:\n    min_interval: -1ms\n",
+  ]
+  list.each(invalid, fn(yaml) {
+    assert_config_rejected(yaml)
+    reject_yaml_against_schema(
+      "public_config_schema",
+      "schemas/scherzo.config.v1.schema.json",
+      yaml,
+    )
+  })
+}
+
 pub fn config_removed_keys_and_invalid_shapes_are_rejected_test() {
   let cases = [
     #(

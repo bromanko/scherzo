@@ -52,6 +52,25 @@ pub fn control_command_timeout_ms(
   )
 }
 
+pub fn ledger_compaction_min_interval_ms(
+  root: yay.Node,
+  default: Int,
+) -> Result(Int, error.ConfigError) {
+  let state_ledger = get_map(root, "state_ledger")
+  let auto_compaction = get_map(state_ledger, "auto_compaction")
+  get_duration_ms_from_sources(
+    [
+      DurationField(
+        auto_compaction,
+        "min_interval",
+        "state_ledger.auto_compaction.min_interval",
+      ),
+    ],
+    default,
+    False,
+  )
+}
+
 pub fn pi_turn_timeout_ms(root: yay.Node) -> Result(Int, error.ConfigError) {
   let pi = get_map(root, "pi")
   let runtime = runtime_config(root)
