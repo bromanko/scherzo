@@ -1,4 +1,5 @@
 import gleam/dict.{type Dict}
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -25,6 +26,123 @@ import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_fingerprint
 
 const scheduled_failure_publication_kind = "scheduled_failure_publication"
+
+pub type DaemonState {
+  DaemonState(
+    phase: Phase,
+    recovery_by_issue: Dict(String, session_event.RecoveryInfo),
+    next_waiter_id: Int,
+    pending_waiters: Dict(Int, process.Subject(Result(Nil, Nil))),
+  )
+}
+
+pub type Phase {
+  Pending(StartupRecovery)
+  Running(Step, StartupRecovery)
+  Ready
+  Failed(String)
+}
+
+pub type Step {
+  StageApplyRecovery
+  StageApplyScheduledRecovery
+  StageResumeWorkflows
+  StageCheckInvariants
+  StageFinish
+}
+
+pub fn daemon_state(plan: StartupRecovery) -> DaemonState {
+  DaemonState(
+    phase: Pending(plan),
+    recovery_by_issue: plan.recovery_by_issue,
+    next_waiter_id: 1,
+    pending_waiters: dict.new(),
+  )
+}
+
+pub fn recovery_by_issue(
+  state: DaemonState,
+) -> Dict(String, session_event.RecoveryInfo) {
+  state.recovery_by_issue
+}
+
+pub fn clear_recovery(state: DaemonState, issue_id: String) -> DaemonState {
+  DaemonState(
+    ..state,
+    recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
+  )
+}
+
+pub fn phase(state: DaemonState) -> Phase {
+  state.phase
+}
+
+pub fn is_ready(state: DaemonState) -> Bool {
+  case state.phase {
+    Ready -> True
+    _ -> False
+  }
+}
+
+pub fn set_phase(state: DaemonState, phase: Phase) -> DaemonState {
+  DaemonState(..state, phase: phase)
+}
+
+pub fn register_waiter(
+  state: DaemonState,
+  reply: process.Subject(Result(Nil, Nil)),
+) -> #(DaemonState, Int) {
+  let waiter_id = state.next_waiter_id
+  #(
+    DaemonState(
+      ..state,
+      next_waiter_id: waiter_id + 1,
+      pending_waiters: dict.insert(state.pending_waiters, waiter_id, reply),
+    ),
+    waiter_id,
+  )
+}
+
+pub fn remove_waiter(
+  state: DaemonState,
+  waiter_id: Int,
+) -> #(DaemonState, Option(process.Subject(Result(Nil, Nil)))) {
+  #(
+    DaemonState(
+      ..state,
+      pending_waiters: dict.delete(state.pending_waiters, waiter_id),
+    ),
+    case dict.get(state.pending_waiters, waiter_id) {
+      Ok(reply) -> Some(reply)
+      Error(Nil) -> None
+    },
+  )
+}
+
+pub fn complete_waiters(
+  state: DaemonState,
+  result: Result(Nil, Nil),
+) -> #(
+  DaemonState,
+  List(#(process.Subject(Result(Nil, Nil)), Result(Nil, Nil))),
+) {
+  #(
+    DaemonState(..state, pending_waiters: dict.new()),
+    dict.values(state.pending_waiters),
+  )
+  |> map_waiter_result(result)
+}
+
+fn map_waiter_result(
+  state_and_waiters: #(DaemonState, List(process.Subject(Result(Nil, Nil)))),
+  result: Result(Nil, Nil),
+) -> #(
+  DaemonState,
+  List(#(process.Subject(Result(Nil, Nil)), Result(Nil, Nil))),
+) {
+  let #(state, waiters) = state_and_waiters
+  #(state, list.map(waiters, fn(reply) { #(reply, result) }))
+}
 
 pub type StartupError {
   StartupError(code: String, message: String)

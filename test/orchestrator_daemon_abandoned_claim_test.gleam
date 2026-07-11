@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
 import scherzo/error
+import scherzo/orchestrator/control_plane_runtime
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/effect_runner
 import scherzo/orchestrator/outbox_effects
@@ -129,7 +130,7 @@ fn runtime_dependencies(
     cancel_timer: fn(_) { Nil },
     start_event_hub: fn() { hub.start(10, fn() { 42 }) },
     make_control_token: fn() { Ok("test-token") },
-    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
 }

@@ -59,13 +59,28 @@ Milestone 6 clusters effect-runner process ownership, removes leftover top-level
 - [x] (2026-07-09) Wrote this concise review document as a planning artifact only; production code was not changed.
 - [x] (2026-07-09) Incorporated review feedback by making acceptance evidence, exact negative/duplicate/idempotent tests, milestone proof anchors, docs/helper boundaries, provider-live/cache non-scope, full validation, and linting explicit in this document and the updated structured implementation-pack obligations.
 - [x] (2026-07-09) Revalidated this review document with `direnv exec . .scherzo/workflows/scripts/scherzo-execplan validate-review-doc --path docs/plans/LIV-1445-cluster-daemon-state-review.md` and received `REVIEW_DOC_VALID=ok`.
-- [ ] Follow-up implementation has not started.
+- [x] (2026-07-11) Recovered the retained LIV-1469 workspace and removed the mirrored daemon fields, leaving scheduled runtime, startup recovery, session metrics, operator/runtime control state, control plane, query projection, remote runtime, effect runtime, and invariant state owned only by their records.
+- [x] (2026-07-11) Added direct owner-state tests for timer replacement and duplicate ticks, waiter removal/completion idempotence, operator reply correlation, queued-operation de-duplication, stale process monitors, query snapshot publication, and effect-runner monitor identity.
+- [x] (2026-07-11) Lowered the formatted daemon boundary from the failed attempt's 10,711 lines to 10,614 lines, below the then-current 10,617-line parent, and synchronized architecture and source guardrails.
+- [x] (2026-07-11) Rebased onto LIV-1471, preserved its ledger-compaction behavior through the owner-state migration, and lowered the merged daemon boundary to 10,799 lines, below the new 10,802-line parent.
+- [x] (2026-07-11) Ran formatting and the unit suite after the rebase; 2,339 unit tests passed.
+- [x] (2026-07-11) Ran the contract suite and both required production lint gates after the rebase; 1,025 contract tests passed, and both lint commands exited zero with the existing 292-warning inventory and no errors.
+- [x] (2026-07-11) Described the retained jj change as `Implement LIV-1469: cluster daemon state ownership`.
+- [ ] Publication remains an operator step: retained-run finalization dry-run was rejected because the run-pinned workflow interface fingerprint no longer matches the current publication routes.
 
 ## Surprises & Discoveries
 
 The predecessor structure work has already partly landed in this tree: `daemon.gleam` now contains `capabilities: daemon_capabilities.DaemonCapabilities(State, Message, TimerHandle)` and `core: transition_types.State`, and the old `dispatch_recovery_cleared_pending_claims` side channel is no longer present. That makes this plan a true last-stage clustering pass rather than a first extraction pass.
 
 The current guardrail already ratchets `src/scherzo/orchestrator/daemon.gleam` to its exact line count, so every implementation milestone must update `docs/architecture/daemon-boundary.md`, `test/orchestrator_daemon_boundary_test.gleam`, and `test/source_guardrail_test.gleam` in lockstep when the daemon shrinks.
+
+The first implementation attempt added owner records alongside the old flat fields and routed most reads through compatibility accessors. That shape passed broad tests but did not establish ownership because every mutation still had two possible storage locations. Removing the mirrors exposed a finite set of compiler errors, making `gleam check` an effective inventory of every remaining flat-field mutation.
+
+The failed attempt raised the daemon ratchet to 10,711 even though its parent was 10,617 lines. Completing owner wiring and moving query snapshot construction and cache cleanup into `query_projection.gleam` reduced the formatted shell to 10,614 lines without changing protocols or durable data. Before manual publication, LIV-1471 advanced the parent with ledger auto-compaction and a 10,802-line boundary. The rebase retained ledger-compaction state and effect dispatch alongside the new owner records while keeping the merged daemon at 10,799 lines.
+
+The rebase exposed an existing race in an orphan-cleanup contract assertion: asynchronous outbox completion could append between the test's ledger snapshot and cleanup assertion. The test now waits for the durable `outbox_completed` synchronization point before asserting that cleanup itself appends no records.
+
+A manual retained-run finalization dry-run cannot publish this old run because its pinned workflow-interface fingerprint differs from the current workflow definition. Scherzo rejected it with `publication_route_discovery_unsafe`; the implementation commit remains intact in the retained workspace for an explicit manual publication or supersession decision.
 
 ## Decision Log
 
@@ -74,10 +89,16 @@ The current guardrail already ratchets `src/scherzo/orchestrator/daemon.gleam` t
 - Decision: Treat negative, duplicate, stale, timeout, and idempotent behavior as acceptance-critical for every cluster. Rationale: those are the paths most likely to change accidentally when timers, monitors, replies, and recovery waiters move. Date: 2026-07-09.
 - Decision: Keep public actor messages and durable data unchanged. Rationale: this is a structure refactor; widening it into behavior or schema work would add risk without solving the flat-state ownership problem. Date: 2026-07-09.
 - Decision: Treat review feedback about evidence, exact tests, docs/helper inventory, provider-live/cache boundaries, full validation, and linting as implementation-pack obligations. Rationale: Scherzo materializes follow-up implementation instructions from the structured pack, so prose-only requirements would be easy for later implementers to miss. Date: 2026-07-09.
+- Decision: Remove all mirrored cluster fields in one compiler-guided migration rather than preserve compatibility mirrors across more commits. Rationale: the owner APIs already existed in the retained workspace, and `gleam check` precisely identified every stale read and update; keeping mirrors would preserve the verifier's core failure mode. Date: 2026-07-11.
+- Decision: Keep process creation, timer creation, actor replies, and ledger appends in the daemon shell while storing their handles and logical state only in owners. Rationale: these are composition-root effects, while owner records provide one mutation path and independently testable stale/duplicate decisions. Date: 2026-07-11.
 
 ## Outcomes & Retrospective
 
-This planning artifact defines the final daemon-structure pass after the shared-capability and embedded-core work. Implementation has not yet started, so outcomes are limited to the proposed cluster map, sequencing, and validation obligations.
+The retained implementation now has one source of truth for every planned runtime cluster. After rebasing onto LIV-1471, the daemon shell is 10,799 formatted lines, three lines below its 10,802-line parent; before that parent change, the same migration was 10,614 lines, 97 lines below the rejected attempt. Direct owner tests supplement existing daemon integration and query-contract coverage. Formatting passed, 2,339 unit tests passed, 1,025 contract tests passed, and both production lint gates exited zero with the existing warning inventory.
+
+The final changed-surface inventory contains daemon and owner modules, daemon-focused tests, architecture guardrails, and this plan only. `.scherzo/workflows/scripts/*`, workflow schemas and YAML, provider-facing structured-output helpers, review-lane contract files, provider-live probes, cache behavior, and browser/UI surfaces remain unchanged.
+
+Implementation and validation are complete in the retained jj change. Automatic publication is not complete: the old run's interface fingerprint prevents safe route discovery, so publication must use an explicit operator-selected path rather than bypassing that guard.
 
 ## Validation and Acceptance
 

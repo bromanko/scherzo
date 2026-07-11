@@ -371,3 +371,71 @@ pub fn timer_replacement_and_removal_cancel_existing_timer_test() {
   assert dict.size(timers) == 0
   test_async.assert_no_extra_message_within(cancelled, 20)
 }
+
+pub fn owner_state_keeps_runtime_and_timer_lifecycle_atomic_test() {
+  let cancelled = process.new_subject()
+  let cancel_timer = fn(timer) { process.send(cancelled, timer) }
+  let runtime =
+    scheduled_runtime.insert_retry(
+      scheduled_runtime.new(),
+      scheduled_runtime.RetryStart(
+        job_id: "job-1",
+        workflow_id: "implementation",
+        due_at_ms: 100,
+        run_id: "run-1",
+        next_attempt: 2,
+        generation: 1,
+      ),
+    )
+  let owner =
+    scheduled_runtime.owner(runtime)
+    |> scheduled_runtime.insert_retry_timer_cancelling_existing(
+      "run-1",
+      "timer-1",
+      cancel_timer,
+    )
+    |> scheduled_runtime.insert_retry_timer_cancelling_existing(
+      "run-1",
+      "timer-2",
+      cancel_timer,
+    )
+  let assert Ok("timer-1") = process.receive(cancelled, within: 1000)
+  assert scheduled_runtime.retry_timer_count(owner) == 1
+
+  let #(owner, actions) =
+    scheduled_runtime.handle_retry_tick_owner(
+      owner,
+      "run-1",
+      1,
+      200,
+      True,
+      False,
+    )
+  assert scheduled_runtime.retry_timer_count(owner) == 0
+  assert actions
+    == [
+      scheduled_runtime.PromoteRetryToPending(scheduled_runtime.PendingStart(
+        job_id: "job-1",
+        workflow_id: "implementation",
+        due_at_ms: 100,
+        run_id: "run-1",
+        trigger: "automatic",
+        requested_at_ms: 200,
+        attempt: 2,
+        blocking_reason: "",
+      )),
+    ]
+
+  let #(owner, duplicate_actions) =
+    scheduled_runtime.handle_retry_tick_owner(
+      owner,
+      "run-1",
+      1,
+      201,
+      True,
+      False,
+    )
+  assert duplicate_actions == []
+  assert scheduled_runtime.retry_timer_count(owner) == 0
+  test_async.assert_no_extra_message_within(cancelled, 20)
+}

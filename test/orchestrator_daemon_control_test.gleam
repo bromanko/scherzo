@@ -17,6 +17,7 @@ import scherzo/control/remote/ui_websocket_client
 import scherzo/control/server as control_server
 import scherzo/error
 import scherzo/handoff
+import scherzo/orchestrator/control_plane_runtime
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/daemon_remote_client
@@ -315,7 +316,7 @@ fn dependencies_with_tracker_adapter(
     ..dependencies(log_subject),
     make_tracker_adapter: fn(_) { tracker_adapter },
     make_control_token: fn() { Ok("test-token") },
-    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
 }
@@ -347,7 +348,7 @@ fn in_process_dependencies(
     workflow_run_dependencies: workflow_deps_from_agent(agent_runner),
     start_event_hub: fn() { Ok(hub_subject) },
     make_control_token: fn() { Ok("test-token") },
-    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
 }
@@ -464,7 +465,7 @@ fn remote_client_dependencies(
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     ..dependencies(log_subject),
-    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
     start_remote_client: fn(
       effective: config_types.EffectiveConfig,
@@ -870,7 +871,7 @@ pub fn daemon_control_server_uses_extended_command_timeout_test() {
         _backend: control_server.Backend,
       ) {
         process.send(settings_subject, settings.command_timeout_ms)
-        Ok(daemon.NoControlServer)
+        Ok(control_plane_runtime.NoControlServer)
       },
       stop_control_server: fn(_) { Nil },
     )
@@ -903,7 +904,7 @@ pub fn daemon_control_server_uses_configured_command_timeout_test() {
         _backend: control_server.Backend,
       ) {
         process.send(settings_subject, settings.command_timeout_ms)
-        Ok(daemon.NoControlServer)
+        Ok(control_plane_runtime.NoControlServer)
       },
       stop_control_server: fn(_) { Nil },
     )
@@ -929,7 +930,7 @@ pub fn daemon_stops_when_control_server_accept_loop_dies_test() {
         case control_server.start(settings, backend) {
           Ok(server_handle) -> {
             process.send(server_subject, server_handle)
-            Ok(daemon.RealControlServer(server_handle))
+            Ok(control_plane_runtime.RealControlServer(server_handle))
           }
           Error(control_server.ServerStartFailed(message)) ->
             Error(daemon.StartupError("control_server_start_failed", message))
@@ -1234,7 +1235,9 @@ pub fn daemon_execute_query_timeout_does_not_leave_late_reply_in_caller_mailbox_
   let deps =
     daemon.RuntimeDependencies(
       ..dependencies(log_subject),
-      start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+      start_control_server: fn(_, _) {
+        Ok(control_plane_runtime.NoControlServer)
+      },
       stop_control_server: fn(_) { Nil },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -1291,7 +1294,9 @@ pub fn daemon_outbox_queries_use_recovered_outbox_snapshot_test() {
   let deps =
     daemon.RuntimeDependencies(
       ..dependencies(log_subject),
-      start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+      start_control_server: fn(_, _) {
+        Ok(control_plane_runtime.NoControlServer)
+      },
       stop_control_server: fn(_) { Nil },
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
@@ -1454,7 +1459,9 @@ pub fn daemon_status_and_metrics_queries_stay_bounded_with_large_retained_histor
     daemon.RuntimeDependencies(
       ..dependencies(log_subject),
       start_event_hub: fn() { Ok(hub_subject) },
-      start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+      start_control_server: fn(_, _) {
+        Ok(control_plane_runtime.NoControlServer)
+      },
       stop_control_server: fn(_) { Nil },
     )
 
@@ -1493,7 +1500,9 @@ pub fn daemon_read_model_reports_remote_client_retrying_when_start_fails_test() 
     daemon.RuntimeDependencies(
       ..dependencies(log_subject),
       start_event_hub: fn() { Ok(hub_subject) },
-      start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+      start_control_server: fn(_, _) {
+        Ok(control_plane_runtime.NoControlServer)
+      },
       stop_control_server: fn(_) { Nil },
       start_remote_client: fn(_, _, _, _, _, _, _) {
         Error(daemon.StartupError("dial_failed", "boom"))

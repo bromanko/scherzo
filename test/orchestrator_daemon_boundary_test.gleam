@@ -15,9 +15,9 @@ const service_path = "src/scherzo/orchestrator/service.gleam"
 
 const daemon_module = "scherzo/orchestrator/daemon"
 
-const max_daemon_lines = 10_802
+const max_daemon_lines = 10_799
 
-const max_daemon_lines_source_literal = "10_802"
+const max_daemon_lines_source_literal = "10_799"
 
 type ShellException {
   ShellException(name: String)
@@ -473,6 +473,7 @@ fn owner_rules() -> List(OwnerRule) {
         ShellException(name: "scheduled_failure_ledger_via_capabilities"),
         ShellException(name: "scheduled_failure_dedupe_key"),
         ShellException(name: "scheduled_failure_issue_id_for_state"),
+        ShellException(name: "scheduled_runtime_value"),
       ],
     ),
     OwnerRule(
@@ -522,6 +523,7 @@ fn owner_rules() -> List(OwnerRule) {
         ShellException(name: "parked_issue_resolution"),
         ShellException(name: "parked_issue_id_for_ref"),
         ShellException(name: "parked_issue_id_for_identifier"),
+        ShellException(name: "operator_paused"),
       ],
     ),
     OwnerRule(

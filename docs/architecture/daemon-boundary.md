@@ -2,7 +2,9 @@
 
 `src/scherzo/orchestrator/daemon.gleam` remains Scherzo's public daemon actor shell. It may own public actor startup, public message receipt, compatibility types, dependency injection, control-plane/process/timer edges, top-level logging/redaction context, and handoff between subsystem outcomes. It also owns the actor-side reply bridge for operator commands whose worker acknowledgements arrive asynchronously. It must not regrow extracted subsystem helpers without an explicit update to this document and the matching source guardrail.
 
-The daemon line-count ratchet is `max_daemon_lines: 10802`. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
+The daemon line-count ratchet is `max_daemon_lines: 10799`. This is below the current 10,802-line parent boundary. Lower the ratchet whenever `src/scherzo/orchestrator/daemon.gleam` shrinks. Never raise it to let extracted code move back into the daemon. Raise it only when a review shows the added code is daemon-owned according to this document.
+
+The private daemon `State` stores one record per extracted runtime cluster: `scheduled_runtime.State`, `startup_recovery.DaemonState`, `session_metrics.State`, `operator_runtime.State`, `control_operation_runtime.State`, `remote_command_runtime.State`, `control_plane_runtime.State`, `query_projection.State`, `effect_runtime.State`, and `daemon_transition_shell.InvariantState`. It must not mirror fields owned by those records. The shell may unwrap an owner to build an actor reply or invoke a process/timer effect, but mutations must return through the owner API.
 
 `src/scherzo/orchestrator/service.gleam` is the only documented startup-edge import exception for `scherzo/orchestrator/daemon`. It may import the daemon because it is the process edge that starts the public actor. Extracted orchestrator subsystem modules must not import `scherzo/orchestrator/daemon`.
 
@@ -34,6 +36,7 @@ Exact daemon shell exceptions:
 - `scheduled_failure_ledger_via_capabilities`: the daemon shell still appends daemon-owned ledger records through shared capabilities after scheduled failure reporting.
 - `scheduled_failure_dedupe_key`: the daemon shell still computes daemon-owned report dedupe keys at the orchestration edge.
 - `scheduled_failure_issue_id_for_state`: the daemon shell still resolves daemon-owned issue identity while reporting scheduled failures.
+- `scheduled_runtime_value`: the daemon shell reads the runtime snapshot through `scheduled_runtime.State` while shaping actor-edge decisions.
 
 ### `src/scherzo/orchestrator/startup_recovery.gleam`
 
@@ -88,6 +91,7 @@ Exact daemon shell exceptions:
 - `parked_issue_id_for_ref`: the daemon shell still resolves parked issue identity from daemon-owned state.
 - `parked_issue_id_for_identifier`: the daemon shell still resolves parked issue identity from daemon-owned state.
 - `recollect_outputs_issue_preflight_for_run`: the daemon shell still enforces actor-owned parked-issue policy and tracker refresh before handing recollection off to the output recollection subsystem.
+- `operator_paused`: the daemon shell reads the dispatch-pause snapshot through `operator_runtime.State` while shaping actor replies and scheduling decisions.
 
 ### `src/scherzo/orchestrator/remote_command_runtime.gleam`
 
@@ -97,6 +101,10 @@ Exact daemon shell exceptions:
 
 - `start_remote_client_now`: the daemon shell still owns the actor-side wiring that starts the remote client process.
 - `restart_remote_client_if_enabled`: the daemon shell still owns the actor-side policy that decides whether a remote client restart should happen.
+
+### Other state owners
+
+`control_operation_runtime.gleam` owns queued-operation de-duplication; `control_plane_runtime.gleam` owns control server/query-service handles and control-file cleanup state; `query_projection.gleam` owns query cache, read model, ledger projection, and snapshot publication; `effect_runtime.gleam` owns the effect-runner handle and monitor; `session_metrics.gleam` owns YAML step token aggregation; and `daemon_transition_shell.gleam` owns the invariant latch. These modules must not import `scherzo/orchestrator/daemon`, and their fields must not be mirrored in daemon `State`.
 
 ## Update process
 

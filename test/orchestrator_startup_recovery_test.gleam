@@ -6,8 +6,12 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/orchestrator/core
+import scherzo/orchestrator/query_projection
+import scherzo/orchestrator/query_snapshot_cache
+import scherzo/orchestrator/read_model
 import scherzo/orchestrator/scheduled_runtime
 import scherzo/orchestrator/startup_recovery
+import scherzo/orchestrator/workflow_reloader
 import scherzo/runtime/reason
 import scherzo/runtime/state as orchestrator_state
 import scherzo/runtime_bundle
@@ -447,6 +451,51 @@ pub fn current_workflow_observation_uses_default_workflow_for_unlabelled_issue_t
   assert workflow_id == "implementation"
 }
 
+pub fn query_projection_owner_publishes_coherent_snapshot_test() {
+  let bundle =
+    write_bundle("test/tmp/query-projection-owner", "prompts/task.md")
+  let workflow = workflow_reloader.from_bundle(None, bundle)
+  let model =
+    read_model.new(
+      daemon_id: "daemon-1",
+      boot_id: "boot-1",
+      ui_server_enabled: True,
+    )
+  let projection_state = projection.new()
+  let initial =
+    query_projection.initial_snapshot(model, projection_state, workflow, 100)
+  let assert Ok(cache) = query_snapshot_cache.start(initial)
+  let owner = query_projection.new(cache, model, projection_state)
+  let owner =
+    query_projection.update_read_model(owner, fn(model) {
+      read_model.update_dispatch_paused(model, dispatch_paused: True)
+    })
+  let projected =
+    projection.Projection(..projection_state, dispatch_paused: True)
+  let owner = query_projection.set_ledger_projection(owner, projected)
+  let snapshot =
+    query_projection.initial_snapshot(
+      query_projection.read_model(owner),
+      query_projection.ledger_projection(owner),
+      workflow,
+      200,
+    )
+  let owner = query_projection.publish(owner, snapshot)
+
+  assert query_snapshot_cache.get_dispatch_paused(
+      query_projection.query_cache(owner),
+      1000,
+    )
+    == Ok(True)
+  let assert Ok(read_snapshot) =
+    query_snapshot_cache.get_read_model_snapshot(
+      query_projection.query_cache(owner),
+      1000,
+    )
+  assert read_snapshot.dispatch_paused
+  query_projection.stop_cache_best_effort(query_projection.query_cache(owner))
+}
+
 pub fn load_recovers_interrupted_run_as_parked_issue_test() {
   let bundle =
     write_bundle("test/tmp/startup-recovery-interrupted-run", "prompts/task.md")
@@ -482,6 +531,27 @@ pub fn load_recovers_interrupted_run_as_parked_issue_test() {
       _ -> False
     }
   })
+
+  let first_reply = process.new_subject()
+  let second_reply = process.new_subject()
+  let owner = startup_recovery.daemon_state(loaded)
+  let #(owner, first_id) = startup_recovery.register_waiter(owner, first_reply)
+  let #(owner, second_id) =
+    startup_recovery.register_waiter(owner, second_reply)
+  assert first_id == 1
+  assert second_id == 2
+  let #(owner, removed) = startup_recovery.remove_waiter(owner, first_id)
+  let assert Some(_) = removed
+  let #(owner, duplicate_removal) =
+    startup_recovery.remove_waiter(owner, first_id)
+  assert duplicate_removal == None
+  let #(owner, notifications) =
+    startup_recovery.complete_waiters(owner, Ok(Nil))
+  assert list.length(notifications) == 1
+  assert startup_recovery.phase(owner) == startup_recovery.Pending(loaded)
+  let #(_, no_duplicate_notifications) =
+    startup_recovery.complete_waiters(owner, Error(Nil))
+  assert no_duplicate_notifications == []
 }
 
 pub fn load_recovers_cleanup_request_for_terminal_interrupted_run_test() {
