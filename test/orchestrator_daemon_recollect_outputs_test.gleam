@@ -272,12 +272,14 @@ pub fn recollect_outputs_daemon_completes_without_new_outputs_when_latest_manife
   let #(workflow_path, root) = write_recollect_workflow(dir)
   let _seed = seed_completed_run(workflow_path, root, issue, True)
   let worker_subject = process.new_subject()
+  let finished_operation_subject = process.new_subject()
   let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
   let deps =
-    in_process_dependencies(
+    in_process_dependencies_observing_finished_operations(
       tracker_issue_only(issue),
       hub_subject,
       worker_subject,
+      finished_operation_subject,
     )
   let assert Ok(started) = daemon.start(Some(workflow_path), deps)
   let before_outputs =
@@ -291,8 +293,12 @@ pub fn recollect_outputs_daemon_completes_without_new_outputs_when_latest_manife
 
   assert command.status_to_string(result.status) == "queued"
   let assert Some(operation_id) = result.operation_id
+  let finished_operation_id =
+    test_async.expect_message_within(finished_operation_subject, 5000)
+  assert finished_operation_id == operation_id
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 100)
+    projection.control_operation(load_projection_or_panic(root), operation_id)
+  assert completed_operation.status == "completed"
   let assert Some(message) = completed_operation.message
   assert string.contains(message, "workflow outputs already valid for run-1")
   assert count_kind(ledger_kinds(root), "workflow_run_outputs_recorded")
@@ -783,6 +789,20 @@ fn in_process_dependencies(
     make_control_token: fn() { Ok("test-token") },
     start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
+  )
+}
+
+fn in_process_dependencies_observing_finished_operations(
+  tracker_client: tracker.Client,
+  hub_subject: process.Subject(hub.Message),
+  worker_subject: process.Subject(String),
+  finished_operation_subject: process.Subject(String),
+) -> daemon.RuntimeDependencies {
+  daemon.RuntimeDependencies(
+    ..in_process_dependencies(tracker_client, hub_subject, worker_subject),
+    observe_queued_control_operation_finished: fn(operation_id) {
+      process.send(finished_operation_subject, operation_id)
+    },
   )
 }
 

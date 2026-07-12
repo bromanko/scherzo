@@ -225,6 +225,7 @@ pub type RuntimeDependencies {
     enqueue_startup_recovery_message: fn(process.Subject(Message), Message) ->
       Nil,
     observe_startup_recovery_stage: fn(String) -> Nil,
+    observe_queued_control_operation_finished: fn(String) -> Nil,
     emit_work_item_invalidation: fn(
       Option(remote.Handle),
       work_item_invalidation.Event,
@@ -446,6 +447,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     managed_launch_auth_rejected: fn(_) { Nil },
     enqueue_startup_recovery_message: process.send,
     observe_startup_recovery_stage: fn(_) { Nil },
+    observe_queued_control_operation_finished: fn(_) { Nil },
     emit_work_item_invalidation: fn(remote_client, event) {
       case remote_client {
         Some(handle) -> remote.notify_work_item_invalidation(handle, event)
@@ -3758,7 +3760,12 @@ fn queue_retry_step_operation_for_operator(
   step_id: Option(String),
   released_park: Option(orchestrator_state.ParkedEntry),
 ) -> #(State, command.CommandResult) {
-  let operation_id = make_retry_step_operation_id(state, run_id, step_id)
+  let operation_id =
+    control_operation_runtime.retry_step_operation_id(
+      run_id,
+      step_id,
+      state.dependencies.now_ms(),
+    )
   let queued_body =
     record.ControlOperationQueued(
       operation_id: operation_id,
@@ -4390,7 +4397,7 @@ fn finish_queued_control_operation(
         operation_id,
       ),
     )
-  case execution_result {
+  let finished_state = case execution_result {
     QueuedControlOperationNoop -> state
     QueuedControlOperationSucceeded(bodies, resumption) ->
       case retry_step_resumption.validate(state.workflow.bundle, resumption) {
@@ -4447,19 +4454,10 @@ fn finish_queued_control_operation(
     QueuedControlOperationFailed(reason, message) ->
       append_control_operation_failure(state, operation_id, reason, message)
   }
-}
-
-fn make_retry_step_operation_id(
-  state: State,
-  run_id: String,
-  step_id: Option(String),
-) -> String {
-  "retry-step:"
-  <> run_id
-  <> ":"
-  <> option.unwrap(step_id, "auto")
-  <> ":"
-  <> int.to_string(state.dependencies.now_ms())
+  finished_state.dependencies.observe_queued_control_operation_finished(
+    operation_id,
+  )
+  finished_state
 }
 
 fn retry_step_operation_kind(
