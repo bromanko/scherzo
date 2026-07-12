@@ -17,6 +17,12 @@ When that happens:
 
 Treat an unapproved `.envrc` as an environment setup issue, not as a code or test failure. Prefer the direnv-backed commands for validation. Use plain `gleam ...` only as a fallback when direnv is unavailable in the workspace and Gleam is already on `PATH`.
 
+## Pre-release compatibility
+
+Scherzo has not shipped and currently has a single primary user. When designing or implementing new features, do not preserve backward compatibility unless the task explicitly requires it. Prefer the simplest coherent design, including breaking internal APIs, schemas, persisted development data, and unfinished behavior when useful.
+
+Call out destructive changes that affect developer workflows or require regenerating fixtures, resetting local data, or coordinating dependent packages.
+
 ## Production lint policy
 
 `glinter` is the source of truth for the production safety policy in `src/`, and `scherzo_lint` adds Scherzo-specific production style rules. The required gates are:
