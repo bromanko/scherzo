@@ -233,6 +233,11 @@ fn assert_implementation_completion_structured_output(
     == workflow_dag.StructuredObjectSchema([
       "ready_for_verification",
       "changed_files",
+      "acceptance_criteria",
+      "guardrail_checks",
+      "absence_checks",
+      "required_references",
+      "implementation_inventory",
       "remaining_required_work",
       "blockers",
     ])

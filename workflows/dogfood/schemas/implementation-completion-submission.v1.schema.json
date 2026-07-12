@@ -7,6 +7,11 @@
   "required": [
     "ready_for_verification",
     "changed_files",
+    "acceptance_criteria",
+    "guardrail_checks",
+    "absence_checks",
+    "required_references",
+    "implementation_inventory",
     "remaining_required_work",
     "blockers"
   ],
@@ -14,16 +19,82 @@
     "ready_for_verification": { "type": "boolean" },
     "changed_files": {
       "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
-      },
+      "items": { "$ref": "#/$defs/repo_path" },
       "uniqueItems": true
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "satisfied", "evidence"],
+        "properties": {
+          "criterion": { "$ref": "#/$defs/non_empty_string" },
+          "satisfied": { "type": "boolean" },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "reference", "observation"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["code", "test", "command", "measurement", "inventory"]
+                },
+                "reference": { "$ref": "#/$defs/non_empty_string" },
+                "observation": { "$ref": "#/$defs/non_empty_string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "guardrail_checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["metric", "path", "baseline", "measured", "requirement"],
+        "properties": {
+          "metric": { "type": "string", "enum": ["line_count", "import_count"] },
+          "path": { "$ref": "#/$defs/repo_path" },
+          "baseline": { "type": "integer", "minimum": 1 },
+          "measured": { "type": "integer", "minimum": 0 },
+          "requirement": { "const": "decrease_from_baseline" }
+        }
+      }
+    },
+    "absence_checks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/repository_check" }
+    },
+    "required_references": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/repository_check" }
+    },
+    "implementation_inventory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surface", "path_pattern", "disposition", "evidence"],
+        "properties": {
+          "surface": { "$ref": "#/$defs/non_empty_string" },
+          "path_pattern": { "$ref": "#/$defs/repo_path" },
+          "disposition": {
+            "type": "string",
+            "enum": ["unchanged", "changed", "not_applicable"]
+          },
+          "evidence": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
     },
     "remaining_required_work": {
       "type": "array",
-      "items": { "type": "string", "minLength": 1 },
+      "items": { "$ref": "#/$defs/non_empty_string" },
       "uniqueItems": true
     },
     "blockers": {
@@ -44,7 +115,30 @@
               "other"
             ]
           },
-          "description": { "type": "string", "minLength": 1 }
+          "description": { "$ref": "#/$defs/non_empty_string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "non_empty_string": { "type": "string", "minLength": 1 },
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+    },
+    "repository_check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criterion", "pattern", "paths"],
+      "properties": {
+        "criterion": { "$ref": "#/$defs/non_empty_string" },
+        "pattern": { "$ref": "#/$defs/non_empty_string" },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/repo_path" },
+          "uniqueItems": true
         }
       }
     }
