@@ -628,6 +628,12 @@ fn suggested_next_action(code: String) -> String {
           "Read `state/implementation/scherzo-plan-completion-verdict.json` in the retained workspace, inspect `workflow_step_recovery_history`, salvage the retained work if needed, then use the normal full workflow retry command shown in the recovery artifacts, such as `scherzoctl retry <issue>`."
         "implementation_incomplete_noop" ->
           "Read `state/implementation/scherzo-implementation-completion-diagnostic.json` and the retained `implement_plan` final response. Resume broad implementation only with an operator-directed `implement_plan` or whole-workflow retry; do not retry `analyze_changes`."
+        "implementation_blocked" ->
+          "Read `state/implementation/scherzo-implementation-completion-diagnostic.json`, resolve the concrete blocker reported by `implement_plan`, then retry the implementation workflow; do not retry `analyze_changes` directly."
+        "implementation_noop" ->
+          "Read `state/implementation/scherzo-implementation-completion-diagnostic.json` and the retained `implement_plan` final response, then retry the implementation workflow from `implement_plan`; do not retry `analyze_changes`."
+        "implementation_completion_evidence_invalid" ->
+          "Read `state/implementation/scherzo-implementation-completion-diagnostic.json`, reconcile the completion submission with the retained workspace evidence, then retry the implementation workflow; do not retry `analyze_changes` directly."
         _ ->
           "Inspect the retained workspace and command diagnostics, fix the failing command, then retry the workflow."
       }

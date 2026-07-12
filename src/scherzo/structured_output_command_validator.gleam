@@ -408,7 +408,9 @@ fn finish_timeout(
 
 fn command_rejection_retryable(failure_code: String) -> Bool {
   case failure_code {
-    "implementation_incomplete_noop" -> False
+    "implementation_incomplete_noop"
+    | "implementation_blocked"
+    | "implementation_noop" -> False
     _ -> True
   }
 }

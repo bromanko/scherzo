@@ -452,30 +452,27 @@ pub fn workflow_command_failure_handoff_renders_step_batch_timeout_unrecovered_a
   assert !string.contains(failure_comment, "pi_protocol_error")
 }
 
-pub fn workflow_command_failure_handoff_renders_incomplete_implementation_action_test() {
+pub fn workflow_command_failure_handoff_renders_noop_implementation_action_test() {
   let failure =
     worker_failure(
       error.WorkflowCommandFailed(
-        code: "implementation_incomplete_noop",
+        code: "implementation_noop",
         step_id: "implement_plan",
-        detail: "SCHERZO_FAILURE_CODE=implementation_incomplete_noop\ncompletion rejected before analyze_changes",
+        detail: "SCHERZO_FAILURE_CODE=implementation_noop\nno workflow-baseline changes",
       ),
       Some(".scherzo/workspaces/execplan-implementation/ABC-1/run-1"),
     )
 
   let failure_comment =
-    capture_failure_comment(failure, "run-implementation-incomplete")
+    capture_failure_comment(failure, "run-implementation-noop")
 
-  assert string.contains(
-    failure_comment,
-    "| Error | `implementation_incomplete_noop` |",
-  )
+  assert string.contains(failure_comment, "| Error | `implementation_noop` |")
   assert string.contains(failure_comment, "| Step | `implement_plan` |")
   assert string.contains(
     failure_comment,
     "scherzo-implementation-completion-diagnostic.json",
   )
-  assert string.contains(failure_comment, "operator-directed `implement_plan`")
+  assert string.contains(failure_comment, "retry the implementation workflow")
   assert string.contains(failure_comment, "do not retry `analyze_changes`")
 }
 

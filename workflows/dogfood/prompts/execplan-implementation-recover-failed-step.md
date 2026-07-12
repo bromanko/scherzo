@@ -20,7 +20,7 @@ Safe recovery examples:
 - rerun a cheap targeted command to confirm the specific fix.
 
 Return `gave_up` instead of `recheck` when:
-- the failure code/classification is `implementation_incomplete_noop`, the failed step is `implement_plan`, or an `analyze_changes` diagnostic says there are no changed files; broad unfinished implementation and no-op recovery require operator action and must not be attempted by this bounded prompt;
+- the failure code/classification is `implementation_incomplete_noop` (retained-run compatibility), `implementation_blocked`, `implementation_noop`, or `implementation_completion_evidence_invalid`; the failed step is `implement_plan`; or an `analyze_changes` diagnostic says there are no changed files. Partial unblocked implementation now proceeds to the dedicated plan-completion verifier and its recovery, while these hard failures require operator action and must not be attempted by this generic bounded prompt;
 - the failed step is publish, handoff, code-change-bundle materialization after publish, or any step that may already have produced remote side effects;
 - a plan-completion recovery finalizer reports `plan_completion_recovery_exhausted` or instructs the operator to retry the full workflow with `scherzoctl retry`; do not create an extra edit pass beyond the workflow's explicit plan-completion repair budget;
 - Linear credentials, retained run artifacts, required ExecPlan handoff inputs, required review artifacts, or issue context are missing;

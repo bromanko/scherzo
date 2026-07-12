@@ -93,7 +93,8 @@ analyze       Diff from the recorded starting parent to @, detect review-
 gate-implementation-completion [--submission PATH]
               Validate the broad ExecPlan implementation agent's completion
               submission against the workflow-baseline changed-file manifest.
-              Reject incomplete, blocked, or no-op work before conflict analysis.
+              Forward partial unblocked work to semantic verification, while
+              rejecting blocked, no-op, or invalid-evidence submissions.
 plan-completion-context
               Write and print the current ExecPlan implementation patch
               context for diagnostics. Checkpoint/gate commands stamp these
@@ -2502,13 +2503,25 @@ def write_implementation_completion_diagnostic(
 ) -> Path:
     step_id = os.environ.get("SCHERZO_STEP_ID", "implement_plan").strip()
     attempt_index = os.environ.get("SCHERZO_ATTEMPT_INDEX", "0").strip()
+    classification = (
+        str(validation_error.get("failure_code") or "").strip()
+        if validation_error is not None
+        else None
+    )
+    operator_action = {
+        "accepted": "No operator action required; continue to conflict and semantic completion verification.",
+        "partial": (
+            "No operator action required. Continue to the independent semantic completion verifier, whose bounded recovery treats the current-tree gaps as an actionable implementation backlog."
+        ),
+    }.get(
+        status,
+        "Inspect the retained implementation response, submission, plan references, and workspace evidence before retrying the implementation workflow; do not retry analyze_changes directly.",
+    )
     diagnostic = {
         "schema_version": 1,
         "artifact_type": "scherzo.implementation_completion_diagnostic.v1",
         "status": status,
-        "classification": (
-            "implementation_incomplete_noop" if status == "rejected" else None
-        ),
+        "classification": classification,
         "submission": submission,
         "validation_error": validation_error,
         "workspace_evidence": workspace,
@@ -2520,12 +2533,7 @@ def write_implementation_completion_diagnostic(
             "step_artifact_ref": f"{step_id}/attempt-{attempt_index}.json",
             "field": "final_response",
         },
-        "operator_action": (
-            "Inspect the retained implementation response, submission, plan references, and workspace evidence. "
-            "Resume broad work only with an operator-directed implement_plan or whole-workflow retry; do not retry analyze_changes."
-            if status == "rejected"
-            else "No operator action required; continue to conflict and semantic completion verification."
-        ),
+        "operator_action": operator_action,
     }
     path = implementation_completion_diagnostic_path()
     try:
@@ -2614,13 +2622,90 @@ def gate_implementation_completion_command(args: list[str]) -> None:
         reason_codes.append("changed_file_evidence_mismatch")
     reason_codes = list(dict.fromkeys(reason_codes))
 
-    if reason_codes:
+    explicit_partial = (
+        not submission["ready_for_verification"]
+        or bool(submission["remaining_required_work"])
+    )
+    rejection_code: str | None = None
+    rejection_message: str | None = None
+    if submission["blockers"]:
+        rejection_code = "implementation_blocked"
+        rejection_message = (
+            "The implementation agent reported a concrete blocker that requires operator action."
+        )
+    elif not actual_files:
+        rejection_code = "implementation_noop"
+        rejection_message = (
+            "The implementation agent produced no workflow-baseline code changes."
+        )
+    elif not submission["changed_files"] or submission["changed_files"] != actual_files:
+        rejection_code = "implementation_completion_evidence_invalid"
+        rejection_message = (
+            "The submitted changed-file evidence does not match the workflow workspace."
+        )
+
+    if rejection_code is not None:
         error = {
-            "failure_code": "implementation_incomplete_noop",
+            "failure_code": rejection_code,
+            "reason_codes": reason_codes,
+            "criterion_failures": criterion_failures,
+            "message": rejection_message,
+        }
+        diagnostic_path = write_implementation_completion_diagnostic(
+            status="rejected",
+            submission=submission,
+            validation_error=error,
+            workspace=workspace,
+            metadata=metadata,
+        )
+        print("IMPLEMENTATION_COMPLETION_GATE=rejected")
+        print("IMPLEMENTATION_COMPLETION_CLASSIFICATION=" + rejection_code)
+        print("IMPLEMENTATION_COMPLETION_REASON_CODES=" + ",".join(reason_codes))
+        print(
+            "IMPLEMENTATION_COMPLETION_DIAGNOSTIC_PATH="
+            + display_path(diagnostic_path)
+        )
+        fail(
+            "implementation completion rejected before gate_no_conflict/analyze_changes; "
+            f"inspect {display_path(diagnostic_path)} and take operator action",
+            failure_code=rejection_code,
+        )
+
+    if explicit_partial:
+        error = {
+            "failure_code": "implementation_continuation_required",
             "reason_codes": reason_codes,
             "criterion_failures": criterion_failures,
             "message": (
-                "The broad implementation pass is incomplete, blocked, or contradicts required current-tree acceptance evidence."
+                "The broad implementation pass is partial but unblocked; independent semantic verification and bounded recovery must continue the canonical-plan backlog."
+            ),
+        }
+        diagnostic_path = write_implementation_completion_diagnostic(
+            status="partial",
+            submission=submission,
+            validation_error=error,
+            workspace=workspace,
+            metadata=metadata,
+        )
+        print("IMPLEMENTATION_COMPLETION_GATE=partial")
+        print(
+            "IMPLEMENTATION_COMPLETION_CLASSIFICATION=implementation_continuation_required"
+        )
+        print("IMPLEMENTATION_COMPLETION_REASON_CODES=" + ",".join(reason_codes))
+        print(
+            "IMPLEMENTATION_COMPLETION_DIAGNOSTIC_PATH="
+            + display_path(diagnostic_path)
+        )
+        print_list("IMPLEMENTATION_COMPLETION_CHANGED_FILES", actual_files)
+        return
+
+    if reason_codes:
+        error = {
+            "failure_code": "implementation_completion_evidence_invalid",
+            "reason_codes": reason_codes,
+            "criterion_failures": criterion_failures,
+            "message": (
+                "The agent claimed completion, but required current-tree acceptance evidence is missing or contradictory."
             ),
         }
         diagnostic_path = write_implementation_completion_diagnostic(
@@ -2631,16 +2716,18 @@ def gate_implementation_completion_command(args: list[str]) -> None:
             metadata=metadata,
         )
         print("IMPLEMENTATION_COMPLETION_GATE=rejected")
-        print("IMPLEMENTATION_COMPLETION_CLASSIFICATION=implementation_incomplete_noop")
+        print(
+            "IMPLEMENTATION_COMPLETION_CLASSIFICATION=implementation_completion_evidence_invalid"
+        )
         print("IMPLEMENTATION_COMPLETION_REASON_CODES=" + ",".join(reason_codes))
         print(
             "IMPLEMENTATION_COMPLETION_DIAGNOSTIC_PATH="
             + display_path(diagnostic_path)
         )
         fail(
-            "implementation completion rejected before gate_no_conflict/analyze_changes; "
+            "implementation completion evidence rejected before gate_no_conflict/analyze_changes; "
             f"inspect {display_path(diagnostic_path)} and take operator action",
-            failure_code="implementation_incomplete_noop",
+            failure_code="implementation_completion_evidence_invalid",
         )
 
     diagnostic_path = write_implementation_completion_diagnostic(

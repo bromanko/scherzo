@@ -1,5 +1,5 @@
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/string
 import scherzo/command_step
 import scherzo/path as scherzo_path
@@ -1994,6 +1994,12 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     verify_prompt,
     "gate-plan-completion --from-submission",
   )
+  assert string.contains(
+    verify_prompt,
+    "scherzo-implementation-completion-diagnostic.json",
+  )
+  assert string.contains(verify_prompt, "status: partial")
+  assert string.contains(verify_prompt, "actionable continuation backlog")
   assert !string.contains(verify_prompt, "plan-completion-context")
 
   let assert Ok(recovery_prompt) =
@@ -2036,6 +2042,14 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
   assert string.contains(
     implementation_prompt,
     "recovery is authorized to treat those findings as an actionable backlog",
+  )
+  assert string.contains(
+    implementation_prompt,
+    "Ordinary remaining implementation work is not a permitted terminal state",
+  )
+  assert string.contains(
+    implementation_prompt,
+    "records it as partial and forwards the current tree",
   )
   assert !string.contains(
     implementation_prompt,
@@ -2158,13 +2172,13 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
   assert !string.contains(workflow, "assert_base_drift_repair")
 }
 
-pub fn implementation_completion_gate_rejects_liv_1469_shaped_submission_test() {
-  let dir = "test/tmp/implementation-completion-gate-liv-1469"
+pub fn implementation_completion_gate_forwards_partial_unblocked_submission_test() {
+  let dir = "test/tmp/implementation-completion-gate-partial-unblocked"
   let _fingerprint = setup_plan_completion_gate_fixture(dir)
   write_implementation_completion_submission(
     dir,
     "false",
-    "[]",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
     "[\"Implement the remaining required milestones and tests.\"]",
     "[]",
   )
@@ -2176,29 +2190,29 @@ pub fn implementation_completion_gate_rejects_liv_1469_shaped_submission_test() 
       "SCHERZO_FAKE_DIFF_SECRET=TOP_SECRET_IMPLEMENTATION_VALUE ",
     )
 
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.exit_code == Some(1)
-  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert artifact.failure_code == None
   assert string.contains(
     artifact.stdout,
-    "IMPLEMENTATION_COMPLETION_GATE=rejected",
+    "IMPLEMENTATION_COMPLETION_GATE=partial",
+  )
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_COMPLETION_CLASSIFICATION=implementation_continuation_required",
   )
   assert string.contains(artifact.stdout, "not_ready_for_verification")
   assert string.contains(artifact.stdout, "remaining_required_work")
-  assert string.contains(artifact.stdout, "changed_file_evidence_missing")
-  assert string.contains(
-    artifact.stderr,
-    "rejected before gate_no_conflict/analyze_changes",
-  )
+  assert !string.contains(artifact.stdout, "changed_file_evidence_missing")
   let assert Ok(diagnostic) =
     simplifile.read(
       dir
       <> "/run-root/state/implementation/scherzo-implementation-completion-diagnostic.json",
     )
-  assert string.contains(diagnostic, "\"status\": \"rejected\"")
+  assert string.contains(diagnostic, "\"status\": \"partial\"")
   assert string.contains(
     diagnostic,
-    "\"classification\": \"implementation_incomplete_noop\"",
+    "\"classification\": \"implementation_continuation_required\"",
   )
   assert string.contains(
     diagnostic,
@@ -2215,7 +2229,7 @@ pub fn implementation_completion_gate_rejects_liv_1469_shaped_submission_test() 
   assert string.contains(diagnostic, "\"plan_references\":")
   assert string.contains(diagnostic, "docs/plans/example.md")
   assert string.contains(diagnostic, "\"field\": \"final_response\"")
-  assert string.contains(diagnostic, "do not retry analyze_changes")
+  assert string.contains(diagnostic, "independent semantic completion verifier")
   assert !string.contains(diagnostic, "TOP_SECRET_IMPLEMENTATION_VALUE")
   let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
   assert jj_log == "diff --from local-start --to @ --name-only --color=never\n"
@@ -2263,7 +2277,7 @@ pub fn implementation_completion_gate_reports_semantic_validator_crash_test() {
   assert string.contains(diagnostic, "Traceback (most recent call last)")
 }
 
-pub fn implementation_completion_gate_rejects_remaining_work_even_when_ready_test() {
+pub fn implementation_completion_gate_forwards_remaining_work_even_when_ready_test() {
   let dir = "test/tmp/implementation-completion-gate-remaining-work"
   let _fingerprint = setup_plan_completion_gate_fixture(dir)
   write_implementation_completion_submission(
@@ -2276,10 +2290,36 @@ pub fn implementation_completion_gate_rejects_remaining_work_even_when_ready_tes
 
   let artifact = run_implementation_completion_gate(dir, "")
 
-  assert artifact.status == step_artifact.StepFailed
-  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.failure_code == None
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_COMPLETION_GATE=partial",
+  )
   assert string.contains(artifact.stdout, "remaining_required_work")
   assert !string.contains(artifact.stdout, "not_ready_for_verification")
+}
+
+pub fn implementation_completion_gate_rejects_reported_blocker_test() {
+  let dir = "test/tmp/implementation-completion-gate-blocked"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  write_implementation_completion_submission(
+    dir,
+    "false",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[\"Obtain the required product decision.\"]",
+    "[{\"kind\":\"required_decision\",\"description\":\"Retention semantics are ambiguous.\"}]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("implementation_blocked")
+  assert string.contains(artifact.stdout, "blockers_reported")
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_COMPLETION_CLASSIFICATION=implementation_blocked",
+  )
 }
 
 pub fn implementation_completion_gate_rejects_changed_file_mismatch_test() {
@@ -2296,7 +2336,8 @@ pub fn implementation_completion_gate_rejects_changed_file_mismatch_test() {
   let artifact = run_implementation_completion_gate(dir, "")
 
   assert artifact.status == step_artifact.StepFailed
-  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert artifact.failure_code
+    == Some("implementation_completion_evidence_invalid")
   assert string.contains(artifact.stdout, "changed_file_evidence_mismatch")
   assert !string.contains(artifact.stdout, "changed_file_evidence_missing")
   assert !string.contains(
@@ -2348,7 +2389,7 @@ pub fn implementation_completion_gate_rejects_ready_noop_test() {
     run_implementation_completion_gate(dir, "SCHERZO_FAKE_NO_CHANGES=1 ")
 
   assert artifact.status == step_artifact.StepFailed
-  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert artifact.failure_code == Some("implementation_noop")
   assert string.contains(artifact.stdout, "changed_file_evidence_missing")
   assert string.contains(artifact.stdout, "workspace_no_implementation_changes")
   let assert Ok(diagnostic) =
@@ -2414,7 +2455,8 @@ pub fn implementation_completion_gate_rejects_general_gates_as_semantic_evidence
   let artifact = run_implementation_completion_gate(dir, "")
 
   assert artifact.status == step_artifact.StepFailed
-  assert artifact.failure_code == Some("implementation_incomplete_noop")
+  assert artifact.failure_code
+    == Some("implementation_completion_evidence_invalid")
   assert string.contains(artifact.stdout, "criterion_semantic_evidence_missing")
   let assert Ok(diagnostic) =
     simplifile.read(

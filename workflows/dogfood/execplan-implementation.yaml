@@ -112,7 +112,9 @@ steps:
           - remaining_required_work
           - blockers
     run_in: main
-    # Incomplete/no-op implementation requires operator action, not bounded failed-step recovery.
+    # Partial unblocked submissions pass to the independent verifier and its
+    # bounded broad recovery. Blocked, no-op, and invalid-evidence submissions
+    # stop here for operator action rather than generic failed-step recovery.
     recovery:
       enabled: false
 

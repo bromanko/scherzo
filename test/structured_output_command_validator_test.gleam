@@ -80,7 +80,7 @@ pub fn command_validator_exit_1_is_retryable_test() {
   assert string.contains(error.diagnostic_summary, "[REDACTED]")
 }
 
-pub fn command_validator_preserves_operator_action_classification_test() {
+pub fn command_validator_preserves_nonretryable_noop_classification_test() {
   let validator =
     command_validator(
       "classified_reject",
@@ -90,11 +90,11 @@ pub fn command_validator_preserves_operator_action_classification_test() {
     )
   let assert Error(error) = run(validator, [])
 
-  assert error.code == "implementation_incomplete_noop"
+  assert error.code == "implementation_noop"
   assert !error.retryable
   assert string.contains(
     error.diagnostic_summary,
-    "SCHERZO_FAILURE_CODE=implementation_incomplete_noop",
+    "SCHERZO_FAILURE_CODE=implementation_noop",
   )
 }
 
