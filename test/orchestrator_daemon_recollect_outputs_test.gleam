@@ -8,6 +8,7 @@ import scherzo/agent/types as agent_types
 import scherzo/artifact_repository/command_runner
 import scherzo/control/command
 import scherzo/error
+import scherzo/orchestrator/control_plane_runtime
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/startup_recovery
@@ -780,7 +781,7 @@ fn in_process_dependencies(
     }),
     start_event_hub: fn() { Ok(hub_subject) },
     make_control_token: fn() { Ok("test-token") },
-    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
 }

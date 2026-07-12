@@ -5,6 +5,7 @@ import scherzo/instance_lock
 import scherzo/lifecycle
 import scherzo/log
 import scherzo/managed_launch/status as managed_launch_status
+import scherzo/orchestrator/control_plane_runtime
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/service
 import scherzo/path
@@ -92,7 +93,7 @@ fn no_control_dependencies(
 ) -> daemon.RuntimeDependencies {
   daemon.RuntimeDependencies(
     ..daemon_dependencies(log_subject),
-    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
 }

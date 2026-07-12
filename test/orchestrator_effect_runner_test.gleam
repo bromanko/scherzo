@@ -5,6 +5,7 @@ import scherzo/agent/types as agent_types
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/orchestrator/effect_runner
+import scherzo/orchestrator/effect_runtime
 import scherzo/orchestrator/outbox_effects
 import scherzo/result_artifact
 import scherzo/session/tokens as session_tokens
@@ -19,6 +20,29 @@ import simplifile
 import support/expected_crash
 import support/test_helpers
 import test_async
+
+pub fn effect_owner_distinguishes_current_and_stale_monitors_test() {
+  let completions = process.new_subject()
+  let handle = start_runner(completions)
+  let current_monitor = effect_runner.monitor(handle)
+  let waiting = process.new_subject()
+  let stale_pid =
+    process.spawn_unlinked(fn() {
+      let _ = process.receive(waiting, within: 10_000)
+      Nil
+    })
+  let stale_monitor = process.monitor(stale_pid)
+  let owner = effect_runtime.new(handle, current_monitor)
+
+  assert effect_runtime.handle(owner) == handle
+  assert effect_runtime.monitor_matches(owner, current_monitor)
+  assert !effect_runtime.monitor_matches(owner, stale_monitor)
+
+  process.demonitor_process(stale_monitor)
+  process.kill(stale_pid)
+  assert effect_runner.shutdown(handle, 1000) == Ok(Nil)
+  process.demonitor_process(current_monitor)
+}
 
 fn hooks() -> config_types.HooksConfig {
   config_types.HooksConfig(

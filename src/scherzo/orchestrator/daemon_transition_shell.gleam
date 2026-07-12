@@ -35,6 +35,25 @@ pub type InvariantMode {
   WarnOnInvariantViolation
 }
 
+pub type InvariantState {
+  InvariantState(violation_pending: Bool)
+}
+
+pub fn clear_invariant_state() -> InvariantState {
+  InvariantState(violation_pending: False)
+}
+
+pub fn invariant_violation_pending(state: InvariantState) -> Bool {
+  let InvariantState(violation_pending: violation_pending) = state
+  violation_pending
+}
+
+pub fn mark_invariant_violation_pending(
+  _state: InvariantState,
+) -> InvariantState {
+  InvariantState(violation_pending: True)
+}
+
 pub type InvariantChecker =
   fn(transition_types.State) ->
     Result(Nil, List(transition_invariants.InvariantError))

@@ -1,10 +1,120 @@
+import gleam/dict.{type Dict}
 import gleam/erlang/process
+import gleam/int
 import gleam/option.{type Option, None}
 import scherzo/agent/worker_command
 import scherzo/control/command
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/transition_types
 import scherzo/tracker/issue as tracker_issue
+import scherzo/work_item/action_receipts
+
+pub type State {
+  State(
+    dispatch_paused: Bool,
+    pending_replies: Dict(String, process.Subject(command.CommandResult)),
+    completed_results: Dict(String, command.CommandResult),
+    work_item_action_receipts: Dict(String, action_receipts.Receipt),
+    next_correlation_id: Int,
+  )
+}
+
+pub fn new(dispatch_paused: Bool) -> State {
+  State(
+    dispatch_paused: dispatch_paused,
+    pending_replies: dict.new(),
+    completed_results: dict.new(),
+    work_item_action_receipts: action_receipts.empty(),
+    next_correlation_id: 1,
+  )
+}
+
+pub fn dispatch_paused(state: State) -> Bool {
+  state.dispatch_paused
+}
+
+pub fn set_dispatch_paused(state: State, paused paused: Bool) -> State {
+  State(..state, dispatch_paused: paused)
+}
+
+pub fn work_item_action_receipts(
+  state: State,
+) -> Dict(String, action_receipts.Receipt) {
+  state.work_item_action_receipts
+}
+
+pub fn set_work_item_action_receipts(
+  state: State,
+  receipts: Dict(String, action_receipts.Receipt),
+) -> State {
+  State(..state, work_item_action_receipts: receipts)
+}
+
+pub fn next_correlation_id(state: State) -> #(State, String) {
+  #(
+    State(..state, next_correlation_id: state.next_correlation_id + 1),
+    correlation_id_value(state.next_correlation_id),
+  )
+}
+
+pub fn remember_pending_reply(
+  state: State,
+  correlation_id: String,
+  reply: process.Subject(command.CommandResult),
+) -> State {
+  State(
+    ..state,
+    pending_replies: dict.insert(state.pending_replies, correlation_id, reply),
+    completed_results: dict.delete(state.completed_results, correlation_id),
+  )
+}
+
+pub fn completed_result(
+  state: State,
+  correlation_id: String,
+) -> Result(command.CommandResult, Nil) {
+  dict.get(state.completed_results, correlation_id)
+}
+
+pub fn pending_reply(
+  state: State,
+  correlation_id: String,
+) -> Result(process.Subject(command.CommandResult), Nil) {
+  dict.get(state.pending_replies, correlation_id)
+}
+
+pub fn record_completed_result(
+  state: State,
+  correlation_id: String,
+  result: command.CommandResult,
+) -> State {
+  State(
+    ..state,
+    completed_results: dict.insert(
+      state.completed_results,
+      correlation_id,
+      result,
+    ),
+  )
+}
+
+pub fn clear_pending_reply(state: State, correlation_id: String) -> State {
+  State(
+    ..state,
+    pending_replies: dict.delete(state.pending_replies, correlation_id),
+  )
+}
+
+pub fn clear_completed_result(state: State, correlation_id: String) -> State {
+  State(
+    ..state,
+    completed_results: dict.delete(state.completed_results, correlation_id),
+  )
+}
+
+fn correlation_id_value(next_correlation_id: Int) -> String {
+  "operator-command-" <> int.to_string(next_correlation_id)
+}
 
 pub opaque type Lookup {
   Lookup(

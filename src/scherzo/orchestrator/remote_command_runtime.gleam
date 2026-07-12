@@ -1,5 +1,5 @@
 import gleam/erlang/process
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/control/query/types as query_types
@@ -14,6 +14,46 @@ pub type Handle =
 
 pub type StartError =
   daemon_remote_client.StartError
+
+pub type State {
+  State(
+    handle: Option(Handle),
+    monitor: Option(process.Monitor),
+    managed_launch: Option(managed_launch_grant.Grant),
+  )
+}
+
+pub fn new(managed_launch: Option(managed_launch_grant.Grant)) -> State {
+  State(handle: None, monitor: None, managed_launch: managed_launch)
+}
+
+pub fn handle(state: State) -> Option(Handle) {
+  state.handle
+}
+
+pub fn monitor(state: State) -> Option(process.Monitor) {
+  state.monitor
+}
+
+pub fn monitor_matches(state: State, monitor: process.Monitor) -> Bool {
+  state.monitor == Some(monitor)
+}
+
+pub fn managed_launch(state: State) -> Option(managed_launch_grant.Grant) {
+  state.managed_launch
+}
+
+pub fn connected(
+  state: State,
+  handle: Handle,
+  monitor: process.Monitor,
+) -> State {
+  State(..state, handle: Some(handle), monitor: Some(monitor))
+}
+
+pub fn cleared(state: State) -> State {
+  State(..state, handle: None, monitor: None)
+}
 
 pub fn start_error_fields(error: StartError) -> #(String, String) {
   let daemon_remote_client.StartError(code: code, message: message) = error
@@ -204,7 +244,7 @@ pub fn stop(handle: Handle, timeout_ms: Int) -> Result(Nil, Nil) {
   daemon_remote_client.stop(handle, timeout_ms)
 }
 
-pub fn monitor(handle: Handle) -> process.Monitor {
+pub fn monitor_remote_client(handle: Handle) -> process.Monitor {
   daemon_remote_client.monitor(handle)
 }
 

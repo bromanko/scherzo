@@ -2,11 +2,48 @@ import gleam/erlang/process
 import gleam/option.{None, Some}
 import scherzo/agent/worker_command
 import scherzo/control/command
+import scherzo/orchestrator/control_operation_runtime
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/operator_runtime
 import scherzo/orchestrator/transition_types
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+
+pub fn owner_state_routes_replies_and_deduplicates_operations_test() {
+  let reply = process.new_subject()
+  let owner = operator_runtime.new(False)
+  let #(owner, correlation_id) = operator_runtime.next_correlation_id(owner)
+  assert correlation_id == "operator-command-1"
+  let owner =
+    operator_runtime.remember_pending_reply(owner, correlation_id, reply)
+  let assert Ok(_) = operator_runtime.pending_reply(owner, correlation_id)
+  let result = command.applied(command.PauseDispatch, Some("paused"))
+  let owner =
+    operator_runtime.record_completed_result(owner, correlation_id, result)
+  assert operator_runtime.completed_result(owner, correlation_id) == Ok(result)
+  let owner =
+    owner
+    |> operator_runtime.clear_pending_reply(correlation_id)
+    |> operator_runtime.clear_completed_result(correlation_id)
+  assert operator_runtime.pending_reply(owner, correlation_id) == Error(Nil)
+  assert operator_runtime.completed_result(owner, correlation_id) == Error(Nil)
+  assert operator_runtime.dispatch_paused(owner) == False
+  assert operator_runtime.dispatch_paused(operator_runtime.set_dispatch_paused(
+    owner,
+    True,
+  ))
+
+  let operations = control_operation_runtime.new()
+  assert !control_operation_runtime.is_active(operations, "operation-1")
+  let operations = control_operation_runtime.begin(operations, "operation-1")
+  assert control_operation_runtime.is_active(operations, "operation-1")
+  let operations = control_operation_runtime.begin(operations, "operation-1")
+  assert control_operation_runtime.is_active(operations, "operation-1")
+  let operations = control_operation_runtime.finish(operations, "operation-1")
+  assert !control_operation_runtime.is_active(operations, "operation-1")
+  let operations = control_operation_runtime.finish(operations, "operation-1")
+  assert !control_operation_runtime.is_active(operations, "operation-1")
+}
 
 pub fn operator_issue_resolution_resolves_retry_issue_refs_test() {
   let issue = issue("issue-1", "LIV-724", "Todo")

@@ -4,8 +4,9 @@ import scherzo/agent/types as agent_types
 import scherzo/session/tokens as session_tokens
 import scherzo/workflow_run
 
-pub type StepTokenEntries =
-  Dict(String, StepTokenEntry)
+pub type State {
+  State(entries: Dict(String, StepTokenEntry))
+}
 
 pub type StepTokenEntry {
   StepTokenEntry(
@@ -15,61 +16,61 @@ pub type StepTokenEntry {
   )
 }
 
-pub fn new() -> StepTokenEntries {
-  dict.new()
+pub fn new() -> State {
+  State(entries: dict.new())
 }
 
 pub fn register_step(
-  entries: StepTokenEntries,
+  state: State,
   session_id: String,
   run_id: String,
   parent_session_id: String,
-) -> StepTokenEntries {
-  dict.insert(
-    entries,
+) -> State {
+  State(entries: dict.insert(
+    state.entries,
     session_id,
     StepTokenEntry(
       run_id: run_id,
       parent_session_id: parent_session_id,
       tokens: session_tokens.zero_token_totals(),
     ),
-  )
+  ))
 }
 
 pub fn update_from_runner(
-  entries: StepTokenEntries,
+  state: State,
   session_id: String,
   runner_update: agent_types.RunnerUpdate,
-) -> StepTokenEntries {
+) -> State {
   let tokens = case runner_update {
     agent_types.RunnerPiUpdate(update) -> update.tokens
     agent_types.RunnerTurnUpdate(update) -> update.tokens
   }
-  update_tokens(entries, session_id, tokens)
+  update_tokens(state, session_id, tokens)
 }
 
 pub fn update_tokens(
-  entries: StepTokenEntries,
+  state: State,
   session_id: String,
   tokens: session_tokens.TokenTotals,
-) -> StepTokenEntries {
+) -> State {
   case session_tokens.nonzero(tokens) {
-    False -> entries
+    False -> state
     True ->
-      case dict.get(entries, session_id) {
+      case dict.get(state.entries, session_id) {
         Ok(entry) ->
-          dict.insert(
-            entries,
+          State(entries: dict.insert(
+            state.entries,
             session_id,
             StepTokenEntry(..entry, tokens: tokens),
-          )
-        Error(Nil) -> entries
+          ))
+        Error(Nil) -> state
       }
   }
 }
 
-pub fn total(entries: StepTokenEntries) -> session_tokens.TokenTotals {
-  entries
+pub fn total(state: State) -> session_tokens.TokenTotals {
+  state.entries
   |> dict.values
   |> list.fold(session_tokens.zero_token_totals(), fn(total, entry) {
     session_tokens.add(total, entry.tokens)
@@ -101,10 +102,10 @@ pub fn workflow_run_result_tokens(
 }
 
 pub fn total_for_run(
-  entries: StepTokenEntries,
+  state: State,
   run_id: String,
 ) -> session_tokens.TokenTotals {
-  entries
+  state.entries
   |> dict.values
   |> list.filter(fn(entry) { entry.run_id == run_id })
   |> list.fold(session_tokens.zero_token_totals(), fn(total, entry) {
@@ -112,15 +113,14 @@ pub fn total_for_run(
   })
 }
 
-pub fn remove_run(
-  entries: StepTokenEntries,
-  run_id: String,
-) -> StepTokenEntries {
-  entries
-  |> dict.to_list
-  |> list.filter(fn(entry) {
-    let #(_, token_entry) = entry
-    token_entry.run_id != run_id
-  })
-  |> dict.from_list
+pub fn remove_run(state: State, run_id: String) -> State {
+  State(
+    entries: state.entries
+    |> dict.to_list
+    |> list.filter(fn(entry) {
+      let #(_, token_entry) = entry
+      token_entry.run_id != run_id
+    })
+    |> dict.from_list,
+  )
 }

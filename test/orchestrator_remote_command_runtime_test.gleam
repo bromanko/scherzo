@@ -1,8 +1,58 @@
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import scherzo/control/command
+import scherzo/control/query/service as query_service
 import scherzo/control/query/types as query_types
+import scherzo/orchestrator/control_plane_runtime
 import scherzo/orchestrator/remote_command_runtime
+
+pub fn remote_and_control_owner_states_ignore_stale_monitors_test() {
+  let query_backend =
+    query_service.Backend(run: fn(_) {
+      Error(query_types.QueryError(query_types.QueryBackendFailed, "unused"))
+    })
+  let assert Ok(query_handle) =
+    query_service.start(
+      query_service.Settings(max_concurrent: 1, max_queued: 1, timeout_ms: 50),
+      query_backend,
+    )
+  let waiting = process.new_subject()
+  let first_pid =
+    process.spawn_unlinked(fn() {
+      let _ = process.receive(waiting, within: 10_000)
+      Nil
+    })
+  let second_pid =
+    process.spawn_unlinked(fn() {
+      let _ = process.receive(waiting, within: 10_000)
+      Nil
+    })
+  let first_monitor = process.monitor(first_pid)
+  let second_monitor = process.monitor(second_pid)
+  let control =
+    control_plane_runtime.new(
+      control_plane_runtime.NoControlServer,
+      Some(first_monitor),
+      Some("control.json"),
+      query_handle,
+    )
+  assert control_plane_runtime.monitor_matches(control, first_monitor)
+  assert !control_plane_runtime.monitor_matches(control, second_monitor)
+  let control = control_plane_runtime.cleared(control)
+  assert control_plane_runtime.monitor(control) == None
+  assert control_plane_runtime.control_file_path(control) == None
+
+  let remote = remote_command_runtime.new(None)
+  assert remote_command_runtime.handle(remote) == None
+  assert !remote_command_runtime.monitor_matches(remote, first_monitor)
+  assert remote_command_runtime.managed_launch(remote) == None
+
+  process.demonitor_process(first_monitor)
+  process.demonitor_process(second_monitor)
+  process.kill(first_pid)
+  process.kill(second_pid)
+  assert query_service.stop(query_handle, 1000) == Ok(Nil)
+}
 
 pub fn apply_remote_command_delegates_to_daemon_callback_test() {
   let daemon_subject = process.new_subject()

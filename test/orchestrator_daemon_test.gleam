@@ -12,6 +12,7 @@ import scherzo/control/command
 import scherzo/control/query/types as query_types
 import scherzo/error
 import scherzo/handoff_format
+import scherzo/orchestrator/control_plane_runtime
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/daemon_transition_shell
@@ -475,7 +476,7 @@ fn base_dependencies(
     cancel_timer: fn(_) { Nil },
     start_event_hub: fn() { hub.start(10, fn() { 42 }) },
     make_control_token: fn() { Ok("test-token") },
-    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
 }
@@ -620,7 +621,7 @@ pub fn daemon_start_maps_actor_init_timeout_to_specific_startup_error_test() {
       },
       start_control_server: fn(_, _) {
         test_async.block_until_released(barrier)
-        Ok(daemon.NoControlServer)
+        Ok(control_plane_runtime.NoControlServer)
       },
     )
 

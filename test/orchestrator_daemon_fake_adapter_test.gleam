@@ -5,6 +5,7 @@ import scherzo/agent/types as agent_types
 import scherzo/agent/worker_command
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/orchestrator/control_plane_runtime
 import scherzo/orchestrator/daemon
 import scherzo/result_artifact
 import scherzo/session/hub
@@ -167,7 +168,7 @@ fn dependencies(
     ),
     start_event_hub: fn() { hub.start(50, fn() { 42 }) },
     make_control_token: fn() { Ok("test-token") },
-    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
 }

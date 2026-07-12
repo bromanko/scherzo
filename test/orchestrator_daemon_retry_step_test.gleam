@@ -17,6 +17,7 @@ import scherzo/control/query/types as query_types
 import scherzo/error
 import scherzo/handoff
 import scherzo/hash
+import scherzo/orchestrator/control_plane_runtime
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon
 import scherzo/orchestrator/dispatch_recovery
@@ -1678,6 +1679,7 @@ pub fn retry_step_abort_of_recovered_parent_cleans_review_children_and_exposes_o
     == 1
 
   let code_review_session_id = code_review_session.session_id
+  let assert Ok(Nil) = wait_for_record_kind(root, "outbox_completed", 100)
   let before_cleanup = ledger_bodies(root)
   let assert Ok(cleanup_dry_run) =
     daemon.apply_operator_command(
@@ -5660,7 +5662,7 @@ fn in_process_dependencies_with_adapter(
     publication_command_runner: publication_runner,
     start_event_hub: fn() { Ok(hub_subject) },
     make_control_token: fn() { Ok("test-token") },
-    start_control_server: fn(_, _) { Ok(daemon.NoControlServer) },
+    start_control_server: fn(_, _) { Ok(control_plane_runtime.NoControlServer) },
     stop_control_server: fn(_) { Nil },
   )
 }
@@ -8283,6 +8285,24 @@ fn wait_for_operation_status(
             expected_status,
             attempts - 1,
           )
+        }
+      }
+  }
+}
+
+fn wait_for_record_kind(
+  root: String,
+  expected_kind: String,
+  attempts: Int,
+) -> Result(Nil, Nil) {
+  case contains_kind(root, expected_kind) {
+    True -> Ok(Nil)
+    False ->
+      case attempts <= 0 {
+        True -> Error(Nil)
+        False -> {
+          process.sleep(20)
+          wait_for_record_kind(root, expected_kind, attempts - 1)
         }
       }
   }

@@ -26,12 +26,15 @@ import scherzo/managed_launch/grant as managed_launch_grant
 import scherzo/orchestrator/abandoned_claim
 import scherzo/orchestrator/artifact_publication_retry_control
 import scherzo/orchestrator/control_command_handler
+import scherzo/orchestrator/control_operation_runtime
+import scherzo/orchestrator/control_plane_runtime
 import scherzo/orchestrator/core
 import scherzo/orchestrator/daemon_capabilities
 import scherzo/orchestrator/daemon_transition_shell
 import scherzo/orchestrator/dispatch_recovery
 import scherzo/orchestrator/effect_completion_handler
 import scherzo/orchestrator/effect_runner
+import scherzo/orchestrator/effect_runtime
 import scherzo/orchestrator/effects/types as transition_effects
 import scherzo/orchestrator/event_publisher
 import scherzo/orchestrator/ledger_compaction
@@ -39,6 +42,7 @@ import scherzo/orchestrator/operator_runtime
 import scherzo/orchestrator/operator_worker_command
 import scherzo/orchestrator/outbox_effects
 import scherzo/orchestrator/poll_scheduler
+import scherzo/orchestrator/query_projection
 import scherzo/orchestrator/query_runtime
 import scherzo/orchestrator/query_snapshot_cache
 import scherzo/orchestrator/read_model
@@ -86,7 +90,6 @@ import scherzo/tracker/state as issue_state
 import scherzo/work_item
 import scherzo/work_item/action_derivation
 import scherzo/work_item/action_executor
-import scherzo/work_item/action_receipts
 import scherzo/work_item_invalidation
 import scherzo/workflow_attempt
 import scherzo/workflow_checkpoint
@@ -189,30 +192,6 @@ pub type TimerHandle {
   TestTimer(Int)
 }
 
-pub type ControlServerHandle {
-  NoControlServer
-  RealControlServer(control_server.Server)
-}
-
-type ControlPlane {
-  ControlPlane(handle: ControlServerHandle, control_file_path: Option(String))
-}
-
-type StartupRecoveryPhase {
-  StartupRecoveryPending(startup_recovery.StartupRecovery)
-  StartupRecoveryRunning(StartupRecoveryStep, startup_recovery.StartupRecovery)
-  StartupRecoveryReady
-  StartupRecoveryFailed(String)
-}
-
-type StartupRecoveryStep {
-  StartupRecoveryStageApplyRecovery
-  StartupRecoveryStageApplyScheduledRecovery
-  StartupRecoveryStageResumeWorkflows
-  StartupRecoveryStageCheckInvariants
-  StartupRecoveryStageFinish
-}
-
 pub type RuntimeDependencies {
   RuntimeDependencies(
     make_tracker_adapter: fn(config_types.EffectiveConfig) ->
@@ -229,8 +208,8 @@ pub type RuntimeDependencies {
     start_event_hub: fn() -> Result(process.Subject(hub.Message), hub.HubError),
     make_control_token: fn() -> Result(String, StartupError),
     start_control_server: fn(control_server.Settings, control_server.Backend) ->
-      Result(ControlServerHandle, StartupError),
-    stop_control_server: fn(ControlServerHandle) -> Nil,
+      Result(control_plane_runtime.Handle, StartupError),
+    stop_control_server: fn(control_plane_runtime.Handle) -> Nil,
     start_remote_client: fn(
       config_types.EffectiveConfig,
       Option(managed_launch_grant.Grant),
@@ -260,51 +239,137 @@ type State {
     workflow: workflow_reloader.State,
     tracker_client: tracker.Client,
     tracker_adapter: adapter.TrackerAdapter,
-    scheduled_runtime: scheduled_runtime.Runtime,
-    scheduled_retry_timers: Dict(String, TimerHandle),
-    scheduled_report_retry_timers: Dict(String, TimerHandle),
+    scheduled_runtime_owner: scheduled_runtime.State(TimerHandle),
     core: transition_types.State,
     poll: poll_scheduler.State(TimerHandle),
     retry: retry_scheduler.State(TimerHandle),
     registry: worker_registry.Registry,
-    yaml_step_tokens: session_metrics.StepTokenEntries,
-    recovery_by_issue: Dict(String, session_event.RecoveryInfo),
-    effect_runner: effect_runner.Handle,
-    effect_runner_monitor: process.Monitor,
+    yaml_step_tokens: session_metrics.State,
+    startup_recovery: startup_recovery.DaemonState,
+    effect_runtime: effect_runtime.State,
     event_hub: process.Subject(hub.Message),
-    control_server: ControlServerHandle,
-    control_server_monitor: Option(process.Monitor),
-    control_file_path: Option(String),
-    query_service: query_service.Handle,
-    query_cache: query_snapshot_cache.Handle,
-    read_model: read_model.ReadModel,
-    ledger_projection: projection.Projection,
+    control_plane: control_plane_runtime.State,
+    query_projection: query_projection.State,
     ledger_compaction: ledger_compaction.State,
-    remote_client: Option(remote.Handle),
-    remote_client_monitor: Option(process.Monitor),
-    managed_launch: Option(managed_launch_grant.Grant),
-    operator_paused: Bool,
-    pending_operator_command_replies: Dict(
-      String,
-      process.Subject(command.CommandResult),
-    ),
-    completed_operator_command_results: Dict(String, command.CommandResult),
-    active_control_operations: Dict(String, Bool),
-    work_item_action_receipts: Dict(String, action_receipts.Receipt),
-    next_operator_command_correlation_id: Int,
-    startup_recovery: StartupRecoveryPhase,
-    next_startup_recovery_waiter_id: Int,
-    pending_startup_recovery_waiters: Dict(
-      Int,
-      process.Subject(Result(Nil, Nil)),
-    ),
-    transition_invariant_violation_pending: Bool,
+    remote_runtime: remote.State,
+    operator_runtime: operator_runtime.State,
+    control_operations: control_operation_runtime.State,
+    invariant_state: daemon_transition_shell.InvariantState,
     capabilities: daemon_capabilities.DaemonCapabilities(
       State,
       Message,
       TimerHandle,
     ),
     dependencies: RuntimeDependencies,
+  )
+}
+
+fn scheduled_runtime_value(state: State) -> scheduled_runtime.Runtime {
+  scheduled_runtime.runtime(state.scheduled_runtime_owner)
+}
+
+fn set_scheduled_runtime(
+  state: State,
+  runtime: scheduled_runtime.Runtime,
+) -> State {
+  State(
+    ..state,
+    scheduled_runtime_owner: scheduled_runtime.set_runtime(
+      state.scheduled_runtime_owner,
+      runtime,
+    ),
+  )
+}
+
+fn query_cache(state: State) -> query_snapshot_cache.Handle {
+  query_projection.query_cache(state.query_projection)
+}
+
+fn read_model_value(state: State) -> read_model.ReadModel {
+  query_projection.read_model(state.query_projection)
+}
+
+fn ledger_projection(state: State) -> projection.Projection {
+  query_projection.ledger_projection(state.query_projection)
+}
+
+fn query_service(state: State) -> query_service.Handle {
+  control_plane_runtime.query_service(state.control_plane)
+}
+
+fn control_server_handle(state: State) -> control_plane_runtime.Handle {
+  control_plane_runtime.handle(state.control_plane)
+}
+
+fn control_server_monitor(state: State) -> Option(process.Monitor) {
+  control_plane_runtime.monitor(state.control_plane)
+}
+
+fn control_file_path(state: State) -> Option(String) {
+  control_plane_runtime.control_file_path(state.control_plane)
+}
+
+fn effect_runner_handle(state: State) -> effect_runner.Handle {
+  effect_runtime.handle(state.effect_runtime)
+}
+
+fn effect_runner_monitor(state: State) -> process.Monitor {
+  effect_runtime.monitor(state.effect_runtime)
+}
+
+fn remote_client(state: State) -> Option(remote.Handle) {
+  remote.handle(state.remote_runtime)
+}
+
+fn remote_client_monitor(state: State) -> Option(process.Monitor) {
+  remote.monitor(state.remote_runtime)
+}
+
+fn managed_launch(state: State) -> Option(managed_launch_grant.Grant) {
+  remote.managed_launch(state.remote_runtime)
+}
+
+fn operator_paused(state: State) -> Bool {
+  operator_runtime.dispatch_paused(state.operator_runtime)
+}
+
+fn invariant_violation_pending(state: State) -> Bool {
+  daemon_transition_shell.invariant_violation_pending(state.invariant_state)
+}
+
+fn recovery_by_issue(state: State) -> Dict(String, session_event.RecoveryInfo) {
+  startup_recovery.recovery_by_issue(state.startup_recovery)
+}
+
+fn clear_recovery_for_issue(state: State, issue_id: String) -> State {
+  State(
+    ..state,
+    startup_recovery: startup_recovery.clear_recovery(
+      state.startup_recovery,
+      issue_id,
+    ),
+  )
+}
+
+fn mark_invariant_violation(state: State) -> State {
+  State(
+    ..state,
+    invariant_state: daemon_transition_shell.mark_invariant_violation_pending(
+      state.invariant_state,
+    ),
+  )
+}
+
+fn update_query_projection(
+  state: State,
+  update: fn(read_model.ReadModel) -> read_model.ReadModel,
+) -> State {
+  State(
+    ..state,
+    query_projection: query_projection.update_read_model(
+      state.query_projection,
+      update,
+    ),
   )
 }
 
@@ -336,15 +401,16 @@ pub fn default_dependencies() -> RuntimeDependencies {
     },
     start_control_server: fn(settings, store) {
       case control_server.start(settings, store) {
-        Ok(server) -> Ok(RealControlServer(server))
+        Ok(server) -> Ok(control_plane_runtime.RealControlServer(server))
         Error(control_server.ServerStartFailed(message)) ->
           Error(StartupError("control_server_start_failed", message))
       }
     },
     stop_control_server: fn(handle) {
       case handle {
-        NoControlServer -> Nil
-        RealControlServer(server) -> control_server.stop(server)
+        control_plane_runtime.NoControlServer -> Nil
+        control_plane_runtime.RealControlServer(server) ->
+          control_server.stop(server)
       }
     },
     start_remote_client: fn(
@@ -376,7 +442,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
       })
     },
     stop_remote_client: remote.stop,
-    monitor_remote_client: remote.monitor,
+    monitor_remote_client: remote.monitor_remote_client,
     managed_launch_auth_rejected: fn(_) { Nil },
     enqueue_startup_recovery_message: process.send,
     observe_startup_recovery_stage: fn(_) { Nil },
@@ -643,25 +709,31 @@ fn runtime_counts_from_state(state: State) -> read_model.RuntimeCounts {
     lifecycle_projection_failed: daemon_transition_shell.lifecycle_projection_failed(
       get_core_state(state),
     ),
-    scheduled_due_count: state.scheduled_runtime
+    scheduled_due_count: scheduled_runtime_value(state)
       |> scheduled_runtime.due_count(now_ms),
     scheduled_next_due_count: scheduled_runtime.next_due_count(
-      state.scheduled_runtime,
+      scheduled_runtime_value(state),
     ),
-    scheduled_pending_count: dict.size(state.scheduled_runtime.pending_starts),
-    scheduled_retry_count: dict.size(state.scheduled_runtime.scheduled_retries),
+    scheduled_pending_count: dict.size(
+      scheduled_runtime_value(state).pending_starts,
+    ),
+    scheduled_retry_count: dict.size(
+      scheduled_runtime_value(state).scheduled_retries,
+    ),
     scheduled_report_retry_count: dict.size(
-      state.scheduled_runtime.scheduled_report_retries,
+      scheduled_runtime_value(state).scheduled_report_retries,
     ),
-    scheduled_retry_timer_count: dict.size(state.scheduled_retry_timers),
-    scheduled_report_retry_timer_count: dict.size(
-      state.scheduled_report_retry_timers,
+    scheduled_retry_timer_count: scheduled_runtime.retry_timer_count(
+      state.scheduled_runtime_owner,
+    ),
+    scheduled_report_retry_timer_count: scheduled_runtime.report_retry_timer_count(
+      state.scheduled_runtime_owner,
     ),
   )
 }
 
 fn outbox_counts_for_metrics(state: State) -> #(Int, Int, Int, Int) {
-  state.ledger_projection.outbox
+  ledger_projection(state).outbox
   |> dict.values
   |> list.fold(#(0, 0, 0, 0), fn(counts, status) {
     let #(pending, in_flight, retryable, permanent) = counts
@@ -706,34 +778,18 @@ fn metrics_token_totals(state: State) -> session_tokens.TokenTotals {
 
 fn refresh_read_model(state: State) -> State {
   let refreshed =
-    state.read_model
+    read_model_value(state)
     |> read_model.update_counts(runtime_counts_from_state(state))
-    |> read_model.update_dispatch_paused(dispatch_paused: state.operator_paused)
+    |> read_model.update_dispatch_paused(dispatch_paused: operator_paused(state))
     |> read_model.update_token_totals(metrics_token_totals(state))
 
-  State(..state, read_model: refreshed)
+  update_query_projection(state, fn(_) { refreshed })
 }
 
 fn read_model_snapshot_from_state(state: State) -> read_model.Snapshot {
   read_model.snapshot(
-    state.read_model,
+    read_model_value(state),
     sampled_at_ms: state.dependencies.now_ms(),
-  )
-}
-
-fn initial_query_snapshot(
-  model: read_model.ReadModel,
-  projection_state: projection.Projection,
-  workflow: workflow_reloader.State,
-  sampled_at_ms: Int,
-) -> query_snapshot_cache.Snapshot {
-  query_snapshot_cache.Snapshot(
-    read_model: read_model.snapshot(model, sampled_at_ms: sampled_at_ms),
-    projection: projection_state,
-    outbox: dict.to_list(projection_state.outbox),
-    workflow: workflow,
-    dispatch_paused: projection_state.dispatch_paused,
-    claims: query_types.ClaimListDto(sampled_at_ms: sampled_at_ms, items: []),
   )
 }
 
@@ -750,22 +806,13 @@ fn start_query_snapshot_cache(
   }
 }
 
-fn stop_query_snapshot_cache_best_effort(
-  handle: query_snapshot_cache.Handle,
-) -> Nil {
-  case query_snapshot_cache.stop(handle, 1000) {
-    Ok(Nil) -> Nil
-    Error(Nil) -> Nil
-  }
-}
-
 fn query_snapshot_from_state(state: State) -> query_snapshot_cache.Snapshot {
   query_snapshot_cache.Snapshot(
     read_model: read_model_snapshot_from_state(state),
-    projection: state.ledger_projection,
-    outbox: dict.to_list(state.ledger_projection.outbox),
+    projection: ledger_projection(state),
+    outbox: dict.to_list(ledger_projection(state).outbox),
     workflow: state.workflow,
-    dispatch_paused: state.operator_paused,
+    dispatch_paused: operator_paused(state),
     claims: query_snapshot_cache.claims_snapshot(
       pending_claims: state.core.pending_claims,
       worker_claims: state.core.workers.by_issue,
@@ -776,8 +823,8 @@ fn query_snapshot_from_state(state: State) -> query_snapshot_cache.Snapshot {
 }
 
 fn publish_query_snapshot(state: State) -> State {
-  query_snapshot_cache.update(
-    state.query_cache,
+  query_projection.publish(
+    state.query_projection,
     query_snapshot_from_state(state),
   )
   state
@@ -790,7 +837,7 @@ fn start_control_plane(
   daemon_subject: process.Subject(Message),
   query_handle: query_service.Handle,
   secrets: List(String),
-) -> Result(ControlPlane, StartupError) {
+) -> Result(control_plane_runtime.StartupControlPlane, StartupError) {
   use token <- try_startup(dependencies.make_control_token())
   let settings = control_server.settings_for_control(token, effective.control)
   use handle <- try_startup(dependencies.start_control_server(
@@ -798,8 +845,12 @@ fn start_control_plane(
     control_backend(event_hub, daemon_subject, query_handle),
   ))
   case handle {
-    NoControlServer -> Ok(ControlPlane(handle: handle, control_file_path: None))
-    RealControlServer(server) -> {
+    control_plane_runtime.NoControlServer ->
+      Ok(control_plane_runtime.StartupControlPlane(
+        handle: handle,
+        control_file_path: None,
+      ))
+    control_plane_runtime.RealControlServer(server) -> {
       let port = control_server.bound_port(server)
       let path = control_file.path_for_workspace(effective.workspace.root)
       let control =
@@ -824,7 +875,10 @@ fn start_control_plane(
             ],
             secrets,
           )
-          Ok(ControlPlane(handle: handle, control_file_path: Some(path)))
+          Ok(control_plane_runtime.StartupControlPlane(
+            handle: handle,
+            control_file_path: Some(path),
+          ))
         }
         Error(err) -> {
           dependencies.stop_control_server(handle)
@@ -838,7 +892,7 @@ fn start_control_plane(
 
 fn stop_control_plane(
   dependencies: RuntimeDependencies,
-  control_plane: ControlPlane,
+  control_plane: control_plane_runtime.StartupControlPlane,
 ) -> Nil {
   dependencies.stop_control_server(control_plane.handle)
   case control_plane.control_file_path {
@@ -847,17 +901,8 @@ fn stop_control_plane(
   }
 }
 
-fn monitor_control_server(
-  handle: ControlServerHandle,
-) -> Option(process.Monitor) {
-  case handle {
-    NoControlServer -> None
-    RealControlServer(server) -> Some(control_server.monitor(server))
-  }
-}
-
 fn start_remote_client_now(state: State) -> State {
-  case state.remote_client {
+  case remote_client(state) {
     Some(_) -> state
     None -> restart_remote_client_if_enabled(state)
   }
@@ -867,23 +912,22 @@ fn update_read_model_remote_client_status(
   state: State,
   status: read_model.RemoteClientStatus,
 ) -> State {
-  State(
-    ..state,
-    read_model: read_model.update_remote_client_status(state.read_model, status),
-  )
+  update_query_projection(state, fn(model) {
+    read_model.update_remote_client_status(model, status)
+  })
 }
 
 fn restart_remote_client_if_enabled(state: State) -> State {
   case
     ui_server_enabled(state.workflow.effective.ui_server),
-    state.managed_launch
+    managed_launch(state)
   {
     False, None -> stop_remote_client_and_clear(state, read_model.Disabled)
     _, _ ->
       case
         state.dependencies.start_remote_client(
           state.workflow.effective,
-          state.managed_launch,
+          managed_launch(state),
           state.event_hub,
           state.subject,
           state.dependencies.managed_launch_auth_rejected,
@@ -897,8 +941,9 @@ fn restart_remote_client_if_enabled(state: State) -> State {
           |> fn(state) {
             State(
               ..state,
-              remote_client: Some(handle),
-              remote_client_monitor: Some(
+              remote_runtime: remote.connected(
+                state.remote_runtime,
+                handle,
                 state.dependencies.monitor_remote_client(handle),
               ),
             )
@@ -919,11 +964,11 @@ fn stop_remote_client_and_clear(
   state: State,
   status: read_model.RemoteClientStatus,
 ) -> State {
-  case state.remote_client_monitor {
+  case remote_client_monitor(state) {
     Some(monitor) -> process.demonitor_process(monitor)
     None -> Nil
   }
-  case state.remote_client {
+  case remote_client(state) {
     Some(handle) ->
       case state.dependencies.stop_remote_client(handle, 1000) {
         Ok(Nil) -> Nil
@@ -939,7 +984,7 @@ fn stop_remote_client_and_clear(
   state
   |> update_read_model_remote_client_status(status)
   |> fn(state) {
-    State(..state, remote_client: None, remote_client_monitor: None)
+    State(..state, remote_runtime: remote.cleared(state.remote_runtime))
   }
 }
 
@@ -1092,7 +1137,7 @@ fn start_with_managed_launch_and_initialiser_timeout(
       dispatch_paused: startup_recovery.projection.dispatch_paused,
     )
   use query_cache <- try_startup(
-    start_query_snapshot_cache(initial_query_snapshot(
+    start_query_snapshot_cache(query_projection.initial_snapshot(
       initial_read_model,
       startup_recovery.projection,
       workflow,
@@ -1171,7 +1216,9 @@ fn start_with_managed_launch_and_initialiser_timeout(
                         "constructing_startup_state",
                       )
                       let control_server_monitor =
-                        monitor_control_server(control_plane.handle)
+                        control_plane_runtime.monitor_handle(
+                          control_plane.handle,
+                        )
                       let capabilities =
                         build_daemon_capabilities(
                           event_hub,
@@ -1184,9 +1231,9 @@ fn start_with_managed_launch_and_initialiser_timeout(
                           workflow: workflow,
                           tracker_client: tracker_client,
                           tracker_adapter: tracker_adapter,
-                          scheduled_runtime: startup_recovery.scheduled.runtime,
-                          scheduled_retry_timers: dict.new(),
-                          scheduled_report_retry_timers: dict.new(),
+                          scheduled_runtime_owner: scheduled_runtime.owner(
+                            startup_recovery.scheduled.runtime,
+                          ),
                           core: transition_types.State(
                             runtime: runtime,
                             workers: transition_types.new_worker_directory(),
@@ -1202,17 +1249,25 @@ fn start_with_managed_launch_and_initialiser_timeout(
                           retry: retry_scheduler.new(),
                           registry: worker_registry.new(),
                           yaml_step_tokens: session_metrics.new(),
-                          recovery_by_issue: startup_recovery.recovery_by_issue,
-                          effect_runner: effect_runner_handle,
-                          effect_runner_monitor: effect_runner_monitor,
+                          startup_recovery: startup_recovery.daemon_state(
+                            startup_recovery,
+                          ),
+                          effect_runtime: effect_runtime.new(
+                            effect_runner_handle,
+                            effect_runner_monitor,
+                          ),
                           event_hub: event_hub,
-                          control_server: control_plane.handle,
-                          control_server_monitor: control_server_monitor,
-                          control_file_path: control_plane.control_file_path,
-                          query_service: query_handle,
-                          query_cache: query_cache,
-                          read_model: initial_read_model,
-                          ledger_projection: startup_recovery.projection,
+                          control_plane: control_plane_runtime.new(
+                            control_plane.handle,
+                            control_server_monitor,
+                            control_plane.control_file_path,
+                            query_handle,
+                          ),
+                          query_projection: query_projection.new(
+                            query_cache,
+                            initial_read_model,
+                            startup_recovery.projection,
+                          ),
                           ledger_compaction: ledger_compaction.new(
                             ledger.CurrentSegmentStats(
                               record_count: 0,
@@ -1220,21 +1275,12 @@ fn start_with_managed_launch_and_initialiser_timeout(
                               truncated_tail: False,
                             ),
                           ),
-                          remote_client: None,
-                          remote_client_monitor: None,
-                          managed_launch: managed_launch,
-                          operator_paused: startup_recovery.projection.dispatch_paused,
-                          pending_operator_command_replies: dict.new(),
-                          completed_operator_command_results: dict.new(),
-                          active_control_operations: dict.new(),
-                          work_item_action_receipts: action_receipts.empty(),
-                          next_operator_command_correlation_id: 1,
-                          startup_recovery: StartupRecoveryPending(
-                            startup_recovery,
+                          remote_runtime: remote.new(managed_launch),
+                          operator_runtime: operator_runtime.new(
+                            startup_recovery.projection.dispatch_paused,
                           ),
-                          next_startup_recovery_waiter_id: 1,
-                          pending_startup_recovery_waiters: dict.new(),
-                          transition_invariant_violation_pending: False,
+                          control_operations: control_operation_runtime.new(),
+                          invariant_state: daemon_transition_shell.clear_invariant_state(),
                           capabilities: capabilities,
                           dependencies: dependencies,
                         )
@@ -1303,7 +1349,7 @@ fn start_with_managed_launch_and_initialiser_timeout(
   stop_startup_phase_tracker(startup_phase)
   case result {
     Ok(_) -> Nil
-    Error(_) -> stop_query_snapshot_cache_best_effort(query_cache)
+    Error(_) -> query_projection.stop_cache_best_effort(query_cache)
   }
   result
 }
@@ -1389,7 +1435,7 @@ fn apply_scheduled_startup_recovery(
   state: State,
   scheduled: startup_recovery.ScheduledRecovery,
 ) -> State {
-  case state.transition_invariant_violation_pending {
+  case invariant_violation_pending(state) {
     True -> state
     False ->
       list.fold(scheduled.effects, state, fn(state, effect) {
@@ -1455,7 +1501,7 @@ fn log_startup_invariant_warn_mode(state: State) -> State {
 }
 
 fn check_startup_transition_invariants(state: State) -> State {
-  case state.transition_invariant_violation_pending {
+  case invariant_violation_pending(state) {
     True -> state
     False ->
       daemon_transition_shell.check_invariants(transition_shell_context(state))
@@ -1466,7 +1512,7 @@ fn spawn_recovered_workflow_resumptions(
   state: State,
   resumptions: List(recovery.RecoveredWorkflowRun),
 ) -> State {
-  case state.transition_invariant_violation_pending {
+  case invariant_violation_pending(state) {
     True -> state
     False ->
       list.fold(resumptions, state, fn(state, resumption) {
@@ -1488,7 +1534,7 @@ fn replay_incomplete_control_operations(
   ]
   |> list.each(fn(operation_kind) {
     projection.replayable_control_operation_ids(
-      state.ledger_projection,
+      ledger_projection(state),
       operation_kind,
     )
     |> list.each(fn(operation_id) {
@@ -1498,12 +1544,7 @@ fn replay_incomplete_control_operations(
 }
 
 fn startup_recovery_ready(state: State) -> Bool {
-  case state.startup_recovery {
-    StartupRecoveryReady -> True
-    StartupRecoveryPending(_)
-    | StartupRecoveryRunning(_, _)
-    | StartupRecoveryFailed(_) -> False
-  }
+  startup_recovery.is_ready(state.startup_recovery)
 }
 
 fn queue_startup_recovery_continuation(state: State) -> State {
@@ -1567,7 +1608,7 @@ fn maybe_start_ledger_compaction(state: State) -> State {
         }
         Ok(ledger_path) -> {
           effect_runner.enqueue(
-            state.effect_runner,
+            effect_runner_handle(state),
             effect_runner.CompactLedger(ledger_path, state.dependencies.now_ms),
           )
           State(
@@ -1616,20 +1657,20 @@ fn refresh_ledger_compaction_after_external_append(state: State) -> State {
 }
 
 fn notify_startup_recovery_waiters(
-  waiters: Dict(Int, process.Subject(Result(Nil, Nil))),
-  result: Result(Nil, Nil),
+  notifications: List(#(process.Subject(Result(Nil, Nil)), Result(Nil, Nil))),
 ) -> Nil {
-  waiters
-  |> dict.values
-  |> list.each(fn(reply) { process.send(reply, result) })
+  notifications
+  |> list.each(fn(notification) {
+    let #(reply, result) = notification
+    process.send(reply, result)
+  })
 }
 
 fn fail_pending_startup_recovery_waiters(state: State) -> State {
-  notify_startup_recovery_waiters(
-    state.pending_startup_recovery_waiters,
-    Error(Nil),
-  )
-  State(..state, pending_startup_recovery_waiters: dict.new())
+  let #(startup_state, notifications) =
+    startup_recovery.complete_waiters(state.startup_recovery, Error(Nil))
+  notify_startup_recovery_waiters(notifications)
+  State(..state, startup_recovery: startup_state)
 }
 
 fn defer_until_startup_recovery_ready(
@@ -1698,54 +1739,64 @@ fn complete_startup_recovery(state: State) -> State {
       state
     }
   }
-  let waiters = state.pending_startup_recovery_waiters
   let state =
     State(
       ..state,
-      startup_recovery: StartupRecoveryReady,
-      pending_startup_recovery_waiters: dict.new(),
+      startup_recovery: startup_recovery.set_phase(
+        state.startup_recovery,
+        startup_recovery.Ready,
+      ),
     )
+  let #(startup_state, notifications) =
+    startup_recovery.complete_waiters(state.startup_recovery, Ok(Nil))
+  let state = State(..state, startup_recovery: startup_state)
   replay_incomplete_control_operations(state.subject, state)
   let state = start_initial_poll(state)
   process.send(state.subject, StartRemoteClient)
-  notify_startup_recovery_waiters(waiters, Ok(Nil))
+  notify_startup_recovery_waiters(notifications)
   state
 }
 
 fn advance_startup_recovery(state: State) -> State {
-  case state.startup_recovery {
-    StartupRecoveryReady | StartupRecoveryFailed(_) -> state
-    StartupRecoveryPending(plan) -> {
+  case startup_recovery.phase(state.startup_recovery) {
+    startup_recovery.Ready | startup_recovery.Failed(_) -> state
+    startup_recovery.Pending(plan) -> {
       state.dependencies.observe_startup_recovery_stage("startup_recovery")
       apply_startup_recovery(state, plan)
       |> fn(state) {
         State(
           ..state,
-          startup_recovery: StartupRecoveryRunning(
-            StartupRecoveryStageApplyScheduledRecovery,
-            plan,
+          startup_recovery: startup_recovery.set_phase(
+            state.startup_recovery,
+            startup_recovery.Running(
+              startup_recovery.StageApplyScheduledRecovery,
+              plan,
+            ),
           ),
         )
       }
       |> queue_startup_recovery_continuation
     }
-    StartupRecoveryRunning(stage, plan) ->
+    startup_recovery.Running(stage, plan) ->
       case stage {
-        StartupRecoveryStageApplyRecovery -> {
+        startup_recovery.StageApplyRecovery -> {
           state.dependencies.observe_startup_recovery_stage("startup_recovery")
           apply_startup_recovery(state, plan)
           |> fn(state) {
             State(
               ..state,
-              startup_recovery: StartupRecoveryRunning(
-                StartupRecoveryStageApplyScheduledRecovery,
-                plan,
+              startup_recovery: startup_recovery.set_phase(
+                state.startup_recovery,
+                startup_recovery.Running(
+                  startup_recovery.StageApplyScheduledRecovery,
+                  plan,
+                ),
               ),
             )
           }
           |> queue_startup_recovery_continuation
         }
-        StartupRecoveryStageApplyScheduledRecovery -> {
+        startup_recovery.StageApplyScheduledRecovery -> {
           state.dependencies.observe_startup_recovery_stage(
             "scheduled_startup_recovery",
           )
@@ -1753,15 +1804,18 @@ fn advance_startup_recovery(state: State) -> State {
           |> fn(state) {
             State(
               ..state,
-              startup_recovery: StartupRecoveryRunning(
-                StartupRecoveryStageResumeWorkflows,
-                plan,
+              startup_recovery: startup_recovery.set_phase(
+                state.startup_recovery,
+                startup_recovery.Running(
+                  startup_recovery.StageResumeWorkflows,
+                  plan,
+                ),
               ),
             )
           }
           |> queue_startup_recovery_continuation
         }
-        StartupRecoveryStageResumeWorkflows -> {
+        startup_recovery.StageResumeWorkflows -> {
           state.dependencies.observe_startup_recovery_stage(
             "workflow_resumptions",
           )
@@ -1769,39 +1823,43 @@ fn advance_startup_recovery(state: State) -> State {
           |> fn(state) {
             State(
               ..state,
-              startup_recovery: StartupRecoveryRunning(
-                StartupRecoveryStageCheckInvariants,
-                plan,
+              startup_recovery: startup_recovery.set_phase(
+                state.startup_recovery,
+                startup_recovery.Running(
+                  startup_recovery.StageCheckInvariants,
+                  plan,
+                ),
               ),
             )
           }
           |> queue_startup_recovery_continuation
         }
-        StartupRecoveryStageCheckInvariants -> {
+        startup_recovery.StageCheckInvariants -> {
           state.dependencies.observe_startup_recovery_stage(
             "startup_transition_invariants",
           )
           let state = check_startup_transition_invariants(state)
-          case state.transition_invariant_violation_pending {
+          case invariant_violation_pending(state) {
             True ->
               State(
                 ..fail_pending_startup_recovery_waiters(state),
-                startup_recovery: StartupRecoveryFailed(
-                  "transition_invariant_violation",
+                startup_recovery: startup_recovery.set_phase(
+                  state.startup_recovery,
+                  startup_recovery.Failed("transition_invariant_violation"),
                 ),
               )
             False ->
               State(
                 ..state,
-                startup_recovery: StartupRecoveryRunning(
-                  StartupRecoveryStageFinish,
-                  plan,
+                startup_recovery: startup_recovery.set_phase(
+                  state.startup_recovery,
+                  startup_recovery.Running(startup_recovery.StageFinish, plan),
                 ),
               )
               |> queue_startup_recovery_continuation
           }
         }
-        StartupRecoveryStageFinish -> {
+        startup_recovery.StageFinish -> {
           state.dependencies.observe_startup_recovery_stage(
             "startup_recovery_ready",
           )
@@ -1881,7 +1939,7 @@ fn scheduled_retry_values_from_projection(
   job_id: String,
   run_id: String,
 ) -> #(Int, Int) {
-  case projection.scheduled_status_for(state.ledger_projection, job_id) {
+  case projection.scheduled_status_for(ledger_projection(state), job_id) {
     Ok(status) ->
       case status.current_run {
         Some(run) if run.run_id == run_id -> #(
@@ -2412,7 +2470,7 @@ fn map_startup_recovery_error(
 }
 
 fn continue_with_refreshed_state(state: State) -> actor.Next(State, Message) {
-  case state.transition_invariant_violation_pending {
+  case invariant_violation_pending(state) {
     True -> {
       let state = fail_pending_startup_recovery_waiters(state)
       let _shutdown_state = shutdown_runtime_shell(state, True)
@@ -2739,11 +2797,11 @@ fn handle_message(
           actor.continue(refreshed)
         }
         GetProjectionSnapshot(reply) -> {
-          process.send(reply, state.ledger_projection)
+          process.send(reply, ledger_projection(state))
           actor.continue(state)
         }
         GetOutboxSnapshot(reply) -> {
-          process.send(reply, dict.to_list(state.ledger_projection.outbox))
+          process.send(reply, dict.to_list(ledger_projection(state).outbox))
           actor.continue(state)
         }
         GetWorkflowSnapshot(reply) -> {
@@ -2751,7 +2809,7 @@ fn handle_message(
           actor.continue(state)
         }
         GetRemoteDispatchPaused(reply) -> {
-          process.send(reply, state.operator_paused)
+          process.send(reply, operator_paused(state))
           actor.continue(state)
         }
         AwaitStartupRecoveryReady(reply, timeout_ms) ->
@@ -2767,7 +2825,11 @@ fn handle_message(
                   actor.continue(state)
                 }
                 False -> {
-                  let waiter_id = state.next_startup_recovery_waiter_id
+                  let #(startup_state, waiter_id) =
+                    startup_recovery.register_waiter(
+                      state.startup_recovery,
+                      reply,
+                    )
                   let _timer =
                     state.dependencies.send_after(
                       state.subject,
@@ -2775,34 +2837,23 @@ fn handle_message(
                       StartupRecoveryWaiterTimedOut(waiter_id),
                     )
                   actor.continue(
-                    State(
-                      ..state,
-                      next_startup_recovery_waiter_id: waiter_id + 1,
-                      pending_startup_recovery_waiters: dict.insert(
-                        state.pending_startup_recovery_waiters,
-                        waiter_id,
-                        reply,
-                      ),
-                    ),
+                    State(..state, startup_recovery: startup_state),
                   )
                 }
               }
           }
         StartupRecoveryWaiterTimedOut(waiter_id) -> {
-          let pending_waiters =
-            dict.delete(state.pending_startup_recovery_waiters, waiter_id)
-          case dict.get(state.pending_startup_recovery_waiters, waiter_id) {
-            Ok(reply) -> process.send(reply, Error(Nil))
-            Error(Nil) -> Nil
+          let #(startup_state, removed) =
+            startup_recovery.remove_waiter(state.startup_recovery, waiter_id)
+          case removed {
+            Some(reply) -> process.send(reply, Error(Nil))
+            None -> Nil
           }
-          actor.continue(
-            State(..state, pending_startup_recovery_waiters: pending_waiters),
-          )
+          actor.continue(State(..state, startup_recovery: startup_state))
         }
         StartRemoteClient ->
           case
-            state.transition_invariant_violation_pending
-            || !startup_recovery_ready(state)
+            invariant_violation_pending(state) || !startup_recovery_ready(state)
           {
             True -> continue_with_refreshed_state(state)
             False ->
@@ -2835,7 +2886,7 @@ fn handle_message(
             process.spawn_unlinked(fn() {
               process.send(
                 reply,
-                query_service.query(state.query_service, query),
+                query_service.query(query_service(state), query),
               )
               Nil
             })
@@ -2847,7 +2898,7 @@ fn handle_message(
               transition_types.ShutdownRequested(True),
             ])
             |> fail_pending_startup_recovery_waiters
-          case state.transition_invariant_violation_pending {
+          case invariant_violation_pending(state) {
             True -> actor.stop_abnormal("transition_invariant_violation")
             False -> {
               log_state(state, "info", "daemon_shutdown", [])
@@ -3159,13 +3210,19 @@ fn reply_for_work_item_action(
 ) -> State {
   let action_executor.Outcome(result: result, receipts: receipts) =
     action_executor.execute(
-      state.work_item_action_receipts,
+      operator_runtime.work_item_action_receipts(state.operator_runtime),
       request,
       fn(request) { live_work_item_detail(state, request) },
     )
   process.send(reply, result)
   log_operator_result(state, result, [])
-  State(..state, work_item_action_receipts: receipts)
+  State(
+    ..state,
+    operator_runtime: operator_runtime.set_work_item_action_receipts(
+      state.operator_runtime,
+      receipts,
+    ),
+  )
 }
 
 fn live_work_item_detail(
@@ -3186,8 +3243,8 @@ fn live_work_item_detail(
         Some(action_derivation.detail_for_target_kind_in_projection(
           detail,
           target_kind: request.target_kind,
-          dispatch_paused: state.operator_paused,
-          projection_state: state.ledger_projection,
+          dispatch_paused: operator_paused(state),
+          projection_state: ledger_projection(state),
         )),
       )
     Ok(None) -> Ok(None)
@@ -3224,21 +3281,16 @@ fn transition_operator_command_reply(
   timeout_ms: Int,
   reply: process.Subject(command.CommandResult),
 ) -> State {
-  let correlation_id = next_operator_command_correlation_id(state)
+  let #(operator_state, correlation_id) =
+    operator_runtime.next_correlation_id(state.operator_runtime)
   let state =
     State(
       ..state,
-      pending_operator_command_replies: dict.insert(
-        state.pending_operator_command_replies,
+      operator_runtime: operator_runtime.remember_pending_reply(
+        operator_state,
         correlation_id,
         reply,
       ),
-      completed_operator_command_results: dict.delete(
-        state.completed_operator_command_results,
-        correlation_id,
-      ),
-      next_operator_command_correlation_id: state.next_operator_command_correlation_id
-        + 1,
     )
   let request =
     transition_effects.OperatorCommandRequest(
@@ -3259,7 +3311,9 @@ fn transition_operator_command_reply(
         ),
       ),
     ])
-  case dict.get(state.completed_operator_command_results, correlation_id) {
+  case
+    operator_runtime.completed_result(state.operator_runtime, correlation_id)
+  {
     Ok(result) ->
       send_completed_operator_command_reply(state, correlation_id, result)
     Error(Nil) -> {
@@ -3279,20 +3333,15 @@ fn send_completed_operator_command_reply(
   correlation_id: String,
   result: command.CommandResult,
 ) -> State {
-  case dict.get(state.pending_operator_command_replies, correlation_id) {
+  case operator_runtime.pending_reply(state.operator_runtime, correlation_id) {
     Ok(reply) -> {
       process.send(reply, result)
       log_operator_result(state, result, [#("correlation_id", correlation_id)])
       State(
         ..state,
-        pending_operator_command_replies: dict.delete(
-          state.pending_operator_command_replies,
-          correlation_id,
-        ),
-        completed_operator_command_results: dict.delete(
-          state.completed_operator_command_results,
-          correlation_id,
-        ),
+        operator_runtime: state.operator_runtime
+          |> operator_runtime.clear_pending_reply(correlation_id)
+          |> operator_runtime.clear_completed_result(correlation_id),
       )
     }
     Error(Nil) -> {
@@ -3302,18 +3351,13 @@ fn send_completed_operator_command_reply(
       ])
       State(
         ..state,
-        completed_operator_command_results: dict.delete(
-          state.completed_operator_command_results,
+        operator_runtime: operator_runtime.clear_completed_result(
+          state.operator_runtime,
           correlation_id,
         ),
       )
     }
   }
-}
-
-fn next_operator_command_correlation_id(state: State) -> String {
-  "operator-command-"
-  <> int.to_string(state.next_operator_command_correlation_id)
 }
 
 fn operator_issue_resolution(
@@ -3676,7 +3720,7 @@ fn retry_step_dry_run_for_operator(
 ) -> #(State, command.CommandResult) {
   case
     workflow_repair.retry_dry_run(
-      state.ledger_projection,
+      ledger_projection(state),
       command.RetryWorkflowStepRunId(run_id),
       step_id,
       observation,
@@ -4263,10 +4307,14 @@ fn retry_step_issue_preflight(
 }
 
 fn run_queued_control_operation(state: State, operation_id: String) -> State {
-  case dict.get(state.active_control_operations, operation_id) {
-    Ok(True) -> state
-    _ ->
-      case projection.control_operation(state.ledger_projection, operation_id) {
+  case
+    control_operation_runtime.is_active(state.control_operations, operation_id)
+  {
+    True -> state
+    False ->
+      case
+        projection.control_operation(ledger_projection(state), operation_id)
+      {
         Error(Nil) -> state
         Ok(operation) ->
           case operation.status {
@@ -4283,7 +4331,7 @@ fn start_queued_control_operation(
 ) -> State {
   case
     recollect_outputs_control.control_operation_running_conflict(
-      state.ledger_projection,
+      ledger_projection(state),
       operation,
     )
   {
@@ -4298,10 +4346,9 @@ fn start_queued_control_operation(
       let state =
         State(
           ..state,
-          active_control_operations: dict.insert(
-            state.active_control_operations,
+          control_operations: control_operation_runtime.begin(
+            state.control_operations,
             operation.operation_id,
-            True,
           ),
         )
       let state = case operation.status {
@@ -4338,8 +4385,8 @@ fn finish_queued_control_operation(
   let state =
     State(
       ..state,
-      active_control_operations: dict.delete(
-        state.active_control_operations,
+      control_operations: control_operation_runtime.finish(
+        state.control_operations,
         operation_id,
       ),
     )
@@ -4491,7 +4538,7 @@ fn execute_retry_step_operation(
       case
         retry_step_issue_preflight(
           state,
-          state.ledger_projection,
+          ledger_projection(state),
           operator_command,
           command.RetryWorkflowStepRunId(run_id),
           run_id,
@@ -4516,7 +4563,7 @@ fn continue_scheduled_retry_step_operation(
   case
     scheduled_retry_step_observation(
       state,
-      state.ledger_projection,
+      ledger_projection(state),
       operator_command,
       option.unwrap(operation.run_id, ""),
     )
@@ -5301,7 +5348,7 @@ fn operation_requested_step_id(
   state: State,
   operation_id: String,
 ) -> Option(String) {
-  case projection.control_operation(state.ledger_projection, operation_id) {
+  case projection.control_operation(ledger_projection(state), operation_id) {
     Ok(operation) -> operation.requested_step_id
     Error(Nil) -> None
   }
@@ -5313,13 +5360,16 @@ fn finish_operator_command_effect(
   result: command.CommandResult,
 ) -> #(State, List(transition_types.Message)) {
   case
-    dict.get(state.pending_operator_command_replies, request.correlation_id)
+    operator_runtime.pending_reply(
+      state.operator_runtime,
+      request.correlation_id,
+    )
   {
     Ok(_) -> #(
       State(
         ..state,
-        completed_operator_command_results: dict.insert(
-          state.completed_operator_command_results,
+        operator_runtime: operator_runtime.record_completed_result(
+          state.operator_runtime,
           request.correlation_id,
           result,
         ),
@@ -5339,12 +5389,25 @@ fn finish_operator_command_effect(
 fn set_operator_paused(state: State, paused: Bool) -> State {
   case paused {
     True ->
-      State(..state, operator_paused: True)
+      State(
+        ..state,
+        operator_runtime: operator_runtime.set_dispatch_paused(
+          state.operator_runtime,
+          True,
+        ),
+      )
       |> start_pending_scheduled_runs
       |> evaluate_scheduled_jobs
     False -> {
       let state = evaluate_scheduled_jobs(state)
-      State(..state, operator_paused: False) |> start_pending_scheduled_runs
+      State(
+        ..state,
+        operator_runtime: operator_runtime.set_dispatch_paused(
+          state.operator_runtime,
+          False,
+        ),
+      )
+      |> start_pending_scheduled_runs
     }
   }
 }
@@ -5482,7 +5545,7 @@ fn schedule_run_now_for_operator(
   job_id: String,
 ) -> #(State, command.CommandResult) {
   let state = evaluate_scheduled_jobs(state)
-  case state.operator_paused {
+  case operator_paused(state) {
     True -> #(
       state,
       command.rejected(
@@ -5571,12 +5634,12 @@ fn reenable_schedule_for_operator(
             True -> {
               let runtime =
                 scheduled_runtime.set_next_due(
-                  state.scheduled_runtime,
+                  scheduled_runtime_value(state),
                   job.id,
                   schedule_core.initial_next_due(now_ms, job.every_ms),
                 )
               #(
-                State(..state, scheduled_runtime: runtime),
+                set_scheduled_runtime(state, runtime),
                 command.applied(
                   operator_command,
                   Some("schedule re-enabled; future fires resumed"),
@@ -5596,7 +5659,7 @@ fn schedule_run_now_for_enabled_job(
 ) -> #(State, command.CommandResult) {
   case
     scheduled_runtime.schedule_mode(
-      state.scheduled_runtime,
+      scheduled_runtime_value(state),
       job.id,
       scheduled_worker_active_for_job(state, job.id),
     )
@@ -5645,17 +5708,17 @@ fn schedule_run_now_for_enabled_job(
           "scheduled_pending_append_failed",
         )
       let state =
-        State(
-          ..state,
-          scheduled_runtime: scheduled_runtime.insert_pending_start(
-            state.scheduled_runtime,
+        set_scheduled_runtime(
+          state,
+          scheduled_runtime.insert_pending_start(
+            scheduled_runtime_value(state),
             pending,
           ),
         )
         |> start_pending_scheduled_runs
       case
         scheduled_runtime.schedule_mode(
-          state.scheduled_runtime,
+          scheduled_runtime_value(state),
           job.id,
           scheduled_worker_active_for_job(state, job.id),
         )
@@ -6219,15 +6282,13 @@ fn apply_reloaded_workflow(
 fn reconcile_remote_client_after_reload(state: State) -> State {
   let ui_server = state.workflow.effective.ui_server
   let state =
-    State(
-      ..state,
-      read_model: state.read_model
-        |> read_model.update_ui_server_enabled(ui_server_enabled(ui_server)),
-    )
+    update_query_projection(state, fn(model) {
+      read_model.update_ui_server_enabled(model, ui_server_enabled(ui_server))
+    })
   case ui_server_enabled(ui_server) {
     False -> stop_remote_client_and_clear(state, read_model.Disabled)
     True ->
-      case state.remote_client {
+      case remote_client(state) {
         None -> restart_remote_client_if_enabled(state)
         Some(_) ->
           state
@@ -6242,12 +6303,12 @@ fn refresh_scheduled_next_due_after_reload(state: State) -> State {
   let runtime =
     state.workflow.bundle.orchestrator.scheduled_jobs
     |> list.filter(fn(job) { job.enabled })
-    |> list.fold(state.scheduled_runtime, fn(runtime, job) {
+    |> list.fold(scheduled_runtime_value(state), fn(runtime, job) {
       let #(runtime, _) =
         scheduled_runtime.ensure_next_due(runtime, job.id, now_ms, job.every_ms)
       runtime
     })
-  State(..state, scheduled_runtime: runtime)
+  set_scheduled_runtime(state, runtime)
 }
 
 fn begin_running_refresh(state: State, generation: Int) -> State {
@@ -6349,7 +6410,7 @@ fn emit_work_item_invalidation_event(
   state: State,
   event: work_item_invalidation.Event,
 ) -> Nil {
-  state.dependencies.emit_work_item_invalidation(state.remote_client, event)
+  state.dependencies.emit_work_item_invalidation(remote_client(state), event)
 }
 
 fn emit_work_item_invalidation_for_issues(
@@ -6432,13 +6493,13 @@ fn transition_dispatch_context(
     state.workflow.bundle.orchestrator.routing,
     runtime_bundle.normalized_workflows(state.workflow.bundle),
     config.can_dispatch(state.workflow.reload_state),
-    state.operator_paused,
+    operator_paused(state),
     worker_registry.worker_issue_ids(state.registry),
     worker_registry.worker_issues(state.registry),
     worker_registry.scheduled_worker_count(state.registry),
     state.workflow.effective.workspace.root,
     state.dependencies.now_ms(),
-    state.recovery_by_issue,
+    recovery_by_issue(state),
     state.workflow.bundle.orchestrator.config_dir,
     review_lane_preflight.policy_from_env(),
   )
@@ -6489,9 +6550,7 @@ fn transition_shell_context(
       ])
       state
     },
-    mark_invariant_failure: fn(state, _) {
-      State(..state, transition_invariant_violation_pending: True)
-    },
+    mark_invariant_failure: fn(state, _) { mark_invariant_violation(state) },
     invariant_mode: transition_invariant_mode_from_env(),
     invariant_checker: state.dependencies.check_transition_invariants,
     max_messages: daemon_transition_shell.default_message_limit(),
@@ -6515,9 +6574,7 @@ fn transition_shell_boundary(
 ) -> daemon_transition_shell.ShellHandlers(State, Message, TimerHandle) {
   daemon_transition_shell.shell_handlers(
     capabilities: capabilities,
-    mark_ledger_append_failed: fn(state) {
-      State(..state, transition_invariant_violation_pending: True)
-    },
+    mark_ledger_append_failed: mark_invariant_violation,
     start_worker: transition_start_worker,
     reply_snapshot: fn(state, _) { state },
     mark_poll_in_flight: fn(state, generation) {
@@ -6619,12 +6676,7 @@ fn transition_shell_boundary(
       log_state(state, "info", "claim_released", [#("issue_id", issue_id)])
       state
     },
-    clear_recovery: fn(state, issue_id) {
-      State(
-        ..state,
-        recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
-      )
-    },
+    clear_recovery: clear_recovery_for_issue,
     worker_start_failed: transition_worker_start_failed,
     remove_worker: transition_remove_worker,
     publish_worker_exited: transition_publish_worker_exited,
@@ -7483,12 +7535,11 @@ fn transition_worker_start_failed(
     #("reason", reason),
   ])
   State(
-    ..state,
+    ..clear_recovery_for_issue(state, issue_id),
     registry: worker_registry.forget_task_ref_session(
       state.registry,
       request.task_ref,
     ),
-    recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
   )
 }
 
@@ -7678,7 +7729,7 @@ fn transition_park_issue(
   ])
   let #(state, appended) = append_parked_record(state, parked, reason_text)
   case appended {
-    False -> State(..state, transition_invariant_violation_pending: True)
+    False -> mark_invariant_violation(state)
     True ->
       enqueue_parked_entry_report(state, parked, reason_text, source_run_id)
   }
@@ -8093,10 +8144,10 @@ fn evaluate_scheduled_job(
 ) -> State {
   case scheduled_job_quarantined(state, job.id) {
     True ->
-      State(
-        ..state,
-        scheduled_runtime: scheduled_runtime.set_next_due(
-          state.scheduled_runtime,
+      set_scheduled_runtime(
+        state,
+        scheduled_runtime.set_next_due(
+          scheduled_runtime_value(state),
           job.id,
           schedule_core.next_due_after(now_ms, job.every_ms),
         ),
@@ -8104,21 +8155,21 @@ fn evaluate_scheduled_job(
     False -> {
       let #(runtime, actions) =
         scheduled_runtime.admit_due(
-          state.scheduled_runtime,
+          scheduled_runtime_value(state),
           job.id,
           job.workflow,
           job.every_ms,
           now_ms,
           scheduled_worker_active_for_job(state, job.id),
         )
-      let state = State(..state, scheduled_runtime: runtime)
+      let state = set_scheduled_runtime(state, runtime)
       apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
     }
   }
 }
 
 fn scheduled_job_quarantined(state: State, job_id: String) -> Bool {
-  case projection.scheduled_status_for(state.ledger_projection, job_id) {
+  case projection.scheduled_status_for(ledger_projection(state), job_id) {
     Ok(status) -> status.state == projection.ScheduledQuarantined
     Error(Nil) -> False
   }
@@ -8126,7 +8177,7 @@ fn scheduled_job_quarantined(state: State, job_id: String) -> Bool {
 
 fn schedule_quarantined_message(state: State, job_id: String) -> String {
   let reason = case
-    projection.scheduled_status_for(state.ledger_projection, job_id)
+    projection.scheduled_status_for(ledger_projection(state), job_id)
   {
     Ok(status) ->
       option.unwrap(status.quarantine_reason, "too many consecutive failures")
@@ -8300,8 +8351,8 @@ fn schedule_scheduled_retry_timer(
     )
   State(
     ..state,
-    scheduled_retry_timers: scheduled_runtime.insert_timer_cancelling_existing(
-      state.scheduled_retry_timers,
+    scheduled_runtime_owner: scheduled_runtime.insert_retry_timer_cancelling_existing(
+      state.scheduled_runtime_owner,
       run_id,
       timer,
       fn(timer) { daemon_capabilities.cancel_timer(timers, timer) },
@@ -8325,8 +8376,8 @@ fn schedule_scheduled_report_retry_timer(
     )
   State(
     ..state,
-    scheduled_report_retry_timers: scheduled_runtime.insert_timer_cancelling_existing(
-      state.scheduled_report_retry_timers,
+    scheduled_runtime_owner: scheduled_runtime.insert_report_retry_timer_cancelling_existing(
+      state.scheduled_runtime_owner,
       run_id,
       timer,
       fn(timer) { daemon_capabilities.cancel_timer(timers, timer) },
@@ -8335,8 +8386,7 @@ fn schedule_scheduled_report_retry_timer(
 }
 
 fn start_pending_scheduled_runs(state: State) -> State {
-  state.scheduled_runtime
-  |> scheduled_runtime.pending_starts
+  scheduled_runtime.pending_starts(scheduled_runtime_value(state))
   |> list.fold(state, fn(state, pending) {
     start_pending_scheduled_run(state, pending)
   })
@@ -8346,7 +8396,7 @@ fn start_pending_scheduled_run(
   state: State,
   pending: scheduled_runtime.PendingStart,
 ) -> State {
-  case state.operator_paused {
+  case operator_paused(state) {
     True -> block_pending_scheduled_run(state, pending, "paused")
     False ->
       case scheduled_slot_available_for_start(state) {
@@ -8375,10 +8425,10 @@ fn start_pending_scheduled_run(
                   ],
                   "scheduled_pending_cancel_append_failed",
                 )
-              State(
-                ..state,
-                scheduled_runtime: scheduled_runtime.remove_pending_start(
-                  state.scheduled_runtime,
+              set_scheduled_runtime(
+                state,
+                scheduled_runtime.remove_pending_start(
+                  scheduled_runtime_value(state),
                   pending.job_id,
                 ),
               )
@@ -8411,10 +8461,10 @@ fn start_pending_scheduled_run(
                       ],
                       "scheduled_start_failed_append_failed",
                     )
-                  State(
-                    ..state,
-                    scheduled_runtime: scheduled_runtime.remove_pending_start(
-                      state.scheduled_runtime,
+                  set_scheduled_runtime(
+                    state,
+                    scheduled_runtime.remove_pending_start(
+                      scheduled_runtime_value(state),
                       pending.job_id,
                     ),
                   )
@@ -8438,12 +8488,12 @@ fn block_pending_scheduled_run(
 ) -> State {
   let #(runtime, actions) =
     scheduled_runtime.block_pending_start(
-      state.scheduled_runtime,
+      scheduled_runtime_value(state),
       pending.job_id,
       reason,
       state.dependencies.now_ms(),
     )
-  let state = State(..state, scheduled_runtime: runtime)
+  let state = set_scheduled_runtime(state, runtime)
   apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
 }
 
@@ -8635,12 +8685,7 @@ fn worker_spawn_context(
         registry: worker_registry.register_worker(state.registry, handle),
       )
     },
-    clear_recovery: fn(state, issue_id) {
-      State(
-        ..state,
-        recovery_by_issue: dict.delete(state.recovery_by_issue, issue_id),
-      )
-    },
+    clear_recovery: clear_recovery_for_issue,
   )
 }
 
@@ -8726,10 +8771,10 @@ fn scheduled_worker_spawn_context(
       )
     },
     remove_pending_start: fn(state, job_id) {
-      State(
-        ..state,
-        scheduled_runtime: scheduled_runtime.remove_pending_start(
-          state.scheduled_runtime,
+      set_scheduled_runtime(
+        state,
+        scheduled_runtime.remove_pending_start(
+          scheduled_runtime_value(state),
           job_id,
         ),
       )
@@ -9066,7 +9111,7 @@ fn scheduled_worker_failure_follow_up(
 ) -> #(State, scheduled_runtime.WorkerFailureFollowUp) {
   let #(runtime, follow_up) =
     scheduled_runtime.worker_failure_follow_up(
-      state.scheduled_runtime,
+      scheduled_runtime_value(state),
       handle.job_id,
       handle.workflow_id,
       handle.due_at_ms,
@@ -9076,7 +9121,7 @@ fn scheduled_worker_failure_follow_up(
       run_root,
       Some(handle.session_id),
     )
-  #(State(..state, scheduled_runtime: runtime), follow_up)
+  #(set_scheduled_runtime(state, runtime), follow_up)
 }
 
 fn scheduled_failure_ledger_via_capabilities(
@@ -9170,7 +9215,7 @@ fn begin_scheduled_failure_report_for_job(
       let generation =
         scheduled_runtime.normalize_report_attempt_index(report_attempt_index)
       let previous_task_remote_id = case
-        projection.scheduled_status_for(state.ledger_projection, job.id)
+        projection.scheduled_status_for(ledger_projection(state), job.id)
       {
         Ok(status) -> status.failure_issue_id
         Error(Nil) -> None
@@ -9227,31 +9272,16 @@ fn handle_scheduled_retry_tick(
   generation: Int,
 ) -> State {
   let state = evaluate_scheduled_jobs(state)
-  let clear_timer =
-    scheduled_runtime.retry_tick_matches(
-      state.scheduled_runtime,
-      run_id,
-      generation,
-    )
-  let #(runtime, actions) =
-    scheduled_runtime.handle_retry_tick(
-      state.scheduled_runtime,
+  let #(scheduled_runtime_owner, actions) =
+    scheduled_runtime.handle_retry_tick_owner(
+      state.scheduled_runtime_owner,
       run_id,
       generation,
       state.dependencies.now_ms(),
       scheduled_slot_available_for_start(state),
-      state.operator_paused,
+      operator_paused(state),
     )
-  let scheduled_retry_timers = case clear_timer {
-    True -> dict.delete(state.scheduled_retry_timers, run_id)
-    False -> state.scheduled_retry_timers
-  }
-  let state =
-    State(
-      ..state,
-      scheduled_runtime: runtime,
-      scheduled_retry_timers: scheduled_retry_timers,
-    )
+  let state = State(..state, scheduled_runtime_owner: scheduled_runtime_owner)
   apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
   |> start_pending_scheduled_runs
 }
@@ -9307,12 +9337,8 @@ fn handle_scheduled_failure_report_success(
   let state =
     State(
       ..state,
-      scheduled_runtime: scheduled_runtime.clear_report_retry(
-        state.scheduled_runtime,
-        publication.run_id,
-      ),
-      scheduled_report_retry_timers: scheduled_runtime.delete_timer_cancelling_existing(
-        state.scheduled_report_retry_timers,
+      scheduled_runtime_owner: scheduled_runtime.clear_report_retry_and_delete_timer(
+        state.scheduled_runtime_owner,
         publication.run_id,
         state.dependencies.cancel_timer,
       ),
@@ -9345,7 +9371,7 @@ fn handle_scheduled_failure_report_failure(
 ) -> State {
   let decision =
     scheduled_runtime.decide_report_failure(
-      state.scheduled_runtime,
+      scheduled_runtime_value(state),
       publication.job_id,
       publication.run_id,
       generation,
@@ -9356,19 +9382,12 @@ fn handle_scheduled_failure_report_failure(
   let state =
     State(
       ..state,
-      scheduled_runtime: scheduled_runtime.report_failure_decision_runtime(
+      scheduled_runtime_owner: scheduled_runtime.apply_report_failure_decision(
+        state.scheduled_runtime_owner,
+        publication.run_id,
         decision,
+        state.dependencies.cancel_timer,
       ),
-      scheduled_report_retry_timers: case decision {
-        scheduled_runtime.ReportFailureTerminal(..) ->
-          scheduled_runtime.delete_timer_cancelling_existing(
-            state.scheduled_report_retry_timers,
-            publication.run_id,
-            state.dependencies.cancel_timer,
-          )
-        scheduled_runtime.ReportFailureRetry(..) ->
-          state.scheduled_report_retry_timers
-      },
     )
   log_state(
     state,
@@ -9402,28 +9421,13 @@ fn handle_scheduled_report_retry_tick(
   run_id: String,
   generation: Int,
 ) -> State {
-  let clear_timer =
-    scheduled_runtime.report_retry_tick_matches(
-      state.scheduled_runtime,
+  let #(scheduled_runtime_owner, actions) =
+    scheduled_runtime.handle_report_retry_tick_owner(
+      state.scheduled_runtime_owner,
       run_id,
       generation,
     )
-  let #(runtime, actions) =
-    scheduled_runtime.handle_report_retry_tick(
-      state.scheduled_runtime,
-      run_id,
-      generation,
-    )
-  let scheduled_report_retry_timers = case clear_timer {
-    True -> dict.delete(state.scheduled_report_retry_timers, run_id)
-    False -> state.scheduled_report_retry_timers
-  }
-  let state =
-    State(
-      ..state,
-      scheduled_runtime: runtime,
-      scheduled_report_retry_timers: scheduled_report_retry_timers,
-    )
+  let state = State(..state, scheduled_runtime_owner: scheduled_runtime_owner)
   apply_scheduled_runtime_actions(state, actions, append_retry_record: True)
 }
 
@@ -9433,7 +9437,7 @@ fn retry_scheduled_failure_report_by_identity(
   run_id: String,
   report_attempt_index: Int,
 ) -> State {
-  case projection.scheduled_status_for(state.ledger_projection, job_id) {
+  case projection.scheduled_status_for(ledger_projection(state), job_id) {
     Error(Nil) -> state
     Ok(status) ->
       case scheduled_job_by_id(state, job_id), status.current_run {
@@ -9481,10 +9485,10 @@ fn retain_scheduled_report_retry_after_outbox_append_failure(
 ) -> State {
   let generation = previous_report_retry_generation(report_attempt_index)
   let state =
-    State(
-      ..state,
-      scheduled_runtime: scheduled_runtime.insert_report_retry(
-        state.scheduled_runtime,
+    set_scheduled_runtime(
+      state,
+      scheduled_runtime.insert_report_retry(
+        scheduled_runtime_value(state),
         scheduled_runtime.ReportRetryStart(
           job_id: job_id,
           run_id: run_id,
@@ -9610,7 +9614,7 @@ fn worker_down_context(
 ) -> worker_lifecycle.WorkerDownContext(State) {
   worker_lifecycle.WorkerDownContext(
     state: state,
-    remote_client_monitor: state.remote_client_monitor,
+    remote_client_monitor: remote_client_monitor(state),
     log_remote_client_down: fn(state) {
       log_state(state, "warn", "remote_client_down", [
         #("monitor", "remote_client"),
@@ -9620,7 +9624,7 @@ fn worker_down_context(
       state
       |> update_read_model_remote_client_status(read_model.Stopped)
       |> fn(state) {
-        State(..state, remote_client: None, remote_client_monitor: None)
+        State(..state, remote_runtime: remote.cleared(state.remote_runtime))
       }
     },
     restart_remote_client_if_enabled: restart_remote_client_if_enabled,
@@ -10325,7 +10329,7 @@ fn require_handoff_capability(state: State) -> adapter.HandoffCapability {
 }
 
 fn enqueue_side_effect(state: State, effect: effect_runner.Effect) -> State {
-  effect_runner.enqueue(state.effect_runner, effect)
+  effect_runner.enqueue(effect_runner_handle(state), effect)
   state
 }
 
@@ -10500,9 +10504,9 @@ fn append_ledger_records(
               let state =
                 State(
                   ..state,
-                  ledger_projection: projection.fold_from(
-                    state.ledger_projection,
-                    records,
+                  query_projection: query_projection.set_ledger_projection(
+                    state.query_projection,
+                    projection.fold_from(ledger_projection(state), records),
                   ),
                   ledger_compaction: ledger_compaction.after_successful_append(
                     state.ledger_compaction,
@@ -10650,14 +10654,14 @@ fn shutdown_step_attempt_interruption_bodies(
 }
 
 fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
-  process.demonitor_process(state.effect_runner_monitor)
-  case state.control_server_monitor {
+  process.demonitor_process(effect_runner_monitor(state))
+  case control_server_monitor(state) {
     Some(monitor) -> process.demonitor_process(monitor)
     None -> Nil
   }
   case stop_effect_runner {
     True ->
-      case effect_runner.shutdown(state.effect_runner, 1000) {
+      case effect_runner.shutdown(effect_runner_handle(state), 1000) {
         Ok(Nil) -> Nil
         Error(Nil) ->
           log_state(state, "warn", "effect_runner_shutdown_timeout", [
@@ -10666,7 +10670,7 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
       }
     False -> Nil
   }
-  case state.remote_client {
+  case remote_client(state) {
     Some(handle) ->
       case state.dependencies.stop_remote_client(handle, 1000) {
         Ok(Nil) -> Nil
@@ -10679,10 +10683,10 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
       }
     None -> Nil
   }
-  let _best_effort = query_service.stop(state.query_service, 1000)
-  let _cache_stop = query_snapshot_cache.stop(state.query_cache, 1000)
-  state.dependencies.stop_control_server(state.control_server)
-  case state.control_file_path {
+  let _best_effort = query_service.stop(query_service(state), 1000)
+  let _cache_stop = query_snapshot_cache.stop(query_cache(state), 1000)
+  state.dependencies.stop_control_server(control_server_handle(state))
+  case control_file_path(state) {
     Some(path) -> control_file.remove(path)
     None -> Nil
   }
@@ -10695,12 +10699,11 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
   |> list.each(fn(handle) { kill_worker(handle) })
   worker_registry.scheduled_worker_handles(state.registry)
   |> list.each(fn(handle) { kill_scheduled_worker(handle) })
-  state.scheduled_retry_timers
-  |> dict.values
-  |> list.each(state.dependencies.cancel_timer)
-  state.scheduled_report_retry_timers
-  |> dict.values
-  |> list.each(state.dependencies.cancel_timer)
+  let scheduled_runtime_owner =
+    scheduled_runtime.reset(
+      state.scheduled_runtime_owner,
+      state.dependencies.cancel_timer,
+    )
   let event_hub_shutdown_timeout_ms = 1000
   case hub.stop_and_wait(state.event_hub, event_hub_shutdown_timeout_ms) {
     Ok(Nil) -> Nil
@@ -10722,15 +10725,9 @@ fn shutdown_runtime_shell(state: State, stop_effect_runner: Bool) -> State {
       pending_dispatch_validations: dict.new(),
       pending_review_lane_preflights: dict.new(),
     ),
-    scheduled_runtime: scheduled_runtime.new(),
-    scheduled_retry_timers: dict.new(),
-    scheduled_report_retry_timers: dict.new(),
-    control_server: NoControlServer,
-    control_server_monitor: None,
-    control_file_path: None,
-    query_service: state.query_service,
-    remote_client: None,
-    remote_client_monitor: None,
+    scheduled_runtime_owner: scheduled_runtime_owner,
+    control_plane: control_plane_runtime.cleared(state.control_plane),
+    remote_runtime: remote.cleared(state.remote_runtime),
   )
 }
 

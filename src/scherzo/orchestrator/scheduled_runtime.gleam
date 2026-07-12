@@ -20,6 +20,55 @@ pub type Runtime {
   )
 }
 
+pub type State(timer) {
+  State(
+    runtime: Runtime,
+    retry_timers: Dict(String, timer),
+    report_retry_timers: Dict(String, timer),
+  )
+}
+
+pub fn owner(runtime: Runtime) -> State(timer) {
+  State(
+    runtime: runtime,
+    retry_timers: dict.new(),
+    report_retry_timers: dict.new(),
+  )
+}
+
+pub fn runtime(state: State(timer)) -> Runtime {
+  state.runtime
+}
+
+pub fn retry_timer_count(state: State(timer)) -> Int {
+  dict.size(state.retry_timers)
+}
+
+pub fn report_retry_timer_count(state: State(timer)) -> Int {
+  dict.size(state.report_retry_timers)
+}
+
+pub fn cancel_all_timers(
+  state: State(timer),
+  cancel_timer: fn(timer) -> Nil,
+) -> State(timer) {
+  state.retry_timers |> dict.values |> list.each(cancel_timer)
+  state.report_retry_timers |> dict.values |> list.each(cancel_timer)
+  State(..state, retry_timers: dict.new(), report_retry_timers: dict.new())
+}
+
+pub fn reset(
+  state: State(timer),
+  cancel_timer: fn(timer) -> Nil,
+) -> State(timer) {
+  let state = cancel_all_timers(state, cancel_timer)
+  State(..state, runtime: new())
+}
+
+pub fn set_runtime(state: State(timer), runtime: Runtime) -> State(timer) {
+  State(..state, runtime: runtime)
+}
+
 pub type PendingStart {
   PendingStart(
     job_id: String,
@@ -675,6 +724,40 @@ pub fn insert_timer_cancelling_existing(
   dict.insert(timers, key, timer)
 }
 
+pub fn insert_retry_timer_cancelling_existing(
+  state: State(timer),
+  run_id: String,
+  timer: timer,
+  cancel_timer: fn(timer) -> Nil,
+) -> State(timer) {
+  State(
+    ..state,
+    retry_timers: insert_timer_cancelling_existing(
+      state.retry_timers,
+      run_id,
+      timer,
+      cancel_timer,
+    ),
+  )
+}
+
+pub fn insert_report_retry_timer_cancelling_existing(
+  state: State(timer),
+  run_id: String,
+  timer: timer,
+  cancel_timer: fn(timer) -> Nil,
+) -> State(timer) {
+  State(
+    ..state,
+    report_retry_timers: insert_timer_cancelling_existing(
+      state.report_retry_timers,
+      run_id,
+      timer,
+      cancel_timer,
+    ),
+  )
+}
+
 pub fn delete_timer_cancelling_existing(
   timers: Dict(String, timer),
   key: String,
@@ -685,6 +768,87 @@ pub fn delete_timer_cancelling_existing(
     Error(Nil) -> Nil
   }
   dict.delete(timers, key)
+}
+
+pub fn clear_report_retry_and_delete_timer(
+  state: State(timer),
+  run_id: String,
+  cancel_timer: fn(timer) -> Nil,
+) -> State(timer) {
+  State(
+    ..state,
+    runtime: clear_report_retry(state.runtime, run_id),
+    report_retry_timers: delete_timer_cancelling_existing(
+      state.report_retry_timers,
+      run_id,
+      cancel_timer,
+    ),
+  )
+}
+
+pub fn apply_report_failure_decision(
+  state: State(timer),
+  run_id: String,
+  decision: ReportFailureDecision,
+  cancel_timer: fn(timer) -> Nil,
+) -> State(timer) {
+  State(
+    ..state,
+    runtime: report_failure_decision_runtime(decision),
+    report_retry_timers: case decision {
+      ReportFailureTerminal(..) ->
+        delete_timer_cancelling_existing(
+          state.report_retry_timers,
+          run_id,
+          cancel_timer,
+        )
+      ReportFailureRetry(..) -> state.report_retry_timers
+    },
+  )
+}
+
+pub fn handle_retry_tick_owner(
+  state: State(timer),
+  run_id: String,
+  generation: Int,
+  now_ms: Int,
+  slot_available: Bool,
+  dispatch_paused: Bool,
+) -> #(State(timer), List(Action)) {
+  let clear_timer = retry_tick_matches(state.runtime, run_id, generation)
+  let #(runtime, actions) =
+    handle_retry_tick(
+      state.runtime,
+      run_id,
+      generation,
+      now_ms,
+      slot_available,
+      dispatch_paused,
+    )
+  #(
+    State(..state, runtime: runtime, retry_timers: case clear_timer {
+      True -> dict.delete(state.retry_timers, run_id)
+      False -> state.retry_timers
+    }),
+    actions,
+  )
+}
+
+pub fn handle_report_retry_tick_owner(
+  state: State(timer),
+  run_id: String,
+  generation: Int,
+) -> #(State(timer), List(Action)) {
+  let clear_timer = report_retry_tick_matches(state.runtime, run_id, generation)
+  let #(runtime, actions) =
+    handle_report_retry_tick(state.runtime, run_id, generation)
+  #(
+    State(..state, runtime: runtime, report_retry_timers: case clear_timer {
+      True -> dict.delete(state.report_retry_timers, run_id)
+      False -> state.report_retry_timers
+    }),
+    actions,
+  )
 }
 
 pub fn handle_report_retry_tick(
