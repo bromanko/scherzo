@@ -2005,8 +2005,42 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     recovery_prompt,
     "submit_workflow_step_recovery_result",
   )
+  assert string.contains(recovery_prompt, "actionable implementation backlog")
+  assert string.contains(
+    recovery_prompt,
+    "Breadth alone is not scope expansion",
+  )
+  assert string.contains(recovery_prompt, "configured two-attempt")
+  assert string.contains(recovery_prompt, "newly stamped verdict")
+  assert string.contains(recovery_prompt, "do not repeat or undo")
+  assert string.contains(recovery_prompt, "required full gates")
+  assert string.contains(recovery_prompt, "missing required input or artifact")
+  assert string.contains(recovery_prompt, "provenance or intent conflict")
+  assert string.contains(recovery_prompt, "unsafe ambiguity")
+  assert string.contains(recovery_prompt, "required product decision")
+  assert string.contains(recovery_prompt, "infrastructure failure")
+  assert string.contains(recovery_prompt, "exhausted attempt budget")
   assert string.contains(recovery_prompt, "gave_up")
   assert string.contains(recovery_prompt, "recheck")
+  assert !string.contains(recovery_prompt, "change would be broad or unsafe")
+  assert !string.contains(recovery_prompt, "Run only cheap targeted checks")
+
+  let assert Ok(implementation_prompt) =
+    simplifile.read(
+      ".scherzo/workflows/prompts/execplan-implementation-implement.md",
+    )
+  assert string.contains(
+    implementation_prompt,
+    "this `implement_plan` step remains the primary broad implementation pass",
+  )
+  assert string.contains(
+    implementation_prompt,
+    "recovery is authorized to treat those findings as an actionable backlog",
+  )
+  assert !string.contains(
+    implementation_prompt,
+    "Recovery is intentionally narrow",
+  )
 
   let assert Ok(repair_prompt) =
     simplifile.read(".scherzo/workflows/prompts/repair-base-drift.md")
