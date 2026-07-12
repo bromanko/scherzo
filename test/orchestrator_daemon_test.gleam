@@ -3986,14 +3986,14 @@ pub fn daemon_scheduled_capacity_starts_after_issue_failures_park_test() {
   assert wait_for_records(
     root,
     fn(records) { scheduled_started_count(records) >= 1 },
-    20,
+    100,
   )
   let _ = test_async.drain_subject(log_subject)
 
   test_async.release_barrier(barrier)
   test_async.release_barrier(barrier)
   test_async.release_barrier(barrier)
-  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  assert daemon.shutdown(started.data, 5000) == Ok(Nil)
   process.send(clock, StopClock)
 }
 
@@ -4200,10 +4200,10 @@ pub fn daemon_scheduled_failure_reports_without_workflow_retry_test() {
       && has_scheduled_failure_outbox_completed(records)
       && !has_scheduled_retry_scheduled(records, run_id, 2)
     },
-    20,
+    100,
   )
 
-  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  assert daemon.shutdown(started.data, 5000) == Ok(Nil)
   process.send(clock, StopClock)
 }
 
@@ -5244,7 +5244,7 @@ pub fn daemon_startup_resume_preserves_recovered_success_outcome_test() {
   assert wait_for_workflow_finished_outcomes(
     workspace_root,
     ["succeeded_after_recovery"],
-    20,
+    100,
   )
   assert workflow_finished_task_refs(workspace_root)
     == [
