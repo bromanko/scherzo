@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -2564,11 +2565,41 @@ def gate_implementation_completion_command(args: list[str]) -> None:
         for record in workspace["changed_files"]
         if str(record.get("path") or "").strip()
     )
-    reason_codes, criterion_failures = implementation_completion_semantic_failures(
-        submission,
-        plan_path=plan_path,
-        actual_files=actual_files,
-    )
+    try:
+        reason_codes, criterion_failures = implementation_completion_semantic_failures(
+            submission,
+            plan_path=plan_path,
+            actual_files=actual_files,
+        )
+    except Exception as exc:
+        error = {
+            "failure_code": "implementation_completion_evidence_failed",
+            "reason_codes": ["semantic_evidence_validator_crashed"],
+            "criterion_failures": [],
+            "message": "The implementation-completion semantic evidence validator crashed.",
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        diagnostic_path = write_implementation_completion_diagnostic(
+            status="rejected",
+            submission=submission,
+            validation_error=error,
+            workspace=workspace,
+            metadata=metadata,
+        )
+        print("IMPLEMENTATION_COMPLETION_GATE=error")
+        print("IMPLEMENTATION_COMPLETION_REASON_CODES=semantic_evidence_validator_crashed")
+        print(
+            "IMPLEMENTATION_COMPLETION_DIAGNOSTIC_PATH="
+            + display_path(diagnostic_path)
+        )
+        fail(
+            "implementation-completion semantic evidence validation crashed; "
+            f"inspect {display_path(diagnostic_path)}",
+            failure_code="implementation_completion_evidence_failed",
+            exit_code=2,
+        )
     if not submission["ready_for_verification"]:
         reason_codes.append("not_ready_for_verification")
     if submission["remaining_required_work"]:

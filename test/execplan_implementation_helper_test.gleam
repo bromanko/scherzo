@@ -2221,6 +2221,48 @@ pub fn implementation_completion_gate_rejects_liv_1469_shaped_submission_test() 
   assert jj_log == "diff --from local-start --to @ --name-only --color=never\n"
 }
 
+pub fn implementation_completion_gate_reports_semantic_validator_crash_test() {
+  let dir = "test/tmp/implementation-completion-gate-validator-crash"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  let _ = run_helper_in(dir, "printf '\\377' > invalid-evidence.bin")
+  write_implementation_completion_submission_with_evidence(
+    dir,
+    "true",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[{\"criterion\":\"Required implementation behavior is present.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"code\",\"reference\":\"invalid-evidence.bin\",\"observation\":\"Malformed evidence must not escape as a traceback.\"}]}]",
+    "[]",
+    "[{\"criterion\":\"Malformed evidence is unreadable.\",\"pattern\":\"missing\",\"paths\":[\"invalid-evidence.bin\"]}]",
+    "[]",
+    "[]",
+    "[]",
+    "[]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.exit_code == Some(2)
+  assert artifact.failure_code
+    == Some("implementation_completion_evidence_failed")
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_COMPLETION_GATE=error",
+  )
+  assert string.contains(artifact.stdout, "semantic_evidence_validator_crashed")
+  assert !string.contains(artifact.stderr, "Traceback (most recent call last)")
+  let assert Ok(diagnostic) =
+    simplifile.read(
+      dir
+      <> "/run-root/state/implementation/scherzo-implementation-completion-diagnostic.json",
+    )
+  assert string.contains(
+    diagnostic,
+    "implementation_completion_evidence_failed",
+  )
+  assert string.contains(diagnostic, "UnicodeDecodeError")
+  assert string.contains(diagnostic, "Traceback (most recent call last)")
+}
+
 pub fn implementation_completion_gate_rejects_remaining_work_even_when_ready_test() {
   let dir = "test/tmp/implementation-completion-gate-remaining-work"
   let _fingerprint = setup_plan_completion_gate_fixture(dir)
