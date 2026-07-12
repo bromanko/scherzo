@@ -177,6 +177,74 @@ pub fn idempotent_ledger_append_rejects_conflict_after_compaction_test() {
   assert read.records == []
 }
 
+pub fn append_workstream_start_records_coalesces_duplicate_start_test() {
+  let root = "test/tmp/workstream-ledger/workstream-start-duplicate"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = state_ledger.path_for_workspace_root(root)
+  let created = workstream_created_record()
+  let queued = workstream_phase_run_record()
+
+  let assert Ok(state_ledger.WorkstreamStartRecordsAppended) =
+    state_ledger.append_workstream_start_records(
+      path,
+      [created, queued],
+      queued,
+      True,
+    )
+  let assert Ok(state_ledger.WorkstreamStartRecordsDuplicate(existing_run)) =
+    state_ledger.append_workstream_start_records(
+      path,
+      [created, queued],
+      queued,
+      True,
+    )
+
+  assert existing_run.action_id == "action-1"
+  assert existing_run.idempotency_key == "ws-phase-1"
+  let assert Ok(read) = state_ledger.read_records(path)
+  assert read.records == [created, queued]
+}
+
+pub fn append_workstream_start_records_rejects_conflicting_start_test() {
+  let root = "test/tmp/workstream-ledger/workstream-start-conflict"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = state_ledger.path_for_workspace_root(root)
+  let created = workstream_created_record()
+  let queued = workstream_phase_run_record()
+  let conflicting =
+    ledger.workstream_phase_run_queued(
+      1005,
+      "linear:LIV-393",
+      "phase-run-2",
+      "action-1",
+      "execplan-implementation",
+      bundle_ref,
+      string.repeat("d", times: 64),
+      790,
+      "ws-phase-2",
+    )
+
+  let assert Ok(state_ledger.WorkstreamStartRecordsAppended) =
+    state_ledger.append_workstream_start_records(
+      path,
+      [created, queued],
+      queued,
+      True,
+    )
+  let assert Ok(state_ledger.WorkstreamStartRecordsConflict(existing_run)) =
+    state_ledger.append_workstream_start_records(
+      path,
+      [conflicting],
+      conflicting,
+      True,
+    )
+
+  assert existing_run.action_id == "action-1"
+  assert existing_run.idempotency_key == "ws-phase-1"
+  let assert Ok(read) = state_ledger.read_records(path)
+  assert read.records == [created, queued]
+}
+
 pub fn workstream_projection_replays_core_records_test() {
   let folded =
     projection.fold([

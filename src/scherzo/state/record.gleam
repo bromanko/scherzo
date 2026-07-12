@@ -888,6 +888,14 @@ pub fn kind(body: RecordBody) -> String {
   }
 }
 
+pub fn body_to_json(body: RecordBody) -> json.Json {
+  [#("kind", json.string(kind(body))), ..body_entries(body)] |> json.object
+}
+
+pub fn body_to_string(body: RecordBody) -> String {
+  body |> body_to_json |> json.to_string
+}
+
 pub fn to_json(ledger_record: LedgerRecord) -> json.Json {
   [
     #("schema_version", json.int(schema_version)),

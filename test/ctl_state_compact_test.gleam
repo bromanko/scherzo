@@ -4,6 +4,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/control/file as control_file
 import scherzo/ctl/state_handlers
 import scherzo/instance_lock
 import scherzo/path as scherzo_path
@@ -254,6 +255,43 @@ pub fn state_compact_dry_run_rejects_held_instance_lock_test() {
   assert decoded.reason == Some("instance_lock_held")
   assert string.contains(decoded.message, "instance lock already exists")
   instance_lock.release(lock)
+}
+
+pub fn state_compact_yes_rejects_live_control_file_test() {
+  let root = "test/tmp/ctl-state-compact/control-file-present"
+  test_helpers.reset_dir(root)
+  let assert Ok(path) = ledger.path_for_workspace_root(root)
+  let assert Ok(Nil) = ledger.append_many(path, initial_records(), False)
+  let control_path = control_file.path_for_workspace(root)
+  let assert Ok(Nil) =
+    control_file.write(
+      control_path,
+      control_file.ControlFile(
+        host: "127.0.0.1",
+        port: 4010,
+        token: "token",
+        workspace_root: root,
+        started_at_ms: 1000,
+        command_timeout_ms: 1000,
+      ),
+    )
+  let before_current = simplifile.read(path.current_path)
+  let subject = process.new_subject()
+
+  assert state_handlers.run_compact(
+      root,
+      json_output: True,
+      dry_run: False,
+      yes: True,
+      line: subject_line(subject),
+    )
+    == Ok(Nil)
+
+  let decoded = expect_compact_json(subject)
+  assert decoded.status == "failed"
+  assert decoded.reason == Some("daemon_control_file_present")
+  assert string.contains(decoded.message, ".scherzo-state/control.json")
+  assert simplifile.read(path.current_path) == before_current
 }
 
 pub fn state_compact_yes_rejects_held_instance_lock_test() {

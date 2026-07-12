@@ -1,5 +1,6 @@
 -module(scherzo_state_ffi).
--export([append_line/3, append_lines/3, fold_lines/3, with_ledger_lock/2, system_time_millisecond/0]).
+-include_lib("kernel/include/file.hrl").
+-export([append_line/3, append_lines/3, fold_lines/3, with_ledger_lock/2, system_time_millisecond/0, file_fingerprint/1]).
 
 append_line(Path, Line, Fsync) ->
     LineBin = to_binary(Line),
@@ -51,6 +52,25 @@ with_ledger_lock(Key, Operation) ->
 
 system_time_millisecond() ->
     erlang:system_time(millisecond).
+
+file_fingerprint(Path) ->
+    try
+        PathList = to_list(Path),
+        case file:read_file_info(PathList, [{time, posix}]) of
+            {ok, Info} ->
+                {ok, {
+                    true,
+                    Info#file_info.size,
+                    Info#file_info.mtime * 1000,
+                    Info#file_info.ctime * 1000,
+                    Info#file_info.inode
+                }};
+            {error, enoent} -> {ok, {false, 0, 0, 0, 0}};
+            {error, Reason} -> {error, reason_to_binary(Reason)}
+        end
+    catch
+        Class:CatchReason -> {error, format_error(Class, CatchReason)}
+    end.
 
 write_and_maybe_sync(IoDevice, ContentsBin, Fsync) ->
     case file:write(IoDevice, ContentsBin) of

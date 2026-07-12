@@ -3598,6 +3598,38 @@ pub fn state_repair_run_provenance_dry_run_yes_and_idempotent_test() {
   assert provenance_repair_record_count(root) == 1
 }
 
+pub fn state_repair_run_provenance_rejects_live_control_file_test() {
+  let root = "test/tmp/ctl-state-repair-provenance-control-file/workspaces"
+  test_helpers.reset_dir("test/tmp/ctl-state-repair-provenance-control-file")
+  seed_missing_provenance_state(root)
+  let control_path = file.path_for_workspace(root)
+  let assert Ok(Nil) =
+    file.write(
+      control_path,
+      file.ControlFile(
+        host: "127.0.0.1",
+        port: 4010,
+        token: "token",
+        workspace_root: root,
+        started_at_ms: 1000,
+        command_timeout_ms: 1000,
+      ),
+    )
+  let subject = process.new_subject()
+
+  assert ctl.run_with_deps(
+      ctl.StateRepairRunProvenance(root, True, "run-1", False, True),
+      ps_deps([], ps_now_ms, ""),
+      output(subject),
+    )
+    == Ok(Nil)
+  let rejected = drain_output(subject)
+  assert string.contains(rejected, "\"status\":\"rejected\"")
+  assert string.contains(rejected, "\"reason\":\"daemon_control_file_present\"")
+  assert string.contains(rejected, ".scherzo-state/control.json")
+  assert !has_provenance_repair_record(root)
+}
+
 pub fn state_repair_run_provenance_rejects_parent_traversal_run_root_test() {
   let root = "test/tmp/ctl-state-repair-provenance-traversal/workspaces"
   test_helpers.reset_dir("test/tmp/ctl-state-repair-provenance-traversal")
