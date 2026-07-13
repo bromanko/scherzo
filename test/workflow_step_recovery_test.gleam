@@ -75,6 +75,7 @@ pub fn recovery_input_json_includes_context_policy_and_redacts_test() {
       "run-1",
       "verify",
       1,
+      2,
       failed_artifact,
       ["TOP_SECRET"],
     )
@@ -87,6 +88,8 @@ pub fn recovery_input_json_includes_context_policy_and_redacts_test() {
   assert string.contains(payload, "\"run_id\":\"run-1\"")
   assert string.contains(payload, "\"step_id\":\"verify\"")
   assert string.contains(payload, "\"attempt_index\":1")
+  assert string.contains(payload, "\"recovery_attempt_number\":1")
+  assert string.contains(payload, "\"max_recovery_attempts\":2")
   assert string.contains(
     payload,
     "\"diagnostic_refs\":[\".scherzo/command-step-diagnostics/verify.txt\"]",
@@ -120,6 +123,7 @@ pub fn recovery_input_json_hides_absolute_diagnostic_refs_test() {
       "run-1",
       "verify",
       1,
+      2,
       failed_artifact,
       [],
     )
@@ -138,6 +142,9 @@ pub fn recovery_input_json_hides_absolute_diagnostic_refs_test() {
     payload,
     "\"diagnostic_refs\":[\"<absolute path hidden>\"]",
   )
+  assert string.contains(prompt, "bounded continuation checkpoint")
+  assert string.contains(prompt, "recovery_attempt_number")
+  assert string.contains(prompt, "max_recovery_attempts")
 }
 
 pub fn recovery_input_json_includes_structured_output_refs_and_reason_code_test() {
@@ -188,6 +195,7 @@ pub fn recovery_input_json_includes_structured_output_refs_and_reason_code_test(
       "run-1",
       "verify",
       1,
+      2,
       failed_artifact,
       [],
     )

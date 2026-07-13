@@ -4822,6 +4822,35 @@ pub fn two_attempt_recovery_rechecks_until_success_test() {
       #(1, 1, "recheck", Some(2)),
       #(2, 2, "recheck", Some(3)),
     ]
+
+  let assert Ok(first_recovery_input) =
+    simplifile.read(
+      artifact_root(root)
+      <> "/"
+      <> artifact_store.recovery_artifact_ref(
+        "run-1",
+        "fixable",
+        1,
+        1,
+        "workflow_step_recovery_input",
+      ),
+    )
+  let assert Ok(second_recovery_input) =
+    simplifile.read(
+      artifact_root(root)
+      <> "/"
+      <> artifact_store.recovery_artifact_ref(
+        "run-1",
+        "fixable",
+        2,
+        2,
+        "workflow_step_recovery_input",
+      ),
+    )
+  assert string.contains(first_recovery_input, "\"recovery_attempt_number\":1")
+  assert string.contains(first_recovery_input, "\"max_recovery_attempts\":2")
+  assert string.contains(second_recovery_input, "\"recovery_attempt_number\":2")
+  assert string.contains(second_recovery_input, "\"max_recovery_attempts\":2")
 }
 
 pub fn two_attempt_recovery_exhaustion_fails_after_recovery_test() {
