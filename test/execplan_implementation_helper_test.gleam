@@ -2566,6 +2566,37 @@ pub fn implementation_completion_gate_accepts_structured_current_tree_evidence_t
   )
 }
 
+pub fn implementation_completion_gate_accepts_qualified_paths_and_composite_inventory_globs_test() {
+  let dir = "test/tmp/implementation-completion-gate-qualified-evidence"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      dir <> "/docs/plans/example.md",
+      "# Example\n\n## Validation and Acceptance\n\nThe `implementation_completion` gate has current-tree evidence. Include an explicit implementation inventory.\n",
+    )
+  write_implementation_completion_submission_with_evidence(
+    dir,
+    "true",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[{\"criterion\":\"The implementation_completion gate has current-tree evidence.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"code\",\"reference\":\".scherzo/workflows/scripts/scherzo-implementation:2246\",\"observation\":\"The current validator implementation was inspected.\"}]}]",
+    "[]",
+    "[]",
+    "[]",
+    "[{\"surface\":\"implementation helper\",\"path_pattern\":\".scherzo/{workflows/scripts/scherzo-implementation,missing/**}|src/**\",\"disposition\":\"changed\",\"evidence\":\"The workflow diff changes the implementation helper.\"}]",
+    "[]",
+    "[]",
+  )
+
+  let artifact = run_implementation_completion_gate(dir, "")
+
+  assert artifact.status == step_artifact.StepSucceeded
+  assert artifact.exit_code == Some(0)
+  assert string.contains(
+    artifact.stdout,
+    "IMPLEMENTATION_COMPLETION_GATE=passed",
+  )
+}
+
 pub fn implementation_completion_gate_accepts_matching_changed_implementation_test() {
   let dir = "test/tmp/implementation-completion-gate-pass"
   let _fingerprint = setup_plan_completion_gate_fixture(dir)
