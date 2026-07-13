@@ -2232,7 +2232,11 @@ def execplan_acceptance_text(plan_text: str) -> str:
         if heading:
             level = len(heading.group(1))
             title = heading.group(2).strip().casefold()
-            if title in {"validation and acceptance", "acceptance criteria"}:
+            if title in {
+                "validation and acceptance",
+                "acceptance criteria",
+                "rollout, recovery, and idempotence",
+            }:
                 capture_level = level
                 selected.append(line)
                 continue
