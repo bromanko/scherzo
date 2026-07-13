@@ -2244,7 +2244,29 @@ def execplan_acceptance_text(plan_text: str) -> str:
 
 
 def normalized_prose(value: str) -> str:
-    return " ".join(value.casefold().split())
+    # Markdown code spans are presentation, not part of an acceptance
+    # criterion's prose identity. Agents commonly quote the same sentence
+    # without retaining its backticks.
+    return " ".join(value.replace("`", "").casefold().split())
+
+
+def implementation_evidence_path(value: str) -> str:
+    line_reference = re.match(r"^(.+?)(?::[0-9]+(?:-[0-9]+)?|#L[0-9]+(?:-L?[0-9]+)?)$", value)
+    return line_reference.group(1) if line_reference else value
+
+
+def inventory_pattern_variants(pattern: str) -> list[str]:
+    variants: list[str] = []
+    for alternative in pattern.split("|"):
+        brace = re.search(r"\{([^{}]+)\}", alternative)
+        if brace is None:
+            variants.append(alternative)
+            continue
+        prefix = alternative[: brace.start()]
+        suffix = alternative[brace.end() :]
+        for choice in brace.group(1).split(","):
+            variants.extend(inventory_pattern_variants(prefix + choice + suffix))
+    return variants
 
 
 def plan_mentions_baseline(plan_text: str, path: str, baseline: int) -> bool:
@@ -2344,7 +2366,8 @@ def implementation_completion_semantic_failures(
             kind = str(evidence["kind"])
             reference = str(evidence["reference"])
             if kind in {"code", "test", "inventory"}:
-                if not valid_implementation_evidence_path(reference):
+                evidence_path = implementation_evidence_path(reference)
+                if not valid_implementation_evidence_path(evidence_path):
                     reason_codes.append("criterion_evidence_path_invalid")
                     failures.append(
                         {
@@ -2353,9 +2376,9 @@ def implementation_completion_semantic_failures(
                         }
                     )
                     continue
-                if Path(reference).resolve(strict=False) == resolved_plan_path.resolve(
+                if Path(evidence_path).resolve(
                     strict=False
-                ):
+                ) == resolved_plan_path.resolve(strict=False):
                     reason_codes.append("historical_plan_claim_used_as_evidence")
                     failures.append(
                         {
@@ -2364,7 +2387,7 @@ def implementation_completion_semantic_failures(
                         }
                     )
                     continue
-                if reference not in actual_files and not Path(reference).exists():
+                if evidence_path not in actual_files and not Path(evidence_path).exists():
                     reason_codes.append("criterion_evidence_path_missing")
                     failures.append(
                         {
@@ -2466,10 +2489,11 @@ def implementation_completion_semantic_failures(
             }
         )
     for entry in submission["implementation_inventory"]:
+        patterns = inventory_pattern_variants(str(entry["path_pattern"]))
         matches = [
             path
             for path in actual_files
-            if fnmatch.fnmatch(path, str(entry["path_pattern"]))
+            if any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
         ]
         disposition = entry["disposition"]
         if disposition == "unchanged" and matches:
