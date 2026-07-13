@@ -2716,6 +2716,301 @@ pub fn daemon_compacts_oversized_current_segment_on_startup_test() {
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
 }
 
+pub fn daemon_compaction_uses_retention_policy_and_logs_complete_prune_report_test() {
+  let root = "test/tmp/daemon-ledger-compaction-retention"
+  let workflow_path =
+    write_workflow_with_extra_config(
+      root,
+      1,
+      "state_ledger:\n  auto_compaction:\n    max_current_records: 1\n    max_current_bytes: 1048576\n    min_interval: 1ms\n  projection_retention:\n    enabled: true\n    terminal_grace: 0ms\n    scheduled_max_age: 48h\n    scheduled_last_per_job: 9\n",
+    )
+  let log_subject = process.new_subject()
+  let log_fields_subject = process.new_subject()
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(bundle.effective.workspace.root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "retention-run-started",
+          10,
+          record.WorkflowRunStartedWithTask(
+            "retention-run",
+            "implementation",
+            "workflow-fingerprint",
+            "issue-retention",
+            "ABC-retention",
+            record.linear_task_ref_fields(
+              "issue-retention",
+              Some("ABC-retention"),
+              None,
+            ),
+            "issue-fingerprint",
+            9,
+            root <> "/retention-run",
+          ),
+        ),
+        record.with_id(
+          "retention-run-finished",
+          20,
+          record.WorkflowRunFinished(
+            "retention-run",
+            "implementation",
+            "issue-retention",
+            "completed",
+            1,
+            1,
+          ),
+        ),
+        record.with_id(
+          "retention-control-queued",
+          21,
+          record.ControlOperationQueued(
+            operation_id: "retention-operation",
+            operation_kind: "retry_step",
+            command_name: "retry-step",
+            target: "retention-run",
+            run_id: Some("retention-run"),
+            issue_id: Some("issue-retention"),
+            issue_identifier: Some("ABC-retention"),
+            requested_step_id: Some("implement"),
+            publication_id: None,
+          ),
+        ),
+        record.with_id(
+          "retention-control-completed",
+          22,
+          record.ControlOperationCompleted(
+            operation_id: "retention-operation",
+            message: Some("done"),
+          ),
+        ),
+      ],
+      False,
+    )
+  let clock = test_clock.new(42)
+  let compaction_started = process.new_subject()
+  let compaction_barrier = test_async.new_barrier()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(empty_tracker_client(), log_subject),
+      compact_ledger: fn(path, policy, now_ms) {
+        process.send(compaction_started, Nil)
+        test_async.block_until_released(compaction_barrier)
+        ledger.compact_with_retention(path, policy, now_ms)
+      },
+      logger: fn(_, event, fields, _) {
+        process.send(log_subject, event)
+        process.send(log_fields_subject, #(event, fields))
+        Ok(Nil)
+      },
+      now_ms: fn() { test_clock.now_ms(clock) },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+  let _ = test_async.expect_message(compaction_started)
+  let operation_query =
+    query_types.OperationStatus(query_types.OperationStatusQuery(
+      operation_id: "retention-operation",
+    ))
+  let assert Ok(query_types.OperationStatusResponse(_)) =
+    daemon.execute_query(started.data, operation_query, 1000)
+  let assert Ok(pause_result) =
+    daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
+  assert pause_result.status == command.Applied
+  let assert Ok(resident_during_compaction) =
+    daemon.get_projection_snapshot(started.data, 1000)
+  assert projection.has_workflow_run(
+    resident_during_compaction,
+    "retention-run",
+  )
+  assert projection.dispatch_paused(resident_during_compaction)
+  let assert Ok(query_types.StatusResponse(status_during_compaction)) =
+    daemon.execute_query(started.data, query_types.Status, 1000)
+  assert status_during_compaction.dispatch_paused
+  test_async.release_barrier(compaction_barrier)
+
+  let assert Ok(fields) =
+    wait_for_log_fields(log_fields_subject, "projection_pruned", 20)
+  let field_map = dict.from_list(fields)
+  assert dict.get(field_map, "policy_enabled") == Ok("True")
+  assert dict.get(field_map, "terminal_grace_ms") == Ok("0")
+  assert dict.get(field_map, "scheduled_max_age_ms") == Ok("172800000")
+  assert dict.get(field_map, "scheduled_last_per_job") == Ok("9")
+  assert dict.get(field_map, "run_count") == Ok("1")
+  let required_fields = [
+    "policy_fingerprint",
+    "policy_enabled",
+    "terminal_grace_ms",
+    "scheduled_max_age_ms",
+    "scheduled_last_per_job",
+    "run_count",
+    "before_bytes",
+    "after_bytes",
+    "coverage_status",
+    "family_workflow_runs",
+    "family_provenances",
+    "family_task_refs",
+    "family_input_manifests",
+    "family_interface_snapshots",
+    "family_output_manifests",
+    "family_repairs",
+    "family_step_attempts",
+    "family_step_recoveries",
+    "family_publication_attempts",
+    "family_control_operations",
+    "family_outbox_entries",
+    "blocker_active",
+    "blocker_within_grace",
+    "blocker_parked",
+    "blocker_retained_workspace",
+    "blocker_marker_unavailable",
+    "blocker_recovery_started",
+    "blocker_control_in_flight",
+    "blocker_publication_unsettled",
+    "blocker_outbox_unsettled",
+    "blocker_malformed_association",
+  ]
+  assert list.all(required_fields, fn(field) { dict.has_key(field_map, field) })
+  assert ledger.workflow_run_presence(ledger_path, "retention-run")
+    == Ok(ledger.Pruned)
+  let assert Ok(resident_after_compaction) =
+    daemon.get_projection_snapshot(started.data, 1000)
+  assert !projection.has_workflow_run(
+    resident_after_compaction,
+    "retention-run",
+  )
+  assert projection.control_operation(
+      resident_after_compaction,
+      "retention-operation",
+    )
+    == Error(Nil)
+  assert projection.dispatch_paused(resident_after_compaction)
+  let assert Error(query_types.QueryError(query_types.QueryNotFound, _)) =
+    daemon.execute_query(started.data, operation_query, 1000)
+  let assert Ok(query_types.StatusResponse(status_after_compaction)) =
+    daemon.execute_query(started.data, query_types.Status, 1000)
+  assert status_after_compaction.dispatch_paused
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
+pub fn daemon_failed_compaction_preserves_resident_and_cached_projection_test() {
+  let root = "test/tmp/daemon-ledger-compaction-retention-failure"
+  let workflow_path =
+    write_workflow_with_extra_config(
+      root,
+      1,
+      "state_ledger:\n  auto_compaction:\n    max_current_records: 1\n    max_current_bytes: 1048576\n    min_interval: 1ms\n  projection_retention:\n    enabled: true\n    terminal_grace: 0ms\n    scheduled_max_age: 48h\n    scheduled_last_per_job: 9\n",
+    )
+  let log_subject = process.new_subject()
+  let assert Ok(bundle) = runtime_bundle.load(Some(workflow_path))
+  let assert Ok(ledger_path) =
+    ledger.path_for_workspace_root(bundle.effective.workspace.root)
+  let assert Ok(Nil) =
+    ledger.append_many(
+      ledger_path,
+      [
+        record.with_id(
+          "retention-failure-run-started",
+          10,
+          record.WorkflowRunStartedWithTask(
+            "retention-failure-run",
+            "implementation",
+            "workflow-fingerprint",
+            "issue-retention-failure",
+            "ABC-retention-failure",
+            record.linear_task_ref_fields(
+              "issue-retention-failure",
+              Some("ABC-retention-failure"),
+              None,
+            ),
+            "issue-fingerprint",
+            9,
+            root <> "/retention-failure-run",
+          ),
+        ),
+        record.with_id(
+          "retention-failure-run-finished",
+          20,
+          record.WorkflowRunFinished(
+            "retention-failure-run",
+            "implementation",
+            "issue-retention-failure",
+            "completed",
+            1,
+            1,
+          ),
+        ),
+        record.with_id(
+          "retention-failure-control-queued",
+          21,
+          record.ControlOperationQueued(
+            operation_id: "retention-failure-operation",
+            operation_kind: "retry_step",
+            command_name: "retry-step",
+            target: "retention-failure-run",
+            run_id: Some("retention-failure-run"),
+            issue_id: Some("issue-retention-failure"),
+            issue_identifier: Some("ABC-retention-failure"),
+            requested_step_id: Some("implement"),
+            publication_id: None,
+          ),
+        ),
+        record.with_id(
+          "retention-failure-control-completed",
+          22,
+          record.ControlOperationCompleted(
+            operation_id: "retention-failure-operation",
+            message: Some("done"),
+          ),
+        ),
+      ],
+      False,
+    )
+  let compaction_started = process.new_subject()
+  let compaction_barrier = test_async.new_barrier()
+  let deps =
+    daemon.RuntimeDependencies(
+      ..base_dependencies(empty_tracker_client(), log_subject),
+      compact_ledger: fn(_, _, _) {
+        process.send(compaction_started, Nil)
+        test_async.block_until_released(compaction_barrier)
+        Error(ledger.Io("injected daemon compaction failure"))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+  let _ = test_async.expect_message(compaction_started)
+  let operation_query =
+    query_types.OperationStatus(query_types.OperationStatusQuery(
+      operation_id: "retention-failure-operation",
+    ))
+  let assert Ok(query_types.OperationStatusResponse(_)) =
+    daemon.execute_query(started.data, operation_query, 1000)
+  let assert Ok(pause_result) =
+    daemon.apply_operator_command(started.data, command.PauseDispatch, 1000)
+  assert pause_result.status == command.Applied
+  test_async.release_barrier(compaction_barrier)
+  assert wait_for_event(log_subject, "ledger_compaction_failed", 20)
+
+  let assert Ok(resident) = daemon.get_projection_snapshot(started.data, 1000)
+  assert projection.has_workflow_run(resident, "retention-failure-run")
+  let assert Ok(_) =
+    projection.control_operation(resident, "retention-failure-operation")
+  assert projection.dispatch_paused(resident)
+  let assert Ok(query_types.OperationStatusResponse(_)) =
+    daemon.execute_query(started.data, operation_query, 1000)
+  let assert Ok(query_types.StatusResponse(status)) =
+    daemon.execute_query(started.data, query_types.Status, 1000)
+  assert status.dispatch_paused
+  assert ledger.workflow_run_presence(ledger_path, "retention-failure-run")
+    == Ok(ledger.Online)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+}
+
 pub fn daemon_compacts_after_dispatch_append_threshold_test() {
   let root = "test/tmp/daemon-ledger-compaction-append"
   let workflow_path =
@@ -2887,6 +3182,12 @@ pub fn ledger_compaction_state_suppresses_duplicates_and_throttles_retries_test(
       max_current_records: 1,
       max_current_bytes: 1000,
       min_interval_ms: 1000,
+      projection_retention: config_types.ProjectionRetentionConfig(
+        enabled: False,
+        terminal_grace_ms: 86_400_000,
+        scheduled_max_age_ms: 604_800_000,
+        scheduled_last_per_job: 25,
+      ),
     )
   let state = ledger_compaction.new(stats)
   assert ledger_compaction.should_start(state, compaction_config, 42)

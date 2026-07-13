@@ -195,12 +195,22 @@ pub type ControlConfig {
   ControlConfig(command_timeout_ms: Int)
 }
 
+pub type ProjectionRetentionConfig {
+  ProjectionRetentionConfig(
+    enabled: Bool,
+    terminal_grace_ms: Int,
+    scheduled_max_age_ms: Int,
+    scheduled_last_per_job: Int,
+  )
+}
+
 pub type LedgerCompactionConfig {
   LedgerCompactionConfig(
     enabled: Bool,
     max_current_records: Int,
     max_current_bytes: Int,
     min_interval_ms: Int,
+    projection_retention: ProjectionRetentionConfig,
   )
 }
 

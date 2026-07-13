@@ -954,13 +954,25 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
     command_spec.CommandSpec(
       handler: StateCompactKey,
       path: ["state", "compact"],
-      usage: "state compact --root <workspace-root> --dry-run|--yes",
-      summary: "Inspect or compact the durable local state ledger; stop the daemon before --yes.",
+      usage: "state compact --root <workspace-root> --dry-run|--yes [--rebuild-from-archives]",
+      summary: "Inspect, compact, or reconstruct the durable local state ledger; stop the daemon before --yes.",
       positionals: [],
-      options: [root_option(), json_option(), dry_run_option(), yes_option()],
+      options: [
+        root_option(),
+        json_option(),
+        dry_run_option(),
+        yes_option(),
+        rebuild_from_archives_option(),
+      ],
       help_lines: [
-        line("state compact --root <workspace-root> --dry-run|--yes", ""),
-        line("", "Inspect or compact the durable local state ledger."),
+        line(
+          "state compact --root <workspace-root> --dry-run|--yes [--rebuild-from-archives]",
+          "",
+        ),
+        line(
+          "",
+          "Inspect, compact, or reconstruct the durable local state ledger.",
+        ),
       ],
     ),
     command_spec.CommandSpec(
@@ -1423,6 +1435,13 @@ fn dry_run_option() -> command_spec.OptionSpec {
   command_spec.flag_option(
     "--dry-run",
     "Preview without mutating retained state.",
+  )
+}
+
+fn rebuild_from_archives_option() -> command_spec.OptionSpec {
+  command_spec.flag_option(
+    "--rebuild-from-archives",
+    "Reconstruct a retain-all snapshot from verified archives; requires --yes.",
   )
 }
 

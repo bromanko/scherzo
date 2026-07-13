@@ -418,6 +418,11 @@ pub fn config_state_ledger_auto_compaction_schema_matches_parser_test() {
     <> "    max_current_records: 123\n"
     <> "    max_current_bytes: 456\n"
     <> "    min_interval: 7m\n"
+    <> "  projection_retention:\n"
+    <> "    enabled: true\n"
+    <> "    terminal_grace: 0ms\n"
+    <> "    scheduled_max_age: 48h\n"
+    <> "    scheduled_last_per_job: 9\n"
   assert_config_source_parses(valid)
   validate_yaml_source_against_schema(
     "public_config_schema",
@@ -438,6 +443,12 @@ pub fn config_state_ledger_auto_compaction_schema_matches_parser_test() {
       <> "state_ledger:\n  auto_compaction:\n    min_interval: 0ms\n",
     minimal_config()
       <> "state_ledger:\n  auto_compaction:\n    min_interval: -1ms\n",
+    minimal_config()
+      <> "state_ledger:\n  projection_retention:\n    terminal_grace: -1ms\n",
+    minimal_config()
+      <> "state_ledger:\n  projection_retention:\n    scheduled_max_age: 0ms\n",
+    minimal_config()
+      <> "state_ledger:\n  projection_retention:\n    scheduled_last_per_job: 0\n",
   ]
   list.each(invalid, fn(yaml) {
     assert_config_rejected(yaml)

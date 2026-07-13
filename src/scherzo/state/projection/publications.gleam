@@ -52,6 +52,54 @@ pub fn latest_for_series(
   dict.get(latest_attempts, series_key(series_id))
 }
 
+pub fn rebuild_latest_by_series(
+  existing_latest: Dict(String, attempt),
+  attempts: Dict(String, List(attempt)),
+  series_id_of: fn(attempt) -> String,
+  recorded_at_ms_of: fn(attempt) -> Int,
+  run_id_of: fn(attempt) -> String,
+  publication_id_of: fn(attempt) -> String,
+) -> Dict(String, attempt) {
+  let preserved =
+    dict.fold(existing_latest, dict.new(), fn(acc, series_id, attempt) {
+      case attempt_present(attempts, attempt, run_id_of, publication_id_of) {
+        True -> dict.insert(acc, series_id, attempt)
+        False -> acc
+      }
+    })
+
+  dict.values(attempts)
+  |> list.flatten
+  |> list.fold(preserved, fn(acc, attempt) {
+    let series_id = series_id_of(attempt)
+    case dict.get(acc, series_id) {
+      Ok(existing) ->
+        case recorded_at_ms_of(existing) > recorded_at_ms_of(attempt) {
+          True -> acc
+          False -> dict.insert(acc, series_id, attempt)
+        }
+      Error(Nil) -> dict.insert(acc, series_id, attempt)
+    }
+  })
+}
+
+fn attempt_present(
+  attempts: Dict(String, List(attempt)),
+  target: attempt,
+  run_id_of: fn(attempt) -> String,
+  publication_id_of: fn(attempt) -> String,
+) -> Bool {
+  case
+    dict.get(
+      attempts,
+      publication_key(run_id_of(target), publication_id_of(target)),
+    )
+  {
+    Ok(values) -> list.any(values, fn(attempt) { attempt == target })
+    Error(Nil) -> False
+  }
+}
+
 pub fn publication_ids_for_run(
   attempts: Dict(String, List(attempt)),
   run_id: String,

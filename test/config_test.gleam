@@ -148,6 +148,11 @@ pub fn default_values_test() {
   assert ledger_compaction.max_current_records == 10_000
   assert ledger_compaction.max_current_bytes == 8 * 1024 * 1024
   assert ledger_compaction.min_interval_ms == 300_000
+  assert ledger_compaction.projection_retention.enabled == False
+  assert ledger_compaction.projection_retention.terminal_grace_ms == 86_400_000
+  assert ledger_compaction.projection_retention.scheduled_max_age_ms
+    == 604_800_000
+  assert ledger_compaction.projection_retention.scheduled_last_per_job == 25
 
   let agent = config.default_agent_config()
   assert agent.max_concurrent_agents == 1
@@ -186,6 +191,13 @@ pub fn state_ledger_auto_compaction_defaults_test() {
   assert configured.ledger_compaction.max_current_records == 10_000
   assert configured.ledger_compaction.max_current_bytes == 8 * 1024 * 1024
   assert configured.ledger_compaction.min_interval_ms == 300_000
+  assert configured.ledger_compaction.projection_retention.enabled == False
+  assert configured.ledger_compaction.projection_retention.terminal_grace_ms
+    == 86_400_000
+  assert configured.ledger_compaction.projection_retention.scheduled_max_age_ms
+    == 604_800_000
+  assert configured.ledger_compaction.projection_retention.scheduled_last_per_job
+    == 25
 }
 
 pub fn state_ledger_auto_compaction_custom_values_test() {
@@ -199,6 +211,39 @@ pub fn state_ledger_auto_compaction_custom_values_test() {
   assert configured.ledger_compaction.max_current_records == 123
   assert configured.ledger_compaction.max_current_bytes == 456
   assert configured.ledger_compaction.min_interval_ms == 420_000
+}
+
+pub fn state_ledger_projection_retention_defaults_test() {
+  let assert Ok(configured) =
+    config.resolve_with_env(
+      definition(minimal_front()),
+      "test/tmp/scherzo.yaml",
+      env,
+    )
+
+  assert configured.ledger_compaction.projection_retention.enabled == False
+  assert configured.ledger_compaction.projection_retention.terminal_grace_ms
+    == 86_400_000
+  assert configured.ledger_compaction.projection_retention.scheduled_max_age_ms
+    == 604_800_000
+  assert configured.ledger_compaction.projection_retention.scheduled_last_per_job
+    == 25
+}
+
+pub fn state_ledger_projection_retention_custom_values_test() {
+  let front =
+    minimal_front()
+    <> "state_ledger:\n  projection_retention:\n    enabled: true\n    terminal_grace: 0ms\n    scheduled_max_age: 48h\n    scheduled_last_per_job: 9\n"
+  let assert Ok(configured) =
+    config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
+
+  assert configured.ledger_compaction.projection_retention.enabled == True
+  assert configured.ledger_compaction.projection_retention.terminal_grace_ms
+    == 0
+  assert configured.ledger_compaction.projection_retention.scheduled_max_age_ms
+    == 172_800_000
+  assert configured.ledger_compaction.projection_retention.scheduled_last_per_job
+    == 9
 }
 
 pub fn state_ledger_auto_compaction_invalid_values_test() {
@@ -280,6 +325,78 @@ pub fn state_ledger_auto_compaction_invalid_values_test() {
   assert string.contains(
     negative_interval,
     "state_ledger.auto_compaction.min_interval",
+  )
+}
+
+pub fn state_ledger_projection_retention_invalid_values_test() {
+  let wrong_enabled =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  projection_retention:\n    enabled: nope\n",
+    )
+  assert string.contains(
+    wrong_enabled,
+    "state_ledger.projection_retention.enabled must be a boolean",
+  )
+
+  let wrong_grace =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  projection_retention:\n    terminal_grace: nope\n",
+    )
+  assert string.contains(
+    wrong_grace,
+    "state_ledger.projection_retention.terminal_grace",
+  )
+
+  let negative_grace =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  projection_retention:\n    terminal_grace: -1ms\n",
+    )
+  assert string.contains(
+    negative_grace,
+    "state_ledger.projection_retention.terminal_grace",
+  )
+
+  let zero_age =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  projection_retention:\n    scheduled_max_age: 0ms\n",
+    )
+  assert string.contains(
+    zero_age,
+    "state_ledger.projection_retention.scheduled_max_age must be positive",
+  )
+
+  let wrong_count =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  projection_retention:\n    scheduled_last_per_job: nope\n",
+    )
+  assert string.contains(
+    wrong_count,
+    "state_ledger.projection_retention.scheduled_last_per_job must be an integer",
+  )
+
+  let zero_count =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  projection_retention:\n    scheduled_last_per_job: 0\n",
+    )
+  assert string.contains(
+    zero_count,
+    "state_ledger.projection_retention.scheduled_last_per_job must be positive",
+  )
+
+  let unknown_key =
+    invalid_config_message(
+      minimal_front()
+      <> "state_ledger:\n  projection_retention:\n    extra: nope\n",
+    )
+  assert string.contains(
+    unknown_key,
+    "state_ledger.projection_retention.extra is not supported",
   )
 }
 

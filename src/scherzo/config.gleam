@@ -72,12 +72,22 @@ pub fn default_control_config() -> config_types.ControlConfig {
   )
 }
 
+pub fn default_projection_retention_config() -> config_types.ProjectionRetentionConfig {
+  config_types.ProjectionRetentionConfig(
+    enabled: False,
+    terminal_grace_ms: 86_400_000,
+    scheduled_max_age_ms: 604_800_000,
+    scheduled_last_per_job: 25,
+  )
+}
+
 pub fn default_ledger_compaction_config() -> config_types.LedgerCompactionConfig {
   config_types.LedgerCompactionConfig(
     enabled: True,
     max_current_records: 10_000,
     max_current_bytes: 8 * 1024 * 1024,
     min_interval_ms: 300_000,
+    projection_retention: default_projection_retention_config(),
   )
 }
 
@@ -446,12 +456,18 @@ fn resolve_ledger_compaction(
   use _ <- result.try(
     reject_unknown_map_keys(state_ledger, "state_ledger", [
       "auto_compaction",
+      "projection_retention",
     ]),
   )
   use auto_compaction <- result.try(get_map_strict_or_empty(
     state_ledger,
     "auto_compaction",
     "state_ledger.auto_compaction",
+  ))
+  use projection_retention <- result.try(get_map_strict_or_empty(
+    state_ledger,
+    "projection_retention",
+    "state_ledger.projection_retention",
   ))
   use _ <- result.try(
     reject_unknown_map_keys(auto_compaction, "state_ledger.auto_compaction", [
@@ -465,6 +481,41 @@ fn resolve_ledger_compaction(
     auto_compaction,
     "enabled",
     "state_ledger.auto_compaction.enabled",
+  ))
+  use _ <- result.try(
+    reject_unknown_map_keys(
+      projection_retention,
+      "state_ledger.projection_retention",
+      [
+        "enabled",
+        "terminal_grace",
+        "scheduled_max_age",
+        "scheduled_last_per_job",
+      ],
+    ),
+  )
+  let retention_defaults = default_projection_retention_config()
+  use retention_enabled <- result.try(get_bool_strict(
+    projection_retention,
+    "enabled",
+    "state_ledger.projection_retention.enabled",
+  ))
+  use terminal_grace_ms <- result.try(
+    duration_config.projection_retention_terminal_grace_ms(
+      root,
+      retention_defaults.terminal_grace_ms,
+    ),
+  )
+  use scheduled_max_age_ms <- result.try(
+    duration_config.projection_retention_scheduled_max_age_ms(
+      root,
+      retention_defaults.scheduled_max_age_ms,
+    ),
+  )
+  use scheduled_last_per_job <- result.try(get_int_strict(
+    projection_retention,
+    "scheduled_last_per_job",
+    "state_ledger.projection_retention.scheduled_last_per_job",
   ))
   use max_current_records <- result.try(get_int_strict(
     auto_compaction,
@@ -486,6 +537,16 @@ fn resolve_ledger_compaction(
     max_current_records |> int_default(defaults.max_current_records)
   let max_current_bytes =
     max_current_bytes |> int_default(defaults.max_current_bytes)
+  let scheduled_last_per_job =
+    scheduled_last_per_job
+    |> int_default(retention_defaults.scheduled_last_per_job)
+  let projection_retention =
+    config_types.ProjectionRetentionConfig(
+      enabled: retention_enabled |> bool_default(retention_defaults.enabled),
+      terminal_grace_ms: terminal_grace_ms,
+      scheduled_max_age_ms: scheduled_max_age_ms,
+      scheduled_last_per_job: scheduled_last_per_job,
+    )
   case max_current_records <= 0 {
     True ->
       Error(error.InvalidConfig(
@@ -504,12 +565,27 @@ fn resolve_ledger_compaction(
                 "state_ledger.auto_compaction.min_interval must be positive",
               ))
             False ->
-              Ok(config_types.LedgerCompactionConfig(
-                enabled: enabled |> bool_default(defaults.enabled),
-                max_current_records: max_current_records,
-                max_current_bytes: max_current_bytes,
-                min_interval_ms: min_interval_ms,
-              ))
+              case scheduled_max_age_ms <= 0 {
+                True ->
+                  Error(error.InvalidConfig(
+                    "state_ledger.projection_retention.scheduled_max_age must be positive",
+                  ))
+                False ->
+                  case scheduled_last_per_job <= 0 {
+                    True ->
+                      Error(error.InvalidConfig(
+                        "state_ledger.projection_retention.scheduled_last_per_job must be positive",
+                      ))
+                    False ->
+                      Ok(config_types.LedgerCompactionConfig(
+                        enabled: enabled |> bool_default(defaults.enabled),
+                        max_current_records: max_current_records,
+                        max_current_bytes: max_current_bytes,
+                        min_interval_ms: min_interval_ms,
+                        projection_retention: projection_retention,
+                      ))
+                  }
+              }
           }
       }
   }

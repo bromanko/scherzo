@@ -359,7 +359,7 @@ pub fn crash_result_for_effect(
         publication,
         Error(adapter.Transient(reason)),
       )
-    effect_runner.CompactLedger(_, _) ->
+    effect_runner.CompactLedger(_, _, _, _) ->
       effect_runner.LedgerCompactionFinished(
         Error(ledger.Io("side effect crashed: " <> reason)),
       )

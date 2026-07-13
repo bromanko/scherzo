@@ -619,7 +619,13 @@ pub fn crash_result_for_effect_maps_all_effect_variants_test() {
 pub fn compact_ledger_crash_maps_to_io_and_routes_failure_test() {
   let assert Ok(ledger_path) =
     ledger.path_for_workspace_root("test/tmp/effect-completion-ledger-crash")
-  let effect = effect_runner.CompactLedger(ledger_path, fn() { 0 })
+  let effect =
+    effect_runner.CompactLedger(
+      ledger_path,
+      config.default_projection_retention_config(),
+      fn() { 0 },
+      ledger.compact_with_retention,
+    )
 
   assert effect_completion_handler.crash_result_for_effect(effect, "boom")
     == effect_runner.LedgerCompactionFinished(

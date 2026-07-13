@@ -3365,6 +3365,75 @@ pub fn latest_publication_for_series(
   )
 }
 
+pub fn remove_run_ids(
+  projection: Projection,
+  run_ids: List(String),
+) -> Projection {
+  let removal_set = run_ids_to_dict(run_ids)
+  case dict.is_empty(removal_set) {
+    True -> projection
+    False -> {
+      let publication_attempts =
+        filter_publication_attempts(
+          projection.publication_attempts,
+          removal_set,
+        )
+      Projection(
+        ..projection,
+        workflow_runs: dict.drop(projection.workflow_runs, run_ids),
+        workflow_run_provenances: dict.drop(
+          projection.workflow_run_provenances,
+          run_ids,
+        ),
+        workflow_task_refs: dict.drop(projection.workflow_task_refs, run_ids),
+        workflow_input_manifests: dict.drop(
+          projection.workflow_input_manifests,
+          run_ids,
+        ),
+        workflow_interface_snapshots: dict.drop(
+          projection.workflow_interface_snapshots,
+          run_ids,
+        ),
+        workflow_output_manifests: dict.drop(
+          projection.workflow_output_manifests,
+          run_ids,
+        ),
+        workflow_repairs: dict.drop(projection.workflow_repairs, run_ids),
+        step_attempts: filter_step_attempts(
+          projection.step_attempts,
+          removal_set,
+        ),
+        step_recoveries: filter_step_recoveries(
+          projection.step_recoveries,
+          removal_set,
+        ),
+        publication_attempts: publication_attempts,
+        publication_latest_by_series: publication_projection.rebuild_latest_by_series(
+          projection.publication_latest_by_series,
+          publication_attempts,
+          fn(attempt) { attempt.series_id },
+          fn(attempt) { attempt.recorded_at_ms },
+          fn(attempt) { attempt.run_id },
+          fn(attempt) { attempt.publication_id },
+        ),
+        control_operations: filter_control_operations(
+          projection.control_operations,
+          removal_set,
+        ),
+        outbox: filter_outbox(projection.outbox, removal_set),
+        issue_counters: filter_issue_counters(
+          projection.issue_counters,
+          removal_set,
+        ),
+        scheduled_jobs: filter_scheduled_jobs(
+          projection.scheduled_jobs,
+          removal_set,
+        ),
+      )
+    }
+  }
+}
+
 pub fn publication_ids_for_run(
   projection: Projection,
   run_id: String,
@@ -3471,6 +3540,216 @@ fn attempt_identity(status: StepAttemptStatus) -> #(String, String, Int) {
 fn attempt_index_of(status: StepAttemptStatus) -> Int {
   let #(_, _, attempt_index) = attempt_identity(status)
   attempt_index
+}
+
+fn run_ids_to_dict(run_ids: List(String)) -> Dict(String, Bool) {
+  list.fold(run_ids, dict.new(), fn(acc, run_id) {
+    dict.insert(acc, run_id, True)
+  })
+}
+
+fn contains_run_id(run_ids: Dict(String, Bool), run_id: String) -> Bool {
+  dict.has_key(run_ids, run_id)
+}
+
+fn filter_step_attempts(
+  attempts: Dict(String, StepAttemptStatus),
+  run_ids: Dict(String, Bool),
+) -> Dict(String, StepAttemptStatus) {
+  dict.fold(attempts, dict.new(), fn(acc, key, status) {
+    let #(run_id, _, _) = attempt_identity(status)
+    case contains_run_id(run_ids, run_id) {
+      True -> acc
+      False -> dict.insert(acc, key, status)
+    }
+  })
+}
+
+fn filter_step_recoveries(
+  recoveries: Dict(String, StepRecoveryStatus),
+  run_ids: Dict(String, Bool),
+) -> Dict(String, StepRecoveryStatus) {
+  dict.fold(recoveries, dict.new(), fn(acc, key, status) {
+    case contains_run_id(run_ids, step_recovery_run_id(status)) {
+      True -> acc
+      False -> dict.insert(acc, key, status)
+    }
+  })
+}
+
+fn step_recovery_run_id(status: StepRecoveryStatus) -> String {
+  case status {
+    StepRecoveryStartedStatus(run_id: run_id, ..)
+    | StepRecoveryFinishedStatus(run_id: run_id, ..) -> run_id
+  }
+}
+
+fn filter_publication_attempts(
+  attempts: Dict(String, List(PublicationAttempt)),
+  run_ids: Dict(String, Bool),
+) -> Dict(String, List(PublicationAttempt)) {
+  dict.fold(attempts, dict.new(), fn(acc, key, values) {
+    case values {
+      [first, ..] ->
+        case contains_run_id(run_ids, first.run_id) {
+          True -> acc
+          False -> dict.insert(acc, key, values)
+        }
+      [] -> dict.insert(acc, key, values)
+    }
+  })
+}
+
+fn filter_control_operations(
+  operations: Dict(String, ControlOperationStatus),
+  run_ids: Dict(String, Bool),
+) -> Dict(String, ControlOperationStatus) {
+  dict.fold(operations, dict.new(), fn(acc, key, status) {
+    case status.run_id {
+      Some(run_id) ->
+        case contains_run_id(run_ids, run_id) {
+          True -> acc
+          False -> dict.insert(acc, key, status)
+        }
+      None -> dict.insert(acc, key, status)
+    }
+  })
+}
+
+fn filter_outbox(
+  entries: Dict(String, OutboxStatus),
+  run_ids: Dict(String, Bool),
+) -> Dict(String, OutboxStatus) {
+  dict.fold(entries, dict.new(), fn(acc, outbox_id, status) {
+    case outbox_references_removed_run(outbox_id, status, dict.keys(run_ids)) {
+      True -> acc
+      False -> dict.insert(acc, outbox_id, status)
+    }
+  })
+}
+
+fn outbox_references_removed_run(
+  outbox_id: String,
+  status: OutboxStatus,
+  run_ids: List(String),
+) -> Bool {
+  list.any(run_ids, fn(run_id) {
+    let exact_key =
+      outbox_id == run_id
+      || string.ends_with(outbox_id, ":" <> run_id)
+      || string.ends_with(outbox_id, "/" <> run_id)
+    exact_key || outbox_payload_contains_run_id(status, run_id)
+  })
+}
+
+fn outbox_payload_contains_run_id(
+  status: OutboxStatus,
+  run_id: String,
+) -> Bool {
+  let payload = case status {
+    OutboxPendingV2(payload_json: value, ..)
+    | OutboxPendingV2WithTask(payload_json: value, ..)
+    | OutboxAttempted(payload_json: value, ..)
+    | OutboxAttemptedWithTask(payload_json: value, ..)
+    | OutboxRetryScheduled(payload_json: value, ..)
+    | OutboxRetryScheduledWithTask(payload_json: value, ..) -> Some(value)
+    _ -> None
+  }
+  case payload {
+    None -> False
+    Some(value) ->
+      string.contains(value, "\"run_id\":\"" <> run_id <> "\"")
+      || string.contains(value, "\"run_id\": \"" <> run_id <> "\"")
+  }
+}
+
+fn filter_issue_counters(
+  counters: Dict(String, IssueCounterStatus),
+  run_ids: Dict(String, Bool),
+) -> Dict(String, IssueCounterStatus) {
+  dict.fold(counters, dict.new(), fn(acc, key, status) {
+    let source_run_ids =
+      list.filter(status.source_run_ids, fn(run_id) {
+        !contains_run_id(run_ids, run_id)
+      })
+    dict.insert(
+      acc,
+      key,
+      IssueCounterStatus(..status, source_run_ids: source_run_ids),
+    )
+  })
+}
+
+fn filter_scheduled_jobs(
+  jobs: Dict(String, ScheduledJobStatus),
+  run_ids: Dict(String, Bool),
+) -> Dict(String, ScheduledJobStatus) {
+  dict.fold(jobs, dict.new(), fn(acc, key, status) {
+    let current_run = case status.current_run {
+      Some(summary) ->
+        case contains_run_id(run_ids, summary.run_id) {
+          True -> None
+          False -> status.current_run
+        }
+      None -> None
+    }
+    let remove_last_success =
+      optional_run_is_removed(status.last_success_run_id, run_ids)
+    let remove_last_failure =
+      optional_run_is_removed(status.last_failure_run_id, run_ids)
+    let report_retry = case status.report_retry {
+      Some(retry) ->
+        case contains_run_id(run_ids, retry.run_id) {
+          True -> None
+          False -> status.report_retry
+        }
+      None -> None
+    }
+    let recent_run_ids =
+      list.filter(status.recent_run_ids, fn(run_id) {
+        !contains_run_id(run_ids, run_id)
+      })
+    dict.insert(
+      acc,
+      key,
+      ScheduledJobStatus(
+        ..status,
+        current_run: current_run,
+        last_success_at_ms: case remove_last_success {
+          True -> None
+          False -> status.last_success_at_ms
+        },
+        last_success_run_id: case remove_last_success {
+          True -> None
+          False -> status.last_success_run_id
+        },
+        last_failure_at_ms: case remove_last_failure {
+          True -> None
+          False -> status.last_failure_at_ms
+        },
+        last_failure_run_id: case remove_last_failure {
+          True -> None
+          False -> status.last_failure_run_id
+        },
+        last_failure_reason: case remove_last_failure {
+          True -> None
+          False -> status.last_failure_reason
+        },
+        report_retry: report_retry,
+        recent_run_ids: recent_run_ids,
+      ),
+    )
+  })
+}
+
+fn optional_run_is_removed(
+  run_id: Option(String),
+  removal_set: Dict(String, Bool),
+) -> Bool {
+  case run_id {
+    Some(value) -> contains_run_id(removal_set, value)
+    None -> False
+  }
 }
 
 fn preserve_or_insert_workflow_task_ref(

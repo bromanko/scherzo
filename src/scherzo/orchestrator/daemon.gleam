@@ -1,4 +1,5 @@
 import birl
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/int
@@ -200,6 +201,11 @@ pub type RuntimeDependencies {
     publication_command_runner: command_runner.Runner,
     cleanup: fn(String, String, config_types.HooksConfig) ->
       Result(Nil, error.WorkspaceError),
+    compact_ledger: fn(
+      ledger.LedgerPath,
+      config_types.ProjectionRetentionConfig,
+      fn() -> Int,
+    ) -> Result(ledger.CompactionReport, ledger.LedgerError),
     logger: fn(String, String, List(log.Field), List(String)) ->
       Result(Nil, Nil),
     now_ms: fn() -> Int,
@@ -380,6 +386,7 @@ pub fn default_dependencies() -> RuntimeDependencies {
     workflow_run_dependencies: workflow_run.default_dependencies(),
     publication_command_runner: command_runner.production(),
     cleanup: workspace.cleanup_stored_path,
+    compact_ledger: ledger.compact_with_retention,
     logger: fn(_level, _event, _fields, _secrets) { Ok(Nil) },
     now_ms: wall_clock_ms,
     send_after: fn(subject, delay_ms, message) {
@@ -1611,7 +1618,12 @@ fn maybe_start_ledger_compaction(state: State) -> State {
         Ok(ledger_path) -> {
           effect_runner.enqueue(
             effect_runner_handle(state),
-            effect_runner.CompactLedger(ledger_path, state.dependencies.now_ms),
+            effect_runner.CompactLedger(
+              ledger_path,
+              state.workflow.effective.ledger_compaction.projection_retention,
+              state.dependencies.now_ms,
+              state.dependencies.compact_ledger,
+            ),
           )
           State(
             ..state,
@@ -3574,7 +3586,71 @@ fn apply_shell_operator_command(
   )
 }
 
+fn historical_run_rejection(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+) -> Option(command.CommandResult) {
+  let root = state.workflow.effective.workspace.root
+  case ledger.path_for_workspace_root(root) {
+    Error(error) ->
+      Some(command.rejected(
+        operator_command,
+        "ledger_read_failed",
+        Some(ledger.ledger_error_to_string(error)),
+      ))
+    Ok(ledger_path) ->
+      case ledger.workflow_run_presence(ledger_path, run_id) {
+        Ok(ledger.Online) | Ok(ledger.Unknown) -> None
+        Ok(ledger.Pruned) ->
+          Some(command.rejected(
+            operator_command,
+            "pruned_workflow_run",
+            Some(
+              "workflow run "
+              <> run_id
+              <> " was pruned from online state; raw history remains archived. Stop the daemon and run state compact --rebuild-from-archives --yes before retrying this operation",
+            ),
+          ))
+        Error(error) ->
+          Some(command.rejected(
+            operator_command,
+            "ledger_read_failed",
+            Some(ledger.ledger_error_to_string(error)),
+          ))
+      }
+  }
+}
+
 fn retry_workflow_step_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  target: command.RetryWorkflowStepTarget,
+  step_id: Option(String),
+) -> #(State, command.CommandResult) {
+  case target {
+    command.RetryWorkflowStepRunId(run_id) ->
+      case historical_run_rejection(state, operator_command, run_id) {
+        Some(result) -> #(state, result)
+        None ->
+          retry_workflow_step_after_presence(
+            state,
+            operator_command,
+            target,
+            step_id,
+          )
+      }
+    _ ->
+      retry_workflow_step_after_presence(
+        state,
+        operator_command,
+        target,
+        step_id,
+      )
+  }
+}
+
+fn retry_workflow_step_after_presence(
   state: State,
   operator_command: command.OperatorCommand,
   target: command.RetryWorkflowStepTarget,
@@ -3878,6 +3954,18 @@ fn recollect_workflow_outputs_for_operator(
   operator_command: command.OperatorCommand,
   run_id: String,
 ) -> #(State, command.CommandResult) {
+  case historical_run_rejection(state, operator_command, run_id) {
+    Some(result) -> #(state, result)
+    None ->
+      recollect_workflow_outputs_after_presence(state, operator_command, run_id)
+  }
+}
+
+fn recollect_workflow_outputs_after_presence(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+) -> #(State, command.CommandResult) {
   case replay_projection_for_operator(state) {
     Error(reason) -> #(
       state,
@@ -3951,6 +4039,36 @@ fn queue_recollect_outputs_operation(
 }
 
 fn run_finalize_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  validate: Bool,
+  outputs: command.RunFinalizeOutputs,
+  publish: Bool,
+  update_tracker: Bool,
+  dry_run: Bool,
+  reason: String,
+  allow_unpublished: Bool,
+) -> #(State, command.CommandResult) {
+  case historical_run_rejection(state, operator_command, run_id) {
+    Some(result) -> #(state, result)
+    None ->
+      run_finalize_after_presence(
+        state,
+        operator_command,
+        run_id,
+        validate,
+        outputs,
+        publish,
+        update_tracker,
+        dry_run,
+        reason,
+        allow_unpublished,
+      )
+  }
+}
+
+fn run_finalize_after_presence(
   state: State,
   operator_command: command.OperatorCommand,
   run_id: String,
@@ -5445,6 +5563,24 @@ fn reload_workflow_for_operator(
 }
 
 fn retry_artifact_publication_for_operator(
+  state: State,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  publication_id: Option(String),
+) -> #(State, command.CommandResult) {
+  case historical_run_rejection(state, operator_command, run_id) {
+    Some(result) -> #(state, result)
+    None ->
+      retry_artifact_publication_after_presence(
+        state,
+        operator_command,
+        run_id,
+        publication_id,
+      )
+  }
+}
+
+fn retry_artifact_publication_after_presence(
   state: State,
   operator_command: command.OperatorCommand,
   run_id: String,
@@ -9754,6 +9890,97 @@ fn handle_ledger_compaction_finished(
   }
   case result {
     Ok(report) -> {
+      let state = case report.pruned_run_ids {
+        [] -> state
+        run_ids -> {
+          let resident =
+            query_projection.ledger_projection(state.query_projection)
+          let state =
+            State(
+              ..state,
+              query_projection: query_projection.set_ledger_projection(
+                state.query_projection,
+                projection.remove_run_ids(resident, run_ids),
+              ),
+            )
+          let policy = report.policy
+          let families = report.prune_report.families_removed
+          let blockers = report.prune_report.blockers
+          log_state(state, "info", "projection_pruned", [
+            #("policy_fingerprint", report.policy_fingerprint),
+            #("policy_enabled", bool.to_string(policy.enabled)),
+            #("terminal_grace_ms", int.to_string(policy.terminal_grace_ms)),
+            #(
+              "scheduled_max_age_ms",
+              int.to_string(policy.scheduled_max_age_ms),
+            ),
+            #(
+              "scheduled_last_per_job",
+              int.to_string(policy.scheduled_last_per_job),
+            ),
+            #("run_count", int.to_string(list.length(run_ids))),
+            #("before_bytes", int.to_string(report.prune_report.before_bytes)),
+            #("after_bytes", int.to_string(report.prune_report.after_bytes)),
+            #("coverage_status", report.coverage_status),
+            #("family_workflow_runs", int.to_string(families.workflow_runs)),
+            #("family_provenances", int.to_string(families.provenances)),
+            #("family_task_refs", int.to_string(families.task_refs)),
+            #("family_input_manifests", int.to_string(families.input_manifests)),
+            #(
+              "family_interface_snapshots",
+              int.to_string(families.interface_snapshots),
+            ),
+            #(
+              "family_output_manifests",
+              int.to_string(families.output_manifests),
+            ),
+            #("family_repairs", int.to_string(families.repairs)),
+            #("family_step_attempts", int.to_string(families.step_attempts)),
+            #("family_step_recoveries", int.to_string(families.step_recoveries)),
+            #(
+              "family_publication_attempts",
+              int.to_string(families.publication_attempts),
+            ),
+            #(
+              "family_control_operations",
+              int.to_string(families.control_operations),
+            ),
+            #("family_outbox_entries", int.to_string(families.outbox_entries)),
+            #("blocker_active", int.to_string(blockers.active)),
+            #("blocker_within_grace", int.to_string(blockers.within_grace)),
+            #("blocker_parked", int.to_string(blockers.parked)),
+            #(
+              "blocker_retained_workspace",
+              int.to_string(blockers.retained_workspace),
+            ),
+            #(
+              "blocker_marker_unavailable",
+              int.to_string(blockers.marker_unavailable),
+            ),
+            #(
+              "blocker_recovery_started",
+              int.to_string(blockers.recovery_started),
+            ),
+            #(
+              "blocker_control_in_flight",
+              int.to_string(blockers.control_in_flight),
+            ),
+            #(
+              "blocker_publication_unsettled",
+              int.to_string(blockers.publication_unsettled),
+            ),
+            #(
+              "blocker_outbox_unsettled",
+              int.to_string(blockers.outbox_unsettled),
+            ),
+            #(
+              "blocker_malformed_association",
+              int.to_string(blockers.malformed_association),
+            ),
+          ])
+          state
+        }
+      }
       log_state(state, "info", "ledger_compacted", [
         #(
           "before_current_records",
