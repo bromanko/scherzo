@@ -2580,13 +2580,13 @@ pub fn implementation_completion_gate_accepts_qualified_paths_and_composite_inve
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/docs/plans/example.md",
-      "# Example\n\n## Validation and Acceptance\n\nThe `implementation_completion` gate has current-tree evidence. Include an explicit implementation inventory.\n",
+      "# Example\n\n## Validation and Acceptance\n\nThe `implementation_completion` gate has current-tree evidence. Include an explicit implementation inventory.\n\n## Rollout, Recovery, and Idempotence\n\nRetention ships disabled.\n",
     )
   write_implementation_completion_submission_with_evidence(
     dir,
     "true",
     "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
-    "[{\"criterion\":\"The implementation_completion gate has current-tree evidence.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"code\",\"reference\":\".scherzo/workflows/scripts/scherzo-implementation:2246\",\"observation\":\"The current validator implementation was inspected.\"}]}]",
+    "[{\"criterion\":\"The implementation_completion gate has current-tree evidence.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"code\",\"reference\":\".scherzo/workflows/scripts/scherzo-implementation:2246\",\"observation\":\"The current validator implementation was inspected.\"}]},{\"criterion\":\"Retention ships disabled.\",\"satisfied\":true,\"evidence\":[{\"kind\":\"code\",\"reference\":\".scherzo/workflows/scripts/scherzo-implementation#L2246\",\"observation\":\"The rollout default was inspected.\"}]}]",
     "[]",
     "[]",
     "[]",
