@@ -171,7 +171,9 @@ steps:
           - deferred_manual_verification
     run_in: main
     recovery:
-      attempts: 2
+      # Broad canonical plans may need several verifier-stamped continuation
+      # slices. Keep this bounded while leaving room for the backlog to shrink.
+      attempts: 4
       prompt: prompts/execplan-implementation-recover-plan-completion.md
 
   - id: validate_before_native_review
