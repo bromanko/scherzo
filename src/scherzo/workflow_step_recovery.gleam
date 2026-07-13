@@ -78,8 +78,8 @@ pub fn prompt(
   <> "- You are not retrying the failed step. You are repairing the cause of the failure.\n"
   <> "- Use the structured failure context, diagnostics, and current workspace state.\n"
   <> "- Make the smallest safe local change needed to fix the failure.\n"
-  <> "- Return recheck only when the original failed step should pass if rerun unchanged.\n"
-  <> "- Return gave_up if the failure requires credentials, external service recovery, product decisions, unsafe side effects, broad redesign, missing context, or unclear scope.\n"
+  <> "- Normally return recheck only when the original failed step should pass if rerun unchanged. A workflow-specific prompt may explicitly use recheck as a bounded continuation checkpoint after meaningful progress; follow that policy only while recovery_attempt_number is less than max_recovery_attempts.\n"
+  <> "- Return gave_up if the failure requires credentials, external service recovery, product decisions, unsafe side effects, broad redesign, missing context, unclear scope, or the final configured recovery attempt ends with required work remaining.\n"
   <> "\nStructured recovery input artifact: "
   <> recovery_input.ref
   <> "\n\nStructured recovery input JSON:\n```json\n"
@@ -165,6 +165,7 @@ pub fn record_recovery_input(
   workspace: workspace_run.PreparedStepWorkspace,
   step_id: String,
   recovery_attempt_number: Int,
+  max_recovery_attempts: Int,
   failed_artifact: step_artifact.StepArtifact,
   redaction_secrets: List(String),
 ) -> Result(RecoveryInputArtifact, workflow_checkpoint.CheckpointError) {
@@ -174,6 +175,7 @@ pub fn record_recovery_input(
       workspace.run_id,
       step_id,
       workspace.attempt_index,
+      max_recovery_attempts,
       failed_artifact,
       redaction_secrets,
     )
@@ -198,6 +200,7 @@ pub fn recovery_input_json(
   run_id: String,
   step_id: String,
   attempt_index: Int,
+  max_recovery_attempts: Int,
   failed_artifact: step_artifact.StepArtifact,
   redaction_secrets: List(String),
 ) -> String {
@@ -207,6 +210,8 @@ pub fn recovery_input_json(
     #("run_id", json.string(run_id)),
     #("step_id", json.string(step_id)),
     #("attempt_index", json.int(attempt_index)),
+    #("recovery_attempt_number", json.int(attempt_index)),
+    #("max_recovery_attempts", json.int(max_recovery_attempts)),
     #(
       "failure_summary",
       json.string(log.redact(

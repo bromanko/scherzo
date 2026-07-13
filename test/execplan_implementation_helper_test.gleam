@@ -2017,6 +2017,14 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     "Breadth alone is not scope expansion",
   )
   assert string.contains(recovery_prompt, "configured two-attempt")
+  assert string.contains(recovery_prompt, "recovery_attempt_number")
+  assert string.contains(recovery_prompt, "max_recovery_attempts")
+  assert string.contains(recovery_prompt, "bounded continuation checkpoint")
+  assert string.contains(recovery_prompt, "meaningful safe progress")
+  assert string.contains(
+    recovery_prompt,
+    "does not claim that completion already passes",
+  )
   assert string.contains(recovery_prompt, "newly stamped verdict")
   assert string.contains(recovery_prompt, "do not repeat or undo")
   assert string.contains(recovery_prompt, "required full gates")
@@ -2025,7 +2033,11 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
   assert string.contains(recovery_prompt, "unsafe ambiguity")
   assert string.contains(recovery_prompt, "required product decision")
   assert string.contains(recovery_prompt, "infrastructure failure")
-  assert string.contains(recovery_prompt, "exhausted attempt budget")
+  assert string.contains(recovery_prompt, "final configured recovery attempt")
+  assert string.contains(
+    recovery_prompt,
+    "Never describe the attempt budget as exhausted",
+  )
   assert string.contains(recovery_prompt, "gave_up")
   assert string.contains(recovery_prompt, "recheck")
   assert !string.contains(recovery_prompt, "change would be broad or unsafe")

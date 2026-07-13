@@ -194,6 +194,7 @@ pub fn execute(
               workspace,
               step.id,
               recovery_attempt_number,
+              config.attempts,
               failed_artifact,
               secrets,
             )

@@ -28,10 +28,12 @@ Recovery policy:
 - Treat the current stamped verifier findings as an actionable implementation backlog. Fix all concrete missing behavior, tests, validation, docs/helper migration, or artifact evidence required by the canonical plan and implementation pack that can be safely completed during this attempt.
 - Inspect the current workspace before acting. A later recovery attempt follows a fresh unchanged-verifier recheck, so use its newly stamped verdict and the current tree to identify only the findings that remain; do not repeat or undo already-completed work unless the recheck shows it regressed.
 - Continue implementing within canonical scope until the original unchanged verifier should pass. Do not return `gave_up` merely because the work is broad, touches multiple files, or requires full validation.
-- Scherzo enforces this step's configured two-attempt smart-recovery budget and reruns the original verifier unchanged after `recheck`. Do not extend, reset, or otherwise circumvent that bound.
-- Return `gave_up` only for a concrete blocker: missing required input or artifact; a provenance or intent conflict; unsafe ambiguity; a required product decision; an infrastructure failure that prevents progress; or exhausted attempt budget with remaining findings documented. Explain the blocker and the operator action needed.
-- If all current findings are completed and the original verifier should pass when rerun unchanged, call `submit_workflow_step_recovery_result` exactly once with `decision: "recheck"`.
-- Otherwise call `submit_workflow_step_recovery_result` exactly once with `decision: "gave_up"`; report completed work, every remaining finding, the concrete blocker, and why another safe change is not possible in the available budget.
+- Scherzo enforces this step's configured two-attempt smart-recovery budget and reruns the original verifier unchanged after `recheck`. Read `recovery_attempt_number` and `max_recovery_attempts` from `workflow_step_recovery_input`; do not extend, reset, or otherwise circumvent that bound.
+- This workflow-specific prompt uses `recheck` as both a completion check and a bounded continuation checkpoint. On a non-final recovery attempt (`recovery_attempt_number < max_recovery_attempts`), return `recheck` after making meaningful safe progress even when required findings remain. The unchanged verifier will stamp a fresh, smaller backlog before the next recovery attempt. In this case, `recheck` does not claim that completion already passes; state completed and remaining work truthfully in `summary` and `reason`.
+- On the final configured recovery attempt, return `recheck` only when all current findings are completed and the original verifier should pass unchanged. Return `gave_up` when required findings remain.
+- Return `gave_up` before the final attempt only for a concrete blocker or inability to make meaningful safe progress: missing required input or artifact; a provenance or intent conflict; unsafe ambiguity; a required product decision; or an infrastructure failure that prevents progress. Explain the blocker and operator action needed.
+- Never describe the attempt budget as exhausted when `recovery_attempt_number < max_recovery_attempts`. Broad remaining work, elapsed turn time, or an incomplete canonical backlog is not by itself a reason to give up on a productive non-final attempt.
+- Call `submit_workflow_step_recovery_result` exactly once. Use `decision: "recheck"` under the productive non-final or completed-final rules above; otherwise use `decision: "gave_up"` and report completed work, every remaining finding, the concrete blocker or final-attempt exhaustion, and required operator action.
 
 Process:
 
@@ -39,8 +41,8 @@ Process:
 2. Reconcile each current blocking finding with the current tree and turn the still-valid findings into the attempt backlog.
 3. Implement every backlog item that can be completed safely within canonical scope; breadth or a multi-file change is not by itself a reason to stop.
 4. Run validation proportionate to the edits, including focused checks while iterating and required full gates when necessary to establish that the unchanged verifier should pass.
-5. Re-read the current verdict backlog and inspect the final diff so the recovery decision names what was completed and what, if anything, remains.
-6. Submit `submit_workflow_step_recovery_result` with `recheck` or `gave_up`.
+5. Re-read the current verdict backlog and inspect the final diff so the recovery decision names what was completed and what remains.
+6. Compare `recovery_attempt_number` with `max_recovery_attempts`. If this is non-final and you made meaningful safe progress, submit `recheck` to obtain a fresh verifier backlog even if work remains. On the final attempt, submit `recheck` only if the verifier should pass; otherwise submit `gave_up`.
 
 Final response format:
 
