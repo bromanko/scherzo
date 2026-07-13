@@ -2016,7 +2016,7 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     recovery_prompt,
     "Breadth alone is not scope expansion",
   )
-  assert string.contains(recovery_prompt, "configured two-attempt")
+  assert string.contains(recovery_prompt, "configured bounded smart-recovery")
   assert string.contains(recovery_prompt, "recovery_attempt_number")
   assert string.contains(recovery_prompt, "max_recovery_attempts")
   assert string.contains(recovery_prompt, "bounded continuation checkpoint")
@@ -2145,7 +2145,7 @@ pub fn execplan_implementation_workflow_has_plan_completion_gates_test() {
     workflow,
     "prompts/execplan-implementation-recover-plan-completion.md",
   )
-  assert string.contains(workflow, "attempts: 2")
+  assert string.contains(workflow, "attempts: 4")
   assert string.contains(workflow, "- id: validate_before_native_review")
   assert string.contains(workflow, "depends_on: [verify_plan_completion]")
   assert string.contains(workflow, "- id: refresh_and_validate_after_review")
