@@ -2063,6 +2063,14 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     implementation_prompt,
     "records it as partial and forwards the current tree",
   )
+  assert string.contains(
+    implementation_prompt,
+    "unsupported `jj diff --check` is not an infrastructure blocker",
+  )
+  assert string.contains(
+    implementation_prompt,
+    "git apply --check --allow-empty",
+  )
   assert !string.contains(
     implementation_prompt,
     "Recovery is intentionally narrow",
