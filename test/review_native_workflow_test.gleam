@@ -725,10 +725,11 @@ pub fn liv_1469_final_response_without_completion_submission_fails_test() {
 pub fn execplan_plan_completion_verifiers_use_structured_output_test() {
   let dag = execplan_implementation_dag()
   let verifier_steps = [
-    "verify_plan_completion",
-    "verify_plan_completion_before_final_validation",
+    #("verify_plan_completion", 4),
+    #("verify_plan_completion_before_final_validation", 2),
   ]
-  list.each(verifier_steps, fn(step_id) {
+  list.each(verifier_steps, fn(entry) {
+    let #(step_id, expected_attempts) = entry
     assert_plan_completion_structured_output(dag, step_id)
     let assert Ok(step) = workflow_dag.step_by_id(dag, step_id)
     let assert Ok(Some(workflow_dag.EffectiveRecoveryConfig(
@@ -736,7 +737,7 @@ pub fn execplan_plan_completion_verifiers_use_structured_output_test() {
       prompt: prompt,
       ..,
     ))) = workflow_dag.effective_recovery_config(dag, step)
-    assert attempts == 2
+    assert attempts == expected_attempts
     assert prompt
       == workflow_dag.PromptFile(
         "prompts/execplan-implementation-recover-plan-completion.md",
