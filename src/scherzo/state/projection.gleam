@@ -3672,6 +3672,13 @@ pub fn pending_outbox_replays_at(
 }
 
 pub fn to_json(projection: Projection) -> json.Json {
+  to_json_with_extra_fields(projection, [])
+}
+
+pub fn to_json_with_extra_fields(
+  projection: Projection,
+  extra_fields: List(#(String, json.Json)),
+) -> json.Json {
   json.object([
     #("schema_version", json.int(record.schema_version)),
     #("kind", json.string("projection_snapshot")),
@@ -3820,6 +3827,7 @@ pub fn to_json(projection: Projection) -> json.Json {
         of: scheduled_projection.entry_to_json,
       ),
     ),
+    ..extra_fields
   ])
 }
 

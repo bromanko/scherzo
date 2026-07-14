@@ -1,11 +1,15 @@
 import gleam/bit_array
 import gleam/dict
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import scherzo/path
+import scherzo/state/ledger/cache as ledger_cache
+import scherzo/state/ledger/fingerprint
+import scherzo/state/ledger/record_index
 import scherzo/state/projection
 import scherzo/state/record
 import simplifile
@@ -60,6 +64,26 @@ pub type CompactionReport {
     before: LedgerStorageStats,
     after: LedgerStorageStats,
     duration_ms: Int,
+  )
+}
+
+pub type CacheDiagnostics {
+  CacheDiagnostics(
+    hydration_count: Int,
+    reload_count: Int,
+    fingerprint_mismatch_count: Int,
+    cache_hit_count: Int,
+    duplicate_probe_count: Int,
+    record_id_index_size: Int,
+  )
+}
+
+type CachedLedgerState {
+  CachedLedgerState(
+    projection: projection.Projection,
+    record_index: record_index.RecordIndex,
+    fingerprint: fingerprint.LedgerFingerprint,
+    diagnostics: CacheDiagnostics,
   )
 }
 
@@ -119,6 +143,19 @@ type MissingRecordsDecision {
   MissingRecordConflict(record_id: String)
 }
 
+type RecordPresenceDecision {
+  RecordMissing
+  RecordAlreadyRecorded(existing_record: record.LedgerRecord)
+  RecordConflict(record_id: String)
+}
+
+type SnapshotRead {
+  SnapshotRead(
+    projection: projection.Projection,
+    metadata: Option(record_index.RecordIndex),
+  )
+}
+
 type LockedAppendDecision {
   LockedAppendAppended
   LockedAppendAlreadyRecorded(existing_record: record.LedgerRecord)
@@ -172,11 +209,18 @@ pub fn append_many(
     [] -> Ok(Nil)
     _ ->
       with_ledger_lock(ledger_path.ledger_dir, fn() {
-        use Nil <- result.try(validate_append_batch_unlocked(
-          ledger_path,
+        use cached <- result.try(ensure_cache_current_unlocked(ledger_path))
+        use Nil <- result.try(validate_append_records_against_projection(
+          cached.projection,
           records,
         ))
-        append_prepared(ledger_path.current_path, records, fsync)
+        use Nil <- result.try(append_prepared(
+          ledger_path.current_path,
+          records,
+          fsync,
+        ))
+        persist_cached_append_unlocked(ledger_path, cached, records)
+        Ok(Nil)
       })
   }
 }
@@ -192,22 +236,31 @@ pub fn append_idempotent(
   )
   case
     with_ledger_lock(ledger_path.ledger_dir, fn() {
-      use existing <- result.try(find_record_by_id_unlocked(
-        ledger_path,
-        ledger_record.record_id,
-      ))
-      case existing {
-        Some(existing_record) ->
-          case existing_record.body == ledger_record.body {
-            True -> Ok(LockedAppendAlreadyRecorded(existing_record))
-            False -> Ok(LockedAppendConflict(ledger_record.record_id))
-          }
-        None -> {
+      use cached <- result.try(ensure_cache_current_unlocked(ledger_path))
+      case
+        ensure_record_absent_or_duplicate_unlocked(
+          ledger_path,
+          cached,
+          ledger_record,
+        )
+      {
+        Error(error) -> Error(error)
+        Ok(RecordAlreadyRecorded(existing_record)) ->
+          Ok(LockedAppendAlreadyRecorded(existing_record))
+        Ok(RecordConflict(record_id)) -> Ok(LockedAppendConflict(record_id))
+        Ok(RecordMissing) -> {
           use Nil <- result.try(
-            validate_append_batch_unlocked(ledger_path, [ledger_record]),
+            validate_append_records_against_projection(cached.projection, [
+              ledger_record,
+            ]),
           )
-          append_prepared(ledger_path.current_path, [ledger_record], fsync)
-          |> result.map(fn(_) { LockedAppendAppended })
+          use Nil <- result.try(append_prepared(
+            ledger_path.current_path,
+            [ledger_record],
+            fsync,
+          ))
+          persist_cached_append_unlocked(ledger_path, cached, [ledger_record])
+          Ok(LockedAppendAppended)
         }
       }
     })
@@ -232,22 +285,37 @@ pub fn append_workstream_start_records(
   )
   case
     with_ledger_lock(ledger_path.ledger_dir, fn() {
-      use projected <- result.try(load_projection_unlocked(ledger_path))
-      case existing_start_decision(projected, queue) {
+      use cached <- result.try(ensure_cache_current_unlocked(ledger_path))
+      case existing_start_decision(cached.projection, queue) {
         ExistingStartDuplicate(existing_run) ->
           Ok(LockedStartDuplicate(existing_run))
         ExistingStartConflict(existing_run) ->
           Ok(LockedStartConflict(existing_run))
         NoExistingStart -> {
           use missing <- result.try(
-            missing_records_unlocked(ledger_path, records, []),
+            missing_records_with_cache_unlocked(
+              ledger_path,
+              cached,
+              records,
+              [],
+            ),
           )
           case missing {
             MissingRecordConflict(record_id) ->
               Ok(LockedStartRecordConflict(record_id))
-            MissingRecords(missing_records) ->
-              append_prepared(ledger_path.current_path, missing_records, fsync)
-              |> result.map(fn(_) { LockedStartAppended })
+            MissingRecords(missing_records) -> {
+              use Nil <- result.try(append_prepared(
+                ledger_path.current_path,
+                missing_records,
+                fsync,
+              ))
+              persist_cached_append_unlocked(
+                ledger_path,
+                cached,
+                missing_records,
+              )
+              Ok(LockedStartAppended)
+            }
           }
         }
       }
@@ -313,26 +381,29 @@ fn existing_start_decision(
   }
 }
 
-fn missing_records_unlocked(
+fn missing_records_with_cache_unlocked(
   ledger_path: LedgerPath,
+  cached: CachedLedgerState,
   records: List(record.LedgerRecord),
   acc: List(record.LedgerRecord),
 ) -> Result(MissingRecordsDecision, LedgerError) {
   case records {
     [] -> Ok(MissingRecords(list.reverse(acc)))
     [ledger_record, ..rest] -> {
-      use existing <- result.try(find_record_by_id_unlocked(
+      use decision <- result.try(ensure_record_absent_or_duplicate_unlocked(
         ledger_path,
-        ledger_record.record_id,
+        cached_after_append(cached, list.reverse(acc)),
+        ledger_record,
       ))
-      case existing {
-        Some(existing_record) ->
-          case existing_record.body == ledger_record.body {
-            True -> missing_records_unlocked(ledger_path, rest, acc)
-            False -> Ok(MissingRecordConflict(ledger_record.record_id))
-          }
-        None ->
-          missing_records_unlocked(ledger_path, rest, [ledger_record, ..acc])
+      case decision {
+        RecordAlreadyRecorded(_) ->
+          missing_records_with_cache_unlocked(ledger_path, cached, rest, acc)
+        RecordConflict(record_id) -> Ok(MissingRecordConflict(record_id))
+        RecordMissing ->
+          missing_records_with_cache_unlocked(ledger_path, cached, rest, [
+            ledger_record,
+            ..acc
+          ])
       }
     }
   }
@@ -350,7 +421,7 @@ pub fn current_segment_stats(
   ledger_path: LedgerPath,
 ) -> Result(CurrentSegmentStats, LedgerError) {
   with_ledger_lock(ledger_path.ledger_dir, fn() {
-    use _snapshot_projection <- result.try(read_snapshot(ledger_path))
+    use _snapshot_projection <- result.try(read_snapshot_projection(ledger_path))
     current_segment_stats_unlocked(ledger_path.current_path)
   })
 }
@@ -359,7 +430,7 @@ pub fn storage_stats(
   ledger_path: LedgerPath,
 ) -> Result(LedgerStorageStats, LedgerError) {
   with_ledger_lock(ledger_path.ledger_dir, fn() {
-    use _snapshot_projection <- result.try(read_snapshot(ledger_path))
+    use _snapshot_projection <- result.try(read_snapshot_projection(ledger_path))
     storage_stats_unlocked(ledger_path)
   })
 }
@@ -372,7 +443,17 @@ pub fn load_projection(
   ledger_path: LedgerPath,
 ) -> Result(projection.Projection, LedgerError) {
   with_ledger_lock(ledger_path.ledger_dir, fn() {
-    load_projection_unlocked(ledger_path)
+    ensure_cache_current_unlocked(ledger_path)
+    |> result.map(fn(cached) { cached.projection })
+  })
+}
+
+pub fn cache_diagnostics(
+  ledger_path: LedgerPath,
+) -> Result(CacheDiagnostics, LedgerError) {
+  with_ledger_lock(ledger_path.ledger_dir, fn() {
+    ensure_cache_current_unlocked(ledger_path)
+    |> result.map(fn(cached) { cached.diagnostics })
   })
 }
 
@@ -404,10 +485,237 @@ pub fn records_jsonl_byte_size(records: List(record.LedgerRecord)) -> Int {
   }
 }
 
+fn empty_cache_diagnostics() -> CacheDiagnostics {
+  CacheDiagnostics(
+    hydration_count: 0,
+    reload_count: 0,
+    fingerprint_mismatch_count: 0,
+    cache_hit_count: 0,
+    duplicate_probe_count: 0,
+    record_id_index_size: 0,
+  )
+}
+
+fn put_cached_state(ledger_path: LedgerPath, cached: CachedLedgerState) -> Nil {
+  ledger_cache.put(ledger_path.ledger_dir, cached)
+}
+
+fn capture_fingerprint(
+  ledger_path: LedgerPath,
+) -> Result(fingerprint.LedgerFingerprint, LedgerError) {
+  fingerprint.capture(
+    ledger_path.snapshot_path,
+    ledger_path.current_path,
+    ledger_path.archive_dir,
+  )
+  |> result.map_error(Io)
+}
+
+fn update_cache_diagnostics(
+  diagnostics: CacheDiagnostics,
+  hydration_increment hydration_increment: Int,
+  reload_increment reload_increment: Int,
+  fingerprint_mismatch_increment fingerprint_mismatch_increment: Int,
+  cache_hit_increment cache_hit_increment: Int,
+  duplicate_probe_increment duplicate_probe_increment: Int,
+  record_id_index_size record_id_index_size: Int,
+) -> CacheDiagnostics {
+  CacheDiagnostics(
+    hydration_count: diagnostics.hydration_count + hydration_increment,
+    reload_count: diagnostics.reload_count + reload_increment,
+    fingerprint_mismatch_count: diagnostics.fingerprint_mismatch_count
+      + fingerprint_mismatch_increment,
+    cache_hit_count: diagnostics.cache_hit_count + cache_hit_increment,
+    duplicate_probe_count: diagnostics.duplicate_probe_count
+      + duplicate_probe_increment,
+    record_id_index_size: record_id_index_size,
+  )
+}
+
+fn cached_after_append(
+  cached: CachedLedgerState,
+  records: List(record.LedgerRecord),
+) -> CachedLedgerState {
+  let next_projection = projection.fold_from(cached.projection, records)
+  let next_index =
+    list.fold(records, cached.record_index, fn(index, ledger_record) {
+      case record_index.insert(index, ledger_record, "current") {
+        record_index.Inserted(updated) -> updated
+        record_index.Duplicate(_) | record_index.Conflict(_) -> index
+      }
+    })
+  CachedLedgerState(
+    projection: next_projection,
+    record_index: next_index,
+    fingerprint: cached.fingerprint,
+    diagnostics: update_cache_diagnostics(
+      cached.diagnostics,
+      hydration_increment: 0,
+      reload_increment: 0,
+      fingerprint_mismatch_increment: 0,
+      cache_hit_increment: 0,
+      duplicate_probe_increment: 0,
+      record_id_index_size: record_index.size(next_index),
+    ),
+  )
+}
+
+fn persist_cached_append_unlocked(
+  ledger_path: LedgerPath,
+  cached: CachedLedgerState,
+  records: List(record.LedgerRecord),
+) -> Nil {
+  let updated = cached_after_append(cached, records)
+  case capture_fingerprint(ledger_path) {
+    Ok(refreshed_fingerprint) ->
+      put_cached_state(
+        ledger_path,
+        CachedLedgerState(
+          projection: updated.projection,
+          record_index: updated.record_index,
+          fingerprint: refreshed_fingerprint,
+          diagnostics: updated.diagnostics,
+        ),
+      )
+    Error(_) -> ledger_cache.delete(ledger_path.ledger_dir)
+  }
+}
+
+fn validate_append_records_against_projection(
+  projected: projection.Projection,
+  records: List(record.LedgerRecord),
+) -> Result(Nil, LedgerError) {
+  let known_runs =
+    dict.keys(projected.workflow_runs)
+    |> list.fold(dict.new(), fn(known, run_id) {
+      dict.insert(known, run_id, True)
+    })
+  validate_append_records(records, known_runs)
+}
+
+fn ensure_cache_current_unlocked(
+  ledger_path: LedgerPath,
+) -> Result(CachedLedgerState, LedgerError) {
+  let key = ledger_path.ledger_dir
+  let maybe_cached: Option(CachedLedgerState) = ledger_cache.get(key)
+  use current_fingerprint <- result.try(capture_fingerprint(ledger_path))
+  case maybe_cached {
+    Some(cached) ->
+      case cached.fingerprint == current_fingerprint {
+        True -> {
+          let updated =
+            CachedLedgerState(
+              projection: cached.projection,
+              record_index: cached.record_index,
+              fingerprint: cached.fingerprint,
+              diagnostics: update_cache_diagnostics(
+                cached.diagnostics,
+                hydration_increment: 0,
+                reload_increment: 0,
+                fingerprint_mismatch_increment: 0,
+                cache_hit_increment: 1,
+                duplicate_probe_increment: 0,
+                record_id_index_size: record_index.size(cached.record_index),
+              ),
+            )
+          put_cached_state(ledger_path, updated)
+          Ok(updated)
+        }
+        False -> {
+          let diagnostics =
+            update_cache_diagnostics(
+              cached.diagnostics,
+              hydration_increment: 0,
+              reload_increment: 0,
+              fingerprint_mismatch_increment: 1,
+              cache_hit_increment: 0,
+              duplicate_probe_increment: 0,
+              record_id_index_size: record_index.size(cached.record_index),
+            )
+          hydrate_cache_from_disk_unlocked(
+            ledger_path,
+            current_fingerprint,
+            diagnostics,
+            is_reload: True,
+          )
+        }
+      }
+    None ->
+      hydrate_cache_from_disk_unlocked(
+        ledger_path,
+        current_fingerprint,
+        empty_cache_diagnostics(),
+        is_reload: False,
+      )
+  }
+}
+
+fn hydrate_cache_from_disk_unlocked(
+  ledger_path: LedgerPath,
+  current_fingerprint: fingerprint.LedgerFingerprint,
+  diagnostics: CacheDiagnostics,
+  is_reload is_reload: Bool,
+) -> Result(CachedLedgerState, LedgerError) {
+  use snapshot <- result.try(read_snapshot_state(ledger_path))
+  let base_index = case snapshot.metadata {
+    Some(index) -> Ok(index)
+    None -> hydrate_archive_index_unlocked(ledger_path)
+  }
+  use hydrated_index <- result.try(base_index)
+  use combined <- result.try(fold_current_segment_with_index(
+    ledger_path.current_path,
+    snapshot.projection,
+    hydrated_index,
+  ))
+  let #(combined_projection, combined_index) = combined
+  let diagnostics =
+    update_cache_diagnostics(
+      diagnostics,
+      hydration_increment: 1,
+      reload_increment: case is_reload {
+        True -> 1
+        False -> 0
+      },
+      fingerprint_mismatch_increment: 0,
+      cache_hit_increment: 0,
+      duplicate_probe_increment: 0,
+      record_id_index_size: record_index.size(combined_index),
+    )
+  let cached =
+    CachedLedgerState(
+      projection: combined_projection,
+      record_index: combined_index,
+      fingerprint: current_fingerprint,
+      diagnostics: diagnostics,
+    )
+  put_cached_state(ledger_path, cached)
+  Ok(cached)
+}
+
+fn hydrate_archive_index_unlocked(
+  ledger_path: LedgerPath,
+) -> Result(record_index.RecordIndex, LedgerError) {
+  use archive_paths <- result.try(archive_segment_paths(ledger_path))
+  fold_segment_paths_for_index(archive_paths, record_index.new())
+}
+
+fn fold_segment_paths_for_index(
+  paths: List(String),
+  index: record_index.RecordIndex,
+) -> Result(record_index.RecordIndex, LedgerError) {
+  case paths {
+    [] -> Ok(index)
+    [segment_path, ..rest] -> {
+      use next <- result.try(fold_segment_index(segment_path, index, "archive"))
+      fold_segment_paths_for_index(rest, next)
+    }
+  }
+}
+
 fn replay_unlocked(
   ledger_path: LedgerPath,
 ) -> Result(ReplayResult, LedgerError) {
-  use snapshot_projection <- result.try(read_snapshot(ledger_path))
+  use snapshot_projection <- result.try(read_snapshot_projection(ledger_path))
   use read <- result.try(read_records_unlocked(ledger_path))
   Ok(ReplayResult(
     records: read.records,
@@ -416,30 +724,38 @@ fn replay_unlocked(
   ))
 }
 
-fn load_projection_unlocked(
-  ledger_path: LedgerPath,
-) -> Result(projection.Projection, LedgerError) {
-  use snapshot_projection <- result.try(read_snapshot(ledger_path))
-  fold_current_segment_streaming(ledger_path.current_path, snapshot_projection)
-}
-
 fn compact_locked(
   ledger_path: LedgerPath,
   now_ms: fn() -> Int,
 ) -> Result(CompactionReport, LedgerError) {
   let started_at_ms = now_ms()
   use before <- result.try(storage_stats_unlocked(ledger_path))
-  use snapshot_projection <- result.try(read_snapshot(ledger_path))
-  use compacted_projection <- result.try(fold_current_segment_streaming(
-    ledger_path.current_path,
-    snapshot_projection,
-  ))
+  use cached <- result.try(ensure_cache_current_unlocked(ledger_path))
+  use snapshot <- result.try(read_snapshot_state(ledger_path))
   use Nil <- result.try(write_snapshot_atomically(
     ledger_path,
-    compacted_projection,
+    cached.projection,
+    cached.record_index,
   ))
   case archive_current_segment(ledger_path, before.archive_segment_count + 1) {
     Ok(archived_nonempty_current) -> {
+      use refreshed_fingerprint <- result.try(capture_fingerprint(ledger_path))
+      let refreshed_cache =
+        CachedLedgerState(
+          projection: cached.projection,
+          record_index: cached.record_index,
+          fingerprint: refreshed_fingerprint,
+          diagnostics: update_cache_diagnostics(
+            cached.diagnostics,
+            hydration_increment: 0,
+            reload_increment: 1,
+            fingerprint_mismatch_increment: 0,
+            cache_hit_increment: 0,
+            duplicate_probe_increment: 0,
+            record_id_index_size: record_index.size(cached.record_index),
+          ),
+        )
+      put_cached_state(ledger_path, refreshed_cache)
       use current <- result.try(current_segment_stats_unlocked(
         ledger_path.current_path,
       ))
@@ -460,11 +776,13 @@ fn compact_locked(
         duration_ms: now_ms() - started_at_ms,
       ))
     }
-    Error(error) ->
-      case restore_snapshot(ledger_path, snapshot_projection) {
+    Error(error) -> {
+      ledger_cache.delete(ledger_path.ledger_dir)
+      case restore_snapshot(ledger_path, snapshot) {
         Ok(Nil) -> Error(error)
         Error(restore_error) -> Error(restore_error)
       }
+    }
   }
 }
 
@@ -524,6 +842,7 @@ fn archive_segment_paths(
       |> list.sort(by: string.compare)
       |> list.map(fn(entry) { path.join(ledger_path.archive_dir, entry) })
       |> Ok
+    Error(simplifile.Enoent) | Error(simplifile.Enotdir) -> Ok([])
     Error(error) ->
       Error(Io(file_error("read ledger archive directory", error)))
   }
@@ -589,17 +908,48 @@ fn select_found_record(
   }
 }
 
-fn validate_append_batch_unlocked(
+fn ensure_record_absent_or_duplicate_unlocked(
   ledger_path: LedgerPath,
-  records: List(record.LedgerRecord),
-) -> Result(Nil, LedgerError) {
-  use projected <- result.try(load_projection_unlocked(ledger_path))
-  let known_runs =
-    dict.keys(projected.workflow_runs)
-    |> list.fold(dict.new(), fn(known, run_id) {
-      dict.insert(known, run_id, True)
-    })
-  validate_append_records(records, known_runs)
+  cached: CachedLedgerState,
+  ledger_record: record.LedgerRecord,
+) -> Result(RecordPresenceDecision, LedgerError) {
+  case record_index.get(cached.record_index, ledger_record.record_id) {
+    Error(Nil) -> Ok(RecordMissing)
+    Ok(index_entry) ->
+      case index_entry.body_sha256 == record_index.body_sha256(ledger_record) {
+        False -> Ok(RecordConflict(ledger_record.record_id))
+        True -> {
+          let probed =
+            CachedLedgerState(
+              projection: cached.projection,
+              record_index: cached.record_index,
+              fingerprint: cached.fingerprint,
+              diagnostics: update_cache_diagnostics(
+                cached.diagnostics,
+                hydration_increment: 0,
+                reload_increment: 0,
+                fingerprint_mismatch_increment: 0,
+                cache_hit_increment: 0,
+                duplicate_probe_increment: 1,
+                record_id_index_size: record_index.size(cached.record_index),
+              ),
+            )
+          put_cached_state(ledger_path, probed)
+          use existing <- result.try(find_record_by_id_unlocked(
+            ledger_path,
+            ledger_record.record_id,
+          ))
+          case existing {
+            Some(existing_record) ->
+              case existing_record.body == ledger_record.body {
+                True -> Ok(RecordAlreadyRecorded(existing_record))
+                False -> Ok(RecordConflict(ledger_record.record_id))
+              }
+            None -> Ok(RecordMissing)
+          }
+        }
+      }
+  }
 }
 
 fn validate_append_records(
@@ -755,21 +1105,6 @@ fn read_records_unlocked(
   }
 }
 
-fn fold_current_segment_streaming(
-  current_path: String,
-  snapshot_projection: projection.Projection,
-) -> Result(projection.Projection, LedgerError) {
-  let initial =
-    JsonlFold(value: snapshot_projection, error: None, truncated_tail: False)
-  case fold_lines(current_path, initial, projection_fold_step) {
-    Ok(JsonlFold(value: folded, error: None, truncated_tail: _)) -> Ok(folded)
-    Ok(JsonlFold(value: _, error: Some(error), truncated_tail: _)) ->
-      Error(error)
-    Error(OpenFailed("enoent")) -> Ok(snapshot_projection)
-    Error(error) -> Error(LedgerFfiFailed(error))
-  }
-}
-
 fn current_segment_stats_unlocked(
   current_path: String,
 ) -> Result(CurrentSegmentStats, LedgerError) {
@@ -857,32 +1192,157 @@ fn current_segment_stats_fold_step(
   }
 }
 
-fn projection_fold_step(
-  state: JsonlFold(projection.Projection),
-  line: String,
-  line_number: Int,
-  is_last: Bool,
-) -> JsonlFold(projection.Projection) {
-  case state.error {
-    Some(_) -> state
-    None ->
-      case parse_jsonl_line(line, line_number, is_last) {
-        Ok(ParsedRecord(ledger_record)) ->
-          JsonlFold(
-            value: projection.apply(state.value, ledger_record),
-            error: None,
-            truncated_tail: state.truncated_tail,
-          )
-        Ok(EmptyTrailingLine) -> state
-        Ok(TruncatedTail) ->
-          JsonlFold(value: state.value, error: None, truncated_tail: True)
-        Error(error) ->
-          JsonlFold(
-            value: state.value,
-            error: Some(error),
-            truncated_tail: state.truncated_tail,
-          )
-      }
+fn fold_current_segment_with_index(
+  current_path: String,
+  snapshot_projection: projection.Projection,
+  snapshot_index: record_index.RecordIndex,
+) -> Result(#(projection.Projection, record_index.RecordIndex), LedgerError) {
+  let initial =
+    JsonlFold(
+      value: #(snapshot_projection, snapshot_index),
+      error: None,
+      truncated_tail: False,
+    )
+  case
+    fold_lines(current_path, initial, projection_and_index_fold_step("current"))
+  {
+    Ok(JsonlFold(value: combined, error: None, truncated_tail: _)) ->
+      Ok(combined)
+    Ok(JsonlFold(value: _, error: Some(error), truncated_tail: _)) ->
+      Error(error)
+    Error(OpenFailed("enoent")) -> Ok(#(snapshot_projection, snapshot_index))
+    Error(error) -> Error(LedgerFfiFailed(error))
+  }
+}
+
+fn fold_segment_index(
+  segment_path: String,
+  initial_index: record_index.RecordIndex,
+  storage: String,
+) -> Result(record_index.RecordIndex, LedgerError) {
+  let initial =
+    JsonlFold(value: initial_index, error: None, truncated_tail: False)
+  case fold_lines(segment_path, initial, record_index_fold_step(storage)) {
+    Ok(JsonlFold(value: index, error: None, truncated_tail: _)) -> Ok(index)
+    Ok(JsonlFold(value: _, error: Some(error), truncated_tail: _)) ->
+      Error(error)
+    Error(OpenFailed("enoent")) -> Ok(initial_index)
+    Error(error) -> Error(LedgerFfiFailed(error))
+  }
+}
+
+fn projection_and_index_fold_step(
+  storage: String,
+) -> fn(
+  JsonlFold(#(projection.Projection, record_index.RecordIndex)),
+  String,
+  Int,
+  Bool,
+) -> JsonlFold(#(projection.Projection, record_index.RecordIndex)) {
+  fn(
+    state: JsonlFold(#(projection.Projection, record_index.RecordIndex)),
+    line: String,
+    line_number: Int,
+    is_last: Bool,
+  ) {
+    case state.error {
+      Some(_) -> state
+      None ->
+        case parse_jsonl_line(line, line_number, is_last) {
+          Ok(ParsedRecord(ledger_record)) -> {
+            let #(projected, index) = state.value
+            case record_index.insert(index, ledger_record, storage) {
+              record_index.Inserted(_) | record_index.Duplicate(_) ->
+                JsonlFold(
+                  value: #(
+                    projection.apply(projected, ledger_record),
+                    insert_index_or_keep(index, ledger_record, storage),
+                  ),
+                  error: None,
+                  truncated_tail: state.truncated_tail,
+                )
+              record_index.Conflict(_) ->
+                JsonlFold(
+                  value: state.value,
+                  error: Some(CorruptRecord(
+                    line_number,
+                    "conflicting record bodies for record id "
+                      <> ledger_record.record_id,
+                  )),
+                  truncated_tail: state.truncated_tail,
+                )
+            }
+          }
+          Ok(EmptyTrailingLine) -> state
+          Ok(TruncatedTail) ->
+            JsonlFold(value: state.value, error: None, truncated_tail: True)
+          Error(error) ->
+            JsonlFold(
+              value: state.value,
+              error: Some(error),
+              truncated_tail: state.truncated_tail,
+            )
+        }
+    }
+  }
+}
+
+fn record_index_fold_step(
+  storage: String,
+) -> fn(JsonlFold(record_index.RecordIndex), String, Int, Bool) ->
+  JsonlFold(record_index.RecordIndex) {
+  fn(
+    state: JsonlFold(record_index.RecordIndex),
+    line: String,
+    line_number: Int,
+    is_last: Bool,
+  ) {
+    case state.error {
+      Some(_) -> state
+      None ->
+        case parse_jsonl_line(line, line_number, is_last) {
+          Ok(ParsedRecord(ledger_record)) ->
+            case record_index.insert(state.value, ledger_record, storage) {
+              record_index.Inserted(next_index) ->
+                JsonlFold(
+                  value: next_index,
+                  error: None,
+                  truncated_tail: state.truncated_tail,
+                )
+              record_index.Duplicate(_) -> state
+              record_index.Conflict(_) ->
+                JsonlFold(
+                  value: state.value,
+                  error: Some(CorruptRecord(
+                    line_number,
+                    "conflicting record bodies for record id "
+                      <> ledger_record.record_id,
+                  )),
+                  truncated_tail: state.truncated_tail,
+                )
+            }
+          Ok(EmptyTrailingLine) -> state
+          Ok(TruncatedTail) ->
+            JsonlFold(value: state.value, error: None, truncated_tail: True)
+          Error(error) ->
+            JsonlFold(
+              value: state.value,
+              error: Some(error),
+              truncated_tail: state.truncated_tail,
+            )
+        }
+    }
+  }
+}
+
+fn insert_index_or_keep(
+  index: record_index.RecordIndex,
+  ledger_record: record.LedgerRecord,
+  storage: String,
+) -> record_index.RecordIndex {
+  case record_index.insert(index, ledger_record, storage) {
+    record_index.Inserted(next_index) -> next_index
+    record_index.Duplicate(_) | record_index.Conflict(_) -> index
   }
 }
 
@@ -924,19 +1384,34 @@ fn record_decode_error(
   }
 }
 
-fn read_snapshot(
+fn read_snapshot_projection(
   ledger_path: LedgerPath,
 ) -> Result(projection.Projection, LedgerError) {
+  read_snapshot_state(ledger_path)
+  |> result.map(fn(snapshot) { snapshot.projection })
+}
+
+fn read_snapshot_state(
+  ledger_path: LedgerPath,
+) -> Result(SnapshotRead, LedgerError) {
   case simplifile.read(ledger_path.snapshot_path) {
-    Ok(contents) ->
-      case projection.decode_string(contents) {
+    Ok(contents) -> {
+      let projection_result = case projection.decode_string(contents) {
         Ok(snapshot_projection) -> Ok(snapshot_projection)
         Error(projection.UnsupportedSnapshotVersion(version)) ->
           Error(UnsupportedVersion(version))
         Error(error) ->
           Error(CorruptRecord(0, projection.describe_decode_error(error)))
       }
-    Error(simplifile.Enoent) -> Ok(projection.new())
+      use snapshot_projection <- result.try(projection_result)
+      let metadata = case record_index.decode_snapshot_metadata(contents) {
+        Ok(index) -> index
+        Error(_) -> None
+      }
+      Ok(SnapshotRead(projection: snapshot_projection, metadata: metadata))
+    }
+    Error(simplifile.Enoent) ->
+      Ok(SnapshotRead(projection: projection.new(), metadata: None))
     Error(error) -> Error(Io(file_error("read ledger snapshot", error)))
   }
 }
@@ -944,14 +1419,24 @@ fn read_snapshot(
 fn write_snapshot_atomically(
   ledger_path: LedgerPath,
   snapshot_projection: projection.Projection,
+  snapshot_index: record_index.RecordIndex,
+) -> Result(Nil, LedgerError) {
+  projection.to_json_with_extra_fields(snapshot_projection, [
+    #(
+      record_index.snapshot_metadata_field,
+      record_index.snapshot_metadata_json(snapshot_index),
+    ),
+  ])
+  |> json.to_string
+  |> write_snapshot_contents_atomically(ledger_path)
+}
+
+fn write_snapshot_contents_atomically(
+  contents: String,
+  ledger_path: LedgerPath,
 ) -> Result(Nil, LedgerError) {
   let temp_path = ledger_path.snapshot_path <> ".tmp"
-  case
-    simplifile.write(
-      temp_path,
-      projection.to_string(snapshot_projection) <> "\n",
-    )
-  {
+  case simplifile.write(temp_path, contents <> "\n") {
     Error(error) ->
       Error(Io(file_error("write temporary ledger snapshot", error)))
     Ok(Nil) ->
@@ -964,9 +1449,20 @@ fn write_snapshot_atomically(
 
 fn restore_snapshot(
   ledger_path: LedgerPath,
-  snapshot_projection: projection.Projection,
+  snapshot: SnapshotRead,
 ) -> Result(Nil, LedgerError) {
-  write_snapshot_atomically(ledger_path, snapshot_projection)
+  let contents = case snapshot.metadata {
+    Some(index) ->
+      projection.to_json_with_extra_fields(snapshot.projection, [
+        #(
+          record_index.snapshot_metadata_field,
+          record_index.snapshot_metadata_json(index),
+        ),
+      ])
+      |> json.to_string
+    None -> projection.to_string(snapshot.projection)
+  }
+  write_snapshot_contents_atomically(contents, ledger_path)
 }
 
 fn archived_segment_delta(archived_nonempty_current: Bool) -> Int {

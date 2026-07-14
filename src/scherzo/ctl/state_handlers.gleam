@@ -3,6 +3,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import scherzo/control/file as control_file
 import scherzo/instance_lock
 import scherzo/state/ledger
 import scherzo/state/local_artifacts
@@ -175,61 +176,91 @@ fn apply_state_compact(root: String) -> StateCompactResult {
   case compact_ledger_path(root) {
     Error(result) -> result
     Ok(ledger_path) ->
-      with_state_compact_lock(ledger_path, fn() {
-        case inspect_compaction_details(ledger_path) {
-          Error(error) ->
-            failed_state_compact_result(
-              ledger_path,
-              None,
-              None,
-              "ledger_inspect_failed",
-              compact_inspect_error_message(error),
-            )
-          Ok(before) ->
-            case ledger.compact(ledger_path) {
+      case offline_state_mutation_guard(ledger_path.workspace_root) {
+        Error(#(reason, message)) ->
+          failed_state_compact_result(ledger_path, None, None, reason, message)
+        Ok(Nil) ->
+          with_state_compact_lock(ledger_path, fn() {
+            case inspect_compaction_details(ledger_path) {
               Error(error) ->
                 failed_state_compact_result(
                   ledger_path,
-                  Some(before),
-                  Some(before.current_size_bytes > 0),
-                  ledger.ledger_error_code(error),
-                  ledger_error_message(error),
+                  None,
+                  None,
+                  "ledger_inspect_failed",
+                  compact_inspect_error_message(error),
                 )
-              Ok(Nil) ->
-                case inspect_compaction_details(ledger_path) {
+              Ok(before) ->
+                case ledger.compact(ledger_path) {
                   Error(error) ->
-                    StateCompactResult(
-                      status: "compacted",
-                      workspace_root: ledger_path.workspace_root,
-                      ledger_dir: ledger_path.ledger_dir,
-                      current_path: ledger_path.current_path,
-                      snapshot_path: ledger_path.snapshot_path,
-                      archive_dir: ledger_path.archive_dir,
-                      before: Some(before),
-                      after: None,
-                      would_archive_current: Some(before.current_size_bytes > 0),
-                      reason: Some("post_compaction_inspect_failed"),
-                      message: "ledger compaction completed; failed to inspect after details: "
-                        <> compact_inspect_error_message(error),
+                    failed_state_compact_result(
+                      ledger_path,
+                      Some(before),
+                      Some(before.current_size_bytes > 0),
+                      ledger.ledger_error_code(error),
+                      ledger_error_message(error),
                     )
-                  Ok(after) ->
-                    StateCompactResult(
-                      status: "compacted",
-                      workspace_root: ledger_path.workspace_root,
-                      ledger_dir: ledger_path.ledger_dir,
-                      current_path: ledger_path.current_path,
-                      snapshot_path: ledger_path.snapshot_path,
-                      archive_dir: ledger_path.archive_dir,
-                      before: Some(before),
-                      after: Some(after),
-                      would_archive_current: Some(before.current_size_bytes > 0),
-                      reason: None,
-                      message: "ledger compaction completed",
-                    )
+                  Ok(Nil) ->
+                    case inspect_compaction_details(ledger_path) {
+                      Error(error) ->
+                        StateCompactResult(
+                          status: "compacted",
+                          workspace_root: ledger_path.workspace_root,
+                          ledger_dir: ledger_path.ledger_dir,
+                          current_path: ledger_path.current_path,
+                          snapshot_path: ledger_path.snapshot_path,
+                          archive_dir: ledger_path.archive_dir,
+                          before: Some(before),
+                          after: None,
+                          would_archive_current: Some(
+                            before.current_size_bytes > 0,
+                          ),
+                          reason: Some("post_compaction_inspect_failed"),
+                          message: "ledger compaction completed; failed to inspect after details: "
+                            <> compact_inspect_error_message(error),
+                        )
+                      Ok(after) ->
+                        StateCompactResult(
+                          status: "compacted",
+                          workspace_root: ledger_path.workspace_root,
+                          ledger_dir: ledger_path.ledger_dir,
+                          current_path: ledger_path.current_path,
+                          snapshot_path: ledger_path.snapshot_path,
+                          archive_dir: ledger_path.archive_dir,
+                          before: Some(before),
+                          after: Some(after),
+                          would_archive_current: Some(
+                            before.current_size_bytes > 0,
+                          ),
+                          reason: None,
+                          message: "ledger compaction completed",
+                        )
+                    }
                 }
             }
-        }
-      })
+          })
+      }
+  }
+}
+
+fn offline_state_mutation_guard(
+  root: String,
+) -> Result(Nil, #(String, String)) {
+  let control_path = control_file.path_for_workspace(root)
+  case simplifile.is_file(control_path) {
+    Ok(True) ->
+      Error(#(
+        "daemon_control_file_present",
+        "stop the daemon before mutating offline state; control file present at "
+          <> control_path,
+      ))
+    Ok(False) | Error(simplifile.Enoent) -> Ok(Nil)
+    Error(error) ->
+      Error(#(
+        "daemon_control_file_check_failed",
+        "failed to inspect daemon control file: "
+          <> simplifile.describe_error(error),
+      ))
   }
 }
 
@@ -545,7 +576,14 @@ fn state_repair_run_provenance(
                         message: Some("workflow run provenance can be repaired"),
                       )
                     _, True ->
-                      append_state_repair_run_provenance(ledger_path, plan)
+                      case
+                        offline_state_mutation_guard(ledger_path.workspace_root)
+                      {
+                        Ok(Nil) ->
+                          append_state_repair_run_provenance(ledger_path, plan)
+                        Error(#(reason, message)) ->
+                          rejected_state_repair_result(run_id, reason, message)
+                      }
                     _, _ ->
                       rejected_state_repair_result(
                         run_id,

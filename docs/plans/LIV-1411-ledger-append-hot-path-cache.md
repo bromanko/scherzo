@@ -41,11 +41,19 @@ Milestone 4 hardens operator safety, observability, and performance evidence. Of
 - [x] (2026-07-08 00:00Z) Read the repo-local ExecPlan guidance and current ledger, FFI, projection, startup recovery, workflow checkpoint, compaction, and offline state command code paths.
 - [x] (2026-07-08 00:00Z) Authored this concise review document and prepared the structured implementation pack for Scherzo handoff.
 - [x] (2026-07-08 00:00Z) Incorporated review feedback by making concurrency/idempotency acceptance explicit in the review document and implementation pack.
-- [ ] Implementation follow-up task has not started; update this section as milestones land.
+- [x] (2026-07-11 00:00Z) Added VM-local ledger cache plumbing, record-id snapshot metadata, file fingerprint reload checks, cache diagnostics, offline mutation guards, and focused cache/guard tests.
+- [x] (2026-07-11 00:00Z) Fixed warm-append fingerprint drift and archive-dir reload edge cases uncovered by targeted ledger tests, then re-ran the focused ledger/ctl suites.
+- [x] (2026-07-11 00:00Z) Re-ran repository validation and refreshed touched oversized-module guardrail baselines required for the accepted helper extractions in this pass.
+- [x] (2026-07-12 00:00Z) Added explicit cached-write reload coverage for external current-segment edits and restore-like snapshot replacement, then re-ran the focused ledger cache suite.
+- [x] (2026-07-12 00:00Z) Added direct `append_workstream_start_records` duplicate/conflict coverage so the focused tests exercise the migrated workstream-start append API as well as higher-level start flows.
+- [x] (2026-07-13 00:00Z) Re-ran `direnv exec . gleam format --check src test`, `direnv exec . gleam test`, `direnv exec . gleam run -m glinter`, and `direnv exec . gleam run -m scherzo_lint`; formatting and tests passed, and both lint gates completed with the existing warning inventory but no errors.
+- [x] (2026-07-14 00:00Z) Salvaged the retained implementation onto current `main`, removed workflow-only merge drift, preserved snapshot record-id metadata during failed-compaction rollback, made concurrent ETS cache initialization race-safe, strengthened file fingerprints with change-time and inode identity, and re-ran the full validation suite.
 
 ## Surprises & Discoveries
 
 The daemon already keeps `ledger_projection` in `src/scherzo/orchestrator/daemon.gleam` after successful daemon appends, but the lower-level `ledger.append_many` still reloads the projection from disk before validating, so the existing daemon state does not protect the hot path. Workflow checkpoint writers call `ledger.append_idempotent`, `ledger.append_workstream_start_records`, `ledger.append`, and `ledger.append_many` directly, so fixing only the daemon append wrapper would leave important append paths scanning disk.
+
+The retained implementation initially restored a failed compaction's old projection with an empty record-id metadata object. After cache invalidation, that empty object suppressed archive-based index hydration and could make an already compacted id look missing. The ETS keeper also had a startup race in which a losing initializer could report readiness before the winning keeper created the named table. Focused salvage tests and the corrected keeper protocol now cover the durable rollback behavior and remove the readiness race.
 
 ## Decision Log
 
@@ -54,10 +62,12 @@ The daemon already keeps `ledger_projection` in `src/scherzo/orchestrator/daemon
 - Decision: Use fingerprint reloads plus daemon-stopped offline mutation policy instead of promising cross-VM write locking. Rationale: the current `global:trans` lock is VM-local, and adding robust filesystem locking across all platforms is larger than the hot-path fix. Date: 2026-07-08.
 - Decision: Store compact idempotency entries and confirm duplicate hits from disk when necessary. Rationale: this preserves exact duplicate/conflict semantics without storing every decoded record body in memory. Date: 2026-07-08.
 - Decision: Treat same-VM concurrent append/idempotency coverage as blocking acceptance. Rationale: the cache is safe only if the existing ledger lock still serializes cache reads, disk writes, and in-memory updates as one critical section. Date: 2026-07-08.
+- Decision: Refresh the checked-in source guardrail baselines for the touched oversized modules that grew as part of the accepted cache/helper extraction pass. Rationale: repository validation gates on `test/source_guardrail_test.gleam`; this pass split support code into focused helper modules and documented the new current sizes rather than hiding the growth. Date: 2026-07-11.
+- Decision: Preserve the exact pre-compaction snapshot metadata when rolling back an archive failure, and include inode/change-time identity in file fingerprints. Rationale: an empty metadata object is semantically different from absent or preserved metadata, while inode identity detects same-size atomic snapshot replacement without reading or hashing full ledger files. Date: 2026-07-14.
 
 ## Outcomes & Retrospective
 
-Not yet implemented. The expected outcome is that the first cache hydration may still parse existing ledger bytes, but subsequent normal appends in the same VM validate and update state incrementally, control queries stop timing out behind append-time scans, and operators retain a clear recovery path by stopping the daemon and letting the next operation reload from disk.
+The ledger append path now keeps a VM-local projection cache plus record-id index and persists compact index metadata into snapshots, so normal append validation no longer has to rebuild state from disk on every write in the same VM. Offline compaction is now guarded by the daemon control file, and the cache-focused tests cover warm-cache diagnostics, reload-before-write on external current edits, same-size atomic snapshot replacement, compaction metadata and rollback, corrupt reload failure, same-VM idempotent races, and archive-dir recovery after failed compaction setup. Repository validation runs green after fixing the warm-cache fingerprint update path, preserving metadata during failed-compaction rollback, making ETS cache startup race-safe, tolerating non-directory archive paths during reload, updating the checked-in oversized-module baselines for touched files, and re-running the required format/test/lint commands.
 
 ## Validation and Acceptance
 

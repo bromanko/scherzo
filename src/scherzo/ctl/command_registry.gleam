@@ -955,7 +955,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       handler: StateCompactKey,
       path: ["state", "compact"],
       usage: "state compact --root <workspace-root> --dry-run|--yes",
-      summary: "Inspect or compact the durable local state ledger.",
+      summary: "Inspect or compact the durable local state ledger; stop the daemon before --yes.",
       positionals: [],
       options: [root_option(), json_option(), dry_run_option(), yes_option()],
       help_lines: [
@@ -967,7 +967,7 @@ pub fn commands() -> List(command_spec.CommandSpec(HandlerKey)) {
       handler: StateRepairRunProvenanceKey,
       path: ["state", "repair-run-provenance"],
       usage: "state repair-run-provenance run:<run-id> --root <workspace-root> --dry-run|--yes",
-      summary: "Inspect or append an auditable workflow provenance repair.",
+      summary: "Inspect or append an auditable workflow provenance repair; stop the daemon before --yes.",
       positionals: [command_spec.Required("run_ref")],
       options: [root_option(), json_option(), dry_run_option(), yes_option()],
       help_lines: [
