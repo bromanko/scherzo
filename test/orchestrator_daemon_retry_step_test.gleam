@@ -64,6 +64,10 @@ type FetchCounterMessage {
   ArmFetchGate
 }
 
+// Control operations cross several daemon processes and persist durable ledger
+// records. Allow loaded CI workers enough time to observe their terminal state.
+const operation_status_wait_attempts = 500
+
 pub fn step_not_repairable_message_does_not_repeat_rejected_command_test() {
   let message =
     retry_step_validation.operation_failure_message(
@@ -806,7 +810,12 @@ pub fn run_retry_step_exact_resume_validation_failure_is_operation_noop_test() {
   test_async.release_barrier(fetch_barrier)
 
   let assert Ok(first_operation) =
-    wait_for_operation_status(root, first_operation_id, "failed", 50)
+    wait_for_operation_status(
+      root,
+      first_operation_id,
+      "failed",
+      operation_status_wait_attempts,
+    )
   assert first_operation.reason == Some("workflow_drift")
   let assert Some(first_message) = first_operation.message
   assert string.contains(
@@ -830,7 +839,12 @@ pub fn run_retry_step_exact_resume_validation_failure_is_operation_noop_test() {
   let second_operation_id =
     assert_retry_step_queued(second_result, Some("apply_feedback"))
   let assert Ok(second_operation) =
-    wait_for_operation_status(root, second_operation_id, "failed", 50)
+    wait_for_operation_status(
+      root,
+      second_operation_id,
+      "failed",
+      operation_status_wait_attempts,
+    )
   assert second_operation.reason == Some("workflow_drift")
   assert count_kind(root, "workflow_repair_requested") == 0
   assert count_kind(root, "step_attempt_superseded") == 0
@@ -5000,7 +5014,12 @@ pub fn run_finalize_finished_run_queues_declared_publication_retry_test() {
     "artifact-publication-retry:run-1:all:",
   )
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 100)
+    wait_for_operation_status(
+      root,
+      operation_id,
+      "completed",
+      operation_status_wait_attempts,
+    )
   assert completed_operation.message
     == Some("publication retry recorded execplan_review_doc as published")
   assert publication_attempt_count(root, "run-1", "execplan_review_doc") == 1
