@@ -1,3 +1,4 @@
+import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -215,6 +216,7 @@ type ToolCallOrigin {
 fn tool_call_submissions(
   records: List(protocol.RpcRecord),
 ) -> List(ToolCallSubmission) {
+  let evidence = tool_evidence(records)
   let observed =
     records
     |> list.flat_map(fn(record) {
@@ -223,7 +225,7 @@ fn tool_call_submissions(
         ObservedToolCall(
           origin: tool_call_origin(record),
           call: call,
-          status: tool_status_for_call(records, call),
+          status: tool_status_for_call(evidence, call),
         )
       })
     })
@@ -237,7 +239,7 @@ fn tool_call_submissions(
       arguments_json: observed.call.arguments_json,
       status: observed.status,
       sibling_count: observed.call.sibling_count,
-      receipt_json: tool_receipt_for_call(records, observed.call),
+      receipt_json: tool_receipt_for_call(evidence, observed.call),
     )
   })
 }
@@ -359,87 +361,103 @@ fn same_arguments_json(left: Option(String), right: Option(String)) -> Bool {
   }
 }
 
+type ToolEvidence {
+  ToolEvidence(
+    statuses_by_id: Dict(String, String),
+    statuses_by_name: Dict(String, String),
+    receipts_by_id: Dict(String, String),
+    receipts_by_name: Dict(String, String),
+  )
+}
+
+fn tool_evidence(records: List(protocol.RpcRecord)) -> ToolEvidence {
+  records
+  |> list.reverse
+  |> list.fold(
+    ToolEvidence(dict.new(), dict.new(), dict.new(), dict.new()),
+    fn(evidence, record) {
+      let evidence = case record.tool_status {
+        Some(status) ->
+          ToolEvidence(
+            ..evidence,
+            statuses_by_id: insert_optional(
+              evidence.statuses_by_id,
+              record.tool_call_id,
+              status,
+            ),
+            statuses_by_name: insert_optional(
+              evidence.statuses_by_name,
+              record.tool_name,
+              status,
+            ),
+          )
+        None -> evidence
+      }
+      case record.tool_call_id, record.tool_name {
+        None, None -> evidence
+        _, _ ->
+          case receipt_from_record(record) {
+            Some(receipt) ->
+              ToolEvidence(
+                ..evidence,
+                receipts_by_id: insert_optional(
+                  evidence.receipts_by_id,
+                  record.tool_call_id,
+                  receipt,
+                ),
+                receipts_by_name: insert_optional(
+                  evidence.receipts_by_name,
+                  record.tool_name,
+                  receipt,
+                ),
+              )
+            None -> evidence
+          }
+      }
+    },
+  )
+}
+
+fn insert_optional(
+  values: Dict(String, String),
+  key: Option(String),
+  value: String,
+) -> Dict(String, String) {
+  case key {
+    Some(key) -> dict.insert(values, key, value)
+    None -> values
+  }
+}
+
 fn tool_status_for_call(
-  records: List(protocol.RpcRecord),
+  evidence: ToolEvidence,
   call: protocol.ToolCallRecord,
 ) -> Option(String) {
   case call.id {
     Some(id) ->
-      case tool_status_for_id(records, id) {
-        Some(status) -> Some(status)
-        None -> tool_status_for_name(records, call.name)
+      case dict.get(evidence.statuses_by_id, id) {
+        Ok(status) -> Some(status)
+        Error(Nil) ->
+          dict.get(evidence.statuses_by_name, call.name)
+          |> option.from_result
       }
-    None -> tool_status_for_name(records, call.name)
-  }
-}
-
-fn tool_status_for_id(
-  records: List(protocol.RpcRecord),
-  id: String,
-) -> Option(String) {
-  case records {
-    [] -> None
-    [record, ..rest] ->
-      case record.tool_call_id == Some(id), record.tool_status {
-        True, Some(status) -> Some(status)
-        _, _ -> tool_status_for_id(rest, id)
-      }
-  }
-}
-
-fn tool_status_for_name(
-  records: List(protocol.RpcRecord),
-  name: String,
-) -> Option(String) {
-  case records {
-    [] -> None
-    [record, ..rest] ->
-      case record.tool_name == Some(name), record.tool_status {
-        True, Some(status) -> Some(status)
-        _, _ -> tool_status_for_name(rest, name)
-      }
+    None -> dict.get(evidence.statuses_by_name, call.name) |> option.from_result
   }
 }
 
 fn tool_receipt_for_call(
-  records: List(protocol.RpcRecord),
+  evidence: ToolEvidence,
   call: protocol.ToolCallRecord,
 ) -> Option(String) {
   case call.id {
     Some(id) ->
-      case tool_receipt_for_id(records, id) {
-        Some(receipt) -> Some(receipt)
-        None -> tool_receipt_for_name(records, call.name)
+      case dict.get(evidence.receipts_by_id, id) {
+        Ok(receipt) -> Some(receipt)
+        Error(Nil) ->
+          dict.get(evidence.receipts_by_name, call.name)
+          |> option.from_result
       }
-    None -> tool_receipt_for_name(records, call.name)
-  }
-}
-
-fn tool_receipt_for_id(
-  records: List(protocol.RpcRecord),
-  id: String,
-) -> Option(String) {
-  case records {
-    [] -> None
-    [record, ..rest] ->
-      case record.tool_call_id == Some(id), receipt_from_record(record) {
-        True, Some(receipt) -> Some(receipt)
-        _, _ -> tool_receipt_for_id(rest, id)
-      }
-  }
-}
-
-fn tool_receipt_for_name(
-  records: List(protocol.RpcRecord),
-  name: String,
-) -> Option(String) {
-  case records {
-    [] -> None
-    [record, ..rest] ->
-      case record.tool_name == Some(name), receipt_from_record(record) {
-        True, Some(receipt) -> Some(receipt)
-        _, _ -> tool_receipt_for_name(rest, name)
-      }
+    None -> dict.get(evidence.receipts_by_name, call.name) |> option.from_result
   }
 }
 
