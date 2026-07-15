@@ -6,6 +6,7 @@ import gleam/result
 import gleam/string
 import scherzo/agent/types as agent_types
 import scherzo/artifact_repository/command_runner
+import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/error
 import scherzo/orchestrator/control_plane_runtime
@@ -16,6 +17,7 @@ import scherzo/port
 import scherzo/runtime_bundle
 import scherzo/session/hub
 import scherzo/session/tokens as session_tokens
+import scherzo/state/archive_pruned_index
 import scherzo/state/ledger
 import scherzo/state/projection
 import scherzo/state/record
@@ -32,6 +34,163 @@ import scherzo/workflow_run/contract_io
 import simplifile
 import support/test_helpers
 import test_async
+
+pub fn pruned_run_rejects_all_recovery_commands_without_side_effects_test() {
+  let dir = "test/tmp/daemon-recollect-outputs/pruned-commands"
+  let issue = issue()
+  let #(workflow_path, root) = write_recollect_workflow(dir)
+  let _seed = seed_completed_run(workflow_path, root, issue, False)
+  let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
+  let policy = config_types.ProjectionRetentionConfig(True, 0, 604_800_000, 25)
+  let assert Ok(compaction) =
+    ledger.compact_with_retention(ledger_path, policy, fn() { 1_000_000_000 })
+  assert compaction.pruned_run_ids == ["run-1"]
+
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      tracker_issue_only(issue),
+      hub_subject,
+      worker_subject,
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let before = ledger_kinds(root)
+  let commands = [
+    command.RetryWorkflowStep(
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("implement"),
+    ),
+    command.RetryWorkflowStepDryRun(
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("implement"),
+    ),
+    command.RetryWorkflowStepExact(
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("implement"),
+    ),
+    command.RecollectWorkflowOutputs("run-1"),
+    command.RunFinalize(
+      run_id: "run-1",
+      validate: True,
+      outputs: command.RunFinalizeOutputsAuto,
+      publish: True,
+      update_tracker: True,
+      dry_run: True,
+      reason: "test",
+      allow_unpublished: False,
+    ),
+    command.RetryArtifactPublication("run-1", None),
+  ]
+  commands
+  |> list.each(fn(operator_command) {
+    let assert Ok(first) =
+      apply_operator_command_after_startup_recovery(
+        started.data,
+        operator_command,
+      )
+    assert command.status_reason(first.status) == Some("pruned_workflow_run")
+    let assert Ok(duplicate) =
+      daemon.apply_operator_command(started.data, operator_command, 5000)
+    assert command.status_reason(duplicate.status)
+      == Some("pruned_workflow_run")
+    assert ledger_kinds(root) == before
+  })
+
+  let marker =
+    archive_pruned_index.marker_path(ledger_path.archive_dir, "run-1")
+  let assert Ok(Nil) = simplifile.write(marker, "malformed-without-newline")
+  commands
+  |> list.each(fn(operator_command) {
+    let assert Ok(result) =
+      daemon.apply_operator_command(started.data, operator_command, 5000)
+    assert command.status_reason(result.status) == Some("ledger_read_failed")
+    assert ledger_kinds(root) == before
+  })
+  test_async.assert_no_extra_message(worker_subject)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn never_known_run_rejects_recovery_commands_without_side_effects_test() {
+  let dir = "test/tmp/daemon-recollect-outputs/never-known-commands"
+  let issue = issue()
+  let #(workflow_path, root) = write_recollect_workflow(dir)
+  let _seed = seed_completed_run(workflow_path, root, issue, False)
+  let worker_subject = process.new_subject()
+  let log_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      tracker_issue_logs(issue, log_subject, "unexpected_issue_lookup"),
+      hub_subject,
+      worker_subject,
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 5000)
+  let before = ledger_kinds(root)
+  let commands = [
+    #(
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("never-known-run"),
+        Some("implement"),
+      ),
+      "rejected",
+      Some("no_failed_workflow_run"),
+    ),
+    #(
+      command.RetryWorkflowStepDryRun(
+        command.RetryWorkflowStepRunId("never-known-run"),
+        Some("implement"),
+      ),
+      "rejected",
+      Some("no_failed_workflow_run"),
+    ),
+    #(
+      command.RetryWorkflowStepExact(
+        command.RetryWorkflowStepRunId("never-known-run"),
+        Some("implement"),
+      ),
+      "rejected",
+      Some("no_failed_workflow_run"),
+    ),
+    #(
+      command.RunFinalize(
+        run_id: "never-known-run",
+        validate: True,
+        outputs: command.RunFinalizeOutputsAuto,
+        publish: True,
+        update_tracker: True,
+        dry_run: True,
+        reason: "test",
+        allow_unpublished: False,
+      ),
+      "not_found",
+      None,
+    ),
+  ]
+
+  commands
+  |> list.each(fn(scenario) {
+    let #(operator_command, expected_status, expected_reason) = scenario
+    let assert Ok(first) =
+      daemon.apply_operator_command(started.data, operator_command, 5000)
+    assert command.status_to_string(first.status) == expected_status
+    assert command.status_reason(first.status) == expected_reason
+    assert first.operation_id == None
+    let assert Ok(duplicate) =
+      daemon.apply_operator_command(started.data, operator_command, 5000)
+    assert command.status_to_string(duplicate.status) == expected_status
+    assert command.status_reason(duplicate.status) == expected_reason
+    assert duplicate.operation_id == None
+    assert ledger_kinds(root) == before
+  })
+
+  assert !wait_for_log(log_subject, "unexpected_issue_lookup", 5)
+  test_async.assert_no_extra_message(worker_subject)
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
 
 fn apply_operator_command_after_startup_recovery(
   daemon_subject: process.Subject(daemon.Message),

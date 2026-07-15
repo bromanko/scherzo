@@ -1,6 +1,6 @@
 -module(scherzo_state_ffi).
 -include_lib("kernel/include/file.hrl").
--export([append_line/3, append_lines/3, fold_lines/3, with_ledger_lock/2, system_time_millisecond/0, file_fingerprint/1]).
+-export([append_line/3, append_lines/3, fold_lines/3, with_ledger_lock/2, system_time_millisecond/0, file_fingerprint/1, available_memory_bytes/0, free_disk_bytes/1]).
 
 append_line(Path, Line, Fsync) ->
     LineBin = to_binary(Line),
@@ -70,6 +70,45 @@ file_fingerprint(Path) ->
         end
     catch
         Class:CatchReason -> {error, format_error(Class, CatchReason)}
+    end.
+
+available_memory_bytes() ->
+    try
+        case application:ensure_all_started(os_mon) of
+            {ok, _} -> available_memory_bytes_started();
+            {error, Reason} -> {error, reason_to_binary(Reason)}
+        end
+    catch
+        Class:CatchReason -> {error, format_error(Class, CatchReason)}
+    end.
+
+available_memory_bytes_started() ->
+    Data = memsup:get_system_memory_data(),
+    case proplists:get_value(available_memory, Data) of
+        Value when is_integer(Value), Value >= 0 -> {ok, Value};
+        _ -> {error, <<"available memory probe returned no usable value">>}
+    end.
+
+free_disk_bytes(Path) ->
+    try
+        case application:ensure_all_started(os_mon) of
+            {ok, _} -> free_disk_bytes_started(Path);
+            {error, Reason} -> {error, reason_to_binary(Reason)}
+        end
+    catch
+        Class:CatchReason -> {error, format_error(Class, CatchReason)}
+    end.
+
+free_disk_bytes_started(Path) ->
+    case disksup:get_disk_info(to_list(Path)) of
+        [{_Mount, _TotalKBytes, AvailableKBytes, _Capacity} | _]
+          when is_integer(AvailableKBytes), AvailableKBytes >= 0 ->
+            {ok, AvailableKBytes * 1024};
+        {ok, {_Mount, _TotalKBytes, AvailableKBytes, _Capacity}}
+          when is_integer(AvailableKBytes), AvailableKBytes >= 0 ->
+            {ok, AvailableKBytes * 1024};
+        {error, Reason} -> {error, reason_to_binary(Reason)};
+        _ -> {error, <<"free disk probe returned no usable value">>}
     end.
 
 write_and_maybe_sync(IoDevice, ContentsBin, Fsync) ->

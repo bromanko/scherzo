@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import scherzo/agent/types as agent_types
+import scherzo/config
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/orchestrator/effect_runner
@@ -462,7 +463,12 @@ pub fn effect_runner_runs_ledger_compaction_test() {
 
   effect_runner.enqueue(
     runner,
-    effect_runner.CompactLedger(ledger_path, fn() { 5000 }),
+    effect_runner.CompactLedger(
+      ledger_path,
+      config.default_projection_retention_config(),
+      fn() { 5000 },
+      ledger.compact_with_retention,
+    ),
   )
 
   let assert Ok(effect_runner.Finished(

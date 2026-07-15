@@ -764,11 +764,22 @@
         "min_interval": { "$ref": "#/$defs/Duration" }
       }
     },
+    "LedgerProjectionRetention": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "terminal_grace": { "$ref": "#/$defs/NonNegativeDuration" },
+        "scheduled_max_age": { "$ref": "#/$defs/Duration" },
+        "scheduled_last_per_job": { "type": "integer", "minimum": 1 }
+      }
+    },
     "StateLedger": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "auto_compaction": { "$ref": "#/$defs/LedgerAutoCompaction" }
+        "auto_compaction": { "$ref": "#/$defs/LedgerAutoCompaction" },
+        "projection_retention": { "$ref": "#/$defs/LedgerProjectionRetention" }
       }
     },
     "UiServer": {

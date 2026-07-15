@@ -67,6 +67,12 @@ fn config(
       max_current_records: 10_000,
       max_current_bytes: 8 * 1024 * 1024,
       min_interval_ms: 300_000,
+      projection_retention: config_types.ProjectionRetentionConfig(
+        enabled: False,
+        terminal_grace_ms: 86_400_000,
+        scheduled_max_age_ms: 604_800_000,
+        scheduled_last_per_job: 25,
+      ),
     ),
     hooks: config_types.HooksConfig(
       after_create: Some("printf populated > POPULATED"),

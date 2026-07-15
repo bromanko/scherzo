@@ -183,6 +183,7 @@ pub type Command {
   StateDiscardOld(root: String, json: Bool, yes: Bool)
   StateReinitialize(root: String, json: Bool, yes: Bool)
   StateCompact(root: String, json: Bool, dry_run: Bool, yes: Bool)
+  StateCompactRebuild(root: String, json: Bool)
   StateRepairRunProvenance(
     root: String,
     json: Bool,
@@ -1255,15 +1256,29 @@ fn build_state_compact_command(
     False, False ->
       Error(UsageError("state compact requires --dry-run or --yes"))
     _, _ ->
-      case required_root_from_parsed(parsed) {
-        Ok(root) ->
-          Ok(StateCompact(
-            root,
-            json_output(parsed),
-            command_spec.has_flag(parsed, "--dry-run"),
-            command_spec.has_flag(parsed, "--yes"),
+      case
+        command_spec.has_flag(parsed, "--rebuild-from-archives"),
+        command_spec.has_flag(parsed, "--yes")
+      {
+        True, False ->
+          Error(UsageError(
+            "state compact --rebuild-from-archives requires --yes",
           ))
-        Error(error) -> Error(error)
+        _, _ ->
+          case required_root_from_parsed(parsed) {
+            Ok(root) ->
+              case command_spec.has_flag(parsed, "--rebuild-from-archives") {
+                True -> Ok(StateCompactRebuild(root, json_output(parsed)))
+                False ->
+                  Ok(StateCompact(
+                    root,
+                    json_output(parsed),
+                    command_spec.has_flag(parsed, "--dry-run"),
+                    command_spec.has_flag(parsed, "--yes"),
+                  ))
+              }
+            Error(error) -> Error(error)
+          }
       }
   }
 }
@@ -1897,6 +1912,16 @@ fn run_with_deps_and_env_internal(
         json_output: json,
         dry_run: dry_run,
         yes: yes,
+        line: output.line,
+      )
+      |> result.map_error(pair_error_to_failed)
+    StateCompactRebuild(root, json) ->
+      ctl_state_handlers.run_compact_with_rebuild(
+        resolve_path_option(root, env),
+        json_output: json,
+        dry_run: False,
+        yes: True,
+        rebuild_from_archives: True,
         line: output.line,
       )
       |> result.map_error(pair_error_to_failed)

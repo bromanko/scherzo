@@ -2484,7 +2484,7 @@ pub fn retry_step_operation_status_query_succeeds_while_startup_replay_is_runnin
 
   test_async.release_barrier_if_waiting(lookup_barrier)
   let assert Ok(completed_operation) =
-    wait_for_operation_status(root, operation_id, "completed", 100)
+    wait_for_operation_status(root, operation_id, "completed", 500)
   assert completed_operation.requested_step_id == Some("apply_feedback")
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)

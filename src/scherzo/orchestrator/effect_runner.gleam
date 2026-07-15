@@ -100,7 +100,16 @@ pub type Effect {
     publication: adapter.ScheduledFailurePublication,
     capability: adapter.ScheduledFailureCapability,
   )
-  CompactLedger(ledger_path: ledger.LedgerPath, now_ms: fn() -> Int)
+  CompactLedger(
+    ledger_path: ledger.LedgerPath,
+    retention: config_types.ProjectionRetentionConfig,
+    now_ms: fn() -> Int,
+    compact: fn(
+      ledger.LedgerPath,
+      config_types.ProjectionRetentionConfig,
+      fn() -> Int,
+    ) -> Result(ledger.CompactionReport, ledger.LedgerError),
+  )
   CleanupWorkspace(
     root: String,
     workspace_path: String,
@@ -407,7 +416,7 @@ pub fn effect_kind(effect: Effect) -> String {
     ReportInvalidWorkflow(_, _, _, _, _, _, _, _) -> "report_invalid_workflow"
     ReplayOutbox(_, _, _, _) -> "replay_outbox"
     ReportScheduledFailure(_, _, _, _) -> "report_scheduled_failure"
-    CompactLedger(_, _) -> "ledger_compaction"
+    CompactLedger(_, _, _, _) -> "ledger_compaction"
     CleanupWorkspace(_, _, _, _) -> "cleanup_workspace"
   }
 }
@@ -1119,8 +1128,8 @@ fn run_side_effect(effect: Effect) -> EffectResult {
         publication,
         capability.publish(publication),
       )
-    CompactLedger(ledger_path, now_ms) ->
-      LedgerCompactionFinished(ledger.compact_with_report(ledger_path, now_ms))
+    CompactLedger(ledger_path, retention, now_ms, compact) ->
+      LedgerCompactionFinished(compact(ledger_path, retention, now_ms))
     CleanupWorkspace(root, workspace_path, hooks, cleanup) ->
       CleanupFinished(workspace_path, cleanup(root, workspace_path, hooks))
   }

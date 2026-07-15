@@ -72,6 +72,12 @@ fn config(
       max_current_records: 10_000,
       max_current_bytes: 8 * 1024 * 1024,
       min_interval_ms: 300_000,
+      projection_retention: config_types.ProjectionRetentionConfig(
+        enabled: False,
+        terminal_grace_ms: 86_400_000,
+        scheduled_max_age_ms: 604_800_000,
+        scheduled_last_per_job: 25,
+      ),
     ),
     hooks: config_types.HooksConfig(
       after_create: Some("printf populated > POPULATED"),
@@ -395,6 +401,12 @@ pub fn after_run_failure_is_emitted_without_overriding_success_test() {
         max_current_records: 10_000,
         max_current_bytes: 8 * 1024 * 1024,
         min_interval_ms: 300_000,
+        projection_retention: config_types.ProjectionRetentionConfig(
+          enabled: False,
+          terminal_grace_ms: 86_400_000,
+          scheduled_max_age_ms: 604_800_000,
+          scheduled_last_per_job: 25,
+        ),
       ),
       hooks: config_types.HooksConfig(
         ..base.hooks,
@@ -468,6 +480,12 @@ pub fn runner_allows_codex_sse_timeout_auto_retry_in_same_turn_test() {
         max_current_records: 10_000,
         max_current_bytes: 8 * 1024 * 1024,
         min_interval_ms: 300_000,
+        projection_retention: config_types.ProjectionRetentionConfig(
+          enabled: False,
+          terminal_grace_ms: 86_400_000,
+          scheduled_max_age_ms: 604_800_000,
+          scheduled_last_per_job: 25,
+        ),
       ),
       hooks: config_types.HooksConfig(
         ..base.hooks,
@@ -1137,6 +1155,12 @@ pub fn before_run_and_probe_failures_abort_before_prompt_test() {
         max_current_records: 10_000,
         max_current_bytes: 8 * 1024 * 1024,
         min_interval_ms: 300_000,
+        projection_retention: config_types.ProjectionRetentionConfig(
+          enabled: False,
+          terminal_grace_ms: 86_400_000,
+          scheduled_max_age_ms: 604_800_000,
+          scheduled_last_per_job: 25,
+        ),
       ),
       hooks: bad_hooks,
     )

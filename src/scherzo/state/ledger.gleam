@@ -6,11 +6,17 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import scherzo/config
+import scherzo/config/types as config_types
+import scherzo/hash
 import scherzo/path
+import scherzo/state/archive_coverage
+import scherzo/state/archive_pruned_index
 import scherzo/state/ledger/cache as ledger_cache
 import scherzo/state/ledger/fingerprint
 import scherzo/state/ledger/record_index
 import scherzo/state/projection
+import scherzo/state/projection/retention
 import scherzo/state/record
 import simplifile
 
@@ -64,6 +70,41 @@ pub type CompactionReport {
     before: LedgerStorageStats,
     after: LedgerStorageStats,
     duration_ms: Int,
+    policy: config_types.ProjectionRetentionConfig,
+    policy_fingerprint: String,
+    candidate_run_ids: List(String),
+    pruned_run_ids: List(String),
+    prune_report: retention.PruneReport,
+    coverage_status: String,
+  )
+}
+
+pub type ReconstructionEstimate {
+  ReconstructionEstimate(
+    raw_input_bytes: Int,
+    estimated_output_bytes: Int,
+    required_memory_bytes: Int,
+    required_disk_bytes: Int,
+  )
+}
+
+pub type CompactionPreview {
+  CompactionPreview(
+    storage: LedgerStorageStats,
+    policy: config_types.ProjectionRetentionConfig,
+    policy_fingerprint: String,
+    candidate_run_ids: List(String),
+    prune_report: retention.PruneReport,
+    coverage_status: String,
+    reconstruction_estimate: ReconstructionEstimate,
+  )
+}
+
+pub type RebuildReport {
+  RebuildReport(
+    estimate: ReconstructionEstimate,
+    restored_projection_bytes: Int,
+    archived_current: Bool,
   )
 }
 
@@ -93,6 +134,12 @@ pub type ReplayResult {
     projection: projection.Projection,
     truncated_tail: Bool,
   )
+}
+
+pub type WorkflowRunPresence {
+  Online
+  Pruned
+  Unknown
 }
 
 pub type AppendIdempotentResult {
@@ -211,6 +258,7 @@ pub fn append_many(
       with_ledger_lock(ledger_path.ledger_dir, fn() {
         use cached <- result.try(ensure_cache_current_unlocked(ledger_path))
         use Nil <- result.try(validate_append_records_against_projection(
+          ledger_path,
           cached.projection,
           records,
         ))
@@ -250,9 +298,11 @@ pub fn append_idempotent(
         Ok(RecordConflict(record_id)) -> Ok(LockedAppendConflict(record_id))
         Ok(RecordMissing) -> {
           use Nil <- result.try(
-            validate_append_records_against_projection(cached.projection, [
-              ledger_record,
-            ]),
+            validate_append_records_against_projection(
+              ledger_path,
+              cached.projection,
+              [ledger_record],
+            ),
           )
           use Nil <- result.try(append_prepared(
             ledger_path.current_path,
@@ -457,6 +507,17 @@ pub fn cache_diagnostics(
   })
 }
 
+pub fn workflow_run_presence(
+  ledger_path: LedgerPath,
+  run_id: String,
+) -> Result(WorkflowRunPresence, LedgerError) {
+  use Nil <- result.try(ensure_layout(ledger_path))
+  with_ledger_lock(ledger_path.ledger_dir, fn() {
+    use cached <- result.try(ensure_cache_current_unlocked(ledger_path))
+    workflow_run_presence_unlocked(ledger_path, cached.projection, run_id)
+  })
+}
+
 pub fn compact(ledger_path: LedgerPath) -> Result(Nil, LedgerError) {
   compact_with_report(ledger_path, fn() { 0 }) |> result.map(fn(_) { Nil })
 }
@@ -465,9 +526,285 @@ pub fn compact_with_report(
   ledger_path: LedgerPath,
   now_ms: fn() -> Int,
 ) -> Result(CompactionReport, LedgerError) {
+  compact_with_retention(
+    ledger_path,
+    config.default_projection_retention_config(),
+    now_ms,
+  )
+}
+
+pub fn compact_with_retention(
+  ledger_path: LedgerPath,
+  policy: config_types.ProjectionRetentionConfig,
+  now_ms: fn() -> Int,
+) -> Result(CompactionReport, LedgerError) {
   use Nil <- result.try(ensure_layout(ledger_path))
   with_ledger_lock(ledger_path.ledger_dir, fn() {
-    compact_locked(ledger_path, now_ms)
+    compact_locked(ledger_path, policy, now_ms)
+  })
+}
+
+pub fn rebuild_from_archives(
+  ledger_path: LedgerPath,
+  policy: config_types.ProjectionRetentionConfig,
+) -> Result(RebuildReport, LedgerError) {
+  rebuild_from_archives_with_probes(
+    ledger_path,
+    policy,
+    ffi_available_memory_bytes,
+    fn() { ffi_free_disk_bytes(ledger_path.ledger_dir) },
+  )
+}
+
+pub fn rebuild_from_archives_with_probes(
+  ledger_path: LedgerPath,
+  policy: config_types.ProjectionRetentionConfig,
+  memory_probe: fn() -> Result(Int, String),
+  disk_probe: fn() -> Result(Int, String),
+) -> Result(RebuildReport, LedgerError) {
+  rebuild_from_archives_with_capabilities(
+    ledger_path,
+    policy,
+    memory_probe,
+    disk_probe,
+    archive_current_segment,
+  )
+}
+
+pub fn rebuild_from_archives_with_capabilities(
+  ledger_path: LedgerPath,
+  policy: config_types.ProjectionRetentionConfig,
+  memory_probe: fn() -> Result(Int, String),
+  disk_probe: fn() -> Result(Int, String),
+  archive_current: fn(LedgerPath, Int) -> Result(Bool, LedgerError),
+) -> Result(RebuildReport, LedgerError) {
+  with_ledger_lock(ledger_path.ledger_dir, fn() {
+    case policy.enabled {
+      True ->
+        Error(Io(
+          "archive reconstruction requires projection retention to be disabled",
+        ))
+      False ->
+        rebuild_from_archives_locked(
+          ledger_path,
+          memory_probe,
+          disk_probe,
+          archive_current,
+        )
+    }
+  })
+}
+
+fn rebuild_from_archives_locked(
+  ledger_path: LedgerPath,
+  memory_probe: fn() -> Result(Int, String),
+  disk_probe: fn() -> Result(Int, String),
+  archive_current: fn(LedgerPath, Int) -> Result(Bool, LedgerError),
+) -> Result(RebuildReport, LedgerError) {
+  use _coverage <- result.try(
+    archive_coverage.verify_stored(ledger_path.archive_dir)
+    |> result.map_error(coverage_error),
+  )
+  use before <- result.try(storage_stats_unlocked(ledger_path))
+  use estimate <- result.try(reconstruction_estimate_unlocked(
+    ledger_path,
+    before.snapshot_size_bytes,
+  ))
+  use available_memory <- result.try(
+    memory_probe()
+    |> result.map_error(fn(reason) {
+      rebuild_preflight_error(
+        "available memory probe failed: " <> reason,
+        estimate,
+      )
+    }),
+  )
+  use free_disk <- result.try(
+    disk_probe()
+    |> result.map_error(fn(reason) {
+      rebuild_preflight_error("free disk probe failed: " <> reason, estimate)
+    }),
+  )
+  case available_memory < estimate.required_memory_bytes {
+    True ->
+      Error(rebuild_preflight_error(
+        "archive reconstruction requires "
+          <> int.to_string(estimate.required_memory_bytes)
+          <> " bytes of available memory; only "
+          <> int.to_string(available_memory)
+          <> " bytes are available",
+        estimate,
+      ))
+    False ->
+      case free_disk < estimate.required_disk_bytes {
+        True ->
+          Error(rebuild_preflight_error(
+            "archive reconstruction requires "
+              <> int.to_string(estimate.required_disk_bytes)
+              <> " bytes of free disk; only "
+              <> int.to_string(free_disk)
+              <> " bytes are available",
+            estimate,
+          ))
+        False ->
+          perform_archive_rebuild(
+            ledger_path,
+            before,
+            estimate,
+            archive_current,
+          )
+      }
+  }
+}
+
+fn rebuild_preflight_error(
+  reason: String,
+  estimate: ReconstructionEstimate,
+) -> LedgerError {
+  Io(
+    reason
+    <> "; raw_input_bytes="
+    <> int.to_string(estimate.raw_input_bytes)
+    <> "; estimated_output_bytes="
+    <> int.to_string(estimate.estimated_output_bytes)
+    <> "; required_memory_bytes="
+    <> int.to_string(estimate.required_memory_bytes)
+    <> "; required_disk_bytes="
+    <> int.to_string(estimate.required_disk_bytes),
+  )
+}
+
+fn perform_archive_rebuild(
+  ledger_path: LedgerPath,
+  before: LedgerStorageStats,
+  estimate: ReconstructionEstimate,
+  archive_current: fn(LedgerPath, Int) -> Result(Bool, LedgerError),
+) -> Result(RebuildReport, LedgerError) {
+  use cached <- result.try(ensure_cache_current_unlocked(ledger_path))
+  use previous_snapshot <- result.try(read_snapshot_state(ledger_path))
+  use rebuilt <- result.try(reconstruct_unpruned_projection(ledger_path))
+  use Nil <- result.try(write_snapshot_atomically(
+    ledger_path,
+    rebuilt,
+    cached.record_index,
+  ))
+  let next_segment_number = before.archive_segment_count + 1
+  case archive_current(ledger_path, next_segment_number) {
+    Error(error) ->
+      rollback_rebuild(
+        ledger_path,
+        previous_snapshot,
+        next_segment_number,
+        True,
+        error,
+      )
+    Ok(archived_current) ->
+      case write_current_archive_coverage(ledger_path) {
+        Error(error) ->
+          rollback_rebuild(
+            ledger_path,
+            previous_snapshot,
+            next_segment_number,
+            archived_current,
+            error,
+          )
+        Ok(Nil) -> {
+          use refreshed_fingerprint <- result.try(capture_fingerprint(
+            ledger_path,
+          ))
+          put_cached_state(
+            ledger_path,
+            CachedLedgerState(
+              projection: rebuilt,
+              record_index: cached.record_index,
+              fingerprint: refreshed_fingerprint,
+              diagnostics: update_cache_diagnostics(
+                cached.diagnostics,
+                hydration_increment: 0,
+                reload_increment: 1,
+                fingerprint_mismatch_increment: 0,
+                cache_hit_increment: 0,
+                duplicate_probe_increment: 0,
+                record_id_index_size: record_index.size(cached.record_index),
+              ),
+            ),
+          )
+          Ok(RebuildReport(
+            estimate: estimate,
+            restored_projection_bytes: projection.to_string(rebuilt)
+              |> bit_array.from_string
+              |> bit_array.byte_size,
+            archived_current: archived_current,
+          ))
+        }
+      }
+  }
+}
+
+fn rollback_rebuild(
+  ledger_path: LedgerPath,
+  previous_snapshot: SnapshotRead,
+  segment_number: Int,
+  restore_current: Bool,
+  original_error: LedgerError,
+) -> Result(RebuildReport, LedgerError) {
+  use Nil <- result.try(restore_archived_current(
+    ledger_path,
+    segment_number,
+    restore_current,
+  ))
+  ledger_cache.delete(ledger_path.ledger_dir)
+  case restore_snapshot(ledger_path, previous_snapshot) {
+    Ok(Nil) -> Error(original_error)
+    Error(restore_error) -> Error(restore_error)
+  }
+}
+
+fn write_current_archive_coverage(
+  ledger_path: LedgerPath,
+) -> Result(Nil, LedgerError) {
+  use manifest <- result.try(
+    archive_coverage.build(ledger_path.archive_dir)
+    |> result.map_error(coverage_error),
+  )
+  archive_coverage.write(ledger_path.archive_dir, manifest)
+  |> result.map_error(coverage_error)
+}
+
+pub fn preview_compaction(
+  ledger_path: LedgerPath,
+  policy: config_types.ProjectionRetentionConfig,
+  now_ms: Int,
+) -> Result(CompactionPreview, LedgerError) {
+  use Nil <- result.try(ensure_layout(ledger_path))
+  with_ledger_lock(ledger_path.ledger_dir, fn() {
+    use storage <- result.try(storage_stats_unlocked(ledger_path))
+    use cached <- result.try(ensure_cache_current_unlocked(ledger_path))
+    use coverage_status <- result.try(retention_coverage_status(
+      ledger_path,
+      cached.projection,
+      policy,
+    ))
+    let preview =
+      retention.preview(
+        cached.projection,
+        policy,
+        now_ms,
+        marker_state_for_run_root,
+      )
+    use reconstruction_estimate <- result.try(reconstruction_estimate_unlocked(
+      ledger_path,
+      storage.snapshot_size_bytes,
+    ))
+    Ok(CompactionPreview(
+      storage: storage,
+      policy: policy,
+      policy_fingerprint: retention_policy_fingerprint(policy),
+      candidate_run_ids: preview.candidate_run_ids,
+      prune_report: preview,
+      coverage_status: coverage_status,
+      reconstruction_estimate: reconstruction_estimate,
+    ))
   })
 }
 
@@ -582,6 +919,7 @@ fn persist_cached_append_unlocked(
 }
 
 fn validate_append_records_against_projection(
+  ledger_path: LedgerPath,
   projected: projection.Projection,
   records: List(record.LedgerRecord),
 ) -> Result(Nil, LedgerError) {
@@ -590,7 +928,7 @@ fn validate_append_records_against_projection(
     |> list.fold(dict.new(), fn(known, run_id) {
       dict.insert(known, run_id, True)
     })
-  validate_append_records(records, known_runs)
+  validate_append_records(ledger_path, records, known_runs)
 }
 
 fn ensure_cache_current_unlocked(
@@ -726,23 +1064,88 @@ fn replay_unlocked(
 
 fn compact_locked(
   ledger_path: LedgerPath,
+  policy: config_types.ProjectionRetentionConfig,
   now_ms: fn() -> Int,
 ) -> Result(CompactionReport, LedgerError) {
   let started_at_ms = now_ms()
   use before <- result.try(storage_stats_unlocked(ledger_path))
   use cached <- result.try(ensure_cache_current_unlocked(ledger_path))
   use snapshot <- result.try(read_snapshot_state(ledger_path))
-  use Nil <- result.try(write_snapshot_atomically(
+  use coverage_status <- result.try(retention_coverage_status(
     ledger_path,
     cached.projection,
+    policy,
+  ))
+  let pruned =
+    retention.prune(
+      cached.projection,
+      policy,
+      started_at_ms,
+      marker_state_for_run_root,
+    )
+  use Nil <- result.try(write_pruned_run_markers(
+    ledger_path,
+    pruned.report.candidate_run_ids,
+  ))
+  use Nil <- result.try(write_snapshot_atomically(
+    ledger_path,
+    pruned.projection,
     cached.record_index,
   ))
-  case archive_current_segment(ledger_path, before.archive_segment_count + 1) {
-    Ok(archived_nonempty_current) -> {
+  let next_segment_number = before.archive_segment_count + 1
+  case archive_current_segment(ledger_path, next_segment_number) {
+    Ok(archived_nonempty_current) ->
+      finish_compaction_after_archive(
+        ledger_path,
+        policy,
+        now_ms,
+        started_at_ms,
+        before,
+        snapshot,
+        cached,
+        pruned,
+        coverage_status,
+        next_segment_number,
+        archived_nonempty_current,
+      )
+    Error(error) ->
+      rollback_compaction(
+        ledger_path,
+        snapshot,
+        next_segment_number,
+        True,
+        error,
+      )
+  }
+}
+
+fn finish_compaction_after_archive(
+  ledger_path: LedgerPath,
+  policy: config_types.ProjectionRetentionConfig,
+  now_ms: fn() -> Int,
+  started_at_ms: Int,
+  before: LedgerStorageStats,
+  snapshot: SnapshotRead,
+  cached: CachedLedgerState,
+  pruned: retention.PruneResult,
+  coverage_status: String,
+  next_segment_number: Int,
+  archived_nonempty_current: Bool,
+) -> Result(CompactionReport, LedgerError) {
+  case update_archive_coverage(ledger_path, policy) {
+    Error(error) ->
+      rollback_compaction(
+        ledger_path,
+        snapshot,
+        next_segment_number,
+        archived_nonempty_current,
+        error,
+      )
+    Ok(Nil) -> {
       use refreshed_fingerprint <- result.try(capture_fingerprint(ledger_path))
       let refreshed_cache =
         CachedLedgerState(
-          projection: cached.projection,
+          projection: pruned.projection,
           record_index: cached.record_index,
           fingerprint: refreshed_fingerprint,
           diagnostics: update_cache_diagnostics(
@@ -774,15 +1177,218 @@ fn compact_locked(
         before: before,
         after: after,
         duration_ms: now_ms() - started_at_ms,
+        policy: policy,
+        policy_fingerprint: retention_policy_fingerprint(policy),
+        candidate_run_ids: pruned.report.candidate_run_ids,
+        pruned_run_ids: pruned.report.pruned_run_ids,
+        prune_report: pruned.report,
+        coverage_status: coverage_status,
       ))
     }
-    Error(error) -> {
-      ledger_cache.delete(ledger_path.ledger_dir)
-      case restore_snapshot(ledger_path, snapshot) {
-        Ok(Nil) -> Error(error)
-        Error(restore_error) -> Error(restore_error)
+  }
+}
+
+fn rollback_compaction(
+  ledger_path: LedgerPath,
+  snapshot: SnapshotRead,
+  segment_number: Int,
+  restore_current: Bool,
+  original_error: LedgerError,
+) -> Result(CompactionReport, LedgerError) {
+  use Nil <- result.try(restore_archived_current(
+    ledger_path,
+    segment_number,
+    restore_current,
+  ))
+  ledger_cache.delete(ledger_path.ledger_dir)
+  case restore_snapshot(ledger_path, snapshot) {
+    Ok(Nil) -> Error(original_error)
+    Error(restore_error) -> Error(restore_error)
+  }
+}
+
+fn restore_archived_current(
+  ledger_path: LedgerPath,
+  segment_number: Int,
+  should_restore: Bool,
+) -> Result(Nil, LedgerError) {
+  case should_restore {
+    False -> Ok(Nil)
+    True -> {
+      let archived =
+        archive_path_for_segment_number(ledger_path, segment_number)
+      case simplifile.is_file(archived) {
+        Ok(False) | Error(simplifile.Enoent) -> Ok(Nil)
+        Error(error) ->
+          Error(Io(file_error("inspect archived ledger rollback", error)))
+        Ok(True) -> {
+          use Nil <- result.try(
+            simplifile.delete(ledger_path.current_path)
+            |> ignore_missing_file
+            |> map_io("remove replacement current ledger during rollback"),
+          )
+          simplifile.rename(archived, ledger_path.current_path)
+          |> map_io("restore archived current ledger")
+        }
       }
     }
+  }
+}
+
+fn ignore_missing_file(
+  value: Result(Nil, simplifile.FileError),
+) -> Result(Nil, simplifile.FileError) {
+  case value {
+    Error(simplifile.Enoent) -> Ok(Nil)
+    other -> other
+  }
+}
+
+fn reconstruction_estimate_unlocked(
+  ledger_path: LedgerPath,
+  snapshot_bytes: Int,
+) -> Result(ReconstructionEstimate, LedgerError) {
+  use manifest <- result.try(
+    archive_coverage.build(ledger_path.archive_dir)
+    |> result.map_error(coverage_error),
+  )
+  use current_bytes <- result.try(file_size_bytes_or_zero(
+    ledger_path.current_path,
+    "inspect current ledger for reconstruction estimate",
+  ))
+  let archive_bytes =
+    manifest.segments
+    |> list.fold(0, fn(total, segment) { total + segment.bytes })
+  let raw_input_bytes = archive_bytes + current_bytes
+  let estimated_output_bytes = int.max(snapshot_bytes, raw_input_bytes)
+  Ok(ReconstructionEstimate(
+    raw_input_bytes: raw_input_bytes,
+    estimated_output_bytes: estimated_output_bytes,
+    required_memory_bytes: 4 * raw_input_bytes + estimated_output_bytes,
+    required_disk_bytes: raw_input_bytes
+      + 2
+      * estimated_output_bytes
+      + 1_073_741_824,
+  ))
+}
+
+fn retention_policy_fingerprint(
+  policy: config_types.ProjectionRetentionConfig,
+) -> String {
+  [
+    case policy.enabled {
+      True -> "true"
+      False -> "false"
+    },
+    int.to_string(policy.terminal_grace_ms),
+    int.to_string(policy.scheduled_max_age_ms),
+    int.to_string(policy.scheduled_last_per_job),
+  ]
+  |> string.join(with: ":")
+  |> hash.sha256_hex
+}
+
+fn marker_state_for_run_root(run_root: String) -> retention.MarkerState {
+  case simplifile.is_file(path.join(run_root, ".scherzo-keep-workspace")) {
+    Ok(True) -> retention.MarkerPresent
+    Ok(False) | Error(simplifile.Enoent) -> retention.MarkerAbsent
+    Error(error) -> {
+      let _description = simplifile.describe_error(error)
+      retention.MarkerUnreadable
+    }
+  }
+}
+
+fn retention_coverage_status(
+  ledger_path: LedgerPath,
+  folded: projection.Projection,
+  policy: config_types.ProjectionRetentionConfig,
+) -> Result(String, LedgerError) {
+  use has_manifest <- result.try(
+    archive_coverage.manifest_exists(ledger_path.archive_dir)
+    |> result.map_error(coverage_error),
+  )
+  case policy.enabled, has_manifest {
+    False, False -> Ok("disabled")
+    False, True ->
+      archive_coverage.verify_stored(ledger_path.archive_dir)
+      |> result.map(fn(_) { "disabled" })
+      |> result.map_error(coverage_error)
+    True, True ->
+      archive_coverage.verify_stored(ledger_path.archive_dir)
+      |> result.map(fn(_) { "verified" })
+      |> result.map_error(coverage_error)
+    True, False -> {
+      use reconstructed <- result.try(reconstruct_unpruned_projection(
+        ledger_path,
+      ))
+      case reconstructed == folded {
+        True -> Ok("established")
+        False ->
+          Error(Io(
+            "retention refused: raw archive and current segment do not reconstruct the online projection",
+          ))
+      }
+    }
+  }
+}
+
+fn reconstruct_unpruned_projection(
+  ledger_path: LedgerPath,
+) -> Result(projection.Projection, LedgerError) {
+  use segments <- result.try(
+    archive_coverage.segment_paths_numeric(ledger_path.archive_dir)
+    |> result.map_error(coverage_error),
+  )
+  use archived <- result.try(
+    list.fold(
+      segments,
+      Ok(#(projection.new(), record_index.new())),
+      fn(acc, entry) {
+        use current <- result.try(acc)
+        fold_current_segment_with_index(entry.2, current.0, current.1)
+      },
+    ),
+  )
+  fold_current_segment_with_index(
+    ledger_path.current_path,
+    archived.0,
+    archived.1,
+  )
+  |> result.map(fn(combined) { combined.0 })
+}
+
+fn write_pruned_run_markers(
+  ledger_path: LedgerPath,
+  run_ids: List(String),
+) -> Result(Nil, LedgerError) {
+  archive_pruned_index.write_run_ids(ledger_path.archive_dir, run_ids)
+  |> result.map_error(fn(error) {
+    case error {
+      archive_pruned_index.ArchiveIndexUnavailable(marker, reason) ->
+        Io("write pruned-run index " <> marker <> ": " <> reason)
+    }
+  })
+}
+
+fn update_archive_coverage(
+  ledger_path: LedgerPath,
+  policy: config_types.ProjectionRetentionConfig,
+) -> Result(Nil, LedgerError) {
+  use has_manifest <- result.try(
+    archive_coverage.manifest_exists(ledger_path.archive_dir)
+    |> result.map_error(coverage_error),
+  )
+  case policy.enabled || has_manifest {
+    False -> Ok(Nil)
+    True -> write_current_archive_coverage(ledger_path)
+  }
+}
+
+fn coverage_error(error: archive_coverage.CoverageError) -> LedgerError {
+  case error {
+    archive_coverage.CoverageUnavailable(reason)
+    | archive_coverage.CoverageIncomplete(reason) -> Io(reason)
   }
 }
 
@@ -836,8 +1442,7 @@ fn archive_segment_paths(
     Ok(entries) ->
       entries
       |> list.filter(fn(entry) {
-        string.starts_with(entry, "segment-")
-        && string.ends_with(entry, ".jsonl")
+        is_archive_segment_file(ledger_path.archive_dir, entry)
       })
       |> list.sort(by: string.compare)
       |> list.map(fn(entry) { path.join(ledger_path.archive_dir, entry) })
@@ -953,69 +1558,108 @@ fn ensure_record_absent_or_duplicate_unlocked(
 }
 
 fn validate_append_records(
+  ledger_path: LedgerPath,
   records: List(record.LedgerRecord),
   known_runs: dict.Dict(String, Bool),
 ) -> Result(Nil, LedgerError) {
   case records {
     [] -> Ok(Nil)
     [ledger_record, ..rest] ->
-      case append_record_workflow_requirement(ledger_record.body) {
-        AddWorkflowRun(run_id) ->
-          validate_append_records(rest, dict.insert(known_runs, run_id, True))
-        RequireKnownWorkflowRun(reason, run_id) ->
-          case dict.has_key(known_runs, run_id) {
-            True -> validate_append_records(rest, known_runs)
-            False -> Error(AggregateInvariantViolation(reason, run_id))
-          }
-        NoWorkflowRunRequirement -> validate_append_records(rest, known_runs)
+      case retention.append_record_workflow_requirement(ledger_record.body) {
+        retention.AddWorkflowRun(run_id) ->
+          validate_append_records(
+            ledger_path,
+            rest,
+            dict.insert(known_runs, run_id, True),
+          )
+        retention.RequireKnownWorkflowRun(reason, run_id) ->
+          validate_required_workflow_run(
+            ledger_path,
+            rest,
+            known_runs,
+            reason,
+            run_id,
+          )
+        retention.RejectPrunedWorkflowRunOnly(run_id) ->
+          validate_pruned_workflow_run_rejection(
+            ledger_path,
+            rest,
+            known_runs,
+            run_id,
+          )
+        retention.NoWorkflowRunRequirement ->
+          validate_append_records(ledger_path, rest, known_runs)
       }
   }
 }
 
-type AppendRecordWorkflowRequirement {
-  AddWorkflowRun(run_id: String)
-  RequireKnownWorkflowRun(reason: String, run_id: String)
-  NoWorkflowRunRequirement
+fn validate_required_workflow_run(
+  ledger_path: LedgerPath,
+  rest: List(record.LedgerRecord),
+  known_runs: dict.Dict(String, Bool),
+  reason: String,
+  run_id: String,
+) -> Result(Nil, LedgerError) {
+  case dict.has_key(known_runs, run_id) {
+    True -> validate_append_records(ledger_path, rest, known_runs)
+    False -> {
+      use presence <- result.try(indexed_missing_run_presence(
+        ledger_path,
+        run_id,
+      ))
+      case presence {
+        Pruned ->
+          Error(AggregateInvariantViolation("pruned_workflow_run", run_id))
+        Unknown -> Error(AggregateInvariantViolation(reason, run_id))
+        Online -> validate_append_records(ledger_path, rest, known_runs)
+      }
+    }
+  }
 }
 
-fn append_record_workflow_requirement(
-  body: record.RecordBody,
-) -> AppendRecordWorkflowRequirement {
-  case body {
-    record.WorkflowRunStarted(run_id, _, _, _, _, _, _, _)
-    | record.WorkflowRunStartedWithTask(run_id, _, _, _, _, _, _, _, _) ->
-      AddWorkflowRun(run_id)
-    record.WorkflowRunFinished(run_id, _, _, _, _, _)
-    | record.WorkflowRunFinishedWithTask(run_id, _, _, _, _, _, _)
-    | record.WorkflowRunInterrupted(run_id, _, _, _)
-    | record.WorkflowRunSuperseded(run_id, _, _, _, _) ->
-      RequireKnownWorkflowRun("unknown_workflow_run", run_id)
-    record.StepAttemptPrepared(run_id, _, _, _, _, _, _, _, _)
-    | record.StepAttemptStarted(run_id, _, _, _, _, _, _)
-    | record.StepAttemptContinuationStarted(run_id, _, _, _, _)
-    | record.StepAttemptPiSessionRecorded(run_id, _, _, _, _, _, _, _, _, _, _)
-    | record.StepAttemptPiSessionRecordedWithTask(
+fn validate_pruned_workflow_run_rejection(
+  ledger_path: LedgerPath,
+  rest: List(record.LedgerRecord),
+  known_runs: dict.Dict(String, Bool),
+  run_id: String,
+) -> Result(Nil, LedgerError) {
+  case dict.has_key(known_runs, run_id) {
+    True -> validate_append_records(ledger_path, rest, known_runs)
+    False -> {
+      use presence <- result.try(indexed_missing_run_presence(
+        ledger_path,
         run_id,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-        _,
-      )
-    | record.StepAttemptFinished(run_id, _, _, _, _, _, _, _, _, _, _)
-    | record.StepAttemptInterrupted(run_id, _, _, _, _)
-    | record.StepAttemptSuperseded(run_id, _, _, _, _, _) ->
-      RequireKnownWorkflowRun(
-        "orphan_step_attempt_without_workflow_run",
-        run_id,
-      )
-    _ -> NoWorkflowRunRequirement
+      ))
+      case presence {
+        Pruned ->
+          Error(AggregateInvariantViolation("pruned_workflow_run", run_id))
+        Unknown | Online ->
+          validate_append_records(ledger_path, rest, known_runs)
+      }
+    }
+  }
+}
+
+fn workflow_run_presence_unlocked(
+  ledger_path: LedgerPath,
+  projected: projection.Projection,
+  run_id: String,
+) -> Result(WorkflowRunPresence, LedgerError) {
+  case projection.has_workflow_run(projected, run_id) {
+    True -> Ok(Online)
+    False -> indexed_missing_run_presence(ledger_path, run_id)
+  }
+}
+
+fn indexed_missing_run_presence(
+  ledger_path: LedgerPath,
+  run_id: String,
+) -> Result(WorkflowRunPresence, LedgerError) {
+  case archive_pruned_index.lookup(ledger_path.archive_dir, run_id) {
+    Ok(archive_pruned_index.Pruned) -> Ok(Pruned)
+    Ok(archive_pruned_index.Unknown) -> Ok(Unknown)
+    Error(archive_pruned_index.ArchiveIndexUnavailable(marker, reason)) ->
+      Error(Io("inspect pruned-run index " <> marker <> ": " <> reason))
   }
 }
 
@@ -1069,16 +1713,22 @@ fn file_size_bytes_or_zero(
   }
 }
 
+fn is_archive_segment_file(archive_dir: String, entry: String) -> Bool {
+  case
+    string.starts_with(entry, "segment-") && string.ends_with(entry, ".jsonl")
+  {
+    False -> False
+    True -> simplifile.is_file(path.join(archive_dir, entry)) == Ok(True)
+  }
+}
+
 fn archive_segment_count_unlocked(
   archive_dir: String,
 ) -> Result(Int, LedgerError) {
   case simplifile.read_directory(archive_dir) {
     Ok(entries) ->
       entries
-      |> list.filter(fn(entry) {
-        string.starts_with(entry, "segment-")
-        && string.ends_with(entry, ".jsonl")
-      })
+      |> list.filter(fn(entry) { is_archive_segment_file(archive_dir, entry) })
       |> list.length
       |> Ok
     Error(simplifile.Enoent) -> Ok(0)
@@ -1615,6 +2265,14 @@ fn ffi_append_lines(
   contents: String,
   fsync: Bool,
 ) -> Result(Nil, String)
+
+// nolint: stringly_typed_error -- the Erlang resource probe returns a transport error string
+@external(erlang, "scherzo_state_ffi", "available_memory_bytes")
+fn ffi_available_memory_bytes() -> Result(Int, String)
+
+// nolint: stringly_typed_error -- the Erlang resource probe returns a transport error string
+@external(erlang, "scherzo_state_ffi", "free_disk_bytes")
+fn ffi_free_disk_bytes(path: String) -> Result(Int, String)
 
 @external(erlang, "scherzo_state_ffi", "fold_lines")
 fn ffi_fold_lines(

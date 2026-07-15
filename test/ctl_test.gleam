@@ -1541,6 +1541,17 @@ pub fn parse_ping_ps_session_events_and_attach_test() {
     == Ok(ctl.StateCompact("work", False, True, False))
   assert ctl.parse(["state", "compact", "--root", "work", "--yes", "--json"])
     == Ok(ctl.StateCompact("work", True, False, True))
+  assert ctl.parse([
+      "state", "compact", "--root", "work", "--rebuild-from-archives", "--yes",
+    ])
+    == Ok(ctl.StateCompactRebuild("work", False))
+  assert ctl.parse([
+      "state", "compact", "--root", "work", "--rebuild-from-archives",
+      "--dry-run",
+    ])
+    == Error(ctl.UsageError(
+      "state compact --rebuild-from-archives requires --yes",
+    ))
   assert ctl.parse(["state", "compact", "--root", "work"])
     == Error(ctl.UsageError("state compact requires --dry-run or --yes"))
   assert ctl.parse([

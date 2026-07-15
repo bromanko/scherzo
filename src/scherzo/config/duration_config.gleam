@@ -71,6 +71,44 @@ pub fn ledger_compaction_min_interval_ms(
   )
 }
 
+pub fn projection_retention_terminal_grace_ms(
+  root: yay.Node,
+  default: Int,
+) -> Result(Int, error.ConfigError) {
+  let state_ledger = get_map(root, "state_ledger")
+  let projection_retention = get_map(state_ledger, "projection_retention")
+  get_duration_ms_from_sources(
+    [
+      DurationField(
+        projection_retention,
+        "terminal_grace",
+        "state_ledger.projection_retention.terminal_grace",
+      ),
+    ],
+    default,
+    True,
+  )
+}
+
+pub fn projection_retention_scheduled_max_age_ms(
+  root: yay.Node,
+  default: Int,
+) -> Result(Int, error.ConfigError) {
+  let state_ledger = get_map(root, "state_ledger")
+  let projection_retention = get_map(state_ledger, "projection_retention")
+  get_duration_ms_from_sources(
+    [
+      DurationField(
+        projection_retention,
+        "scheduled_max_age",
+        "state_ledger.projection_retention.scheduled_max_age",
+      ),
+    ],
+    default,
+    False,
+  )
+}
+
 pub fn pi_turn_timeout_ms(root: yay.Node) -> Result(Int, error.ConfigError) {
   let pi = get_map(root, "pi")
   let runtime = runtime_config(root)

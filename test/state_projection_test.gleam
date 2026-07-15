@@ -66,6 +66,104 @@ pub fn folding_records_produces_expected_projection_test() {
   )) = dict.get(folded.outbox, "outbox-1")
 }
 
+pub fn remove_run_ids_preserves_existing_series_latest_on_equal_timestamps_test() {
+  let source =
+    projection.fold([
+      record.with_id(
+        "keep-started",
+        1000,
+        record.WorkflowRunStarted(
+          "workflow-run-keep",
+          "default",
+          "workflow-fingerprint",
+          "issue-keep",
+          "LIV-keep",
+          "issue-fingerprint-keep",
+          900,
+          "test/tmp/workflow-run-keep",
+        ),
+      ),
+      record.with_id(
+        "publication-attempt-1",
+        2000,
+        record.PublicationAttemptRecorded(
+          "workflow-run-keep",
+          "default",
+          "publication-1",
+          "series-1",
+          "attempt-1",
+          "planned",
+          True,
+          True,
+          False,
+          None,
+          None,
+          None,
+          None,
+          None,
+          None,
+        ),
+      ),
+      record.with_id(
+        "publication-attempt-2",
+        2000,
+        record.PublicationAttemptRecorded(
+          "workflow-run-keep",
+          "default",
+          "publication-2",
+          "series-1",
+          "attempt-2",
+          "succeeded",
+          True,
+          False,
+          False,
+          None,
+          None,
+          None,
+          None,
+          None,
+          None,
+        ),
+      ),
+      record.with_id(
+        "prune-started",
+        1100,
+        record.WorkflowRunStarted(
+          "workflow-run-prune",
+          "default",
+          "workflow-fingerprint",
+          "issue-prune",
+          "LIV-prune",
+          "issue-fingerprint-prune",
+          1000,
+          "test/tmp/workflow-run-prune",
+        ),
+      ),
+      record.with_id(
+        "prune-finished",
+        2100,
+        record.WorkflowRunFinished(
+          "workflow-run-prune",
+          "default",
+          "issue-prune",
+          "completed",
+          10,
+          1,
+        ),
+      ),
+    ])
+
+  let assert Ok(before) =
+    projection.latest_publication_for_series(source, "series-1")
+  assert before.attempt_id == "attempt-2"
+
+  let pruned = projection.remove_run_ids(source, ["workflow-run-prune"])
+
+  let assert Ok(after) =
+    projection.latest_publication_for_series(pruned, "series-1")
+  assert after.attempt_id == "attempt-2"
+}
+
 pub fn scheduled_consecutive_failures_quarantine_and_release_test() {
   let folded = projection.fold(scheduled_quarantine_failure_records())
 
@@ -692,6 +790,312 @@ pub fn projection_tracks_publication_attempt_history_and_latest_status_test() {
       "task-1:execplan:review_doc",
     )
   assert series_latest.attempt_id == "failed-1"
+}
+
+pub fn projection_remove_run_ids_cleans_run_owned_families_test() {
+  let folded =
+    projection.fold([
+      record.with_id(
+        "workflow-started",
+        1000,
+        record.WorkflowRunStarted(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          workflow_fingerprint: "wf-1",
+          issue_id: "issue-1",
+          issue_identifier: "LIV-739",
+          issue_fingerprint: "issue-fingerprint",
+          observed_updated_at_ms: 999,
+          run_root: "root/run-1",
+        ),
+      ),
+      record.with_id(
+        "publication-planned",
+        1010,
+        record.PublicationAttemptRecorded(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          publication_id: "review_doc",
+          series_id: "task-1:execplan:review_doc",
+          attempt_id: "version-1",
+          status: "planned",
+          required: True,
+          retryable: False,
+          retry_execution_available: False,
+          version_id: Some("version-1"),
+          manifest_ref: Some(
+            "runs/run-1/publications/review_doc/version-1.json",
+          ),
+          manifest_sha256: Some("sha-1"),
+          manifest_bytes: Some(10),
+          error_code: None,
+          error_message: None,
+        ),
+      ),
+      record.with_id(
+        "step-finished",
+        1020,
+        record.StepAttemptFinished(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          step_id: "review",
+          attempt_index: 1,
+          outcome: "success",
+          artifact_ref: "artifact-ref",
+          artifact_sha256: "sha",
+          workspace_name: "main",
+          workspace_path: "/tmp/main",
+          token_total: 3,
+          turns: 1,
+        ),
+      ),
+      record.with_id(
+        "recovery-started",
+        1030,
+        record.WorkflowStepRecoveryStarted(
+          run_id: "run-1",
+          workflow_id: "execplan",
+          step_id: "review",
+          failed_attempt_index: 1,
+          recovery_attempt_number: 1,
+          recovery_session_id: "recover-1",
+          model: Some("gpt-5"),
+          prompt_ref: ".scherzo/workflows/prompts/recover_failed_step.md",
+        ),
+      ),
+      record.with_id(
+        "op-queued",
+        1040,
+        record.ControlOperationQueued(
+          operation_id: "op-1",
+          operation_kind: "retry_step",
+          command_name: "retry_step",
+          target: "run:run-1",
+          run_id: Some("run-1"),
+          issue_id: Some("issue-1"),
+          issue_identifier: Some("LIV-1"),
+          requested_step_id: Some("review"),
+          publication_id: None,
+        ),
+      ),
+      record.with_id(
+        "counter-updated",
+        1050,
+        record.IssueCounterUpdated(
+          issue_id: "issue-1",
+          issue_identifier: "LIV-1",
+          failure_attempts: 1,
+          worker_sessions: 0,
+          observed_updated_at_ms: 1049,
+          source_run_id: Some("run-1"),
+        ),
+      ),
+      record.with_id(
+        "scheduled-due",
+        1060,
+        record.ScheduledJobDue(
+          job_id: "repair",
+          workflow_id: "execplan",
+          due_at_ms: 900_000,
+          run_id: "run-1",
+          trigger: "automatic",
+        ),
+      ),
+    ])
+
+  let retained_publication =
+    projection.PublicationAttempt(
+      run_id: "run-2",
+      workflow_id: "execplan",
+      publication_id: "review_doc",
+      series_id: "task-1:execplan:review_doc",
+      attempt_id: "retained-version",
+      status: "succeeded",
+      required: True,
+      retryable: False,
+      retry_execution_available: False,
+      version_id: Some("retained-version"),
+      manifest_ref: None,
+      manifest_sha256: None,
+      manifest_bytes: None,
+      error_code: None,
+      error_message: None,
+      recorded_at_ms: 1005,
+    )
+  let manifest =
+    projection.WorkflowContractManifestRef(
+      "execplan",
+      "wf-1",
+      "artifact-ref",
+      "sha",
+      10,
+      1001,
+    )
+  let interface =
+    projection.WorkflowInterfaceSnapshotRef(
+      "execplan",
+      "wf-1",
+      "interface-ref",
+      "sha",
+      11,
+      1002,
+    )
+  let assert Ok(scheduled) = projection.scheduled_status_for(folded, "repair")
+  let populated =
+    projection.Projection(
+      ..folded,
+      workflow_runs: dict.insert(
+        folded.workflow_runs,
+        "run-2",
+        projection.WorkflowRunActive(
+          "execplan",
+          "wf-1",
+          "issue-2",
+          "LIV-2",
+          "issue-fingerprint-2",
+          998,
+          "root/run-2",
+          999,
+        ),
+      ),
+      workflow_run_provenances: dict.insert(
+        folded.workflow_run_provenances,
+        "run-2",
+        projection.WorkflowRunProvenance(
+          "execplan",
+          "wf-1",
+          "issue-2",
+          "LIV-2",
+          "issue-fingerprint-2",
+          998,
+          "root/run-2",
+          record.linear_task_ref_fields("issue-2", Some("LIV-2"), None),
+        ),
+      ),
+      workflow_task_refs: dict.insert(
+        folded.workflow_task_refs,
+        "run-1",
+        record.linear_task_ref_fields("issue-1", Some("LIV-1"), None),
+      ),
+      workflow_input_manifests: dict.insert(
+        folded.workflow_input_manifests,
+        "run-1",
+        manifest,
+      ),
+      workflow_interface_snapshots: dict.insert(
+        folded.workflow_interface_snapshots,
+        "run-1",
+        interface,
+      ),
+      workflow_output_manifests: dict.insert(
+        folded.workflow_output_manifests,
+        "run-1",
+        manifest,
+      ),
+      workflow_repairs: dict.insert(
+        folded.workflow_repairs,
+        "run-1",
+        projection.WorkflowRepairStatus(
+          "execplan",
+          "issue-1",
+          "LIV-1",
+          "run-1",
+          Some("review"),
+          "review",
+          1,
+          2,
+          "retry-step",
+          1003,
+          1,
+        ),
+      ),
+      publication_attempts: dict.insert(
+        folded.publication_attempts,
+        "run-2:review_doc",
+        [retained_publication],
+      ),
+      outbox: dict.insert(
+        folded.outbox,
+        "settled:run-1",
+        projection.OutboxCompleted("issue-1", "report", 1061),
+      ),
+      workstreams: dict.insert(
+        folded.workstreams,
+        "workstream-1",
+        projection.WorkstreamStatus(
+          "workstream-1",
+          Some(record.linear_task_ref_fields("issue-1", Some("LIV-1"), None)),
+          Some(1000),
+          None,
+          dict.new(),
+          dict.new(),
+          dict.new(),
+        ),
+      ),
+      scheduled_jobs: dict.insert(
+        folded.scheduled_jobs,
+        "repair",
+        projection.ScheduledJobStatus(
+          ..scheduled,
+          current_run: Some(projection.ScheduledRunSummary(
+            "run-1",
+            900_000,
+            "automatic",
+            1,
+            "success",
+            None,
+            None,
+            Some("root/run-1"),
+          )),
+          last_success_at_ms: Some(1060),
+          last_success_run_id: Some("run-1"),
+          last_failure_at_ms: Some(1060),
+          last_failure_run_id: Some("run-1"),
+          last_failure_reason: Some("stale"),
+          report_retry: Some(projection.ScheduledReportRetry(
+            "run-1",
+            1,
+            "retry:run-1",
+            "failed",
+            "stale",
+            2000,
+            1,
+          )),
+          recent_run_ids: ["run-2", "run-1"],
+        ),
+      ),
+    )
+  let workstreams_before = populated.workstreams
+
+  let pruned = projection.remove_run_ids(populated, ["run-1"])
+
+  let assert Error(_) = projection.workflow_run(pruned, "run-1")
+  let assert Ok(_) = projection.workflow_run(pruned, "run-2")
+  let assert Error(_) = projection.workflow_task_ref(pruned, "run-1")
+  assert projection.workflow_input_manifest(pruned, "run-1") == None
+  assert projection.workflow_interface_snapshot(pruned, "run-1") == None
+  assert projection.workflow_output_manifest(pruned, "run-1") == None
+  assert projection.latest_workflow_repair(pruned, "run-1") == None
+  assert projection.publication_attempts_for_run(pruned, "run-1", "review_doc")
+    == []
+  let assert Ok(series_latest) =
+    projection.latest_publication_for_series(
+      pruned,
+      "task-1:execplan:review_doc",
+    )
+  assert series_latest.attempt_id == "retained-version"
+  assert list.is_empty(projection.step_attempts_for_run(pruned, "run-1"))
+  assert dict.size(pruned.step_recoveries) == 0
+  let assert Error(_) = projection.control_operation(pruned, "op-1")
+  let assert Error(_) = dict.get(pruned.outbox, "settled:run-1")
+  assert !projection.counter_has_source_run(pruned, "issue-1", "run-1")
+  assert pruned.workstreams == workstreams_before
+  let assert Ok(status) = projection.scheduled_status_for(pruned, "repair")
+  assert status.current_run == None
+  assert status.last_success_run_id == None
+  assert status.last_failure_run_id == None
+  assert status.report_retry == None
+  assert status.recent_run_ids == ["run-2"]
 }
 
 pub fn projection_records_step_recoveries_test() {

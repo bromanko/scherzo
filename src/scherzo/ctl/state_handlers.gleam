@@ -3,14 +3,21 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
+import scherzo/config
+import scherzo/config/types as config_types
 import scherzo/control/file as control_file
+import scherzo/error
 import scherzo/instance_lock
+import scherzo/path
 import scherzo/state/ledger
 import scherzo/state/local_artifacts
 import scherzo/state/projection
+import scherzo/state/projection/retention
 import scherzo/state/record
 import scherzo/workflow_repair
 import simplifile
+import yay
 
 type StateRunProvenanceRepairResult {
   StateRunProvenanceRepairResult(
@@ -115,31 +122,164 @@ pub fn run_compact(
   yes yes: Bool,
   line output_line: fn(String) -> Nil,
 ) -> Result(Nil, #(String, String)) {
-  let result = state_compact(root, dry_run, yes)
+  run_compact_with_rebuild(
+    root,
+    json_output: json_output,
+    dry_run: dry_run,
+    yes: yes,
+    rebuild_from_archives: False,
+    line: output_line,
+  )
+}
+
+pub fn run_compact_with_rebuild(
+  root: String,
+  json_output json_output: Bool,
+  dry_run dry_run: Bool,
+  yes yes: Bool,
+  rebuild_from_archives rebuild_from_archives: Bool,
+  line output_line: fn(String) -> Nil,
+) -> Result(Nil, #(String, String)) {
+  run_compact_with_rebuild_capability(
+    root,
+    json_output,
+    dry_run,
+    yes,
+    rebuild_from_archives,
+    ledger.rebuild_from_archives,
+    output_line,
+  )
+}
+
+pub fn run_compact_with_rebuild_and_probes(
+  root: String,
+  json_output json_output: Bool,
+  dry_run dry_run: Bool,
+  yes yes: Bool,
+  rebuild_from_archives rebuild_from_archives: Bool,
+  memory_probe memory_probe: fn() -> Result(Int, String),
+  disk_probe disk_probe: fn() -> Result(Int, String),
+  line output_line: fn(String) -> Nil,
+) -> Result(Nil, #(String, String)) {
+  run_compact_with_rebuild_capability(
+    root,
+    json_output,
+    dry_run,
+    yes,
+    rebuild_from_archives,
+    fn(ledger_path, policy) {
+      ledger.rebuild_from_archives_with_probes(
+        ledger_path,
+        policy,
+        memory_probe,
+        disk_probe,
+      )
+    },
+    output_line,
+  )
+}
+
+fn run_compact_with_rebuild_capability(
+  root: String,
+  json_output: Bool,
+  dry_run: Bool,
+  yes: Bool,
+  rebuild_from_archives: Bool,
+  rebuild: fn(ledger.LedgerPath, config_types.ProjectionRetentionConfig) ->
+    Result(ledger.RebuildReport, ledger.LedgerError),
+  output_line: fn(String) -> Nil,
+) -> Result(Nil, #(String, String)) {
+  let result = state_compact(root, dry_run, yes, rebuild_from_archives, rebuild)
   print_state_compact(result, json_output, output_line)
   Ok(Nil)
 }
 
-fn state_compact(root: String, dry_run: Bool, yes: Bool) -> StateCompactResult {
-  case dry_run, yes {
-    True, True ->
+fn state_compact(
+  root: String,
+  dry_run: Bool,
+  yes: Bool,
+  rebuild_from_archives: Bool,
+  rebuild: fn(ledger.LedgerPath, config_types.ProjectionRetentionConfig) ->
+    Result(ledger.RebuildReport, ledger.LedgerError),
+) -> StateCompactResult {
+  case dry_run, yes, rebuild_from_archives {
+    True, _, True ->
+      rejected_state_compact_result(
+        root,
+        "rebuild_requires_confirmation",
+        "--rebuild-from-archives requires --yes and cannot be combined with --dry-run",
+      )
+    False, False, True ->
+      rejected_state_compact_result(
+        root,
+        "confirmation_required",
+        "--rebuild-from-archives requires --yes",
+      )
+    True, True, False ->
       rejected_state_compact_result(
         root,
         "confirmation_conflict",
         "pass exactly one of --dry-run or --yes",
       )
-    False, False ->
+    False, False, False ->
       rejected_state_compact_result(
         root,
         "confirmation_required",
         "pass --dry-run to inspect or --yes to compact",
       )
-    True, False -> inspect_state_compact(root)
-    False, True -> apply_state_compact(root)
+    True, False, False ->
+      case load_retention_policy(root) {
+        Ok(policy) -> inspect_state_compact(root, policy)
+        Error(reason) ->
+          rejected_state_compact_result(root, "config_invalid", reason)
+      }
+    False, True, False ->
+      case load_retention_policy(root) {
+        Ok(policy) -> apply_state_compact(root, policy)
+        Error(reason) ->
+          rejected_state_compact_result(root, "config_invalid", reason)
+      }
+    False, True, True ->
+      case load_retention_policy(root) {
+        Ok(policy) -> apply_archive_rebuild(root, policy, rebuild)
+        Error(reason) ->
+          rejected_state_compact_result(root, "config_invalid", reason)
+      }
   }
 }
 
-fn inspect_state_compact(root: String) -> StateCompactResult {
+// nolint: stringly_typed_error -- private loader reason is rendered directly by this CLI boundary
+fn load_retention_policy(
+  root: String,
+) -> Result(config_types.ProjectionRetentionConfig, String) {
+  let config_path = path.join(root, "scherzo.yaml")
+  case simplifile.read(config_path) {
+    Error(simplifile.Enoent) -> Ok(config.default_projection_retention_config())
+    Error(file_error) ->
+      Error("read workspace config: " <> simplifile.describe_error(file_error))
+    Ok(contents) ->
+      case yay.parse_string(contents) {
+        Ok([document]) ->
+          config.resolve_with_env(
+            yay.document_root(document),
+            config_path,
+            path.env,
+          )
+          |> result.map(fn(effective) {
+            effective.ledger_compaction.projection_retention
+          })
+          |> result.map_error(error.config_message)
+        Ok(_) ->
+          Error("workspace config must contain exactly one YAML document")
+        Error(_) -> Error("workspace config contains invalid YAML")
+      }
+  }
+}
+
+fn inspect_state_compact(
+  root: String,
+  policy: config_types.ProjectionRetentionConfig,
+) -> StateCompactResult {
   case compact_ledger_path(root) {
     Error(result) -> result
     Ok(ledger_path) ->
@@ -154,25 +294,138 @@ fn inspect_state_compact(root: String) -> StateCompactResult {
               compact_inspect_error_message(error),
             )
           Ok(before) ->
-            StateCompactResult(
-              status: "dry_run",
-              workspace_root: ledger_path.workspace_root,
-              ledger_dir: ledger_path.ledger_dir,
-              current_path: ledger_path.current_path,
-              snapshot_path: ledger_path.snapshot_path,
-              archive_dir: ledger_path.archive_dir,
-              before: Some(before),
-              after: None,
-              would_archive_current: Some(before.current_size_bytes > 0),
-              reason: None,
-              message: "dry-run; ledger files were not modified",
-            )
+            case
+              ledger.preview_compaction(
+                ledger_path,
+                policy,
+                local_artifacts.now_ms(),
+              )
+            {
+              Error(error) ->
+                failed_state_compact_result(
+                  ledger_path,
+                  Some(before),
+                  Some(before.current_size_bytes > 0),
+                  ledger.ledger_error_code(error),
+                  ledger_error_message(error),
+                )
+              Ok(preview) ->
+                StateCompactResult(
+                  status: "dry_run",
+                  workspace_root: ledger_path.workspace_root,
+                  ledger_dir: ledger_path.ledger_dir,
+                  current_path: ledger_path.current_path,
+                  snapshot_path: ledger_path.snapshot_path,
+                  archive_dir: ledger_path.archive_dir,
+                  before: Some(before),
+                  after: None,
+                  would_archive_current: Some(before.current_size_bytes > 0),
+                  reason: None,
+                  message: compaction_preview_message(preview),
+                )
+            }
         }
       })
   }
 }
 
-fn apply_state_compact(root: String) -> StateCompactResult {
+fn compaction_preview_message(preview: ledger.CompactionPreview) -> String {
+  let policy = preview.policy
+  let report = preview.prune_report
+  let families = report.families_removed
+  let blockers = report.blockers
+  let estimate = preview.reconstruction_estimate
+  "dry-run; ledger files were not modified"
+  <> retention_policy_text(policy, preview.policy_fingerprint)
+  <> "; coverage_status="
+  <> preview.coverage_status
+  <> "; candidates="
+  <> int.to_string(list.length(preview.candidate_run_ids))
+  <> "; blockers="
+  <> blocker_counts_text(blockers)
+  <> "; families="
+  <> family_counts_text(families)
+  <> "; before_bytes="
+  <> int.to_string(report.before_bytes)
+  <> "; projected_bytes="
+  <> int.to_string(report.after_bytes)
+  <> "; reconstruction_raw_input_bytes="
+  <> int.to_string(estimate.raw_input_bytes)
+  <> "; reconstruction_estimated_output_bytes="
+  <> int.to_string(estimate.estimated_output_bytes)
+  <> "; reconstruction_required_memory_bytes="
+  <> int.to_string(estimate.required_memory_bytes)
+  <> "; reconstruction_required_disk_bytes="
+  <> int.to_string(estimate.required_disk_bytes)
+}
+
+fn retention_policy_text(
+  policy: config_types.ProjectionRetentionConfig,
+  fingerprint: String,
+) -> String {
+  "; policy_fingerprint="
+  <> fingerprint
+  <> "; enabled="
+  <> bool_to_string(policy.enabled)
+  <> "; terminal_grace_ms="
+  <> int.to_string(policy.terminal_grace_ms)
+  <> "; scheduled_max_age_ms="
+  <> int.to_string(policy.scheduled_max_age_ms)
+  <> "; scheduled_last_per_job="
+  <> int.to_string(policy.scheduled_last_per_job)
+}
+
+fn compaction_completed_message(report: ledger.CompactionReport) -> String {
+  "ledger compaction completed"
+  <> retention_policy_text(report.policy, report.policy_fingerprint)
+  <> "; coverage_status="
+  <> report.coverage_status
+  <> "; candidates="
+  <> int.to_string(list.length(report.candidate_run_ids))
+  <> "; pruned="
+  <> int.to_string(list.length(report.pruned_run_ids))
+}
+
+fn family_counts_text(value: retention.FamilyCounts) -> String {
+  [
+    int.to_string(value.workflow_runs),
+    int.to_string(value.provenances),
+    int.to_string(value.task_refs),
+    int.to_string(value.input_manifests),
+    int.to_string(value.interface_snapshots),
+    int.to_string(value.output_manifests),
+    int.to_string(value.repairs),
+    int.to_string(value.step_attempts),
+    int.to_string(value.step_recoveries),
+    int.to_string(value.publication_attempts),
+    int.to_string(value.control_operations),
+    int.to_string(value.outbox_entries),
+  ]
+  |> string.join(with: ",")
+}
+
+fn blocker_counts_text(value: retention.BlockerCounts) -> String {
+  [
+    int.to_string(value.active),
+    int.to_string(value.within_grace),
+    int.to_string(value.parked),
+    int.to_string(value.retained_workspace),
+    int.to_string(value.marker_unavailable),
+    int.to_string(value.recovery_started),
+    int.to_string(value.control_in_flight),
+    int.to_string(value.publication_unsettled),
+    int.to_string(value.outbox_unsettled),
+    int.to_string(value.malformed_association),
+  ]
+  |> string.join(with: ",")
+}
+
+fn apply_archive_rebuild(
+  root: String,
+  policy: config_types.ProjectionRetentionConfig,
+  rebuild: fn(ledger.LedgerPath, config_types.ProjectionRetentionConfig) ->
+    Result(ledger.RebuildReport, ledger.LedgerError),
+) -> StateCompactResult {
   case compact_ledger_path(root) {
     Error(result) -> result
     Ok(ledger_path) ->
@@ -191,7 +444,7 @@ fn apply_state_compact(root: String) -> StateCompactResult {
                   compact_inspect_error_message(error),
                 )
               Ok(before) ->
-                case ledger.compact(ledger_path) {
+                case rebuild(ledger_path, policy) {
                   Error(error) ->
                     failed_state_compact_result(
                       ledger_path,
@@ -200,7 +453,107 @@ fn apply_state_compact(root: String) -> StateCompactResult {
                       ledger.ledger_error_code(error),
                       ledger_error_message(error),
                     )
-                  Ok(Nil) ->
+                  Ok(report) ->
+                    completed_archive_rebuild_result(
+                      ledger_path,
+                      before,
+                      report,
+                    )
+                }
+            }
+          })
+      }
+  }
+}
+
+fn completed_archive_rebuild_result(
+  ledger_path: ledger.LedgerPath,
+  before: StateCompactDetails,
+  report: ledger.RebuildReport,
+) -> StateCompactResult {
+  case inspect_compaction_details(ledger_path) {
+    Error(error) ->
+      StateCompactResult(
+        status: "rebuilt",
+        workspace_root: ledger_path.workspace_root,
+        ledger_dir: ledger_path.ledger_dir,
+        current_path: ledger_path.current_path,
+        snapshot_path: ledger_path.snapshot_path,
+        archive_dir: ledger_path.archive_dir,
+        before: Some(before),
+        after: None,
+        would_archive_current: Some(before.current_size_bytes > 0),
+        reason: Some("post_rebuild_inspect_failed"),
+        message: "archive reconstruction completed; failed to inspect after details: "
+          <> compact_inspect_error_message(error),
+      )
+    Ok(after) -> {
+      let estimate = report.estimate
+      StateCompactResult(
+        status: "rebuilt",
+        workspace_root: ledger_path.workspace_root,
+        ledger_dir: ledger_path.ledger_dir,
+        current_path: ledger_path.current_path,
+        snapshot_path: ledger_path.snapshot_path,
+        archive_dir: ledger_path.archive_dir,
+        before: Some(before),
+        after: Some(after),
+        would_archive_current: Some(before.current_size_bytes > 0),
+        reason: None,
+        message: "retain-all archive reconstruction completed"
+          <> "; raw_input_bytes="
+          <> int.to_string(estimate.raw_input_bytes)
+          <> "; estimated_output_bytes="
+          <> int.to_string(estimate.estimated_output_bytes)
+          <> "; required_memory_bytes="
+          <> int.to_string(estimate.required_memory_bytes)
+          <> "; required_disk_bytes="
+          <> int.to_string(estimate.required_disk_bytes)
+          <> "; restored_projection_bytes="
+          <> int.to_string(report.restored_projection_bytes),
+      )
+    }
+  }
+}
+
+fn apply_state_compact(
+  root: String,
+  policy: config_types.ProjectionRetentionConfig,
+) -> StateCompactResult {
+  case compact_ledger_path(root) {
+    Error(result) -> result
+    Ok(ledger_path) ->
+      case offline_state_mutation_guard(ledger_path.workspace_root) {
+        Error(#(reason, message)) ->
+          failed_state_compact_result(ledger_path, None, None, reason, message)
+        Ok(Nil) ->
+          with_state_compact_lock(ledger_path, fn() {
+            case inspect_compaction_details(ledger_path) {
+              Error(error) ->
+                failed_state_compact_result(
+                  ledger_path,
+                  None,
+                  None,
+                  "ledger_inspect_failed",
+                  compact_inspect_error_message(error),
+                )
+              Ok(before) ->
+                case
+                  ledger.compact_with_retention(
+                    ledger_path,
+                    policy,
+                    local_artifacts.now_ms,
+                  )
+                {
+                  Error(error) ->
+                    failed_state_compact_result(
+                      ledger_path,
+                      Some(before),
+                      Some(before.current_size_bytes > 0),
+                      ledger.ledger_error_code(error),
+                      ledger_error_message(error),
+                    )
+                  Ok(report) ->
                     case inspect_compaction_details(ledger_path) {
                       Error(error) ->
                         StateCompactResult(
@@ -216,7 +569,8 @@ fn apply_state_compact(root: String) -> StateCompactResult {
                             before.current_size_bytes > 0,
                           ),
                           reason: Some("post_compaction_inspect_failed"),
-                          message: "ledger compaction completed; failed to inspect after details: "
+                          message: compaction_completed_message(report)
+                            <> "; failed to inspect after details: "
                             <> compact_inspect_error_message(error),
                         )
                       Ok(after) ->
@@ -233,7 +587,7 @@ fn apply_state_compact(root: String) -> StateCompactResult {
                             before.current_size_bytes > 0,
                           ),
                           reason: None,
-                          message: "ledger compaction completed",
+                          message: compaction_completed_message(report),
                         )
                     }
                 }
