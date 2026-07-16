@@ -288,8 +288,7 @@ pub fn composed_task_scope_uses_same_issue_filter_for_ownership_requests_test() 
     == composed_project_task_filter_json()
   assert json_variable(detail_request.body, "taskFilter")
     == composed_project_task_filter_json()
-  assert json_variable(identifier_request.body, "taskFilter")
-    == composed_project_task_filter_json()
+  assert variable_names(identifier_request.body) == ["issueId"]
   assert linear_task_scope.matches_project_slug(
     composed_project_scope(),
     "PROJ",
@@ -331,8 +330,7 @@ pub fn labelled_task_scope_uses_same_issue_filter_for_ownership_requests_test() 
     == labelled_task_filter_json()
   assert json_variable(detail_request.body, "taskFilter")
     == labelled_task_filter_json()
-  assert json_variable(identifier_request.body, "taskFilter")
-    == labelled_task_filter_json()
+  assert variable_names(identifier_request.body) == ["issueId"]
   assert linear_task_scope.matches_issue(labelled_task_scope(), "PROJ", [
     "workflow:implementation",
     "backend",
@@ -654,20 +652,16 @@ pub fn task_source_requests_use_multi_project_task_filters_test() {
       "BUG-1",
     )
   let identifier_query = request_query(identifier_request.body)
-  assert variable_names(identifier_request.body)
-    == ["issueIdentifier", "issueRemoteId", "taskFilter"]
-  assert json_variable(identifier_request.body, "taskFilter")
-    == "{\"project\":{\"slugId\":{\"in\":[\"PROJ\",\"BUGS\"]}}}"
-  assert string_variable(identifier_request.body, "issueRemoteId") == "BUG-1"
-  assert string_variable(identifier_request.body, "issueIdentifier") == "BUG-1"
+  assert variable_names(identifier_request.body) == ["issueId"]
+  assert string_variable(identifier_request.body, "issueId") == "BUG-1"
   assert string.contains(
     identifier_query,
-    "query ScherzoTaskDetailByIdentifier($taskFilter: IssueFilter!, $issueRemoteId: ID!, $issueIdentifier: String!)",
+    "query ScherzoTaskDetailByIdentifier($issueId: String!)",
   )
-  assert string.contains(
-    identifier_query,
-    "filter: { and: [$taskFilter], or: [{ id: { eq: $issueRemoteId } }, { identifier: { eq: $issueIdentifier } }] }",
-  )
+  assert string.contains(identifier_query, "issue(id: $issueId)")
+  assert string.contains(identifier_query, "project { slugId }")
+  assert !string.contains(identifier_request.body, "issueRemoteId")
+  assert !string.contains(identifier_request.body, "taskFilter")
 }
 
 pub fn task_source_detail_identifier_filters_multi_project_scope_test() {
