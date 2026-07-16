@@ -1,9 +1,9 @@
-{ lib
-, stdenv
-, fetchurl
-, unzip
-, autoPatchelfHook
-,
+{
+  lib,
+  stdenv,
+  fetchurl,
+  unzip,
+  patchelf,
 }:
 
 let
@@ -53,7 +53,7 @@ stdenv.mkDerivation {
   };
 
   nativeBuildInputs =
-    lib.optionals isZip [ unzip ] ++ lib.optionals stdenv.hostPlatform.isLinux [ autoPatchelfHook ];
+    lib.optionals isZip [ unzip ] ++ lib.optionals stdenv.hostPlatform.isLinux [ patchelf ];
 
   buildInputs = lib.optionals stdenv.hostPlatform.isLinux [
     stdenv.cc.cc.lib
@@ -61,6 +61,33 @@ stdenv.mkDerivation {
 
   dontConfigure = true;
   dontBuild = true;
+  # linear-cli is shipped as a Deno standalone executable. Keep the embedded
+  # application payload intact; stripping removes the appended data and the
+  # runtime exits with "Could not find standalone binary section."
+  dontStrip = true;
+
+  postFixup = lib.optionalString stdenv.hostPlatform.isLinux ''
+    # Patch the generic Linux binary for NixOS. patchelf appends new ELF
+    # metadata after Deno's standalone payload, so after patching restore a
+    # pristine copy of the d3n0l4nd-delimited payload at EOF.
+    raw_binary="${source.binary}"
+    patched_binary="$out/bin/${source.binary}"
+
+    patchelf \
+      --set-interpreter ${stdenv.cc.bintools.dynamicLinker} \
+      --set-rpath ${lib.makeLibraryPath [ stdenv.cc.cc.lib ]} \
+      "$patched_binary"
+
+    mapfile -t magic_offsets < <(grep -abo 'd3n0l4nd' "$raw_binary" | cut -d: -f1)
+
+    if [ "''${#magic_offsets[@]}" -lt 2 ]; then
+      echo "failed to locate Deno standalone payload in $raw_binary" >&2
+      exit 1
+    fi
+
+    section_start="''${magic_offsets[$((''${#magic_offsets[@]} - 2))]}"
+    tail -c +$((section_start + 1)) "$raw_binary" >> "$patched_binary"
+  '';
 
   installPhase = ''
     runHook preInstall
