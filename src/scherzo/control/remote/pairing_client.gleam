@@ -8,6 +8,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import scherzo/control/remote/credential_store
 import scherzo/control/remote/url
+import scherzo/http_client_proxy
 
 pub type PairingSuccess {
   PairingSuccess(
@@ -164,7 +165,10 @@ fn pairing_response_decoder() -> decode.Decoder(
 }
 
 fn post_json(request: HttpRequest) -> Result(HttpResponse, Nil) {
-  ensure_http_client_started()
+  use Nil <- result.try(
+    http_client_proxy.configure_from_environment()
+    |> result.replace_error(Nil),
+  )
   use http_request <- result.try(http_request.to(request.url))
   let http_request =
     http_request
@@ -180,6 +184,3 @@ fn post_json(request: HttpRequest) -> Result(HttpResponse, Nil) {
     Error(_) -> Error(Nil)
   }
 }
-
-@external(erlang, "scherzo_http_client_ffi", "ensure_started")
-fn ensure_http_client_started() -> Nil

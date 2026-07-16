@@ -10,6 +10,7 @@ import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/http_client_proxy
 import scherzo/linear/contract_query as linear_contract_query
 import scherzo/linear_body_data
 import scherzo/linear_contract
@@ -105,6 +106,12 @@ pub fn real_contract_client(
 pub fn http_transport(
   request: Request,
 ) -> Result(Response, error.TrackerError) {
+  use Nil <- try_tracker(
+    http_client_proxy.configure_from_environment()
+    |> result.map_error(fn(proxy_error) {
+      error.LinearApiRequest(http_client_proxy.error_message(proxy_error))
+    }),
+  )
   use http_req <- try_tracker(
     http_request.to(request.endpoint)
     |> result.replace_error(error.LinearApiRequest("invalid endpoint")),
