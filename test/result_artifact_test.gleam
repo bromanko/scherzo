@@ -111,17 +111,31 @@ pub fn ignores_tool_call_json_delta_as_final_result_test() {
 }
 
 pub fn from_records_handles_high_volume_message_update_deltas_test() {
+  let tool_call =
+    decode(
+      "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"call_review\",\"name\":\"submit_review_lane_draft\",\"arguments\":{\"schema_version\":1}}]}}",
+    )
   let update = decode("{\"type\":\"message_update\",\"delta\":\"token\"}")
+  let tool_result =
+    decode(
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"call_review\",\"toolName\":\"submit_review_lane_draft\",\"isError\":false,\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}",
+    )
   let final =
     decode(
       "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\",\"content\":\"final\"}]}",
     )
-  let records = list.append(repeat_record(update, 50_000, []), [final])
+  let records =
+    list.append(
+      repeat_record(tool_call, 100, []),
+      list.append(repeat_record(update, 50_000, []), [tool_result, final]),
+    )
 
   let artifact = result_artifact.from_records(records, [], 8000)
 
   assert artifact.final_response == Some("final")
   assert artifact.source == "completed_assistant_messages"
+  let assert [call] = artifact.tool_calls
+  assert call.status == Some("success")
 }
 
 pub fn append_combines_turn_results_test() {
