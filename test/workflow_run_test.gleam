@@ -3296,8 +3296,10 @@ pub fn workflow_run_completed_cleanup_failure_keeps_success_and_appends_diagnost
     ]
 }
 
-pub fn workflow_run_failure_cleanup_failure_preserves_primary_reason_test() {
+pub fn workflow_run_failure_retains_workspace_when_cleanup_fails_test() {
   let subject = process.new_subject()
+  let run_root = "test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_helpers.reset_dir(run_root)
   let assert Ok(dag) =
     workflow_dag.parse(
       "version: 1\nid: implementation\nsteps:\n  - id: collect\n    kind: command\n    run: collect\n    run_in: main\n",
@@ -3326,9 +3328,11 @@ pub fn workflow_run_failure_cleanup_failure_preserves_primary_reason_test() {
   assert receive_event(subject) == "prepare:collect:main:"
   assert receive_event(subject) == "run:collect"
   assert receive_event(subject) == "after:collect"
-  assert receive_event(subject)
-    == "cleanup:test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  assert receive_event(subject) == "cleanup:" <> run_root
   test_async.assert_no_extra_message_within(subject, 50)
+  let assert Ok(marker) =
+    simplifile.read(workspace_run.cleanup_retention_marker(run_root))
+  assert string.contains(marker, "retry-required workspace")
 }
 
 pub fn workflow_run_on_failure_continue_makes_artifact_available_test() {
@@ -4942,6 +4946,89 @@ pub fn two_attempt_recovery_exhaustion_fails_after_recovery_test() {
       #(1, 1, "recheck", Some(2)),
       #(2, 2, "recheck", Some(3)),
     ]
+}
+
+pub fn exhausted_agent_step_recovery_retains_retry_workspace_test() {
+  let root = "test/tmp/workflow-run/agent-recovery-retained"
+  let run_root = "test/tmp/workflow-run/workspaces/implementation/ABC-123"
+  test_helpers.reset_dir(root)
+  test_helpers.reset_dir(run_root)
+  let assert Ok(dag) =
+    workflow_dag.parse(
+      "version: 1\nid: implementation\nsteps:\n  - id: draft\n    kind: agent\n    prompt: draft\n    run_in: main\n    recovery:\n      attempts: 1\n      prompt: repair draft\n",
+    )
+  let subject = process.new_subject()
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      cleanup_run: fn(path, _orchestrator, _profile) {
+        process.send(subject, "cleanup:" <> path)
+        Ok(Nil)
+      },
+      agent_step: fn(
+        _issue,
+        context: workflow_run.StepContext,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(
+          subject,
+          "agent:"
+            <> prompt_mode_name(prompt_mode)
+            <> ":"
+            <> int.to_string(context.attempt_index),
+        )
+        case prompt_mode_name(prompt_mode) {
+          "recovery" ->
+            Ok(
+              success_agent_with_result(workflow_step_recovery_result(
+                "recheck",
+                "patched",
+                "retry original step",
+              )),
+            )
+          _ ->
+            Error(agent_types.WorkerFailure(
+              reason: error.PiFailed(error.PiProtocolError("draft failed")),
+              workspace_path: Some(context.workspace_path),
+              tokens: session_tokens.zero_token_totals(),
+              final_issue: Some(issue()),
+            ))
+        }
+      },
+      checkpoint: recording_checkpoint(root, subject),
+    )
+
+  let assert Error(_) =
+    workflow_run.execute(
+      issue(),
+      dag,
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert workflow_finished_outcome(root)
+    == workflow_outcome.failed_after_recovery
+  let marker = workspace_run.cleanup_retention_marker(run_root)
+  let assert Ok(contents) = simplifile.read(marker)
+  assert string.contains(contents, "Scherzo retry-required workspace")
+  assert string.contains(contents, "Run: run-1")
+  assert string.contains(
+    contents,
+    "successful recovery or explicit abandonment",
+  )
+  assert !string.contains(contents, "retention expiry")
+  let events = test_async.drain_subject(subject)
+  assert list.any(events, fn(event) { string.starts_with(event, "cleanup:") })
 }
 
 pub fn recoverable_fatal_batch_drains_siblings_and_rechecks_only_failed_step_test() {

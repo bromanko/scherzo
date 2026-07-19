@@ -126,12 +126,14 @@ fn recovery_scenario_with_fingerprint(
   issue_fingerprint: String,
 ) -> RecoveryScenario {
   test_helpers.reset_dir(root)
+  let run_root = root <> "/workflow-alpha/LIV-59/" <> run_id
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root)
   RecoveryScenario(
     root: root,
     store: artifact_store.new(root),
     issue_fingerprint: issue_fingerprint,
     run_id: run_id,
-    run_root: root <> "/workflow-alpha/LIV-59/" <> run_id,
+    run_root: run_root,
   )
 }
 

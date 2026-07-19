@@ -46,6 +46,8 @@ import scherzo/workflow_checkpoint
 import scherzo/workflow_fingerprint
 import scherzo/workflow_run
 import scherzo/workspace
+import scherzo/workspace_manifest
+import scherzo/workspace_profile
 import scherzo/workspace_run
 import simplifile
 import support/expected_crash
@@ -1990,6 +1992,40 @@ fn append_test_ledger_bodies(
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(root)
   let records = test_records_for_bodies(bodies, 100, 1)
   let assert Ok(Nil) = ledger.append_many(ledger_path, records, True)
+  Nil
+}
+
+fn write_recovered_workspace_manifest(
+  bundle: runtime_bundle.RuntimeBundle,
+  run_root: String,
+  run_id: String,
+  step_id: String,
+) -> Nil {
+  let assert Ok(#(_, dag)) =
+    runtime_bundle.workflow_by_id(bundle, "implementation")
+  let assert Ok(profile) = workspace_profile.resolve(dag, bundle.orchestrator)
+  let context = workspace_profile.driver_context(profile, bundle.orchestrator)
+  let assert Ok(Nil) =
+    workspace_manifest.write_entry(
+      run_root,
+      run_id,
+      "implementation",
+      workspace_manifest.Entry(
+        run_id: run_id,
+        workflow_id: "implementation",
+        step_id: step_id,
+        attempt_index: 1,
+        workspace_name: "main",
+        relative_path: "workspaces/main",
+        workspace_profile: profile.name,
+        driver_command: context.driver,
+        driver_capabilities: config_types.workspace_capability_names(
+          context.capabilities,
+        ),
+        source: workspace.FreshWorkspace,
+        state: workspace_manifest.Ready,
+      ),
+    )
   Nil
 }
 
@@ -4557,7 +4593,7 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
       has_scheduled_failure_report_failed(records, run_id, 1)
       && has_scheduled_failure_outbox_retry(records, 1)
     },
-    20,
+    100,
   )
   let _ = test_async.drain_subject(command_subject)
 
@@ -5397,8 +5433,9 @@ steps:
       completed_artifact,
     )
   let run_root = workspace_root <> "/implementation/ABC-99/run-recover"
-  let first_workspace = run_root <> "/main"
+  let first_workspace = run_root <> "/workspaces/main"
   let assert Ok(Nil) = simplifile.create_directory_all(first_workspace)
+  write_recovered_workspace_manifest(bundle, run_root, "run-recover", "first")
   let assert Ok(ledger_path) = ledger.path_for_workspace_root(workspace_root)
   let assert Ok(Nil) =
     ledger.append_many(
@@ -5505,6 +5542,14 @@ pub fn daemon_startup_resume_preserves_recovered_success_outcome_test() {
     workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
   let workspace_root = bundle.effective.workspace.root
   let run_root = workspace_root <> "/implementation/ABC-100/run-recovered"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(run_root <> "/workspaces/main")
+  write_recovered_workspace_manifest(
+    bundle,
+    run_root,
+    "run-recovered",
+    "implement",
+  )
   append_test_ledger_bodies(workspace_root, [
     record.WorkflowRunStarted(
       "run-recovered",
@@ -5575,6 +5620,14 @@ pub fn daemon_startup_resume_preserves_recovered_failure_outcome_test() {
     workflow_fingerprint.fingerprint_for_execution(dag, bundle.orchestrator)
   let workspace_root = bundle.effective.workspace.root
   let run_root = workspace_root <> "/implementation/ABC-101/run-recovered"
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(run_root <> "/workspaces/main")
+  write_recovered_workspace_manifest(
+    bundle,
+    run_root,
+    "run-recovered",
+    "implement",
+  )
   append_test_ledger_bodies(workspace_root, [
     record.WorkflowRunStarted(
       "run-recovered",

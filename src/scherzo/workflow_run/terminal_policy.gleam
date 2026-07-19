@@ -2,6 +2,7 @@ import gleam/dict.{type Dict}
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import scherzo/agent/types as agent_types
+import scherzo/cleanup/retry_retention_marker
 import scherzo/config/types as config_types
 import scherzo/error
 import scherzo/step_artifact
@@ -117,6 +118,8 @@ pub fn finish_fatal_step_failure(
       }
   }
   input.interrupt_active_attempts()
+  let retention_established =
+    retain_retry_workspace(input.run_root, input.run_id)
   ignore_secondary_checkpoint_result(
     input.runtime.checkpoint.workflow_finished(
       workflow_checkpoint.WorkflowFinished(
@@ -136,7 +139,7 @@ pub fn finish_fatal_step_failure(
       input.orchestrator,
       input.profile,
       input.runtime,
-      input.cleanup_allowed,
+      input.cleanup_allowed && retention_established,
     ))
   Error(Failure(
     reason: reason <> output_suffix <> cleanup_suffix,
@@ -145,6 +148,25 @@ pub fn finish_fatal_step_failure(
     run_root: input.run_root,
     failed_step_id: Some(input.failed_step_id),
   ))
+}
+
+pub fn retain_retry_workspace(
+  run_root: Option(String),
+  run_id: String,
+) -> Bool {
+  case run_root {
+    None -> False
+    Some(path) ->
+      case retry_retention_marker.retain(path, run_id) {
+        Ok(Nil) -> True
+        Error(workspace_error) ->
+          note_retry_retention_failure(error.workspace_code(workspace_error))
+      }
+  }
+}
+
+fn note_retry_retention_failure(_code: String) -> Bool {
+  False
 }
 
 pub fn mark_workflow_failed_terminal(

@@ -1941,6 +1941,8 @@ fn loop(
         Ok(_) -> ""
         Error(error) -> "; workflow_output_manifest_failed:" <> error
       }
+      let retention_established =
+        terminal_policy.retain_retry_workspace(run_root, run_id)
       use Nil <- result_try_checkpoint(
         dependencies.checkpoint.workflow_finished(
           workflow_checkpoint.WorkflowFinished(
@@ -1963,7 +1965,7 @@ fn loop(
           orchestrator,
           profile,
           dependencies,
-          cleanup_allowed,
+          cleanup_allowed && retention_established,
         ))
       Error(WorkflowRunFailure(
         reason: "workflow_step_failed" <> output_suffix <> cleanup_suffix,
@@ -1977,24 +1979,26 @@ fn loop(
       let ready = workflow_scheduler.ready_steps(dag, scheduler_state)
       case ready {
         [] -> {
-          mark_workflow_failed_terminal(
-            dependencies,
-            recovery_evidence,
-            run_id,
-            workflow_dag.id(dag),
-            issue.id,
-            task_ref(issue),
-            tokens.total,
-            turns,
-            [],
-          )
+          let retention_established =
+            mark_workflow_failed_terminal(
+              dependencies,
+              recovery_evidence,
+              run_id,
+              workflow_dag.id(dag),
+              issue.id,
+              task_ref(issue),
+              tokens.total,
+              turns,
+              run_root,
+              [],
+            )
           let cleanup_suffix =
             cleanup_failure_suffix(cleanup_if_allowed(
               run_root,
               orchestrator,
               profile,
               dependencies,
-              cleanup_allowed,
+              cleanup_allowed && retention_established,
             ))
           Error(WorkflowRunFailure(
             reason: "workflow_deadlocked" <> cleanup_suffix,
@@ -2035,24 +2039,26 @@ fn loop(
             )) -> {
               let failure_run_root = option.or(prepared_run_root, run_root)
               let prepared_starts = worker_prepared_starts(prepared_starts)
-              mark_workflow_failed_terminal(
-                dependencies,
-                recovery_evidence,
-                run_id,
-                workflow_dag.id(dag),
-                issue.id,
-                task_ref(issue),
-                tokens.total,
-                turns,
-                prepared_starts,
-              )
+              let retention_established =
+                mark_workflow_failed_terminal(
+                  dependencies,
+                  recovery_evidence,
+                  run_id,
+                  workflow_dag.id(dag),
+                  issue.id,
+                  task_ref(issue),
+                  tokens.total,
+                  turns,
+                  failure_run_root,
+                  prepared_starts,
+                )
               let cleanup_suffix =
                 cleanup_failure_suffix(cleanup_if_allowed(
                   failure_run_root,
                   orchestrator,
                   profile,
                   dependencies,
-                  cleanup_allowed,
+                  cleanup_allowed && retention_established,
                 ))
               Error(WorkflowRunFailure(
                 reason: reason <> cleanup_suffix,
@@ -2189,24 +2195,27 @@ fn execute_prepared_steps(
           let reason = step_worker_pool.describe_step_batch_error(batch_error)
           let batch_cleanup_allowed =
             step_worker_pool.step_batch_error_cleanup_allowed(batch_error)
-          mark_workflow_failed_terminal(
-            dependencies,
-            recovery_evidence,
-            run_id,
-            workflow_dag.id(dag),
-            issue.id,
-            task_ref(issue),
-            tokens.total,
-            turns,
-            starts,
-          )
+          let cleanup_permitted = cleanup_allowed || batch_cleanup_allowed
+          let retention_established =
+            mark_workflow_failed_terminal(
+              dependencies,
+              recovery_evidence,
+              run_id,
+              workflow_dag.id(dag),
+              issue.id,
+              task_ref(issue),
+              tokens.total,
+              turns,
+              run_root,
+              starts,
+            )
           let cleanup_suffix =
             cleanup_failure_suffix(cleanup_if_allowed(
               run_root,
               orchestrator,
               profile,
               dependencies,
-              cleanup_allowed || batch_cleanup_allowed,
+              cleanup_permitted && retention_established,
             ))
           Error(WorkflowRunFailure(
             reason: reason <> cleanup_suffix,
@@ -3486,24 +3495,26 @@ fn apply_prepared_results_state(
       let workspace = step_worker_pool.prepared_start_workspace(start)
       case dict.get(result_by_step, step.id) {
         Error(Nil) -> {
-          mark_workflow_failed_terminal(
-            dependencies,
-            recovery_evidence,
-            run_id,
-            workflow_dag.id(dag),
-            issue.id,
-            task_ref(issue),
-            tokens.total,
-            turns,
-            starts,
-          )
+          let retention_established =
+            mark_workflow_failed_terminal(
+              dependencies,
+              recovery_evidence,
+              run_id,
+              workflow_dag.id(dag),
+              issue.id,
+              task_ref(issue),
+              tokens.total,
+              turns,
+              run_root,
+              starts,
+            )
           let cleanup_suffix =
             cleanup_failure_suffix(cleanup_if_allowed(
               run_root,
               orchestrator,
               profile,
               dependencies,
-              cleanup_allowed,
+              cleanup_allowed && retention_established,
             ))
           Error(WorkflowRunFailure(
             reason: "missing_prepared_step_result:" <> step.id <> cleanup_suffix,
@@ -3543,24 +3554,26 @@ fn apply_prepared_results_state(
             )
           {
             Error(error) -> {
-              mark_workflow_failed_terminal(
-                dependencies,
-                recovery_evidence,
-                run_id,
-                workflow_dag.id(dag),
-                issue.id,
-                task_ref(issue),
-                tokens.total + result_tokens.total,
-                turns + result_turns,
-                starts,
-              )
+              let retention_established =
+                mark_workflow_failed_terminal(
+                  dependencies,
+                  recovery_evidence,
+                  run_id,
+                  workflow_dag.id(dag),
+                  issue.id,
+                  task_ref(issue),
+                  tokens.total + result_tokens.total,
+                  turns + result_turns,
+                  run_root,
+                  starts,
+                )
               let cleanup_suffix =
                 cleanup_failure_suffix(cleanup_if_allowed(
                   run_root,
                   orchestrator,
                   profile,
                   dependencies,
-                  cleanup_allowed,
+                  cleanup_allowed && retention_established,
                 ))
               Error(WorkflowRunFailure(
                 reason: "checkpoint_failed:"
@@ -3585,24 +3598,26 @@ fn apply_prepared_results_state(
               {
                 Error(error) -> {
                   let reason = error
-                  mark_workflow_failed_terminal(
-                    dependencies,
-                    recovery_evidence,
-                    run_id,
-                    workflow_dag.id(dag),
-                    issue.id,
-                    task_ref(issue),
-                    tokens.total + result_tokens.total,
-                    turns + result_turns,
-                    starts,
-                  )
+                  let retention_established =
+                    mark_workflow_failed_terminal(
+                      dependencies,
+                      recovery_evidence,
+                      run_id,
+                      workflow_dag.id(dag),
+                      issue.id,
+                      task_ref(issue),
+                      tokens.total + result_tokens.total,
+                      turns + result_turns,
+                      run_root,
+                      starts,
+                    )
                   let cleanup_suffix =
                     cleanup_failure_suffix(cleanup_if_allowed(
                       run_root,
                       orchestrator,
                       profile,
                       dependencies,
-                      cleanup_allowed,
+                      cleanup_allowed && retention_established,
                     ))
                   Error(WorkflowRunFailure(
                     reason: reason <> cleanup_suffix,
@@ -3620,24 +3635,26 @@ fn apply_prepared_results_state(
                     )
                   {
                     Error(error) -> {
-                      mark_workflow_failed_terminal(
-                        dependencies,
-                        recovery_evidence,
-                        run_id,
-                        workflow_dag.id(dag),
-                        issue.id,
-                        task_ref(issue),
-                        tokens.total + result_tokens.total,
-                        turns + result_turns,
-                        starts,
-                      )
+                      let retention_established =
+                        mark_workflow_failed_terminal(
+                          dependencies,
+                          recovery_evidence,
+                          run_id,
+                          workflow_dag.id(dag),
+                          issue.id,
+                          task_ref(issue),
+                          tokens.total + result_tokens.total,
+                          turns + result_turns,
+                          run_root,
+                          starts,
+                        )
                       let cleanup_suffix =
                         cleanup_failure_suffix(cleanup_if_allowed(
                           run_root,
                           orchestrator,
                           profile,
                           dependencies,
-                          cleanup_allowed,
+                          cleanup_allowed && retention_established,
                         ))
                       Error(WorkflowRunFailure(
                         reason: "checkpoint_failed:"
@@ -3766,8 +3783,9 @@ fn mark_workflow_failed_terminal(
   task_ref: Option(workflow_checkpoint.TaskRef),
   token_total: Int,
   turns: Int,
+  run_root: Option(String),
   active_attempts: List(PreparedStart),
-) -> Nil {
+) -> Bool {
   mark_selected_prepared_attempts_interrupted(
     active_attempts,
     prepared_start_ids(active_attempts, []),
@@ -3775,6 +3793,10 @@ fn mark_workflow_failed_terminal(
     workflow_id,
     "terminal_failure",
   )
+  let retention_established = case active_attempts {
+    [] -> True
+    _ -> terminal_policy.retain_retry_workspace(run_root, run_id)
+  }
   ignore_secondary_checkpoint_result(
     dependencies.checkpoint.workflow_finished(
       workflow_checkpoint.WorkflowFinished(
@@ -3788,6 +3810,7 @@ fn mark_workflow_failed_terminal(
       ),
     ),
   )
+  retention_established
 }
 
 fn ignore_secondary_checkpoint_result(
