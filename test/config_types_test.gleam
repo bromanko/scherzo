@@ -41,7 +41,7 @@ pub fn with_pi_env_prepends_shell_exports_test() {
   let pi =
     config_types.PiConfig(
       ..config.default_pi_config(),
-      command: "pi --mode rpc --no-session --rpc-message-updates off",
+      command: "pi --mode rpc --no-session --rpc-message-updates progress",
       argv_command: None,
     )
   let configured =
@@ -58,7 +58,7 @@ pub fn with_pi_env_prepends_shell_exports_test() {
   assert string.contains(configured.pi.command, "export QUOTE='O'\\''Brien'\n")
   assert string.ends_with(
     configured.pi.command,
-    "pi --mode rpc --no-session --rpc-message-updates off",
+    "pi --mode rpc --no-session --rpc-message-updates progress",
   )
 }
 

@@ -225,6 +225,15 @@ while IFS= read -r line; do
       fi
       jq -cn '{type:"agent_start"}'
       jq -cn '{type:"turn_start"}'
+      if [[ -n "${FAKE_PI_MESSAGE_PROGRESS_COUNT:-}" ]]; then
+        jq -cn '{type:"message_start",message:{role:"assistant",provider:"fake",content:[]}}'
+        for event_index in $(seq 1 "$FAKE_PI_MESSAGE_PROGRESS_COUNT"); do
+          jq -cn --arg event_index "$event_index" '{type:"message_progress",assistantEventType:"thinking_delta",sequence:($event_index|tonumber)}'
+          if [[ -n "${FAKE_PI_MESSAGE_PROGRESS_INTERVAL_MS:-}" ]]; then
+            sleep "$(awk "BEGIN { print ${FAKE_PI_MESSAGE_PROGRESS_INTERVAL_MS} / 1000 }")"
+          fi
+        done
+      fi
       if [[ -n "${FAKE_PI_AGENT_END_WITHOUT_TURN_END:-}" ]]; then
         jq -cn --arg turns "$prompt_seen" '{cursor:15045,type:"agent_end",turns:($turns|tonumber)}'
         continue

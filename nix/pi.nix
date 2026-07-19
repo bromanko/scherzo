@@ -1,27 +1,29 @@
-{ lib
-, stdenv
-, buildNpmPackage
-, fetchFromGitHub
-, nodejs_22
-, makeWrapper
-, fd
-, ripgrep
-,
+{
+  lib,
+  stdenv,
+  buildNpmPackage,
+  fetchFromGitHub,
+  nodejs_22,
+  makeWrapper,
+  fd,
+  ripgrep,
 }:
 
 buildNpmPackage rec {
   pname = "pi";
-  version = "0.79.1-7e717acc";
+  version = "0.80.10-rpc-progress";
 
   src = fetchFromGitHub {
-    owner = "scherzo-systems";
+    owner = "earendil-works";
     repo = "pi";
-    rev = "7e717acc41d161710d834ce94e7ac82cd2852266";
-    hash = "sha256-F+7An+Pys9DJreSWQ4nxF8bo+ii5mc9o+2t3GIEDjpQ=";
+    rev = "v0.80.10";
+    hash = "sha256-Vs/ndHYzFyfN4CjPV2zMYblLXe9IuM13UrPJI1VsZEQ=";
   };
 
+  patches = [ ./patches/pi-rpc-message-progress.patch ];
+
   nodejs = nodejs_22;
-  npmDepsHash = "sha256-Tf7QT1fRhX8rXj4Jnhsk++pYnvfu0eaPInWSBtJkO0I=";
+  npmDepsHash = "sha256-Ro2ovgqH6EpFb20M5DvcP6KIxXZPHcjeEdo1Sh4JbDM=";
   npmDepsFetcherVersion = 2;
   makeCacheWritable = true;
   npmRebuildFlags = [ "--ignore-scripts" ];
@@ -38,6 +40,7 @@ buildNpmPackage rec {
     (cd packages/ai && ../../node_modules/.bin/tsgo -p tsconfig.build.json)
     (cd packages/agent && ../../node_modules/.bin/tsgo -p tsconfig.build.json)
     (cd packages/coding-agent && ../../node_modules/.bin/tsgo -p tsconfig.build.json && chmod +x dist/cli.js && npm run copy-assets)
+    (cd packages/orchestrator && ../../node_modules/.bin/tsgo -p tsconfig.build.json && chmod +x dist/cli.js)
 
     runHook postBuild
   '';
@@ -51,7 +54,7 @@ buildNpmPackage rec {
     cp -PR node_modules "$packageRoot/node_modules"
     mkdir -p "$packageRoot/packages"
 
-    for package in ai agent tui coding-agent; do
+    for package in ai agent tui coding-agent orchestrator; do
       mkdir -p "$packageRoot/packages/$package"
       cp -R "packages/$package/dist" "$packageRoot/packages/$package/dist"
       cp "packages/$package/package.json" "$packageRoot/packages/$package/package.json"
@@ -84,8 +87,8 @@ buildNpmPackage rec {
   dontPatchELF = stdenv.isDarwin;
 
   meta = {
-    description = "Scherzo-pinned pi fork with RPC message update suppression";
-    homepage = "https://github.com/scherzo-systems/pi";
+    description = "Scherzo-pinned pi with bounded RPC message progress";
+    homepage = "https://github.com/earendil-works/pi";
     license = lib.licenses.mit;
     mainProgram = "pi";
     platforms = lib.platforms.all;

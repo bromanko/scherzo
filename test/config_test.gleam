@@ -162,7 +162,8 @@ pub fn default_values_test() {
   assert agent.context_recovery_prompt_char_limit == 40_000
 
   let pi = config.default_pi_config()
-  assert pi.command == "pi --mode rpc --no-session --rpc-message-updates off"
+  assert pi.command
+    == "pi --mode rpc --no-session --rpc-message-updates progress"
   assert pi.turn_timeout_ms == 3_600_000
   assert pi.read_timeout_ms == 5000
   assert pi.stall_timeout_ms == 300_000
@@ -1805,11 +1806,11 @@ pub fn agents_runtime_defaults_persistent_env_and_forbidden_args_test() {
   let assert Ok(defaulted) =
     config.resolve_with_env(definition(defaults), "test/tmp/scherzo.yaml", env)
   assert defaulted.pi.command
-    == "pi --mode rpc --no-session --rpc-message-updates off"
+    == "pi --mode rpc --no-session --rpc-message-updates progress"
   let assert Some(default_argv) = defaulted.pi.argv_command
   assert default_argv.executable == "pi"
   assert default_argv.args
-    == ["--mode", "rpc", "--no-session", "--rpc-message-updates", "off"]
+    == ["--mode", "rpc", "--no-session", "--rpc-message-updates", "progress"]
   assert default_argv.env == []
   assert defaulted.pi.session_persistence.enabled == False
   let assert Ok(pi_command.ArgvLaunch(
@@ -1819,7 +1820,7 @@ pub fn agents_runtime_defaults_persistent_env_and_forbidden_args_test() {
   )) = pi_command.build_launch(defaulted.pi, pi_command.FreshNoSession)
   assert default_launch_executable == "pi"
   assert default_launch_args
-    == ["--mode", "rpc", "--no-session", "--rpc-message-updates", "off"]
+    == ["--mode", "rpc", "--no-session", "--rpc-message-updates", "progress"]
   assert default_launch_env == []
 
   let persistent =
@@ -1832,11 +1833,11 @@ pub fn agents_runtime_defaults_persistent_env_and_forbidden_args_test() {
       env,
     )
   assert configured_persistent.pi.command
-    == "scripts/scherzo-pi --flag --mode rpc --rpc-message-updates off"
+    == "scripts/scherzo-pi --flag --mode rpc --rpc-message-updates progress"
   let assert Some(persistent_argv) = configured_persistent.pi.argv_command
   assert persistent_argv.executable == "scripts/scherzo-pi"
   assert persistent_argv.args
-    == ["--flag", "--mode", "rpc", "--rpc-message-updates", "off"]
+    == ["--flag", "--mode", "rpc", "--rpc-message-updates", "progress"]
   assert persistent_argv.env == [#("FOO", "bar")]
   assert configured_persistent.pi.session_persistence.enabled == True
   assert !string.contains(configured_persistent.pi.command, "FOO")
@@ -1850,7 +1851,7 @@ pub fn agents_runtime_defaults_persistent_env_and_forbidden_args_test() {
     pi_command.build_launch(configured_persistent.pi, pi_command.FreshNoSession)
   assert launch_executable == "scripts/scherzo-pi"
   assert launch_args
-    == ["--flag", "--mode", "rpc", "--rpc-message-updates", "off"]
+    == ["--flag", "--mode", "rpc", "--rpc-message-updates", "progress"]
   assert launch_env == [#("FOO", "bar")]
 
   let quoted =
@@ -1859,7 +1860,7 @@ pub fn agents_runtime_defaults_persistent_env_and_forbidden_args_test() {
   let assert Ok(configured_quoted) =
     config.resolve_with_env(definition(quoted), "test/tmp/scherzo.yaml", env)
   assert configured_quoted.pi.command
-    == "'scripts/scherzo pi' '--label=John'\\''s task' --mode rpc --no-session --rpc-message-updates off"
+    == "'scripts/scherzo pi' '--label=John'\\''s task' --mode rpc --no-session --rpc-message-updates progress"
   let assert Some(quoted_argv) = configured_quoted.pi.argv_command
   assert quoted_argv.executable == "scripts/scherzo pi"
   assert quoted_argv.args
@@ -1869,7 +1870,7 @@ pub fn agents_runtime_defaults_persistent_env_and_forbidden_args_test() {
       "rpc",
       "--no-session",
       "--rpc-message-updates",
-      "off",
+      "progress",
     ]
 }
 
@@ -1983,7 +1984,7 @@ pub fn pi_validation_and_unknown_keys_ignored_test() {
   let assert Ok(configured) =
     config.resolve_with_env(definition(front), "test/tmp/scherzo.yaml", env)
   assert configured.pi.command
-    == "custom-pi --custom --mode rpc --no-session --rpc-message-updates off"
+    == "custom-pi --custom --mode rpc --no-session --rpc-message-updates progress"
   assert configured.pi.compatibility_probe == False
 
   let operator_policy =

@@ -3877,13 +3877,13 @@ pub fn workflow_run_resolves_default_and_step_model_settings_test() {
     )
 
   assert receive_event(command_subject)
-    == "default_step:pi --mode rpc --no-session --rpc-message-updates off --model 'google/gemini-2.5-flash' --thinking 'low'"
+    == "default_step:pi --mode rpc --no-session --rpc-message-updates progress --model 'google/gemini-2.5-flash' --thinking 'low'"
   assert receive_event(command_subject)
-    == "full_override:pi --mode rpc --no-session --rpc-message-updates off --model 'github-copilot/gpt-5.1-codex' --thinking 'high'"
+    == "full_override:pi --mode rpc --no-session --rpc-message-updates progress --model 'github-copilot/gpt-5.1-codex' --thinking 'high'"
   assert receive_event(command_subject)
-    == "partial_thinking:pi --mode rpc --no-session --rpc-message-updates off --model 'google/gemini-2.5-flash' --thinking 'xhigh'"
+    == "partial_thinking:pi --mode rpc --no-session --rpc-message-updates progress --model 'google/gemini-2.5-flash' --thinking 'xhigh'"
   assert receive_event(command_subject)
-    == "partial_model:pi --mode rpc --no-session --rpc-message-updates off --model 'openai/gpt-5.1' --thinking 'low'"
+    == "partial_model:pi --mode rpc --no-session --rpc-message-updates progress --model 'openai/gpt-5.1' --thinking 'low'"
 }
 
 pub fn workflow_run_prepare_failure_cleans_partial_ready_batch_test() {

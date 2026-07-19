@@ -112,6 +112,7 @@ pub fn mark_output_event(
   case event {
     pi_event.MessageStart
     | pi_event.MessageUpdate
+    | pi_event.MessageProgress
     | pi_event.MessageEnd
     | pi_event.Message
     | pi_event.ToolExecutionStart

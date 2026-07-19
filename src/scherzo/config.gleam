@@ -138,7 +138,7 @@ pub fn default_recovery_prompt() -> String {
 
 pub fn default_pi_config() -> config_types.PiConfig {
   config_types.PiConfig(
-    command: "pi --mode rpc --no-session --rpc-message-updates off",
+    command: "pi --mode rpc --no-session --rpc-message-updates progress",
     turn_timeout_ms: 3_600_000,
     read_timeout_ms: 5000,
     stall_timeout_ms: 300_000,
@@ -886,7 +886,7 @@ fn runtime_protocol_args(sessions: RuntimeSessions) -> List(String) {
   }
   list.append(
     ["--mode", "rpc"],
-    list.append(session_args, ["--rpc-message-updates", "off"]),
+    list.append(session_args, ["--rpc-message-updates", "progress"]),
   )
 }
 

@@ -1,0 +1,335 @@
+diff --git a/packages/coding-agent/docs/rpc.md b/packages/coding-agent/docs/rpc.md
+index 1493f2d..88b729b 100644
+--- a/packages/coding-agent/docs/rpc.md
++++ b/packages/coding-agent/docs/rpc.md
+@@ -18,0 +19,3 @@ Common options:
++- `--rpc-message-updates <full|progress|off>`: Control streaming assistant updates. `progress` emits bounded, content-free liveness events; `off` suppresses streaming updates.
++
++`PI_RPC_MESSAGE_UPDATES` configures the same mode for subprocess clients. The default is `full` for compatibility.
+@@ -816 +819,2 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
+-| `message_update` | Streaming update (text/thinking/toolcall deltas) |
++| `message_update` | Full streaming update (default `full` mode only) |
++| `message_progress` | Rate-limited, content-free streaming progress (`progress` mode only) |
+@@ -883 +887,9 @@ Emitted when a message begins and completes. The `message` field contains an `Ag
+-Emitted during streaming of assistant messages. Contains both the partial message and a streaming delta event.
++Emitted during streaming of assistant messages in the default `full` mode. Contains both the partial message and a streaming delta event.
++
++In `progress` mode, Pi replaces these growing records with a content-free `message_progress` record at most once every 10 seconds while real message updates continue:
++
++```json
++{"type":"message_progress","assistantEventType":"thinking_delta"}
++```
++
++Progress records are driven by provider message updates rather than a timer. A provider that stops producing message updates therefore produces no false heartbeat. In `off` mode, neither `message_update` nor `message_progress` is emitted. Final `message_end`, `turn_end`, and agent lifecycle records are unchanged in all modes.
+diff --git a/packages/coding-agent/src/cli/args.ts b/packages/coding-agent/src/cli/args.ts
+index 0ca3396..1931f31 100644
+--- a/packages/coding-agent/src/cli/args.ts
++++ b/packages/coding-agent/src/cli/args.ts
+@@ -8,0 +9 @@ import type { ExtensionFlag } from "../core/extensions/types.ts";
++import { parseRpcMessageUpdates, type RpcMessageUpdates } from "../modes/rpc/rpc-message-updates.ts";
+@@ -49,0 +51,2 @@ export interface Args {
++	rpcMessageUpdates?: RpcMessageUpdates;
++	rpcMessageUpdatesFlagSeen?: boolean;
+@@ -82,0 +86,17 @@ export function parseArgs(args: string[]): Args {
++		} else if (arg === "--rpc-message-updates") {
++			result.rpcMessageUpdatesFlagSeen = true;
++			const value = args[i + 1];
++			if (value === undefined || value.startsWith("-")) {
++				result.diagnostics.push({
++					type: "error",
++					message: "--rpc-message-updates requires a value: full, progress, or off",
++				});
++			} else {
++				i++;
++				const parsed = parseRpcMessageUpdates(value, "cli");
++				if (parsed.warning) {
++					result.diagnostics.push({ type: "warning", message: parsed.warning });
++				} else {
++					result.rpcMessageUpdates = parsed.mode;
++				}
++			}
+@@ -243,0 +264 @@ ${chalk.bold("Options:")}
++  --rpc-message-updates <mode>   RPC updates: full (default), progress, or off
+@@ -377,0 +399 @@ ${chalk.bold("Environment Variables:")}
++  PI_RPC_MESSAGE_UPDATES           - RPC updates: full (default), progress, or off
+diff --git a/packages/coding-agent/src/index.ts b/packages/coding-agent/src/index.ts
+index 26757fb..9e7f3ae 100644
+--- a/packages/coding-agent/src/index.ts
++++ b/packages/coding-agent/src/index.ts
+@@ -332,0 +333,4 @@ export {
++	type RpcMessageProgressEvent,
++	type RpcMessageUpdates,
++	type RpcModeOptions,
++	type RpcOutputEvent,
+diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
+index 5eaa3e5..2caa9d5 100644
+--- a/packages/coding-agent/src/main.ts
++++ b/packages/coding-agent/src/main.ts
+@@ -46,0 +47 @@ import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts"
++import { resolveRpcMessageUpdates } from "./modes/rpc/rpc-message-updates.ts";
+@@ -809,0 +811,8 @@ export async function main(args: string[], options?: MainOptions) {
++		const messageUpdates = resolveRpcMessageUpdates({
++			cliMode: parsed.rpcMessageUpdates,
++			cliFlagSeen: parsed.rpcMessageUpdatesFlagSeen,
++			envValue: process.env.PI_RPC_MESSAGE_UPDATES,
++		});
++		if (!parsed.rpcMessageUpdatesFlagSeen && messageUpdates.warning) {
++			reportDiagnostics([{ type: "warning", message: messageUpdates.warning }]);
++		}
+@@ -811 +820 @@ export async function main(args: string[], options?: MainOptions) {
+-		await runRpcMode(runtime);
++		await runRpcMode(runtime, { messageUpdates: messageUpdates.mode });
+diff --git a/packages/coding-agent/src/modes/index.ts b/packages/coding-agent/src/modes/index.ts
+index 732aee5..2e3ba70 100644
+--- a/packages/coding-agent/src/modes/index.ts
++++ b/packages/coding-agent/src/modes/index.ts
+@@ -8 +8,2 @@ export { type ModelInfo, RpcClient, type RpcClientOptions, type RpcEventListener
+-export { runRpcMode } from "./rpc/rpc-mode.ts";
++export type { RpcMessageProgressEvent, RpcMessageUpdates, RpcOutputEvent } from "./rpc/rpc-message-updates.ts";
++export { type RpcModeOptions, runRpcMode } from "./rpc/rpc-mode.ts";
+diff --git a/packages/coding-agent/src/modes/rpc/rpc-client.ts b/packages/coding-agent/src/modes/rpc/rpc-client.ts
+index 934c6f1..2a3b7e6 100644
+--- a/packages/coding-agent/src/modes/rpc/rpc-client.ts
++++ b/packages/coding-agent/src/modes/rpc/rpc-client.ts
+@@ -10 +10 @@ import type { ImageContent } from "@earendil-works/pi-ai";
+-import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
++import type { SessionStats } from "../../core/agent-session.ts";
+@@ -14,0 +15 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
++import type { RpcOutputEvent } from "./rpc-message-updates.ts";
+@@ -49 +50 @@ export interface ModelInfo {
+-export type RpcEventListener = (event: AgentSessionEvent) => void;
++export type RpcEventListener = (event: RpcOutputEvent) => void;
+@@ -467 +468 @@ export class RpcClient {
+-	collectEvents(timeout = 60000): Promise<AgentSessionEvent[]> {
++	collectEvents(timeout = 60000): Promise<RpcOutputEvent[]> {
+@@ -469 +470 @@ export class RpcClient {
+-			const events: AgentSessionEvent[] = [];
++			const events: RpcOutputEvent[] = [];
+@@ -489 +490 @@ export class RpcClient {
+-	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<AgentSessionEvent[]> {
++	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<RpcOutputEvent[]> {
+@@ -513 +514 @@ export class RpcClient {
+-				listener(data as AgentSessionEvent);
++				listener(data as RpcOutputEvent);
+diff --git a/packages/coding-agent/src/modes/rpc/rpc-mode.ts b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
+index 58b6453..582c845 100644
+--- a/packages/coding-agent/src/modes/rpc/rpc-mode.ts
++++ b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
+@@ -30,0 +31 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
++import { createRpcSessionEventFilter, type RpcMessageUpdates } from "./rpc-message-updates.ts";
+@@ -48,0 +50,4 @@ export type {
++export interface RpcModeOptions {
++	messageUpdates?: RpcMessageUpdates;
++}
++
+@@ -53 +58 @@ export type {
+-export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<never> {
++export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcModeOptions = {}): Promise<never> {
+@@ -54,0 +60 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
++	const filterSessionEvent = createRpcSessionEventFilter(options.messageUpdates ?? "full");
+@@ -355 +361,4 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
+-			output(event);
++			const outputEvent = filterSessionEvent(event);
++			if (outputEvent) {
++				output(outputEvent);
++			}
+diff --git a/packages/coding-agent/test/args.test.ts b/packages/coding-agent/test/args.test.ts
+index 8591974..b1c094b 100644
+--- a/packages/coding-agent/test/args.test.ts
++++ b/packages/coding-agent/test/args.test.ts
+@@ -127,0 +128,24 @@ describe("parseArgs", () => {
++		test("parses --rpc-message-updates", () => {
++			const result = parseArgs(["--rpc-message-updates", "progress"]);
++			expect(result.rpcMessageUpdates).toBe("progress");
++			expect(result.rpcMessageUpdatesFlagSeen).toBe(true);
++		});
++
++		test("rejects invalid --rpc-message-updates values", () => {
++			const result = parseArgs(["--rpc-message-updates", "compact"]);
++			expect(result.rpcMessageUpdates).toBeUndefined();
++			expect(result.diagnostics).toContainEqual({
++				type: "warning",
++				message: 'Invalid RPC message update mode "compact" from cli. Valid values: full, progress, off',
++			});
++		});
++
++		test("requires a --rpc-message-updates value", () => {
++			const result = parseArgs(["--rpc-message-updates"]);
++			expect(result.rpcMessageUpdates).toBeUndefined();
++			expect(result.diagnostics).toContainEqual({
++				type: "error",
++				message: "--rpc-message-updates requires a value: full, progress, or off",
++			});
++		});
++
+diff --git a/packages/coding-agent/src/modes/rpc/rpc-message-updates.ts b/packages/coding-agent/src/modes/rpc/rpc-message-updates.ts
+new file mode 100644
+index 0000000..5c41aaf
+--- /dev/null
++++ b/packages/coding-agent/src/modes/rpc/rpc-message-updates.ts
+@@ -0,0 +1,87 @@
++import type { AgentSessionEvent } from "../../core/agent-session.ts";
++
++export const RPC_MESSAGE_UPDATE_MODES = ["full", "progress", "off"] as const;
++export type RpcMessageUpdates = (typeof RPC_MESSAGE_UPDATE_MODES)[number];
++
++export const RPC_MESSAGE_PROGRESS_INTERVAL_MS = 10_000;
++
++export interface RpcMessageProgressEvent {
++	type: "message_progress";
++	assistantEventType: string;
++}
++
++export type RpcOutputEvent = AgentSessionEvent | RpcMessageProgressEvent;
++
++export interface RpcMessageUpdateParseResult {
++	mode: RpcMessageUpdates;
++	warning?: string;
++}
++
++export function isRpcMessageUpdates(value: string): value is RpcMessageUpdates {
++	return RPC_MESSAGE_UPDATE_MODES.includes(value as RpcMessageUpdates);
++}
++
++export function parseRpcMessageUpdates(
++	value: string | undefined,
++	source: "cli" | "env",
++): RpcMessageUpdateParseResult {
++	if (value === undefined) {
++		return { mode: "full" };
++	}
++
++	if (isRpcMessageUpdates(value)) {
++		return { mode: value };
++	}
++
++	return {
++		mode: "full",
++		warning:
++			`Invalid RPC message update mode "${value}" from ${source}. Valid values: ${RPC_MESSAGE_UPDATE_MODES.join(", ")}`,
++	};
++}
++
++export interface ResolveRpcMessageUpdatesOptions {
++	cliMode?: RpcMessageUpdates;
++	cliFlagSeen?: boolean;
++	envValue?: string;
++}
++
++export function resolveRpcMessageUpdates(options: ResolveRpcMessageUpdatesOptions): RpcMessageUpdateParseResult {
++	if (options.cliFlagSeen) {
++		return { mode: options.cliMode ?? "full" };
++	}
++	return parseRpcMessageUpdates(options.envValue, "env");
++}
++
++export function createRpcSessionEventFilter(
++	mode: RpcMessageUpdates,
++	now: () => number = Date.now,
++	progressIntervalMs = RPC_MESSAGE_PROGRESS_INTERVAL_MS,
++): (event: AgentSessionEvent) => RpcOutputEvent | undefined {
++	let nextProgressAt = 0;
++
++	return (event) => {
++		if (event.type === "message_start") {
++			nextProgressAt = 0;
++			return event;
++		}
++
++		if (event.type !== "message_update" || mode === "full") {
++			return event;
++		}
++
++		if (mode === "off") {
++			return undefined;
++		}
++
++		const observedAt = now();
++		if (observedAt < nextProgressAt) {
++			return undefined;
++		}
++		nextProgressAt = observedAt + progressIntervalMs;
++		return {
++			type: "message_progress",
++			assistantEventType: event.assistantMessageEvent.type,
++		};
++	};
++}
+diff --git a/packages/coding-agent/test/rpc-message-updates.test.ts b/packages/coding-agent/test/rpc-message-updates.test.ts
+new file mode 100644
+index 0000000..5d040ae
+--- /dev/null
++++ b/packages/coding-agent/test/rpc-message-updates.test.ts
+@@ -0,0 +1,72 @@
++import { describe, expect, test } from "vitest";
++import type { AgentSessionEvent } from "../src/core/agent-session.ts";
++import {
++	createRpcSessionEventFilter,
++	parseRpcMessageUpdates,
++	resolveRpcMessageUpdates,
++} from "../src/modes/rpc/rpc-message-updates.ts";
++
++function messageUpdate(type = "thinking_delta"): AgentSessionEvent {
++	return {
++		type: "message_update",
++		message: { growing: "content that must not reach progress output" },
++		assistantMessageEvent: {
++			type,
++			delta: "secret streamed content",
++			partial: { growing: "content that must not reach progress output" },
++		},
++	} as unknown as AgentSessionEvent;
++}
++
++function messageStart(): AgentSessionEvent {
++	return { type: "message_start", message: {} } as unknown as AgentSessionEvent;
++}
++
++describe("RPC message update modes", () => {
++	test("defaults to full and resolves environment configuration", () => {
++		expect(parseRpcMessageUpdates(undefined, "cli")).toEqual({ mode: "full" });
++		expect(resolveRpcMessageUpdates({ envValue: "progress" })).toEqual({ mode: "progress" });
++		expect(resolveRpcMessageUpdates({ cliMode: "off", cliFlagSeen: true, envValue: "full" })).toEqual({
++			mode: "off",
++		});
++	});
++
++	test("preserves full updates in full mode", () => {
++		const update = messageUpdate();
++		expect(createRpcSessionEventFilter("full")(update)).toBe(update);
++	});
++
++	test("suppresses message updates in off mode", () => {
++		expect(createRpcSessionEventFilter("off")(messageUpdate())).toBeUndefined();
++	});
++
++	test("emits bounded content-free progress while updates continue", () => {
++		let observedAt = 1_000;
++		const filter = createRpcSessionEventFilter("progress", () => observedAt, 10_000);
++
++		expect(filter(messageUpdate())).toEqual({
++			type: "message_progress",
++			assistantEventType: "thinking_delta",
++		});
++
++		observedAt = 5_000;
++		expect(filter(messageUpdate("text_delta"))).toBeUndefined();
++
++		observedAt = 11_000;
++		expect(filter(messageUpdate("text_delta"))).toEqual({
++			type: "message_progress",
++			assistantEventType: "text_delta",
++		});
++	});
++
++	test("starts a fresh progress interval for each message", () => {
++		let observedAt = 1_000;
++		const filter = createRpcSessionEventFilter("progress", () => observedAt, 10_000);
++		expect(filter(messageUpdate())).toBeDefined();
++
++		observedAt = 2_000;
++		expect(filter(messageUpdate())).toBeUndefined();
++		expect(filter(messageStart())).toEqual(messageStart());
++		expect(filter(messageUpdate())).toBeDefined();
++	});
++});

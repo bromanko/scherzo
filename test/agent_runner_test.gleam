@@ -732,6 +732,42 @@ pub fn runner_stall_times_out_after_message_start_without_turn_end_test() {
   let assert Some(_) = find_update(updates, "message_start")
 }
 
+pub fn runner_message_progress_extends_stall_without_publishing_test() {
+  let root = "test/tmp/runner-message-progress"
+  test_helpers.reset_dir(root)
+  let command =
+    "FAKE_PI_MESSAGE_PROGRESS_COUNT=12 FAKE_PI_MESSAGE_PROGRESS_INTERVAL_MS=50 "
+    <> fake_pi()
+  let base = config(root, command, False, 1)
+  let cfg =
+    config_types.EffectiveConfig(
+      ..base,
+      pi: config_types.PiConfig(
+        ..base.pi,
+        read_timeout_ms: 1000,
+        stall_timeout_ms: 500,
+        turn_timeout_ms: 3000,
+      ),
+    )
+  let update_subject = process.new_subject()
+
+  let assert Ok(success) =
+    runner.run_attempt(
+      issue("Todo"),
+      None,
+      workflow("Do it"),
+      cfg,
+      tracker_returning(issue("Done")),
+      fn(_, update) { process.send(update_subject, update) },
+    )
+
+  assert success.final_classification == agent_types.FinalTerminal
+  let updates = drain_updates(update_subject, [])
+  assert turn_event_names(updates) == ["turn_started", "turn_finished"]
+  let assert Some(_) = find_update(updates, "message_start")
+  assert find_update(updates, "message_progress") == None
+}
+
 pub fn runner_recovers_context_exhaustion_with_pi_compaction_test() {
   let root = "test/tmp/runner-context-recovery-compact"
   test_helpers.reset_dir(root)
