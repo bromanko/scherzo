@@ -3668,7 +3668,7 @@ fn retry_workflow_step_after_presence(
           command.rejected(
             operator_command,
             workflow_repair.describe_error(error),
-            retry_step_admission_error_message(error, target),
+            retry_step_operation.admission_error_message(error, target),
           ),
         )
         Ok(#(run_id, issue_id, issue_identifier)) ->
@@ -3684,26 +3684,17 @@ fn retry_workflow_step_after_presence(
               {
                 Error(result) -> #(state, result)
                 Ok(observation) ->
-                  case operator_command {
-                    command.RetryWorkflowStepDryRun(_, _) ->
-                      retry_step_dry_run_for_operator(
-                        state,
-                        operator_command,
-                        run_id,
-                        step_id,
-                        observation,
-                      )
-                    _ ->
-                      queue_retry_step_operation_for_operator(
-                        state,
-                        operator_command,
-                        run_id,
-                        issue_id,
-                        issue_identifier,
-                        step_id,
-                        None,
-                      )
-                  }
+                  retry_step_after_operational_preflight(
+                    state,
+                    projection_state,
+                    operator_command,
+                    run_id,
+                    issue_id,
+                    issue_identifier,
+                    step_id,
+                    observation,
+                    None,
+                  )
               }
             False ->
               case
@@ -3721,71 +3712,73 @@ fn retry_workflow_step_after_presence(
                   issue: issue,
                   released_park: released_park,
                 )) ->
-                  case operator_command {
-                    command.RetryWorkflowStepDryRun(_, _) ->
-                      retry_step_dry_run_for_operator(
-                        state,
-                        operator_command,
-                        run_id,
-                        step_id,
-                        startup_recovery.current_workflow_observation(
-                          state.workflow.bundle,
-                          issue,
-                        ),
-                      )
-                    _ ->
-                      queue_retry_step_operation_for_operator(
-                        state,
-                        operator_command,
-                        run_id,
-                        issue_id,
-                        issue_identifier,
-                        step_id,
-                        released_park,
-                      )
-                  }
+                  retry_step_after_operational_preflight(
+                    state,
+                    projection_state,
+                    operator_command,
+                    run_id,
+                    issue_id,
+                    issue_identifier,
+                    step_id,
+                    startup_recovery.current_workflow_observation(
+                      state.workflow.bundle,
+                      issue,
+                    ),
+                    released_park,
+                  )
               }
           }
       }
   }
 }
 
-fn retry_step_admission_error_message(
-  error: workflow_repair.RepairError,
-  target: command.RetryWorkflowStepTarget,
-) -> Option(String) {
-  let reason = workflow_repair.describe_error(error)
-  let base = option.unwrap(workflow_repair.error_message(error), reason)
-  Some(
-    base
-    <> "; no run, park, or tracker state was changed. Next safe command: "
-    <> retry_step_admission_next_command(reason, target),
-  )
-}
-
-fn retry_step_admission_next_command(
-  reason: String,
-  target: command.RetryWorkflowStepTarget,
-) -> String {
-  case reason {
-    "ambiguous_failed_run" -> "scripts/scherzoctl ps --json"
-    "no_failed_workflow_run" -> no_failed_run_next_command(target)
-    _ -> "scripts/scherzoctl ps --json"
-  }
-}
-
-fn no_failed_run_next_command(
-  target: command.RetryWorkflowStepTarget,
-) -> String {
-  case target {
-    command.RetryWorkflowStepRunId(run_id) ->
-      "scripts/scherzoctl session " <> run_id <> " --json"
-    command.RetryWorkflowStepIssueRef(issue_ref) ->
-      "scripts/scherzoctl retry all "
-      <> command.issue_ref_to_string(issue_ref)
-      <> " --json"
-    command.RetryWorkflowStepAutoTarget(target) ->
-      "scripts/scherzoctl retry all " <> target <> " --json"
+fn retry_step_after_operational_preflight(
+  state: State,
+  projection_state: projection.Projection,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  issue_id: String,
+  issue_identifier: String,
+  step_id: Option(String),
+  observation: recovery.CurrentWorkflowObservation,
+  released_park: Option(orchestrator_state.ParkedEntry),
+) -> #(State, command.CommandResult) {
+  case
+    retry_step_operation.operational_preflight(
+      state.workflow.bundle,
+      state.workflow.effective,
+      projection_state,
+      operator_command,
+      run_id,
+      issue_id,
+      issue_identifier,
+      step_id,
+      observation,
+      state.dependencies.now_ms(),
+    )
+  {
+    Error(result) -> #(state, result)
+    Ok(Nil) ->
+      case operator_command {
+        command.RetryWorkflowStepDryRun(_, _) ->
+          retry_step_dry_run_for_operator(
+            state,
+            operator_command,
+            run_id,
+            step_id,
+            observation,
+          )
+        _ ->
+          queue_retry_step_operation_for_operator(
+            state,
+            operator_command,
+            run_id,
+            issue_id,
+            issue_identifier,
+            step_id,
+            released_park,
+          )
+      }
   }
 }
 

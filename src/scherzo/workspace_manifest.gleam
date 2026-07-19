@@ -112,6 +112,30 @@ pub fn cleanup_entries(
   )
 }
 
+pub fn cleanup_entries_for_run(
+  run_root: String,
+  run_id: String,
+  workflow_id: String,
+  profile_name: String,
+  driver_command: String,
+  driver_capabilities: List(String),
+) -> Result(List(CleanupEntry), error.WorkspaceError) {
+  use manifest <- result.try(read_manifest(run_root))
+  use manifest <- result.try(validate_manifest_identity(
+    manifest,
+    run_id,
+    workflow_id,
+  ))
+  cleanup_entries_from_manifest(
+    run_root,
+    manifest,
+    profile_name,
+    driver_command,
+    driver_capabilities,
+    [],
+  )
+}
+
 pub fn read_entries(
   run_root: String,
 ) -> Result(List(Entry), error.WorkspaceError) {

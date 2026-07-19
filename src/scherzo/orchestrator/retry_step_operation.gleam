@@ -6,15 +6,19 @@ import gleam/string
 import scherzo/config/types as config_types
 import scherzo/control/command
 import scherzo/orchestrator/core
+import scherzo/orchestrator/retry_step_resumption
 import scherzo/retry_step_validation
 import scherzo/runtime/identity
 import scherzo/runtime/reason as orchestrator_reason
 import scherzo/runtime/state as orchestrator_state
+import scherzo/runtime_bundle
+import scherzo/state/artifact_store
 import scherzo/state/projection
 import scherzo/state/record
 import scherzo/state/recovery
 import scherzo/tracker/issue as tracker_issue
 import scherzo/tracker/state as issue_state
+import scherzo/workflow_repair
 
 pub type IssuePreflight {
   IssuePreflight(
@@ -211,6 +215,18 @@ pub fn issue_is_active_or_pending(
   || parked
 }
 
+pub fn retained_recovery_unavailable_message(
+  detail: String,
+  run_id: String,
+  fresh_issue_identifier: Option(String),
+) -> String {
+  retry_step_validation.retained_recovery_unavailable_message(
+    detail,
+    run_id,
+    fresh_issue_identifier,
+  )
+}
+
 pub fn validation_rejection_message(
   failure: retry_step_validation.Failure,
   run_id: String,
@@ -281,10 +297,14 @@ pub fn rejection_message(
 ) -> Option(String) {
   let detail = case finalization.diagnostics {
     [diagnostic, ..] ->
-      Some(recovery.workflow_recovery_diagnostic_message(diagnostic))
-    [] -> Some("recovery validation rejected the retry-step repair")
+      recovery.workflow_recovery_diagnostic_message(diagnostic)
+    [] -> "recovery validation rejected the retry-step repair"
   }
-  Some(failure_message(rejection_reason(finalization), detail, run_id, step_id))
+  case rejection_reason(finalization) {
+    "retained_recovery_unavailable" ->
+      Some(retained_recovery_unavailable_message(detail, run_id, None))
+    reason -> Some(failure_message(reason, Some(detail), run_id, step_id))
+  }
 }
 
 pub fn dispatch_rejection_message(
@@ -315,7 +335,7 @@ fn scripts_command(command_text: String) -> String {
 }
 
 pub fn rejection_reason(finalization: recovery.WorkflowFinalization) -> String {
-  case finalization.diagnostics {
+  let reason = case finalization.diagnostics {
     [diagnostic, ..] -> recovery.workflow_recovery_diagnostic_reason(diagnostic)
     [] ->
       case finalization.records_to_append {
@@ -335,5 +355,265 @@ pub fn rejection_reason(finalization: recovery.WorkflowFinalization) -> String {
         ] -> retry_step_validation.stable_rejection_reason(reason)
         _ -> "artifact_recovery_failed"
       }
+  }
+  case retry_step_validation.physical_recovery_failure(reason) {
+    True -> "retained_recovery_unavailable"
+    False -> reason
+  }
+}
+
+pub fn operational_preflight(
+  bundle: runtime_bundle.RuntimeBundle,
+  effective: config_types.EffectiveConfig,
+  projection_state: projection.Projection,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  issue_id: String,
+  issue_identifier: String,
+  step_id: Option(String),
+  observation: recovery.CurrentWorkflowObservation,
+  now_ms: Int,
+) -> Result(Nil, command.CommandResult) {
+  let target = command.RetryWorkflowStepRunId(run_id)
+  case
+    repair_plan_for_command(
+      operator_command,
+      projection_state,
+      target,
+      step_id,
+      observation,
+    )
+  {
+    Error(error) -> {
+      let reason = workflow_repair.describe_error(error)
+      case retry_step_validation.physical_recovery_failure(reason) {
+        True ->
+          Error(retained_recovery_rejection(
+            operator_command,
+            option.unwrap(workflow_repair.error_message(error), reason),
+            run_id,
+            issue_id,
+            issue_identifier,
+          ))
+        False ->
+          Error(command.rejected(
+            operator_command,
+            reason,
+            Some(failure_message(
+              reason,
+              workflow_repair.error_message(error),
+              run_id,
+              step_id,
+            )),
+          ))
+      }
+    }
+    Ok(plan) ->
+      candidate_preflight(
+        bundle,
+        effective,
+        projection_state,
+        operator_command,
+        plan,
+        observation,
+        issue_id,
+        issue_identifier,
+        step_id,
+        now_ms,
+      )
+  }
+}
+
+fn repair_plan_for_command(
+  operator_command: command.OperatorCommand,
+  projection_state: projection.Projection,
+  target: command.RetryWorkflowStepTarget,
+  step_id: Option(String),
+  observation: recovery.CurrentWorkflowObservation,
+) -> Result(workflow_repair.RepairPlan, workflow_repair.RepairError) {
+  case operator_command {
+    command.RetryWorkflowStepExact(_, _) ->
+      workflow_repair.plan_exact(projection_state, target, step_id, observation)
+    _ -> workflow_repair.plan(projection_state, target, step_id, observation)
+  }
+}
+
+fn candidate_preflight(
+  bundle: runtime_bundle.RuntimeBundle,
+  effective: config_types.EffectiveConfig,
+  projection_state: projection.Projection,
+  operator_command: command.OperatorCommand,
+  plan: workflow_repair.RepairPlan,
+  observation: recovery.CurrentWorkflowObservation,
+  issue_id: String,
+  issue_identifier: String,
+  step_id: Option(String),
+  now_ms: Int,
+) -> Result(Nil, command.CommandResult) {
+  case
+    recovery.finalize_retry_step_candidates_with_config(
+      projection_state,
+      [plan.candidate],
+      dict.from_list([#(plan.run_id, observation)]),
+      artifact_store.new(effective.workspace.root),
+      now_ms,
+      effective,
+    )
+  {
+    Error(recovery_error) -> {
+      let detail = recovery.describe_error(recovery_error)
+      case retry_step_validation.physical_recovery_failure(detail) {
+        True ->
+          Error(retained_recovery_rejection(
+            operator_command,
+            detail,
+            plan.run_id,
+            issue_id,
+            issue_identifier,
+          ))
+        False ->
+          Error(command.rejected(
+            operator_command,
+            "workflow_recovery_failed",
+            Some(failure_message(
+              "workflow_recovery_failed",
+              Some(detail),
+              plan.run_id,
+              step_id,
+            )),
+          ))
+      }
+    }
+    Ok(finalization) ->
+      finalization_preflight(
+        bundle,
+        operator_command,
+        plan.run_id,
+        issue_id,
+        issue_identifier,
+        step_id,
+        finalization,
+      )
+  }
+}
+
+fn finalization_preflight(
+  bundle: runtime_bundle.RuntimeBundle,
+  operator_command: command.OperatorCommand,
+  run_id: String,
+  issue_id: String,
+  issue_identifier: String,
+  step_id: Option(String),
+  finalization: recovery.WorkflowFinalization,
+) -> Result(Nil, command.CommandResult) {
+  case finalization.resumptions {
+    [resumption] ->
+      case
+        retry_step_resumption.validate_operational_inputs(bundle, resumption)
+      {
+        Ok(_) -> Ok(Nil)
+        Error(failure) ->
+          case retry_step_validation.physical_recovery_failure(failure.reason) {
+            True ->
+              Error(retained_recovery_rejection(
+                operator_command,
+                failure.message,
+                run_id,
+                issue_id,
+                issue_identifier,
+              ))
+            False ->
+              Error(command.rejected(
+                operator_command,
+                failure.reason,
+                Some(validation_rejection_message(failure, run_id, step_id)),
+              ))
+          }
+      }
+    _ -> {
+      let reason = rejection_reason(finalization)
+      let detail = case finalization.diagnostics {
+        [diagnostic, ..] ->
+          recovery.workflow_recovery_diagnostic_message(diagnostic)
+        [] -> "recovery validation did not produce an executable resumption"
+      }
+      case retry_step_validation.physical_recovery_failure(reason) {
+        True ->
+          Error(retained_recovery_rejection(
+            operator_command,
+            detail,
+            run_id,
+            issue_id,
+            issue_identifier,
+          ))
+        False ->
+          Error(command.rejected(
+            operator_command,
+            reason,
+            rejection_message(finalization, run_id, step_id),
+          ))
+      }
+    }
+  }
+}
+
+fn retained_recovery_rejection(
+  operator_command: command.OperatorCommand,
+  detail: String,
+  run_id: String,
+  issue_id: String,
+  issue_identifier: String,
+) -> command.CommandResult {
+  let fresh_issue_identifier = case string.trim(issue_id) {
+    "" -> None
+    _ -> Some(issue_identifier)
+  }
+  command.rejected(
+    operator_command,
+    "retained_recovery_unavailable",
+    Some(retained_recovery_unavailable_message(
+      detail,
+      run_id,
+      fresh_issue_identifier,
+    )),
+  )
+}
+
+pub fn admission_error_message(
+  error: workflow_repair.RepairError,
+  target: command.RetryWorkflowStepTarget,
+) -> Option(String) {
+  let reason = workflow_repair.describe_error(error)
+  let base = option.unwrap(workflow_repair.error_message(error), reason)
+  Some(
+    base
+    <> "; no run, park, or tracker state was changed. Next safe command: "
+    <> admission_next_command(reason, target),
+  )
+}
+
+fn admission_next_command(
+  reason: String,
+  target: command.RetryWorkflowStepTarget,
+) -> String {
+  case reason {
+    "ambiguous_failed_run" -> "scripts/scherzoctl ps --json"
+    "no_failed_workflow_run" -> no_failed_run_next_command(target)
+    _ -> "scripts/scherzoctl ps --json"
+  }
+}
+
+fn no_failed_run_next_command(
+  target: command.RetryWorkflowStepTarget,
+) -> String {
+  case target {
+    command.RetryWorkflowStepRunId(run_id) ->
+      "scripts/scherzoctl session " <> run_id <> " --json"
+    command.RetryWorkflowStepIssueRef(issue_ref) ->
+      "scripts/scherzoctl retry all "
+      <> command.issue_ref_to_string(issue_ref)
+      <> " --json"
+    command.RetryWorkflowStepAutoTarget(target) ->
+      "scripts/scherzoctl retry all " <> target <> " --json"
   }
 }

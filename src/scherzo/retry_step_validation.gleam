@@ -1,12 +1,19 @@
 import gleam/dict
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import scherzo/path
 import scherzo/state/projection
 import scherzo/tracker/issue as tracker_issue
 import scherzo/workflow_attempt
+import simplifile
 
 pub type Failure {
   Failure(reason: String, message: String)
+}
+
+pub type RunRootError {
+  InvalidRunRoot(run_id: String)
+  MissingRunRoot(run_id: String)
 }
 
 pub fn validate_drift(
@@ -107,12 +114,73 @@ pub fn validation_rejection_message(
   run_id: String,
   step_id: Option(String),
 ) -> String {
-  "retry-step rejected: "
-  <> failure.reason
-  <> " ("
-  <> failure.message
-  <> "); no run, park, or tracker state was changed. Next safe command: "
-  <> next_safe_command(run_id, step_id)
+  case failure.reason {
+    "retained_recovery_unavailable" ->
+      retained_recovery_unavailable_message(failure.message, run_id, None)
+    _ ->
+      "retry-step rejected: "
+      <> failure.reason
+      <> " ("
+      <> failure.message
+      <> "); no run, park, or tracker state was changed. Next safe command: "
+      <> operation_failure_next_safe_command(failure.reason, run_id, step_id)
+  }
+}
+
+pub fn retained_recovery_unavailable_message(
+  detail: String,
+  run_id: String,
+  fresh_issue_identifier: Option(String),
+) -> String {
+  let next_action = case fresh_issue_identifier {
+    Some(identifier) ->
+      "Start a fresh run: scripts/scherzoctl retry all "
+      <> identifier
+      <> " --json. Inspect retained salvage evidence: scripts/scherzoctl session "
+      <> run_id
+      <> " --json"
+    None ->
+      "Inspect retained salvage evidence: scripts/scherzoctl session "
+      <> run_id
+      <> " --json"
+  }
+  "retry-step rejected: retained_recovery_unavailable (a logical ledger repair boundary exists, but retained recovery is unavailable: "
+  <> detail
+  <> "); no run, park, or tracker state was changed. "
+  <> next_action
+}
+
+pub fn validate_run_root(
+  run_id: String,
+  run_root: String,
+  workspace_root: String,
+) -> Result(#(String, String), RunRootError) {
+  let root_abs = path.absolute_or_original(workspace_root)
+  let run_root_abs = path.absolute_or_original(run_root)
+  let invalid_root =
+    string.trim(run_root_abs) == ""
+    || run_root_abs == root_abs
+    || !path.contains(root_abs, run_root_abs)
+  case invalid_root, simplifile.is_directory(run_root_abs) {
+    True, _ -> Error(InvalidRunRoot(run_id))
+    False, Ok(True) -> Ok(#(root_abs, run_root_abs))
+    False, _ -> Error(MissingRunRoot(run_id))
+  }
+}
+
+pub fn run_root_error_reason(error: RunRootError) -> String {
+  case error {
+    InvalidRunRoot(run_id) -> "invalid_run_root:" <> run_id
+    MissingRunRoot(run_id) -> "missing_run_root:" <> run_id
+  }
+}
+
+pub fn physical_recovery_failure(reason: String) -> Bool {
+  reason == "retained_recovery_unavailable"
+  || reason == "artifact_recovery_failed"
+  || string.starts_with(reason, "artifact_recovery_failed:")
+  || reason == "workspace_recovery_failed"
+  || string.starts_with(reason, "workspace_recovery_failed:")
 }
 
 pub fn operation_failure_message(
@@ -141,6 +209,8 @@ fn operation_failure_next_safe_command(
     "step_not_repairable" ->
       "scripts/scherzoctl session " <> run_id <> " --json"
     "no_failed_workflow_run" ->
+      "scripts/scherzoctl session " <> run_id <> " --json"
+    "retained_recovery_unavailable" ->
       "scripts/scherzoctl session " <> run_id <> " --json"
     _ -> next_safe_command(run_id, step_id)
   }

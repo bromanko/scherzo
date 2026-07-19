@@ -107,6 +107,64 @@ pub fn workspace_cleanup_inventory_protects_active_scheduled_run_test() {
   assert item_reason_contains(items, active, "active")
 }
 
+pub fn workspace_cleanup_retains_repairable_failure_until_success_or_abandonment_test() {
+  let repo = "test/tmp/cleanup-workspaces/retry-required"
+  let workspace_root = setup_repo(repo)
+  let retry_required =
+    create_manifest_run(repo, workspace_root, "run-retry-required", "main")
+  let abandoned =
+    create_manifest_run(repo, workspace_root, "run-retry-abandoned", "main")
+  let stale =
+    create_manifest_run(repo, workspace_root, "run-retry-stale", "main")
+  seed_repairable_failed_run(
+    workspace_root,
+    "run-retry-required",
+    retry_required,
+  )
+  seed_repairable_failed_run(workspace_root, "run-retry-abandoned", abandoned)
+  seed_stale_failed_run(workspace_root, "run-retry-stale", stale)
+  write_schema_marker(abandoned, "abandoned", 3)
+
+  let inventory = cleanup.inventory(workspace_root, 4)
+  let inventory_items = workspace_items(inventory)
+  assert item_status(inventory_items, retry_required) == Some("retained")
+  assert item_reason_contains(
+    inventory_items,
+    retry_required,
+    "logical repair boundary",
+  )
+  assert item_status(inventory_items, abandoned) == Some("would_delete")
+  assert item_status(inventory_items, stale) == Some("retained")
+  assert item_reason_contains(inventory_items, stale, "logical repair boundary")
+
+  let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
+  let assert Ok(Nil) =
+    ledger.append(
+      paths,
+      record.with_id(
+        "recovered-success",
+        7,
+        record.WorkflowRunFinished(
+          "run-retry-required",
+          "implementation",
+          "issue-id",
+          "succeeded_after_recovery",
+          0,
+          0,
+        ),
+      ),
+      False,
+    )
+
+  let applied = cleanup.apply(workspace_root, 6)
+  let applied_items = workspace_items(applied)
+  assert item_status(applied_items, retry_required) == Some("deleted")
+  assert item_status(applied_items, abandoned) == Some("deleted")
+  let assert Ok(False) = simplifile.is_directory(retry_required)
+  let assert Ok(False) = simplifile.is_directory(abandoned)
+  let assert Ok(True) = simplifile.is_directory(stale)
+}
+
 pub fn workspace_cleanup_retains_pending_failed_and_releases_successful_commit_stack_publications_test() {
   let repo = "test/tmp/cleanup-workspaces/commit-stack-retention"
   let workspace_root = setup_repo(repo)
@@ -337,6 +395,7 @@ pub fn workspace_cleanup_apply_delegates_remove_and_reports_failures_test() {
     path.symlink(outside_abs, eligible <> "/workspaces/outside-sentinel")
   let assert Ok(Nil) =
     simplifile.write(repo <> "/remove-fail-workspace", "review\n")
+  write_schema_marker(failing, "abandoned", 3)
 
   let report = cleanup.apply(workspace_root, 0)
   let items = workspace_items(report)
@@ -346,12 +405,20 @@ pub fn workspace_cleanup_apply_delegates_remove_and_reports_failures_test() {
   assert item_reason_contains(items, failing, "driver lifecycle remove failed")
   let assert Ok(False) = simplifile.is_directory(eligible)
   let assert Ok(True) = simplifile.is_directory(failing)
+  let assert Ok(True) =
+    simplifile.is_file(failing <> "/.scherzo-keep-workspace")
   let assert Ok(True) = simplifile.is_file(outside <> "/sentinel")
 
   let second = cleanup.apply(workspace_root, 0)
   let second_items = workspace_items(second)
   assert item_status(second_items, failing) == Some("failed")
   assert item_status(second_items, eligible) == None
+  let assert Ok(True) =
+    simplifile.is_file(failing <> "/.scherzo-keep-workspace")
+
+  let assert Ok(Nil) = simplifile.delete(repo <> "/remove-fail-workspace")
+  let third_items = cleanup.apply(workspace_root, 0) |> workspace_items
+  assert item_status(third_items, failing) == Some("deleted")
 
   let encoded = cleanup.cleanup_report_to_json(report) |> json.to_string
   assert string.contains(encoded, "\"provider_id\":\"workspaces\"")
@@ -941,6 +1008,137 @@ fn create_manifest_run_with_keys(
       False,
     )
   run_root
+}
+
+fn seed_repairable_failed_run(
+  workspace_root: String,
+  run_id: String,
+  run_root: String,
+) -> Nil {
+  let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
+  let workspace_path = run_root <> "/workspaces/main"
+  let assert Ok(Nil) =
+    ledger.append_many(
+      paths,
+      [
+        record.with_id(
+          "retry-prepared-" <> run_id,
+          3,
+          record.StepAttemptPrepared(
+            run_id,
+            "implementation",
+            "implement",
+            1,
+            "main",
+            workspace_path,
+            run_root,
+            None,
+            None,
+          ),
+        ),
+        record.with_id(
+          "retry-started-" <> run_id,
+          4,
+          record.StepAttemptStarted(
+            run_id,
+            "implementation",
+            "implement",
+            1,
+            "session-" <> run_id,
+            None,
+            False,
+          ),
+        ),
+        record.with_id(
+          "retry-failed-" <> run_id,
+          5,
+          record.StepAttemptFinished(
+            run_id,
+            "implementation",
+            "implement",
+            1,
+            "failed_fatal",
+            "runs/" <> run_id <> "/implement/attempt-1.json",
+            "missing-artifact-sha",
+            "main",
+            workspace_path,
+            0,
+            0,
+          ),
+        ),
+        record.with_id(
+          "retry-workflow-failed-" <> run_id,
+          6,
+          record.WorkflowRunFinished(
+            run_id,
+            "implementation",
+            "issue-id",
+            "failed_after_recovery",
+            0,
+            0,
+          ),
+        ),
+      ],
+      False,
+    )
+  Nil
+}
+
+fn seed_stale_failed_run(
+  workspace_root: String,
+  run_id: String,
+  run_root: String,
+) -> Nil {
+  let assert Ok(paths) = ledger.path_for_workspace_root(workspace_root)
+  let workspace_path = run_root <> "/workspaces/main"
+  let assert Ok(Nil) =
+    ledger.append_many(
+      paths,
+      [
+        record.with_id(
+          "stale-prepared-" <> run_id,
+          3,
+          record.StepAttemptPrepared(
+            run_id,
+            "implementation",
+            "implement",
+            1,
+            "main",
+            workspace_path,
+            run_root,
+            None,
+            None,
+          ),
+        ),
+        record.with_id(
+          "stale-started-" <> run_id,
+          4,
+          record.StepAttemptStarted(
+            run_id,
+            "implementation",
+            "implement",
+            1,
+            "session-" <> run_id,
+            None,
+            False,
+          ),
+        ),
+        record.with_id(
+          "stale-workflow-failed-" <> run_id,
+          5,
+          record.WorkflowRunFinished(
+            run_id,
+            "implementation",
+            "issue-id",
+            "failed_after_recovery",
+            0,
+            0,
+          ),
+        ),
+      ],
+      False,
+    )
+  Nil
 }
 
 fn seed_commit_stack_publication(

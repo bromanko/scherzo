@@ -55,6 +55,7 @@ import scherzo/workflow_repair
 import scherzo/workflow_run
 import scherzo/workspace
 import scherzo/workspace_manifest
+import scherzo/workspace_profile
 import simplifile
 import support/test_helpers
 import test_async
@@ -438,6 +439,219 @@ pub fn retry_dry_run_reports_safe_point_and_preserved_discarded_steps_test() {
   assert string.contains(message, "discarded steps=apply_feedback")
   assert ledger_bodies(root) == before
   test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_missing_run_root_is_never_reported_or_accepted_as_recoverable_test() {
+  let dir = "test/tmp/daemon-retry-missing-run-root"
+  let issue = issue("issue-1", "LIV-1525", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(_, _, _) {
+        process.send(worker_subject, "unexpected_worker_started")
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let run_root = root <> "/implementation/" <> issue.identifier <> "/run-1"
+  let assert Ok(Nil) = simplifile.delete(run_root)
+  let before = ledger_bodies(root)
+
+  let assert Ok(dry_run) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStepDryRun(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  assert command.status_to_string(dry_run.status) == "rejected"
+  assert command.status_reason(dry_run.status)
+    == Some("retained_recovery_unavailable")
+  let assert Some(dry_run_message) = dry_run.message
+  assert string.contains(
+    dry_run_message,
+    "logical ledger repair boundary exists",
+  )
+  assert string.contains(dry_run_message, "retained recovery is unavailable")
+  assert string.contains(
+    dry_run_message,
+    "scripts/scherzoctl retry all LIV-1525 --json",
+  )
+  assert !string.contains(dry_run_message, "run retry-step run-1")
+
+  let assert Ok(retry) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  assert command.status_to_string(retry.status) == "rejected"
+  assert command.status_reason(retry.status)
+    == Some("retained_recovery_unavailable")
+  assert retry.operation_id == None
+  assert count_kind(root, "control_operation_queued") == 0
+  assert ledger_bodies(root) == before
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_foreign_workspace_manifest_is_rejected_before_queue_test() {
+  let dir = "test/tmp/daemon-retry-foreign-workspace-manifest"
+  let issue = issue("issue-1", "LIV-1525", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let run_root = root <> "/implementation/" <> issue.identifier <> "/run-1"
+  let manifest_path = workspace_manifest.manifest_path(run_root)
+  let assert Ok(manifest) = simplifile.read(manifest_path)
+  let assert Ok(Nil) =
+    simplifile.write(
+      manifest_path,
+      string.replace(in: manifest, each: "run-1", with: "foreign-run"),
+    )
+  let log_subject = process.new_subject()
+  let worker_subject = process.new_subject()
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_issue_only(issue),
+      hub_subject,
+      fn(_, _, _) {
+        process.send(worker_subject, "unexpected_worker_started")
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  let assert Ok(Nil) = daemon.await_startup_recovery_ready(started.data, 1000)
+  let before = ledger_bodies(root)
+
+  let assert Ok(dry_run) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStepDryRun(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  assert command.status_to_string(dry_run.status) == "rejected"
+  assert command.status_reason(dry_run.status)
+    == Some("retained_recovery_unavailable")
+  let assert Some(dry_run_message) = dry_run.message
+  assert string.contains(dry_run_message, "manifest identity mismatch")
+
+  let assert Ok(retry) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  assert command.status_to_string(retry.status) == "rejected"
+  assert command.status_reason(retry.status)
+    == Some("retained_recovery_unavailable")
+  assert retry.operation_id == None
+  assert count_kind(root, "control_operation_queued") == 0
+  assert ledger_bodies(root) == before
+  test_async.assert_no_extra_message(worker_subject)
+
+  assert daemon.shutdown(started.data, 1000) == Ok(Nil)
+  hub.stop(hub_subject)
+}
+
+pub fn retry_execution_rejects_run_root_removed_after_preflight_test() {
+  let dir = "test/tmp/daemon-retry-run-root-removed-after-preflight"
+  let issue = issue("issue-1", "LIV-1525", "Todo")
+  let #(workflow_path, root) = write_retry_step_workflow(dir)
+  seed_interrupted_retry_step_run(root, issue, include_parked: False)
+  let log_subject = process.new_subject()
+  let fetch_barrier = test_async.new_barrier()
+  let fetch_gate = start_fetch_counter()
+  let tracker_client =
+    tracker_issue_only_blocking_retry_operation_fetch(
+      issue,
+      log_subject,
+      fetch_barrier,
+      fetch_gate,
+    )
+  let assert Ok(hub_subject) = hub.start(50, fn() { 42 })
+  let deps =
+    in_process_dependencies(
+      log_subject,
+      tracker_client,
+      hub_subject,
+      fn(_, _, _) {
+        Error(agent_types.WorkerFailure(
+          reason: error.PiFailed(error.PiProtocolError("unexpected spawn")),
+          workspace_path: None,
+          tokens: session_tokens.zero_token_totals(),
+          final_issue: None,
+        ))
+      },
+    )
+  let assert Ok(started) = daemon.start(Some(workflow_path), deps)
+  wait_until_startup_recovery_ready(started.data)
+
+  let assert Ok(result) =
+    daemon.apply_operator_command(
+      started.data,
+      command.RetryWorkflowStep(
+        command.RetryWorkflowStepRunId("run-1"),
+        Some("apply_feedback"),
+      ),
+      1000,
+    )
+  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
+  arm_fetch_gate(fetch_gate)
+  assert wait_for_log(log_subject, "retry_step_operation_fetch_blocked", 100)
+  let run_root = root <> "/implementation/" <> issue.identifier <> "/run-1"
+  let assert Ok(Nil) = simplifile.delete(run_root)
+  test_async.release_barrier(fetch_barrier)
+
+  let assert Ok(failed_operation) =
+    wait_for_operation_status(
+      root,
+      operation_id,
+      "failed",
+      operation_status_wait_attempts,
+    )
+  assert failed_operation.reason == Some("retained_recovery_unavailable")
+  let assert Some(message) = failed_operation.message
+  assert string.contains(message, "logical ledger repair boundary exists")
+  assert string.contains(message, "scripts/scherzoctl session run-1 --json")
+  assert !string.contains(message, "run retry-step run-1")
+  assert count_kind(root, "workflow_repair_requested") == 0
+  assert count_kind(root, "step_attempt_superseded") == 0
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -836,19 +1050,10 @@ pub fn run_retry_step_exact_resume_validation_failure_is_operation_noop_test() {
       ),
       1000,
     )
-  let second_operation_id =
-    assert_retry_step_queued(second_result, Some("apply_feedback"))
-  let assert Ok(second_operation) =
-    wait_for_operation_status(
-      root,
-      second_operation_id,
-      "failed",
-      operation_status_wait_attempts,
-    )
-  assert second_operation.reason == Some("workflow_drift")
-  assert count_kind(root, "workflow_repair_requested") == 0
-  assert count_kind(root, "step_attempt_superseded") == 0
-  assert count_kind(root, "issue_parked_v2") == 0
+  assert command.status_to_string(second_result.status) == "rejected"
+  assert command.status_reason(second_result.status) == Some("workflow_drift")
+  assert second_result.operation_id == None
+
   let assert Ok(_) =
     workflow_repair.resolve_target_run(
       load_projection_or_panic(root),
@@ -979,7 +1184,7 @@ pub fn retry_step_repairs_missing_provenance_after_finalization_accepts_test() {
   hub.stop(hub_subject)
 }
 
-pub fn run_retry_step_exact_artifact_recovery_failure_returns_detail_and_retains_diagnostic_test() {
+pub fn run_retry_step_exact_rejects_artifact_recovery_failure_before_queue_test() {
   let dir = "test/tmp/daemon-retry-step-artifact-detail"
   let issue = issue("issue-1", "LIV-509", "Todo")
   let #(workflow_path, root) = write_retry_step_workflow(dir)
@@ -1021,7 +1226,10 @@ pub fn run_retry_step_exact_artifact_recovery_failure_returns_detail_and_retains
       1000,
     )
 
-  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status)
+    == Some("retained_recovery_unavailable")
+  assert result.operation_id == None
   let detail =
     "artifact_recovery_failed: step_id=seed artifact_ref="
     <> artifact_ref
@@ -1029,17 +1237,16 @@ pub fn run_retry_step_exact_artifact_recovery_failure_returns_detail_and_retains
     <> expected_sha256
     <> " current_sha256="
     <> current_sha256
-  let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 100)
-  assert failed_operation.reason == Some("artifact_recovery_failed")
-  let assert Some(failed_message) = failed_operation.message
-  assert string.contains(failed_message, detail)
+  let assert Some(rejected_message) = result.message
+  assert string.contains(rejected_message, detail)
   assert string.contains(
-    failed_message,
-    "Next safe command: scripts/scherzoctl run retry-step run-1 --step apply_feedback",
+    rejected_message,
+    "scripts/scherzoctl retry all LIV-509 --json",
   )
-  assert retained_workflow_diagnostic_reason(root, detail)
+  assert !string.contains(rejected_message, "run retry-step run-1")
+  assert !retained_workflow_diagnostic_reason(root, detail)
   assert !retained_workflow_interruption_reason(root, detail)
+  assert count_kind(root, "control_operation_queued") == 0
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -1083,12 +1290,12 @@ pub fn run_retry_step_exact_does_not_append_provenance_repair_when_finalization_
       ),
       1000,
     )
-  let operation_id = assert_retry_step_queued(result, Some("apply_feedback"))
-
-  let assert Ok(failed_operation) =
-    wait_for_operation_status(root, operation_id, "failed", 100)
-  assert failed_operation.reason == Some("artifact_recovery_failed")
+  assert command.status_to_string(result.status) == "rejected"
+  assert command.status_reason(result.status)
+    == Some("retained_recovery_unavailable")
+  assert result.operation_id == None
   assert !contains_kind(root, "workflow_run_provenance_repaired")
+  assert count_kind(root, "control_operation_queued") == 0
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   hub.stop(hub_subject)
@@ -7505,6 +7712,7 @@ fn seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
   let seed_workspace = run_root <> "/workspaces/seed"
   let workflow_workspace = root <> "/" <> issue.identifier
   let assert Ok(Nil) = simplifile.create_directory_all(seed_workspace)
+  write_retry_step_workspace_manifest(root, run_root)
   let store = artifact_store.new(root)
   let artifact =
     step_artifact.from_command_result(
@@ -7712,6 +7920,53 @@ fn seed_interrupted_retry_step_run_with_claim_lifecycle_and_fingerprint(
   Nil
 }
 
+fn write_retry_step_workspace_manifest(root: String, run_root: String) -> Nil {
+  let assert Ok(config_dir) = path.dirname(root)
+  let assert Ok(bundle) =
+    runtime_bundle.load(Some(config_dir <> "/scherzo.yaml"))
+  let assert Ok(#(_, dag)) =
+    runtime_bundle.workflow_by_id(bundle, "implementation")
+  let assert Ok(profile) = workspace_profile.resolve(dag, bundle.orchestrator)
+  let context = workspace_profile.driver_context(profile, bundle.orchestrator)
+  let capabilities =
+    config_types.workspace_capability_names(context.capabilities)
+  let entries = [
+    workspace_manifest.Entry(
+      run_id: "run-1",
+      workflow_id: "implementation",
+      step_id: "seed",
+      attempt_index: 1,
+      workspace_name: "seed",
+      relative_path: "workspaces/seed",
+      workspace_profile: profile.name,
+      driver_command: context.driver,
+      driver_capabilities: capabilities,
+      source: workspace.FreshWorkspace,
+      state: workspace_manifest.Ready,
+    ),
+    workspace_manifest.Entry(
+      run_id: "run-1",
+      workflow_id: "implementation",
+      step_id: "apply_feedback",
+      attempt_index: 1,
+      workspace_name: "derived",
+      relative_path: "workspaces/derived",
+      workspace_profile: profile.name,
+      driver_command: context.driver,
+      driver_capabilities: capabilities,
+      source: workspace.DerivedWorkspace("seed", "workspaces/seed"),
+      state: workspace_manifest.Ready,
+    ),
+  ]
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root <> "/.scherzo")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workspace_manifest.manifest_path(run_root),
+      workspace_manifest.encode_manifest(entries, "run-1", "implementation"),
+    )
+  Nil
+}
+
 fn seed_interrupted_retry_step_run_missing_provenance(
   root: String,
   issue: tracker_issue.Issue,
@@ -7719,6 +7974,7 @@ fn seed_interrupted_retry_step_run_missing_provenance(
   let run_root = root <> "/implementation/" <> issue.identifier <> "/run-1"
   let seed_workspace = run_root <> "/workspaces/seed"
   let assert Ok(Nil) = simplifile.create_directory_all(seed_workspace)
+  write_retry_step_workspace_manifest(root, run_root)
   let store = artifact_store.new(root)
   let artifact =
     step_artifact.from_command_result(
@@ -7869,6 +8125,7 @@ fn seed_interrupted_review_retry_step_run(
   let main_workspace = run_root <> "/workspaces/main"
   let assert Ok(Nil) = simplifile.create_directory_all(seed_workspace)
   let assert Ok(Nil) = simplifile.create_directory_all(main_workspace)
+  write_retry_step_review_workspace_manifest(root, run_root)
   let store = artifact_store.new(root)
   let artifact =
     step_artifact.from_command_result(
@@ -8009,6 +8266,56 @@ fn seed_interrupted_review_retry_step_run(
   Nil
 }
 
+fn write_retry_step_review_workspace_manifest(
+  root: String,
+  run_root: String,
+) -> Nil {
+  let assert Ok(config_dir) = path.dirname(root)
+  let assert Ok(bundle) =
+    runtime_bundle.load(Some(config_dir <> "/scherzo.yaml"))
+  let assert Ok(#(_, dag)) =
+    runtime_bundle.workflow_by_id(bundle, "implementation")
+  let assert Ok(profile) = workspace_profile.resolve(dag, bundle.orchestrator)
+  let context = workspace_profile.driver_context(profile, bundle.orchestrator)
+  let capabilities =
+    config_types.workspace_capability_names(context.capabilities)
+  let entries = [
+    workspace_manifest.Entry(
+      run_id: "run-1",
+      workflow_id: "implementation",
+      step_id: "seed",
+      attempt_index: 1,
+      workspace_name: "seed",
+      relative_path: "workspaces/seed",
+      workspace_profile: profile.name,
+      driver_command: context.driver,
+      driver_capabilities: capabilities,
+      source: workspace.FreshWorkspace,
+      state: workspace_manifest.Ready,
+    ),
+    workspace_manifest.Entry(
+      run_id: "run-1",
+      workflow_id: "implementation",
+      step_id: "implement",
+      attempt_index: 1,
+      workspace_name: "main",
+      relative_path: "workspaces/main",
+      workspace_profile: profile.name,
+      driver_command: context.driver,
+      driver_capabilities: capabilities,
+      source: workspace.DerivedWorkspace("seed", "workspaces/seed"),
+      state: workspace_manifest.Ready,
+    ),
+  ]
+  let assert Ok(Nil) = simplifile.create_directory_all(run_root <> "/.scherzo")
+  let assert Ok(Nil) =
+    simplifile.write(
+      workspace_manifest.manifest_path(run_root),
+      workspace_manifest.encode_manifest(entries, "run-1", "implementation"),
+    )
+  Nil
+}
+
 fn seed_orphaned_review_children_run(
   root: String,
   issue: tracker_issue.Issue,
@@ -8023,6 +8330,7 @@ fn seed_orphaned_review_children_run(
   let assert Ok(Nil) = simplifile.create_directory_all(code_review_workspace)
   let assert Ok(Nil) =
     simplifile.create_directory_all(security_review_workspace)
+  write_retry_step_review_workspace_manifest(root, run_root)
   let store = artifact_store.new(root)
   let seed_artifact =
     step_artifact.from_command_result(

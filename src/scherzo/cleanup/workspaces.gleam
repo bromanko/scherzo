@@ -6,7 +6,9 @@ import gleam/result
 import gleam/string
 import scherzo/artifact_publication_manifest
 import scherzo/artifact_publication_runtime
+import scherzo/cleanup/release_marker
 import scherzo/cleanup/retention_marker
+import scherzo/cleanup/retry_retention
 import scherzo/control/file
 import scherzo/error
 import scherzo/hash
@@ -85,6 +87,7 @@ type LedgerContext {
     active_roots: dict.Dict(String, Bool),
     publication_protections: dict.Dict(String, List(PublicationProtection)),
     run_statuses: dict.Dict(String, projection.WorkflowRunStatus),
+    retry_required_run_ids: dict.Dict(String, Bool),
     parked_issue_ids: dict.Dict(String, Bool),
     signature: LedgerSignature,
   )
@@ -921,25 +924,34 @@ fn delegate_cleanup_item(
                   <> context.profile_name,
               )
             Ok(profile) ->
-              case
-                workspace_run.cleanup_run(
-                  item.run_root,
-                  bundle.orchestrator,
-                  profile,
-                )
-              {
-                Ok(Nil) ->
-                  WorkspaceItem(
-                    ..item,
-                    status: "deleted",
-                    reason: "workspace cleanup delegated through workspace_run.cleanup_run",
-                  )
-                Error(err) ->
-                  WorkspaceItem(
-                    ..item,
-                    status: "failed",
-                    reason: workspace_error_message(err),
-                  )
+              case release_marker.release(item.run_root) {
+                Error(release_marker.ReleaseError(reason)) ->
+                  WorkspaceItem(..item, status: "failed", reason: reason)
+                Ok(released_marker) ->
+                  case
+                    workspace_run.cleanup_run(
+                      item.run_root,
+                      bundle.orchestrator,
+                      profile,
+                    )
+                  {
+                    Ok(Nil) ->
+                      WorkspaceItem(
+                        ..item,
+                        status: "deleted",
+                        reason: "workspace cleanup delegated through workspace_run.cleanup_run",
+                      )
+                    Error(err) ->
+                      WorkspaceItem(
+                        ..item,
+                        status: "failed",
+                        reason: release_marker.restore_after_failure(
+                          item.run_root,
+                          released_marker,
+                          workspace_error_message(err),
+                        ),
+                      )
+                  }
               }
           }
       }
@@ -1162,6 +1174,9 @@ fn ledger_context(workspace_root: String) -> Result(LedgerContext, String) {
                       replayed.projection,
                     ),
                     run_statuses: workflow_run_statuses(replayed.projection),
+                    retry_required_run_ids: retry_retention.required_run_ids(
+                      replayed.projection,
+                    ),
                     parked_issue_ids: replayed.projection.parked_issues
                       |> dict.keys
                       |> list.fold(dict.new(), fn(ids, issue_id) {
@@ -1260,32 +1275,15 @@ fn workflow_run_statuses(
 fn hard_hold_reason(
   context: LedgerContext,
   run_root: String,
-  _run_id: String,
+  run_id: String,
 ) -> Option(String) {
-  case dict.get(context.run_statuses, run_root) {
-    Ok(projection.WorkflowRunInterrupted(issue_id: issue_id, ..)) ->
-      case dict.get(context.parked_issue_ids, issue_id) {
-        Ok(True) ->
-          Some(
-            "issue for retained workspace run is parked and must be released before cleanup",
-          )
-        _ ->
-          Some(
-            "workspace run was interrupted and still requires operator review",
-          )
-      }
-    Ok(projection.WorkflowRunActive(issue_id: issue_id, ..))
-    | Ok(projection.WorkflowRunFinished(issue_id: issue_id, ..))
-    | Ok(projection.WorkflowRunSuperseded(issue_id: issue_id, ..)) ->
-      case dict.get(context.parked_issue_ids, issue_id) {
-        Ok(True) ->
-          Some(
-            "issue for retained workspace run is parked and must be released before cleanup",
-          )
-        _ -> None
-      }
-    Error(Nil) -> None
-  }
+  retry_retention.hard_hold_reason(
+    context.run_statuses,
+    context.retry_required_run_ids,
+    context.parked_issue_ids,
+    run_root,
+    run_id,
+  )
 }
 
 fn publication_protections(

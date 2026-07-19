@@ -1887,17 +1887,14 @@ fn validate_recovered_run_root(
   candidate: WorkflowRecoveryCandidate,
   workspace_root: String,
 ) -> Result(#(String, String), RecoveryError) {
-  let root_abs = path.absolute_or_original(workspace_root)
-  let run_root_abs = path.absolute_or_original(candidate.run_root)
-  case
-    string.trim(run_root_abs) == ""
-    || run_root_abs == root_abs
-    || !path.contains(root_abs, run_root_abs)
-  {
-    True ->
-      Error(WorkspaceRecoveryFailed("invalid_run_root:" <> candidate.run_id))
-    False -> Ok(#(root_abs, run_root_abs))
-  }
+  retry_step_validation.validate_run_root(
+    candidate.run_id,
+    candidate.run_root,
+    workspace_root,
+  )
+  |> result.map_error(fn(error) {
+    WorkspaceRecoveryFailed(retry_step_validation.run_root_error_reason(error))
+  })
 }
 
 fn validate_completed_workspace_summaries(
