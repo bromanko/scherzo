@@ -53,6 +53,7 @@ CANONICAL_VALIDATION_NAME = "scherzo-implementation-validation.json"
 CANONICAL_PUBLISH_NAME = "scherzo-implementation-publish.json"
 CANONICAL_COMMIT_STACK_NAME = "scherzo-implementation-commit-stack.json"
 ANALYSIS_PATH = TMP_DIR / "scherzo-implementation-analysis.json"
+WORKFLOW_DIFF_PATH = TMP_DIR / "scherzo-implementation.diff"
 PLAN_COMPLETION_CONTEXT_PATH = TMP_DIR / "scherzo-plan-completion-context.json"
 PLAN_COMPLETION_VERDICT_PATH = TMP_DIR / "scherzo-plan-completion-verdict.json"
 PLAN_COMPLETION_RECOVERY_PATH = TMP_DIR / "scherzo-plan-completion-recovery.json"
@@ -79,7 +80,7 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 def usage() -> None:
     print(
-        """Usage: scherzo-implementation <prepare|refresh-base|refresh-base-and-validate|analyze|gate-implementation-completion|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|languages|ticket-brief>
+        """Usage: scherzo-implementation <prepare|refresh-base|refresh-base-and-validate|pinned-base|analyze|gate-implementation-completion|plan-completion-context|checkpoint-plan-completion-verdict|gate-plan-completion|plan-completion-recovery|assert-base-drift-repair|validate|publish|plan-brief|languages|ticket-brief>
 
 
 Run from a Scherzo jj workflow workspace root.
@@ -126,9 +127,11 @@ refresh-base --stage <stage>
               Fetch the canonical jj workspace base, rebase @ when needed,
               and write structured base-refresh JSON under tmp/.
 refresh-base-and-validate --stage <stage>
-              Run refresh-base, then run final validation only when the
-              refresh result is fresh or rebased_clean. Write the same refresh
-              and validation artifacts used by recovery prompts.
+              Run refresh-base, pin the resolved immutable parent commit, then
+              run final validation only when the refresh result is fresh or
+              rebased_clean. Write the same refresh and validation artifacts
+              used by recovery prompts.
+pinned-base  Print the current epoch's validated immutable base commit ID.
 assert-base-drift-repair
               Legacy compatibility helper for retained pre-step-recovery runs.
               Fail closed when the bounded base-drift repair worker wrote a
@@ -256,55 +259,6 @@ def run_workspace_driver_json(
         )
     except workflow_workspace_driver.WorkspaceDriverError as exc:
         fail(str(exc), failure_code=exc.code)
-
-
-def workspace_driver_changed_file_records() -> list[dict[str, str]]:
-    payload, _ = run_workspace_driver_json(
-        ["changed-files", "--json"],
-        failure_code="workspace_driver_changed_files_failed",
-    )
-    try:
-        records = workflow_workspace_driver.changed_file_records(
-            payload,
-            validate_status=True,
-        )
-    except workflow_workspace_driver.WorkspaceDriverError as exc:
-        fail(str(exc), failure_code=exc.code)
-    return sorted(records, key=lambda record: record["path"])
-
-
-def workspace_driver_changed_files() -> list[str]:
-    return [record["path"] for record in workspace_driver_changed_file_records()]
-
-
-def workspace_driver_diff_text() -> str:
-    payload, _ = run_workspace_driver_json(
-        ["diff", "--json"],
-        failure_code="workspace_driver_diff_failed",
-    )
-    try:
-        return workflow_workspace_driver.diff_text(payload)
-    except workflow_workspace_driver.WorkspaceDriverError as exc:
-        fail(str(exc), failure_code=exc.code)
-
-
-def workspace_driver_baseline() -> dict[str, Any]:
-    payload, _ = run_workspace_driver_json(
-        ["baseline", "--json"],
-        failure_code="workspace_driver_baseline_failed",
-    )
-    for key in ["baseline_id", "workspace_revision_id", "change_id"]:
-        if not isinstance(payload.get(key), str) or not str(payload.get(key)).strip():
-            fail(
-                f"workspace driver baseline JSON missing non-empty {key}",
-                failure_code="workspace_driver_baseline_failed",
-            )
-    if not isinstance(payload.get("dirty"), bool):
-        fail(
-            "workspace driver baseline JSON missing boolean dirty",
-            failure_code="workspace_driver_baseline_failed",
-        )
-    return payload
 
 
 def run_and_print(
@@ -792,26 +746,40 @@ def print_plan_brief_result(result: dict[str, str]) -> None:
         print(f"PLAN_BRIEF_WARNING={result.get('warning', 'brief generation failed')}")
 
 
-def current_base_change_id() -> str:
-    return run(["jj", "log", "-r", "@-", "--no-graph", "-T", "change_id", "--color=never"]).strip()
-
-
 def current_change_id_short() -> str:
     return run(["jj", "log", "-r", "@", "--no-graph", "-T", "change_id.short()", "--color=never"]).strip()
 
 
-def changed_files_since(base_change_id: str) -> list[str]:
-    output = run([
-        "jj",
-        "diff",
-        "--from",
-        base_change_id,
-        "--to",
-        "@",
-        "--name-only",
-        "--color=never",
-    ])
+def changed_files_since(base_commit_id: str) -> list[str]:
+    output = run(
+        [
+            "jj",
+            "diff",
+            "--from",
+            base_commit_id,
+            "--to",
+            "@",
+            "--name-only",
+            "--color=never",
+        ],
+        failure_code="implementation_baseline_unavailable",
+    )
     return clean_lines(output)
+
+
+def diff_since(base_commit_id: str) -> str:
+    return run(
+        [
+            "jj",
+            "diff",
+            "--from",
+            base_commit_id,
+            "--to",
+            "@",
+            "--color=never",
+        ],
+        failure_code="implementation_baseline_unavailable",
+    )
 
 
 def revision_commit_ids(revision: str) -> list[str]:
@@ -846,6 +814,67 @@ def revision_commit_ids_if_exists(revision: str) -> list[str] | None:
 
 def current_parent_commit_ids() -> list[str]:
     return revision_commit_ids("@-")
+
+
+def configured_base_source_revision() -> str:
+    base, remote = configured_publish_base()
+    return f"{base}@{remote}"
+
+
+def resolve_single_commit_id(revision: str, *, context: str) -> str:
+    commits = revision_commit_ids_if_exists(revision)
+    if commits is None:
+        fail(
+            f"pinned implementation baseline is unavailable: {context} revision {revision!r} does not resolve",
+            failure_code="implementation_baseline_unavailable",
+        )
+    if len(commits) != 1:
+        fail(
+            f"pinned implementation baseline is unavailable: {context} revision {revision!r} resolved to {len(commits)} commits; expected exactly one",
+            failure_code="implementation_baseline_unavailable",
+        )
+    return commits[0]
+
+
+def current_base_commit_id() -> str:
+    return resolve_single_commit_id("@-", context="workspace parent")
+
+
+def pinned_base_commit_id(metadata: dict[str, Any] | None = None) -> str:
+    require_command("jj")
+    current_metadata = metadata if metadata is not None else load_implementation_metadata()
+    base_commit_id = str(current_metadata.get("base_commit_id") or "").strip()
+    if not base_commit_id:
+        fail(
+            "implementation metadata is missing the pinned base_commit_id; refusing to resolve mutable base provenance",
+            failure_code="implementation_baseline_missing",
+        )
+    resolved_commit_id = resolve_single_commit_id(
+        base_commit_id,
+        context="metadata base_commit_id",
+    )
+    if resolved_commit_id != base_commit_id:
+        fail(
+            "pinned implementation baseline is unavailable: metadata "
+            f"base_commit_id {base_commit_id!r} resolved to {resolved_commit_id!r}; "
+            "the stored value must be the full immutable jj commit ID",
+            failure_code="implementation_baseline_unavailable",
+        )
+    return base_commit_id
+
+
+def workflow_changed_files(metadata: dict[str, Any]) -> list[str]:
+    return changed_files_since(pinned_base_commit_id(metadata))
+
+
+def workflow_diff(metadata: dict[str, Any]) -> str:
+    return diff_since(pinned_base_commit_id(metadata))
+
+
+def write_workflow_diff(metadata: dict[str, Any]) -> Path:
+    WORKFLOW_DIFF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    WORKFLOW_DIFF_PATH.write_text(workflow_diff(metadata), encoding="utf-8")
+    return WORKFLOW_DIFF_PATH
 
 
 def has_unresolved_conflicts(revision: str) -> bool:
@@ -986,7 +1015,8 @@ def refresh_result(
         "rebased": rebased,
         "has_unresolved_conflicts": has_unresolved_conflicts,
         "conflicted_files": conflicted,
-        "metadata_base_change_id_updated": False,
+        "metadata_base_commit_id_updated": False,
+        "metadata_baseline_epoch_recorded": False,
         "message": message,
         "commands": commands,
     }
@@ -1232,7 +1262,8 @@ def driver_refresh_result(stage: str) -> dict[str, Any]:
         "rebased": status == "rebased_clean",
         "has_unresolved_conflicts": status == "conflicts",
         "conflicted_files": [str(item) for item in conflict_files if isinstance(item, str)],
-        "metadata_base_change_id_updated": False,
+        "metadata_base_commit_id_updated": False,
+        "metadata_baseline_epoch_recorded": False,
         "message": str(payload.get("message") or status),
         "commands": ["$SCHERZO_WORKSPACE_DRIVER refresh-base --stage " + stage + " --json"],
     }
@@ -1242,25 +1273,38 @@ def driver_refresh_result(stage: str) -> dict[str, Any]:
     return result
 
 
-def update_start_refresh_metadata(result: dict[str, Any]) -> None:
-    if result.get("stage") != "before-implementation":
-        return
+def record_refresh_baseline_epoch(result: dict[str, Any]) -> None:
     if result.get("status") not in {"fresh", "rebased_clean"}:
         return
     metadata = load_implementation_metadata()
-    if workspace_driver_available():
-        refreshed_base_change_id = str(result.get("base_revision") or "").strip()
-        if not refreshed_base_change_id:
-            refreshed_base_change_id = str(result.get("parent_commits_after", [""])[0] or "")
-    else:
-        refreshed_base_change_id = current_base_change_id()
-    previous_base_change_id = metadata.get("base_change_id")
-    if previous_base_change_id != refreshed_base_change_id:
-        if "initial_base_change_id" not in metadata:
-            metadata["initial_base_change_id"] = previous_base_change_id
-        metadata["base_change_id"] = refreshed_base_change_id
-        write_implementation_metadata(metadata)
-        result["metadata_base_change_id_updated"] = True
+    refreshed_base_commit_id = current_base_commit_id()
+    refreshed_source_revision = (
+        str(result.get("base_revision") or "").strip()
+        or configured_base_source_revision()
+    )
+    previous_base_commit_id = str(metadata.get("base_commit_id") or "").strip()
+    previous_source_revision = str(
+        metadata.get("base_source_revision") or ""
+    ).strip()
+    if previous_base_commit_id and "initial_base_commit_id" not in metadata:
+        metadata["initial_base_commit_id"] = previous_base_commit_id
+    if previous_source_revision and "initial_base_source_revision" not in metadata:
+        metadata["initial_base_source_revision"] = previous_source_revision
+    previous_epoch = metadata.get("baseline_epoch")
+    if not isinstance(previous_epoch, int) or isinstance(previous_epoch, bool):
+        previous_epoch = 0
+    metadata["base_commit_id"] = refreshed_base_commit_id
+    metadata["base_source_revision"] = refreshed_source_revision
+    metadata["baseline_epoch"] = previous_epoch + 1
+    metadata["baseline_epoch_stage"] = str(result.get("stage") or "refresh")
+    write_implementation_metadata(metadata)
+    result["pinned_base_commit_id"] = refreshed_base_commit_id
+    result["base_source_revision"] = refreshed_source_revision
+    result["baseline_epoch"] = metadata["baseline_epoch"]
+    result["metadata_base_commit_id_updated"] = (
+        previous_base_commit_id != refreshed_base_commit_id
+    )
+    result["metadata_baseline_epoch_recorded"] = True
 
 
 def write_refresh_base_result(result: dict[str, Any]) -> Path:
@@ -1288,7 +1332,7 @@ def refresh_base_result_for_stage(stage: str) -> dict[str, Any]:
     else:
         require_command("jj")
         result = refresh_base(stage)
-    update_start_refresh_metadata(result)
+    record_refresh_baseline_epoch(result)
     write_refresh_base_result(result)
     return result
 
@@ -1595,11 +1639,9 @@ def prepare_command(args: list[str]) -> None:
     # Create the retention marker before any fetch or workspace inspection can fail so
     # prepare-step diagnostics remain available for triage.
     write_retention_marker(source_kind, issue_identifier)
-    if workspace_driver_available():
-        base_change_id = str(workspace_driver_baseline()["baseline_id"])
-    else:
-        require_command("jj")
-        base_change_id = current_base_change_id()
+    require_command("jj")
+    base_commit_id = current_base_commit_id()
+    base_source_revision = configured_base_source_revision()
 
     issue = fetch_linear_issue_context(issue_identifier)
     brief_path = write_ticket_brief(issue)
@@ -1611,12 +1653,16 @@ def prepare_command(args: list[str]) -> None:
         "issue_title": issue.get("title") or "",
         "issue_url": issue.get("url") or "",
         "brief_path": str(brief_path),
-        "base_change_id": base_change_id,
+        "base_commit_id": base_commit_id,
+        "base_source_revision": base_source_revision,
+        "baseline_epoch": 0,
+        "baseline_epoch_stage": "workspace-preparation",
     }
     write_implementation_metadata(metadata)
     print(f"SOURCE_KIND={source_kind}")
     print(f"BRIEF_PATH={brief_path}")
-    print(f"BASE_CHANGE_ID={base_change_id}")
+    print(f"BASE_COMMIT_ID={base_commit_id}")
+    print(f"BASE_SOURCE_REVISION={base_source_revision}")
     print(f"RETENTION_MARKER={retention_marker_path()}")
     print("VALIDATION=ok")
 
@@ -1707,21 +1753,37 @@ def plan_brief_command(args: list[str]) -> None:
         sys.exit(1)
 
 
+def pinned_base_command(args: list[str]) -> None:
+    if args:
+        usage()
+        sys.exit(2)
+    print(pinned_base_commit_id(load_implementation_metadata()))
+
+
 def analyze_command() -> None:
     metadata = load_implementation_metadata()
-    files = workspace_driver_changed_files() if workspace_driver_available() else changed_files_since(metadata["base_change_id"])
+    base_commit_id = pinned_base_commit_id(metadata)
+    files = changed_files_since(base_commit_id)
     if not files:
-        fail("no changed files found since the workflow started")
+        fail("no changed files found since the pinned workflow baseline")
+    diff_path = write_workflow_diff(metadata)
     languages, supported_files, unsupported_files = detect_languages(files)
     commands = review_commands(languages)
     analysis = {
+        "base_commit_id": base_commit_id,
+        "base_source_revision": str(metadata.get("base_source_revision") or ""),
+        "baseline_epoch": metadata.get("baseline_epoch"),
         "changed_files": files,
+        "diff_path": str(diff_path),
         "languages": languages,
         "supported_review_files": supported_files,
         "unsupported_review_files": unsupported_files,
         "review_commands": commands,
     }
     write_json(ANALYSIS_PATH, analysis)
+    print(f"BASE_COMMIT_ID={base_commit_id}")
+    print(f"BASE_SOURCE_REVISION={metadata.get('base_source_revision') or ''}")
+    print(f"WORKFLOW_DIFF_PATH={diff_path}")
     print_list("CHANGED_FILES", files)
     print("LANGUAGES=" + comma_join(languages))
     print_list("SUPPORTED_REVIEW_FILES", supported_files)
@@ -2193,16 +2255,10 @@ def implementation_completion_plan_references(
 def implementation_completion_workspace_evidence(
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    base_change_id = str(metadata.get("base_change_id") or "").strip()
-    if not base_change_id:
-        fail(
-            "implementation metadata is missing base_change_id",
-            failure_code="implementation_completion_evidence_failed",
-            exit_code=2,
-        )
+    base_commit_id = pinned_base_commit_id(metadata)
     records = [
         {"path": path, "status": "changed"}
-        for path in sorted(set(changed_files_since(base_change_id)))
+        for path in sorted(set(changed_files_since(base_commit_id)))
     ]
     manifest = "\n".join(
         f"{record['status']}\t{record['path']}" for record in records
@@ -2210,7 +2266,9 @@ def implementation_completion_workspace_evidence(
     encoded_manifest = manifest.encode("utf-8")
     return {
         "source": "jj_workflow_diff",
-        "base_change_id": base_change_id,
+        "base_commit_id": base_commit_id,
+        "base_source_revision": str(metadata.get("base_source_revision") or ""),
+        "baseline_epoch": metadata.get("baseline_epoch"),
         "changed_file_count": len(records),
         "changed_files": records,
         "diff": {
@@ -2593,7 +2651,7 @@ def gate_implementation_completion_command(args: list[str]) -> None:
         read_implementation_completion_submission(submission_path)
     )
     metadata = load_implementation_metadata()
-    plan_path, _base_change_id = require_execplan_metadata(metadata)
+    plan_path, _base_commit_id = require_execplan_metadata(metadata)
     validate_prepared_execplan_path(plan_path, Path.cwd())
     workspace = implementation_completion_workspace_evidence(metadata)
     actual_files = sorted(
@@ -2788,35 +2846,16 @@ def require_execplan_metadata(metadata: dict[str, Any]) -> tuple[str, str]:
             "scherzo-execplan implementation-prepare first",
             failure_code="plan_completion_verdict_malformed",
         )
-    base_change_id = str(metadata.get("base_change_id") or "").strip()
-    if not base_change_id:
-        fail(
-            f"missing base_change_id in {METADATA_PATH}; run prepare first",
-            failure_code="plan_completion_verdict_malformed",
-        )
-    return plan_path, base_change_id
+    base_commit_id = pinned_base_commit_id(metadata)
+    return plan_path, base_commit_id
 
 
-def changed_files_in_current_patch() -> list[str]:
-    if workspace_driver_available():
-        return workspace_driver_changed_files()
-    output = run([
-        "jj",
-        "diff",
-        "--from",
-        "@-",
-        "--to",
-        "@",
-        "--name-only",
-        "--color=never",
-    ])
-    return clean_lines(output)
+def changed_files_in_current_patch(base_commit_id: str) -> list[str]:
+    return changed_files_since(base_commit_id)
 
 
-def current_patch_diff() -> str:
-    if workspace_driver_available():
-        return workspace_driver_diff_text()
-    return run(["jj", "diff", "--from", "@-", "--to", "@", "--color=never"])
+def current_patch_diff(base_commit_id: str) -> str:
+    return diff_since(base_commit_id)
 
 
 def sha256_json(value: Any) -> str:
@@ -2825,18 +2864,12 @@ def sha256_json(value: Any) -> str:
 
 
 def plan_completion_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:
-    plan_path, base_change_id = require_execplan_metadata(metadata)
-    changed_files = changed_files_in_current_patch()
-    diff = current_patch_diff()
-    if workspace_driver_available():
-        baseline = workspace_driver_baseline()
-        verified_base_change_id = str(baseline["baseline_id"])
-        verified_change_id = str(baseline["change_id"])
-        verified_parent_commit_ids = [str(baseline["baseline_id"])]
-    else:
-        verified_base_change_id = base_change_id
-        verified_change_id = current_change_id_short()
-        verified_parent_commit_ids = current_parent_commit_ids()
+    plan_path, base_commit_id = require_execplan_metadata(metadata)
+    changed_files = changed_files_in_current_patch(base_commit_id)
+    diff = current_patch_diff(base_commit_id)
+    verified_base_commit_id = base_commit_id
+    verified_change_id = current_change_id_short()
+    verified_parent_commit_ids = current_parent_commit_ids()
     fingerprint = sha256_json(
         {
             "schema_version": 1,
@@ -2848,7 +2881,9 @@ def plan_completion_snapshot(metadata: dict[str, Any]) -> dict[str, Any]:
         "schema_version": 1,
         "source_kind": "execplan",
         "plan_path": plan_path,
-        "verified_base_change_id": verified_base_change_id,
+        "verified_base_commit_id": verified_base_commit_id,
+        "base_source_revision": str(metadata.get("base_source_revision") or ""),
+        "baseline_epoch": metadata.get("baseline_epoch"),
         "verified_change_id": verified_change_id,
         "verified_parent_commit_ids": verified_parent_commit_ids,
         "verified_diff_fingerprint": fingerprint,
@@ -2879,7 +2914,7 @@ def plan_completion_context_command(args: list[str]) -> None:
     print(f"PLAN_COMPLETION_CONTEXT_PATH={display_path(state_backed_path(PLAN_COMPLETION_CONTEXT_PATH, CANONICAL_PLAN_COMPLETION_CONTEXT_NAME))}")
     print(f"PLAN_COMPLETION_VERDICT_PATH={plan_completion_verdict_display_path()}")
     print(f"PLAN_COMPLETION_PLAN_PATH={context['plan_path']}")
-    print(f"PLAN_COMPLETION_BASE_CHANGE_ID={context['verified_base_change_id']}")
+    print(f"PLAN_COMPLETION_BASE_COMMIT_ID={context['verified_base_commit_id']}")
     print(f"PLAN_COMPLETION_CHANGE_ID={context['verified_change_id']}")
     print(
         "PLAN_COMPLETION_DIFF_FINGERPRINT="
@@ -2908,7 +2943,7 @@ def fail_plan_completion_gate(
 
 PLAN_COMPLETION_MACHINE_FIELDS = {
     "plan_path",
-    "verified_base_change_id",
+    "verified_base_commit_id",
     "verified_change_id",
     "verified_parent_commit_ids",
     "verified_diff_fingerprint",
@@ -3244,9 +3279,9 @@ def validate_plan_completion_verdict_shape(verdict: dict[str, Any]) -> dict[str,
         "checked_acceptance_criteria",
     )
     plan_path = required_string_field(verdict, "plan_path")
-    verified_base_change_id = required_string_field(
+    verified_base_commit_id = required_string_field(
         verdict,
-        "verified_base_change_id",
+        "verified_base_commit_id",
     )
     verified_change_id = required_string_field(verdict, "verified_change_id")
     verified_diff_fingerprint = required_string_field(
@@ -3266,7 +3301,7 @@ def validate_plan_completion_verdict_shape(verdict: dict[str, Any]) -> dict[str,
         "evidence": evidence,
         "checked_acceptance_criteria": checked_acceptance_criteria,
         "plan_path": plan_path,
-        "verified_base_change_id": verified_base_change_id,
+        "verified_base_commit_id": verified_base_commit_id,
         "verified_change_id": verified_change_id,
         "verified_diff_fingerprint": verified_diff_fingerprint,
         "changed_files": changed_files,
@@ -3279,7 +3314,7 @@ def current_plan_completion_verdict(
     *,
     gate_label: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    current_plan_path, _current_base_change_id = require_execplan_metadata(metadata)
+    current_plan_path, _current_base_commit_id = require_execplan_metadata(metadata)
     verdict = validate_plan_completion_verdict_shape(load_plan_completion_verdict())
     if not workspace_driver_available():
         require_command("jj")
@@ -3290,9 +3325,9 @@ def current_plan_completion_verdict(
             f"{gate_label} found a stale verdict for plan {verdict['plan_path']!r}; current plan is {current_plan_path!r}",
             failure_code="plan_completion_verdict_stale",
         )
-    if verdict["verified_base_change_id"] != current["verified_base_change_id"]:
+    if verdict["verified_base_commit_id"] != current["verified_base_commit_id"]:
         fail_plan_completion_gate(
-            f"{gate_label} found a stale verdict for base change {verdict['verified_base_change_id']!r}; current base is {current['verified_base_change_id']!r}",
+            f"{gate_label} found a stale verdict for base commit {verdict['verified_base_commit_id']!r}; current base is {current['verified_base_commit_id']!r}",
             failure_code="plan_completion_verdict_stale",
         )
     if verdict["verified_change_id"] != current["verified_change_id"]:
@@ -3986,7 +4021,7 @@ def stamped_plan_completion_verdict(
         "evidence": submission["evidence"],
         "checked_acceptance_criteria": submission["checked_acceptance_criteria"],
         "plan_path": current["plan_path"],
-        "verified_base_change_id": current["verified_base_change_id"],
+        "verified_base_commit_id": current["verified_base_commit_id"],
         "verified_change_id": current["verified_change_id"],
         "verified_parent_commit_ids": current["verified_parent_commit_ids"],
         "verified_diff_fingerprint": current["verified_diff_fingerprint"],
@@ -4002,7 +4037,7 @@ def assert_plan_completion_workspace_stable(
 ) -> None:
     for key in [
         "plan_path",
-        "verified_base_change_id",
+        "verified_base_commit_id",
         "verified_change_id",
         "verified_diff_fingerprint",
     ]:
@@ -4162,25 +4197,16 @@ def validation_env() -> dict[str, str]:
     return env
 
 
-def fallback_validation_base_revision() -> str:
-    base, remote = configured_publish_base()
-    return f"{base}@{remote}"
-
-
 def final_validation_base_revision(*, failure_code: str | None = None) -> str:
-    if not BASE_REFRESH_LATEST_PATH.exists():
-        return fallback_validation_base_revision()
     try:
-        refresh = json.loads(BASE_REFRESH_LATEST_PATH.read_text())
-    except json.JSONDecodeError as exc:
+        return pinned_base_commit_id(load_implementation_metadata())
+    except SystemExit:
+        raise
+    except Exception as exc:
         fail(
-            f"invalid {BASE_REFRESH_LATEST_PATH}; cannot resolve validation base revision: {exc}",
-            failure_code=failure_code,
+            f"could not load the pinned implementation baseline for validation: {exc}",
+            failure_code=failure_code or "implementation_baseline_unavailable",
         )
-    base_revision = str(refresh.get("base_revision") or "").strip()
-    if base_revision:
-        return base_revision
-    return fallback_validation_base_revision()
 
 
 # Canonical local/CI gate. The dogfood validate step, devenv `check`, and
@@ -4211,6 +4237,7 @@ def write_validation_result(
 ) -> None:
     result: dict[str, Any] = {
         "base_revision": base_revision,
+        "base_commit_id": base_revision,
         "commands": [validation_command_display(validation_command)],
         "setup_commands": [validation_command_display(c) for c in setup_commands],
         "status": status,
@@ -4305,34 +4332,17 @@ def assert_base_drift_repair_command(args: list[str]) -> None:
     )
 
 
-def validation_fingerprint() -> str | None:
-    # Fingerprint the exact tree state validation runs against: the base commit
-    # the change is stacked on plus the change's own diff. base_commit + diff
-    # fully determines the working tree, so an identical fingerprint means an
-    # identical tree under test and a prior passing scherzo-ci run can be reused
-    # instead of re-running the full gate. Best-effort: any resolution failure
-    # returns None so validation simply runs. SCHERZO_VALIDATE_FINGERPRINT lets
-    # callers/tests pin the value when jj is unavailable.
+def validation_fingerprint(base_commit_id: str) -> str:
+    # Fingerprint the exact workflow-epoch tree state validation runs against:
+    # the immutable pinned base commit plus the full diff through @.
     override = os.environ.get("SCHERZO_VALIDATE_FINGERPRINT", "").strip()
     if override:
         return override
-    if not command_exists("jj"):
-        return None
-    base = run_proc([
-        "jj", "log", "-r", "@-", "--no-graph",
-        "-T", "commit_id ++ \"\\n\"", "--color=never",
-    ])
-    diff = run_proc(["jj", "diff", "--from", "@-", "--to", "@", "--color=never"])
-    if base.returncode != 0 or diff.returncode != 0:
-        return None
-    base_ids = clean_lines(base.stdout)
-    if not base_ids:
-        return None
     return sha256_json(
         {
             "schema_version": 1,
-            "base_commit_ids": base_ids,
-            "diff": diff.stdout,
+            "base_commit_id": base_commit_id,
+            "diff": diff_since(base_commit_id),
         }
     )
 
@@ -4366,7 +4376,7 @@ def validate_command(*, failure_code: str | None = None) -> None:
     base_revision = final_validation_base_revision(failure_code=failure_code)
     setup_commands = [["direnv", "allow", "."]]
     validation_command = scherzo_ci_validation_command()
-    fingerprint = validation_fingerprint()
+    fingerprint = validation_fingerprint(base_revision)
     if cached_passing_validation(fingerprint) is not None:
         # The working tree is byte-identical to a previously passing run (same
         # base + diff), so the gate result is unchanged; reuse it instead of
@@ -4675,8 +4685,7 @@ def publish_command() -> None:
     ensure_validation_passed()
     metadata = load_implementation_metadata()
     base, _remote = configured_publish_base()
-    refresh = driver_refresh_result("publish")
-    write_refresh_base_result(refresh)
+    refresh = refresh_base_result_for_stage("publish")
     refresh_status = str(refresh.get("status") or "")
     if refresh_status == "conflicts":
         publish_blocked_after_refresh(refresh, failure_code="publish_rebase_conflict")
@@ -4700,7 +4709,8 @@ def publish_command() -> None:
             failure_code=str(refresh.get("failure_code") or "workspace_driver_refresh_base_failed"),
         )
 
-    base_revision = str(refresh.get("base_revision") or base)
+    metadata = load_implementation_metadata()
+    base_revision = pinned_base_commit_id(metadata)
     if refresh_status == "rebased_clean":
         print("")
         print("## Revalidation after publish-base normalization")
@@ -4713,9 +4723,10 @@ def publish_command() -> None:
             raise
 
     source_kind, _branch_prefix, _slug, _description, pr_title, body = publish_values(metadata)
-    files = workspace_driver_changed_files()
+    files = workflow_changed_files(metadata)
+    write_workflow_diff(metadata)
     if not files:
-        fail("refusing to publish because no changed files were found")
+        fail("refusing to publish because no changed files were found from the pinned workflow baseline")
 
     title_path, body_path, repair_summary_included = write_publish_metadata_files(
         pr_title,
@@ -4737,6 +4748,9 @@ def publish_command() -> None:
         "changed_files": files,
         "publish_base_revision": base_revision,
         "base_revision": base_revision,
+        "base_commit_id": base_revision,
+        "base_source_revision": str(metadata.get("base_source_revision") or ""),
+        "baseline_epoch": metadata.get("baseline_epoch"),
         "branch": "pending-core-publication",
         "head_revision": commit_stack["head"]["sha"],
         "base_drift_repair_summary_included": repair_summary_included,
@@ -4815,6 +4829,8 @@ def main(argv: list[str]) -> None:
         refresh_base_command(args)
     elif command == "refresh-base-and-validate":
         refresh_base_and_validate_command(args)
+    elif command == "pinned-base":
+        pinned_base_command(args)
     elif command == "analyze" and not args:
         analyze_command()
     elif command == "gate-implementation-completion":
