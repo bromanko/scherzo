@@ -7,6 +7,7 @@ pub type PiEvent {
   TurnFinished
   MessageStart
   MessageUpdate
+  MessageProgress
   MessageEnd
   ToolExecutionStart
   ToolExecutionUpdate
@@ -43,6 +44,7 @@ pub fn to_string(event: PiEvent) -> String {
     TurnFinished -> "turn_finished"
     MessageStart -> "message_start"
     MessageUpdate -> "message_update"
+    MessageProgress -> "message_progress"
     MessageEnd -> "message_end"
     ToolExecutionStart -> "tool_execution_start"
     ToolExecutionUpdate -> "tool_execution_update"
@@ -81,6 +83,7 @@ pub fn from_string(name: String) -> PiEvent {
     "turn_finished" -> TurnFinished
     "message_start" -> MessageStart
     "message_update" -> MessageUpdate
+    "message_progress" -> MessageProgress
     "message_end" -> MessageEnd
     "tool_execution_start" -> ToolExecutionStart
     "tool_execution_update" -> ToolExecutionUpdate

@@ -56,6 +56,17 @@ pub type RunnerUpdate {
   RunnerTurnUpdate(turn_telemetry.TurnLifecycleUpdate)
 }
 
+pub fn without_message_progress(
+  emit_update: fn(String, RunnerUpdate) -> Nil,
+) -> fn(String, RunnerUpdate) -> Nil {
+  fn(issue_id, update) {
+    case update {
+      RunnerPiUpdate(PiUpdate(event: pi_event.MessageProgress, ..)) -> Nil
+      _ -> emit_update(issue_id, update)
+    }
+  }
+}
+
 pub fn redact_runner_update(
   update: RunnerUpdate,
   secrets: List(String),

@@ -64,7 +64,7 @@ agent:
   max_sessions_per_issue: 2
 
 pi:
-  command: "pi --mode rpc --no-session --rpc-message-updates off"
+  command: "pi --mode rpc --no-session --rpc-message-updates progress"
   turn_timeout_ms: 3600000
   read_timeout_ms: 5000
   stall_timeout_ms: 300000

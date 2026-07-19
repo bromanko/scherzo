@@ -734,7 +734,7 @@ Common doctor failures:
 | Workspace driver discovery fails | Driver not on `PATH`, not executable, or invalid `describe --json` | Fix `workspace.driver` / `workspace.drivers` or implement the driver spec |
 | Workspace lifecycle fails | Driver cannot create/remove scratch workspace or selected jj base is unavailable | Fix driver env, VCS state, base branch, or local permissions |
 | Legacy or unsupported shape | Config, workflow, driver, tracker, or local state uses an old shape | Read the diagnostic path/code and the [simplified YAML migration guide](runbooks/simplified-yaml-migration.md), [upgrade policy](runbooks/upgrades.md), or linked specific runbook |
-| Pi probe fails | `pi` missing, provider credentials missing, or runtime config incompatible | Run `pi --mode rpc --no-session --rpc-message-updates off` manually and fix credentials/config |
+| Pi probe fails | `pi` missing, provider credentials missing, or runtime config incompatible | Run `pi --mode rpc --no-session --rpc-message-updates progress` manually and fix credentials/config |
 | Prompt/schema path missing | Paths are relative to different roots | Check workflow-relative prompt paths and repository-relative schema paths |
 
 ## 11. Run one task with `--once`
@@ -853,7 +853,7 @@ Use `ps --json` and `session --json` when scripting or when an agent is acting a
 | Driver problem | `<driver> describe --json` | Then run the relevant driver lifecycle/capability command by hand |
 | Upgrade or breaking-change diagnostic | `scherzo doctor .scherzo/scherzo.yaml` or `scherzo state status --root <workspace-root>` | Follow the [simplified YAML migration guide](runbooks/simplified-yaml-migration.md), [upgrade policy](runbooks/upgrades.md), or any specific runbook named by the diagnostic |
 | jj workspace problem | `jj status` and driver env review | Verify base, remote, fetch policy, and publish remote before daemon mode |
-| Agent cannot start | `pi --mode rpc --no-session --rpc-message-updates off` | Fix `pi` install, model/provider credentials, or `agents.runtime` config |
+| Agent cannot start | `pi --mode rpc --no-session --rpc-message-updates progress` | Fix `pi` install, model/provider credentials, or `agents.runtime` config |
 | Structured output rejected | Read retained step diagnostics and schema validator stderr | Final-response source must be one JSON document; command validators should print concise stderr |
 | Daemon appears stuck | `scherzoctl ps`, `scherzoctl session <id>`, `scherzoctl events --pretty <id>` | Use `attach` for live output and UI requests |
 | Need to stop safely | `scherzoctl stop-after-turn <id> --yes` or Ctrl-C the foreground `scherzo` terminal | Use `abort` only when you accept the interrupted-run implications |

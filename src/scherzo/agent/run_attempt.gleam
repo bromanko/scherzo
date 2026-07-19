@@ -63,7 +63,7 @@ pub fn run_attempt(
     prompt_template,
     config,
     tracker_client,
-    emit_update,
+    types.without_message_progress(emit_update),
     command_subject,
   )
 }

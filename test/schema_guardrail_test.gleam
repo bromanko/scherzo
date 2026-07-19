@@ -195,7 +195,7 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
     )
   assert todo_limit == 1
 
-  assert effective.pi.command == "pi --mode rpc --rpc-message-updates off"
+  assert effective.pi.command == "pi --mode rpc --rpc-message-updates progress"
   assert effective.pi.turn_timeout_ms == 600_000
   assert effective.pi.read_timeout_ms == 7000
   assert effective.pi.stall_timeout_ms == 120_000
@@ -207,7 +207,7 @@ pub fn orchestrator_config_yaml_fixture_parses_schema_shape_test() {
     == Some(
       config_types.PiArgvCommand(
         executable: "pi",
-        args: ["--mode", "rpc", "--rpc-message-updates", "off"],
+        args: ["--mode", "rpc", "--rpc-message-updates", "progress"],
         env: [#("PI_LOG", "debug")],
       ),
     )
