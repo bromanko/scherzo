@@ -1723,6 +1723,19 @@ fn wait_for_event(
   }
 }
 
+fn synchronize_after_daemon_log(
+  daemon_subject: process.Subject(daemon.Message),
+  log_subject: process.Subject(String),
+  event: String,
+) -> Nil {
+  let assert Ok(_) = wait_for_event_result(log_subject, event, 10)
+  // The daemon logs synchronously while handling a transition. A query sent
+  // after observing that log cannot complete until the transition, including
+  // any synchronous ledger append, has finished.
+  let assert Ok(_) = daemon.get_read_model_snapshot(daemon_subject, 1000)
+  Nil
+}
+
 fn wait_for_metrics(
   daemon_subject: process.Subject(daemon.Message),
   attempts: Int,
@@ -1856,9 +1869,9 @@ fn wait_for_event_without_event(
   subject: process.Subject(String),
   wanted: String,
   forbidden: String,
-  attempts: Int,
+  quiet_attempts: Int,
 ) -> Bool {
-  case attempts <= 0 {
+  case quiet_attempts <= 0 {
     True -> False
     False ->
       case process.receive(subject, within: 500) {
@@ -1873,11 +1886,17 @@ fn wait_for_event_without_event(
                     subject,
                     wanted,
                     forbidden,
-                    attempts - 1,
+                    quiet_attempts,
                   )
               }
           }
-        Error(_) -> False
+        Error(_) ->
+          wait_for_event_without_event(
+            subject,
+            wanted,
+            forbidden,
+            quiet_attempts - 1,
+          )
       }
   }
 }
@@ -4529,16 +4548,16 @@ pub fn daemon_scheduled_failure_reports_without_workflow_retry_test() {
   process.send(started.data, daemon.PollTick(1))
   let run_id = "schedule-scheduled-job-19700101T000001Z"
   let assert Ok(_request) = process.receive(report_subject, within: 5000)
-  assert wait_for_records(
-    root,
-    fn(records) {
-      has_scheduled_failed_run(records, run_id)
-      && has_scheduled_failure_reported(records, run_id, "lin-scheduled")
-      && has_scheduled_failure_outbox_completed(records)
-      && !has_scheduled_retry_scheduled(records, run_id, 2)
-    },
-    100,
+  synchronize_after_daemon_log(
+    started.data,
+    log_subject,
+    "scheduled_failure_reported",
   )
+  let records = load_test_records(root)
+  assert has_scheduled_failed_run(records, run_id)
+  assert has_scheduled_failure_reported(records, run_id, "lin-scheduled")
+  assert has_scheduled_failure_outbox_completed(records)
+  assert !has_scheduled_retry_scheduled(records, run_id, 2)
 
   assert daemon.shutdown(started.data, 5000) == Ok(Nil)
   process.send(clock, StopClock)
@@ -4580,21 +4599,18 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
   let run_id = "schedule-scheduled-job-19700101T000001Z"
   let assert Ok(DirectedScheduledReportCall(first_request, first_reply)) =
     process.receive(report_subject, within: 5000)
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_failure_outbox_attempted(records, 1) },
-    20,
-  )
+  let records = load_test_records(root)
+  assert has_scheduled_failure_outbox_attempted(records, 1)
   process.send(first_reply, ScheduledReportError)
   assert first_request.run_id == run_id
-  assert wait_for_records(
-    root,
-    fn(records) {
-      has_scheduled_failure_report_failed(records, run_id, 1)
-      && has_scheduled_failure_outbox_retry(records, 1)
-    },
-    100,
+  synchronize_after_daemon_log(
+    started.data,
+    log_subject,
+    "scheduled_failure_report_failed",
   )
+  let records = load_test_records(root)
+  assert has_scheduled_failure_report_failed(records, run_id, 1)
+  assert has_scheduled_failure_outbox_retry(records, 1)
   let _ = test_async.drain_subject(command_subject)
 
   process.send(started.data, daemon.ScheduledReportRetryTick(run_id, 2))
@@ -4607,14 +4623,14 @@ pub fn daemon_scheduled_report_retry_does_not_rerun_workflow_test() {
   process.send(second_reply, ScheduledReportSuccess)
   assert second_request.run_id == run_id
   test_async.assert_no_extra_message_within(command_subject, 100)
-  assert wait_for_records(
-    root,
-    fn(records) {
-      has_scheduled_failure_reported(records, run_id, "lin-scheduled")
-      && has_scheduled_failure_outbox_completed(records)
-    },
-    20,
+  synchronize_after_daemon_log(
+    started.data,
+    log_subject,
+    "scheduled_failure_reported",
   )
+  let records = load_test_records(root)
+  assert has_scheduled_failure_reported(records, run_id, "lin-scheduled")
+  assert has_scheduled_failure_outbox_completed(records)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
@@ -4658,14 +4674,14 @@ pub fn daemon_scheduled_report_permanent_failure_does_not_retry_test() {
     process.receive(report_subject, within: 5000)
   process.send(first_reply, ScheduledReportPermanentError)
   assert first_request.run_id == run_id
-  assert wait_for_records(
-    root,
-    fn(records) {
-      has_terminal_scheduled_failure_report_failed(records, run_id, 1)
-      && has_scheduled_failure_outbox_permanent(records, 1)
-    },
-    20,
+  synchronize_after_daemon_log(
+    started.data,
+    log_subject,
+    "scheduled_failure_report_failed",
   )
+  let records = load_test_records(root)
+  assert has_terminal_scheduled_failure_report_failed(records, run_id, 1)
+  assert has_scheduled_failure_outbox_permanent(records, 1)
 
   let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
   assert snapshot.counts.scheduled_report_retry_count == 0
@@ -4717,15 +4733,18 @@ pub fn daemon_scheduled_report_retry_stops_after_default_bound_test() {
     process.receive(report_subject, within: 5000)
   process.send(first_reply, ScheduledReportError)
   assert first_request.run_id == run_id
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_failure_report_failed(records, run_id, 1) },
-    20,
+  synchronize_after_daemon_log(
+    started.data,
+    log_subject,
+    "scheduled_failure_report_failed",
   )
+  let records = load_test_records(root)
+  assert has_scheduled_failure_report_failed(records, run_id, 1)
 
   let max_report_attempts = scheduled_runtime.default_report_max_attempts()
   fail_scheduled_report_retries_until_bound(
     started.data,
+    log_subject,
     report_subject,
     root,
     run_id,
@@ -4741,14 +4760,9 @@ pub fn daemon_scheduled_report_retry_stops_after_default_bound_test() {
   let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
   assert snapshot.counts.scheduled_report_retry_count == 0
   assert snapshot.counts.scheduled_report_retry_timer_count == 0
-  assert wait_for_records(
-    root,
-    fn(records) {
-      scheduled_failure_report_failed_count(records, run_id)
-      == max_report_attempts
-    },
-    20,
-  )
+  let records = load_test_records(root)
+  assert scheduled_failure_report_failed_count(records, run_id)
+    == max_report_attempts
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
   process.send(clock, StopClock)
@@ -4756,6 +4770,7 @@ pub fn daemon_scheduled_report_retry_stops_after_default_bound_test() {
 
 fn fail_scheduled_report_retries_until_bound(
   daemon_subject: process.Subject(daemon.Message),
+  log_subject: process.Subject(String),
   report_subject: process.Subject(DirectedScheduledReportCall),
   root: String,
   run_id: String,
@@ -4773,29 +4788,32 @@ fn fail_scheduled_report_retries_until_bound(
         process.receive(report_subject, within: 5000)
       process.send(reply, ScheduledReportError)
       assert request.run_id == run_id
-      let next_generation = failed_generation + 1
-      assert wait_for_records(
-        root,
-        fn(records) {
-          case next_generation == max_generation {
-            True ->
-              has_terminal_scheduled_failure_report_failed(
-                records,
-                run_id,
-                next_generation,
-              )
-            False ->
-              has_scheduled_failure_report_failed(
-                records,
-                run_id,
-                next_generation,
-              )
-          }
-        },
-        20,
+      synchronize_after_daemon_log(
+        daemon_subject,
+        log_subject,
+        "scheduled_failure_report_failed",
       )
+      let next_generation = failed_generation + 1
+      let records = load_test_records(root)
+      case next_generation == max_generation {
+        True -> {
+          assert has_terminal_scheduled_failure_report_failed(
+            records,
+            run_id,
+            next_generation,
+          )
+        }
+        False -> {
+          assert has_scheduled_failure_report_failed(
+            records,
+            run_id,
+            next_generation,
+          )
+        }
+      }
       fail_scheduled_report_retries_until_bound(
         daemon_subject,
+        log_subject,
         report_subject,
         root,
         run_id,
@@ -4839,20 +4857,22 @@ pub fn daemon_scheduled_report_retry_retains_retry_when_outbox_append_fails_test
     process.receive(report_subject, within: 5000)
   process.send(first_reply, ScheduledReportError)
   assert first_request.run_id == run_id
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_failure_report_failed(records, run_id, 1) },
-    20,
+  synchronize_after_daemon_log(
+    started.data,
+    log_subject,
+    "scheduled_failure_report_failed",
   )
+  let records = load_test_records(root)
+  assert has_scheduled_failure_report_failed(records, run_id, 1)
 
   write_corrupt_current_ledger(root)
   process.send(started.data, daemon.ScheduledReportRetryTick(run_id, 1))
 
-  test_async.assert_no_extra_message_within(report_subject, 100)
-  let logs = test_async.drain_subject(log_subject)
-  assert list.contains(logs, "outbox_ledger_append_failed")
-  assert list.contains(logs, "scheduled_report_retry_retained")
+  let assert Ok(logs) =
+    wait_for_event_result(log_subject, "scheduled_report_retry_retained", 10)
   let assert Ok(snapshot) = daemon.get_read_model_snapshot(started.data, 1000)
+  test_async.assert_no_extra_message_within(report_subject, 100)
+  assert list.contains(logs, "outbox_ledger_append_failed")
   assert snapshot.counts.scheduled_report_retry_count == 1
   assert snapshot.counts.scheduled_report_retry_timer_count == 1
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
@@ -4897,20 +4917,20 @@ pub fn daemon_scheduled_report_retry_blocks_new_intervals_until_reported_test() 
     process.receive(report_subject, within: 5000)
   process.send(first_reply, ScheduledReportError)
   assert first_request.run_id == run_id
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_failure_report_failed(records, run_id, 1) },
-    20,
+  synchronize_after_daemon_log(
+    started.data,
+    log_subject,
+    "scheduled_failure_report_failed",
   )
+  let records = load_test_records(root)
+  assert has_scheduled_failure_report_failed(records, run_id, 1)
   let _ = test_async.drain_subject(command_subject)
 
   set_clock(clock, 2000)
   process.send(started.data, daemon.PollTick(2))
-  assert wait_for_records(
-    root,
-    fn(records) { has_scheduled_skip(records, "overlap_running") },
-    20,
-  )
+  let assert Ok(_) = daemon.get_read_model_snapshot(started.data, 1000)
+  let records = load_test_records(root)
+  assert has_scheduled_skip(records, "overlap_running")
   test_async.assert_no_extra_message_within(command_subject, 100)
 
   assert daemon.shutdown(started.data, 1000) == Ok(Nil)
