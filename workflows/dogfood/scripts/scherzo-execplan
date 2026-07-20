@@ -758,6 +758,47 @@ def configured_base_branch() -> str:
     return os.environ.get("SCHERZO_JJ_WORKSPACE_BASE_BRANCH", "main").strip() or "main"
 
 
+def configured_base_remote() -> str:
+    return os.environ.get("SCHERZO_JJ_WORKSPACE_REMOTE", "origin").strip() or "origin"
+
+
+def implementation_base_source_revision() -> str:
+    return f"{configured_base_branch()}@{configured_base_remote()}"
+
+
+def prepared_implementation_base_commit_id() -> str | None:
+    # Fixture-only helper invocations do not always provide a workspace driver.
+    # A routed dogfood implementation does, and must fail closed unless its
+    # prepared workspace parent can be captured as one immutable commit ID.
+    if not workspace_driver_command():
+        return None
+    try:
+        proc = run_proc([
+            "jj",
+            "log",
+            "-r",
+            "@-",
+            "--no-graph",
+            "-T",
+            "commit_id ++ \"\\n\"",
+            "--color=never",
+        ])
+    except OSError as exc:
+        fail(
+            f"could not run jj to pin the prepared implementation workspace parent: {exc}",
+            code="implementation_baseline_unavailable",
+        )
+    commits = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if proc.returncode != 0 or len(commits) != 1:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        fail(
+            "could not pin the prepared implementation workspace parent to one immutable jj commit ID: "
+            + detail,
+            code="implementation_baseline_unavailable",
+        )
+    return commits[0]
+
+
 def fail_commit_stack(error: commit_stack_helper.CommitStackError) -> None:
     fail(error.message, code=error.code)
 
@@ -3170,13 +3211,8 @@ def command_implementation_prepare(args: list[str]) -> None:
     copy_best_effort(canonical_bundle_path, prepared_bundle_path)
     if not prepared_bundle_path.exists():
         write_json(prepared_bundle_path, bundle)
-    base_change_id = "unknown-base"
-    if workspace_driver_command():
-        try:
-            baseline = workspace_driver_json(["baseline", "--json"])
-            base_change_id = str(baseline.get("baseline_id") or baseline.get("base_revision") or base_change_id)
-        except SystemExit:
-            raise
+    base_commit_id = prepared_implementation_base_commit_id()
+    base_source_revision = implementation_base_source_revision()
     handoff = bundle["implementation_handoff"]
     source_issue = bundle["source_issue"]
     source_issue_identifier = str(source_issue.get("identifier") or "").strip()
@@ -3220,7 +3256,9 @@ def command_implementation_prepare(args: list[str]) -> None:
         "plan_publication_path": plan_publication_path,
         "canonical_plan_path": display_path(canonical_plan_path),
         "review_surface_path": review_surface_path,
-        "base_change_id": base_change_id,
+        "base_source_revision": base_source_revision,
+        "baseline_epoch": 0,
+        "baseline_epoch_stage": "workspace-preparation",
         "execplan_v2_bundle_path": display_path(bundle_metadata_path),
         "execplan_v2_implementation_pack_path": display_path(pack_metadata_path),
         "tmp_execplan_v2_bundle_path": "tmp/execplan-bundle.json",
@@ -3228,6 +3266,8 @@ def command_implementation_prepare(args: list[str]) -> None:
         "canonical_execplan_v2_bundle_path": display_path(canonical_bundle_path),
         "canonical_execplan_v2_implementation_pack_path": display_path(canonical_pack_path),
     }
+    if base_commit_id is not None:
+        metadata["base_commit_id"] = base_commit_id
     marker_source = str(descriptor_plan.get("ref") or prepared_plan_path)
     marker = write_implementation_retention_marker("execplan", marker_source)
     if state_dir is not None:
@@ -3246,6 +3286,9 @@ def command_implementation_prepare(args: list[str]) -> None:
     print(f"CANONICAL_BUNDLE={display_path(canonical_bundle_path)}")
     print(f"IMPLEMENTATION_ISSUE_IDENTIFIER={implementation_issue_identifier}")
     print(f"SOURCE_ISSUE_IDENTIFIER={source_issue_identifier}")
+    if base_commit_id is not None:
+        print(f"BASE_COMMIT_ID={base_commit_id}")
+    print(f"BASE_SOURCE_REVISION={base_source_revision}")
     if (
         implementation_issue_identifier
         and source_issue_identifier
@@ -3324,8 +3367,8 @@ def materialize_code_change_bundle(args: list[str]) -> None:
     diff_path = env_value("SCHERZO_EXECPLAN_DIFF_PATH", legacy="SCHERZO_EXECPLAN_V2_DIFF_PATH")
     diff_src = source_file_candidates([
         Path(diff_path) if diff_path else Path("__missing__"),
-        Path(os.environ.get("SCHERZO_RUN_ROOT", "")) / "input.diff" if os.environ.get("SCHERZO_RUN_ROOT") else Path("__missing__"),
         Path("tmp/scherzo-implementation.diff"),
+        Path(os.environ.get("SCHERZO_RUN_ROOT", "")) / "input.diff" if os.environ.get("SCHERZO_RUN_ROOT") else Path("__missing__"),
     ])
     diff_meta = copy_file_to_artifact(
         diff_src or Path("__missing__"),

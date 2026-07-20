@@ -47,6 +47,16 @@ fn metadata_canonical_path(dir: String) -> String {
   dir <> "/run-root/state/implementation/metadata.json"
 }
 
+fn write_pinned_ticket_metadata(dir: String) -> Nil {
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_cache_path(dir),
+      "{\"source_kind\":\"ticket\",\"base_commit_id\":\"2222222222222222222222222222222222222222\",\"base_source_revision\":\"main@origin\",\"baseline_epoch\":0}\n",
+    )
+  Nil
+}
+
 fn run_root_env() -> String {
   "SCHERZO_RUN_ROOT=\"$PWD/run-root\""
 }
@@ -60,15 +70,15 @@ fn clean_workflow_env() -> String {
   <> " -u SCHERZO_RUN_ROOT"
 }
 
-fn execplan_metadata(plan_path: String, base_change_id: String) -> String {
+fn execplan_metadata(plan_path: String, base_commit_id: String) -> String {
   "{\n"
   <> "  \"source_kind\": \"execplan\",\n"
   <> "  \"plan_path\": \""
   <> plan_path
   <> "\",\n"
   <> "  \"execplan_v2_bundle_path\": \"tmp/execplan-bundle.json\",\n"
-  <> "  \"base_change_id\": \""
-  <> base_change_id
+  <> "  \"base_commit_id\": \""
+  <> base_commit_id
   <> "\"\n"
   <> "}\n"
 }
@@ -93,7 +103,7 @@ pub fn plan_brief_command_generates_checks_and_refreshes_execplan_brief_test() {
         <> "  \"source_kind\": \"execplan\",\n"
         <> "  \"plan_path\": \"docs/plans/example.md\",\n"
         <> "  \"execplan_v2_bundle_path\": \"tmp/execplan-bundle.json\",\n"
-        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "  \"base_commit_id\": \"2222222222222222222222222222222222222222\"\n"
         <> "}\n",
     )
 
@@ -185,7 +195,7 @@ pub fn plan_brief_command_resolves_legacy_workspace_prefixed_state_path_test() {
         <> "  \"source_kind\": \"execplan\",\n"
         <> "  \"plan_path\": \"workspaces/main/state/implementation/execplan-review-doc.md\",\n"
         <> "  \"execplan_v2_bundle_path\": \"state/implementation/execplan-bundle.json\",\n"
-        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "  \"base_commit_id\": \"2222222222222222222222222222222222222222\"\n"
         <> "}\n",
     )
   let assert Ok(helper) =
@@ -226,7 +236,7 @@ pub fn plan_brief_command_reports_unavailable_and_removes_partial_files_test() {
         <> "  \"source_kind\": \"execplan\",\n"
         <> "  \"plan_path\": \"docs/plans/example.md\",\n"
         <> "  \"execplan_v2_bundle_path\": \"tmp/execplan-bundle.json\",\n"
-        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "  \"base_commit_id\": \"2222222222222222222222222222222222222222\"\n"
         <> "}\n",
     )
   write_failing_brief_helper(dir <> "/bin/failing-brief-helper")
@@ -264,7 +274,10 @@ pub fn plan_brief_command_rejects_non_markdown_prepared_execplan_metadata_test()
   let assert Ok(Nil) =
     simplifile.write(
       metadata_cache_path(dir),
-      execplan_metadata("docs/plans/example.html", "local-start"),
+      execplan_metadata(
+        "docs/plans/example.html",
+        "2222222222222222222222222222222222222222",
+      ),
     )
 
   let artifact =
@@ -299,7 +312,7 @@ pub fn plan_brief_command_requires_execplan_bundle_metadata_test() {
       "{\n"
         <> "  \"source_kind\": \"execplan\",\n"
         <> "  \"plan_path\": \"docs/plans/example.md\",\n"
-        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "  \"base_commit_id\": \"2222222222222222222222222222222222222222\"\n"
         <> "}\n",
     )
 
@@ -333,7 +346,10 @@ pub fn metadata_load_restores_tmp_cache_from_run_root_test() {
   let assert Ok(Nil) =
     simplifile.write(
       metadata_canonical_path(dir),
-      execplan_metadata("docs/plans/example.md", "canonical-start"),
+      execplan_metadata(
+        "docs/plans/example.md",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      ),
     )
 
   let artifact =
@@ -351,7 +367,10 @@ pub fn metadata_load_restores_tmp_cache_from_run_root_test() {
   let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
   let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
   assert cache == canonical
-  assert string.contains(cache, "\"base_change_id\": \"canonical-start\"")
+  assert string.contains(
+    cache,
+    "\"base_commit_id\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",
+  )
   assert string.contains(cache, "\"plan_brief_status\": \"ok\"")
 }
 
@@ -365,7 +384,10 @@ pub fn metadata_backfills_run_root_from_tmp_cache_with_diagnostic_test() {
   let assert Ok(Nil) =
     simplifile.write(
       metadata_cache_path(dir),
-      execplan_metadata("docs/plans/example.md", "tmp-start"),
+      execplan_metadata(
+        "docs/plans/example.md",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      ),
     )
 
   let artifact =
@@ -388,7 +410,10 @@ pub fn metadata_backfills_run_root_from_tmp_cache_with_diagnostic_test() {
   let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
   let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
   assert cache == canonical
-  assert string.contains(canonical, "\"base_change_id\": \"tmp-start\"")
+  assert string.contains(
+    canonical,
+    "\"base_commit_id\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"",
+  )
 }
 
 pub fn analyze_uses_canonical_metadata_when_tmp_cache_is_deleted_test() {
@@ -402,7 +427,7 @@ pub fn analyze_uses_canonical_metadata_when_tmp_cache_is_deleted_test() {
       metadata_canonical_path(dir),
       "{\n"
         <> "  \"source_kind\": \"ticket\",\n"
-        <> "  \"base_change_id\": \"canonical-base\"\n"
+        <> "  \"base_commit_id\": \"2222222222222222222222222222222222222222\"\n"
         <> "}\n",
     )
   write_fake_analyze_jj(dir <> "/bin/jj")
@@ -423,7 +448,10 @@ pub fn analyze_uses_canonical_metadata_when_tmp_cache_is_deleted_test() {
   assert string.contains(artifact.stdout, "- src/example.gleam")
   assert string.contains(artifact.stdout, "LANGUAGES=gleam")
   let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
-  assert string.contains(cache, "\"base_change_id\": \"canonical-base\"")
+  assert string.contains(
+    cache,
+    "\"base_commit_id\": \"2222222222222222222222222222222222222222\"",
+  )
 }
 
 pub fn refresh_base_updates_canonical_metadata_and_cache_test() {
@@ -434,7 +462,7 @@ pub fn refresh_base_updates_canonical_metadata_and_cache_test() {
   let assert Ok(Nil) =
     simplifile.create_directory_all(dir <> "/run-root/state/implementation")
   let metadata =
-    "{\"source_kind\":\"ticket\",\"base_change_id\":\"old-base\"}\n"
+    "{\"source_kind\":\"ticket\",\"base_commit_id\":\"2222222222222222222222222222222222222222\"}\n"
   let assert Ok(Nil) = simplifile.write(metadata_cache_path(dir), metadata)
   let assert Ok(Nil) = simplifile.write(metadata_canonical_path(dir), metadata)
   write_fake_refresh_jj(dir <> "/bin/jj")
@@ -455,8 +483,14 @@ pub fn refresh_base_updates_canonical_metadata_and_cache_test() {
   let assert Ok(cache) = simplifile.read(metadata_cache_path(dir))
   let assert Ok(canonical) = simplifile.read(metadata_canonical_path(dir))
   assert cache == canonical
-  assert string.contains(cache, "\"base_change_id\": \"refreshed-base-change\"")
-  assert string.contains(cache, "\"initial_base_change_id\": \"old-base\"")
+  assert string.contains(
+    cache,
+    "\"base_commit_id\": \"1111111111111111111111111111111111111111\"",
+  )
+  assert string.contains(
+    cache,
+    "\"initial_base_commit_id\": \"2222222222222222222222222222222222222222\"",
+  )
   let assert Ok(result_json) =
     simplifile.read(
       dir
@@ -464,8 +498,186 @@ pub fn refresh_base_updates_canonical_metadata_and_cache_test() {
     )
   assert string.contains(
     result_json,
-    "\"metadata_base_change_id_updated\": true",
+    "\"metadata_base_commit_id_updated\": true",
   )
+}
+
+pub fn liv_1516_bookmark_move_does_not_change_completion_manifest_test() {
+  let dir = "test/tmp/implementation-baseline-liv-1516-ordering"
+  let _fingerprint = setup_plan_completion_gate_fixture(dir)
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_cache_path(dir),
+      "{\n"
+        <> "  \"source_kind\": \"execplan\",\n"
+        <> "  \"plan_path\": \"docs/plans/example.md\",\n"
+        <> "  \"base_commit_id\": \"2222222222222222222222222222222222222222\",\n"
+        <> "  \"base_source_revision\": \"main@scherzo-agent\",\n"
+        <> "  \"baseline_epoch\": 1\n"
+        <> "}\n",
+    )
+  write_fake_moving_baseline_jj(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+  let assert Ok(Nil) = simplifile.write(dir <> "/jj.log", "")
+
+  let collected =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation analyze",
+    )
+  assert collected.status == step_artifact.StepSucceeded
+  assert string.contains(
+    collected.stdout,
+    "- .scherzo/workflows/scripts/scherzo-implementation",
+  )
+
+  let assert Ok(Nil) = simplifile.write(dir <> "/.source-bookmark-moved", "")
+  write_implementation_completion_submission(
+    dir,
+    "false",
+    "[\".scherzo/workflows/scripts/scherzo-implementation\"]",
+    "[\"Continue the remaining plan work.\"]",
+    "[]",
+  )
+  let gated = run_implementation_completion_gate(dir, "")
+
+  assert gated.status == step_artifact.StepSucceeded
+  assert string.contains(gated.stdout, "IMPLEMENTATION_COMPLETION_GATE=partial")
+  assert !string.contains(gated.stdout, "changed_file_evidence_mismatch")
+  let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
+  assert string.contains(
+    jj_log,
+    "diff --from 2222222222222222222222222222222222222222 --to @ --name-only --color=never",
+  )
+  assert !string.contains(jj_log, "diff --from main@scherzo-agent")
+
+  let mutable_source =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" jj diff --from main@scherzo-agent --to @ --name-only --color=never",
+    )
+  assert mutable_source.status == step_artifact.StepSucceeded
+  assert string.contains(
+    mutable_source.stdout,
+    "src/upstream-after-collection.gleam",
+  )
+}
+
+pub fn intentional_refresh_records_new_pinned_epoch_for_resumed_commands_test() {
+  let dir = "test/tmp/implementation-baseline-refresh-epochs"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_pinned_ticket_metadata(dir)
+  write_fake_refresh_jj(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+
+  let first =
+    run_helper_in(
+      dir,
+      "SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-implementation",
+    )
+  assert first.status == step_artifact.StepSucceeded
+  let resumed =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation analyze",
+    )
+  assert resumed.status == step_artifact.StepSucceeded
+  assert string.contains(
+    resumed.stdout,
+    "BASE_COMMIT_ID=1111111111111111111111111111111111111111",
+  )
+
+  let second =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_BASE_COMMIT=6666666666666666666666666666666666666666 SCHERZO_JJ_WORKSPACE_REMOTE=origin SCHERZO_JJ_WORKSPACE_BASE_BRANCH=main PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation refresh-base --stage before-validation",
+    )
+  assert second.status == step_artifact.StepSucceeded
+  let assert Ok(metadata) = simplifile.read(metadata_cache_path(dir))
+  assert string.contains(
+    metadata,
+    "\"base_commit_id\": \"6666666666666666666666666666666666666666\"",
+  )
+  assert string.contains(
+    metadata,
+    "\"initial_base_commit_id\": \"2222222222222222222222222222222222222222\"",
+  )
+  assert string.contains(metadata, "\"base_source_revision\": \"main@origin\"")
+  assert string.contains(metadata, "\"baseline_epoch\": 2")
+  assert string.contains(
+    metadata,
+    "\"baseline_epoch_stage\": \"before-validation\"",
+  )
+
+  let resumed_again =
+    run_helper_in(
+      dir,
+      "SCHERZO_FAKE_REFRESH_BASE_COMMIT=6666666666666666666666666666666666666666 PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation analyze",
+    )
+  assert resumed_again.status == step_artifact.StepSucceeded
+  assert string.contains(
+    resumed_again.stdout,
+    "BASE_COMMIT_ID=6666666666666666666666666666666666666666",
+  )
+}
+
+pub fn missing_pinned_baseline_fails_without_resolving_mutable_provenance_test() {
+  let dir = "test/tmp/implementation-baseline-missing-pin"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_cache_path(dir),
+      "{\"source_kind\":\"ticket\",\"base_source_revision\":\"main@scherzo-agent\"}\n",
+    )
+  write_fake_analyze_jj(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation analyze",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("implementation_baseline_missing")
+  assert string.contains(
+    artifact.stderr,
+    "refusing to resolve mutable base provenance",
+  )
+  assert !string.contains(read_or_empty(dir <> "/jj.log"), "main@scherzo-agent")
+}
+
+pub fn unavailable_pinned_baseline_fails_without_source_fallback_test() {
+  let dir = "test/tmp/implementation-baseline-unavailable-pin"
+  test_helpers.reset_dir(dir)
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  let assert Ok(Nil) =
+    simplifile.write(
+      metadata_cache_path(dir),
+      "{\"source_kind\":\"ticket\",\"base_commit_id\":\"9999999999999999999999999999999999999999\",\"base_source_revision\":\"main@scherzo-agent\"}\n",
+    )
+  write_fake_analyze_jj(dir <> "/bin/jj")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
+
+  let artifact =
+    run_helper_in(
+      dir,
+      "PATH=\"$PWD/bin:$PATH\" ../../../.scherzo/workflows/scripts/scherzo-implementation analyze",
+    )
+
+  assert artifact.status == step_artifact.StepFailed
+  assert artifact.failure_code == Some("implementation_baseline_unavailable")
+  assert string.contains(
+    artifact.stderr,
+    "stored value must be the full immutable jj commit ID",
+  )
+  let jj_log = read_or_empty(dir <> "/jj.log")
+  assert !string.contains(jj_log, "main@scherzo-agent")
+  assert !string.contains(jj_log, "diff --from")
 }
 
 pub fn metadata_missing_from_run_root_and_tmp_is_unrecoverable_test() {
@@ -542,7 +754,11 @@ pub fn prepare_ticket_writes_canonical_metadata_and_cache_test() {
     cache,
     "\"brief_path\": \"tmp/scherzo-implementation-brief.md\"",
   )
-  assert string.contains(cache, "\"base_change_id\": \"localparentcommit\"")
+  assert string.contains(
+    cache,
+    "\"base_commit_id\": \"2222222222222222222222222222222222222222\"",
+  )
+  assert string.contains(cache, "\"base_source_revision\": \"main@origin\"")
   let assert Ok(brief) =
     simplifile.read(dir <> "/tmp/scherzo-implementation-brief.md")
   assert string.contains(
@@ -573,7 +789,7 @@ pub fn prepare_ticket_failure_writes_retention_marker_before_fetch_test() {
   assert string.contains(marker, "Source: LIV-71")
 }
 
-pub fn prepare_command_failure_reports_bounded_diagnostic_excerpt_test() {
+pub fn prepare_command_baseline_failure_reports_specific_diagnostic_test() {
   let dir = "test/tmp/implementation-helper-bounded-diagnostics"
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
@@ -589,9 +805,12 @@ pub fn prepare_command_failure_reports_bounded_diagnostic_excerpt_test() {
 
   assert artifact.status == step_artifact.StepFailed
   assert artifact.exit_code == Some(1)
-  assert string.contains(artifact.stderr, "exit_code: 2")
-  assert string.contains(artifact.stderr, "truncated")
-  assert string.length(artifact.stderr) < 4000
+  assert artifact.failure_code == Some("implementation_baseline_unavailable")
+  assert string.contains(
+    artifact.stderr,
+    "workspace parent revision '@-' does not resolve",
+  )
+  assert string.length(artifact.stderr) < 1000
   let assert Ok(marker) = simplifile.read(dir <> "/.scherzo-keep-workspace")
   assert string.contains(marker, "Source: LIV-71")
 }
@@ -1227,7 +1446,10 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
   let dir = "test/tmp/implementation-helper-validate-env"
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_pinned_ticket_metadata(dir)
+  write_fake_jj(dir <> "/bin/jj")
   write_fake_direnv(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
@@ -1250,22 +1472,25 @@ pub fn validate_unsets_scherzo_run_root_for_nested_helper_tests_test() {
   assert string.contains(validation_json, "\"validator\": \"scherzo-ci\"")
   assert string.contains(
     validation_json,
-    "\"base_revision\": \"main@scherzo-agent\"",
+    "\"base_revision\": \"2222222222222222222222222222222222222222\"",
   )
   assert string.contains(validation_json, "direnv exec . scripts/scherzo-ci")
 }
 
-pub fn validate_records_latest_refresh_base_revision_test() {
+pub fn validate_records_pinned_base_commit_test() {
   let dir = "test/tmp/implementation-helper-validate-refresh-base"
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  write_pinned_ticket_metadata(dir)
   let assert Ok(Nil) =
     simplifile.write(
       dir <> "/tmp/scherzo-implementation-refresh-base-latest.json",
       "{\"base_revision\":\"feature-base@origin\"}\n",
     )
+  write_fake_jj(dir <> "/bin/jj")
   write_fake_direnv(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
@@ -1281,7 +1506,7 @@ pub fn validate_records_latest_refresh_base_revision_test() {
     simplifile.read(dir <> "/tmp/scherzo-implementation-validation.json")
   assert string.contains(
     validation_json,
-    "\"base_revision\": \"feature-base@origin\"",
+    "\"base_revision\": \"2222222222222222222222222222222222222222\"",
   )
 }
 
@@ -1289,7 +1514,10 @@ pub fn validate_failure_writes_structured_failure_artifact_test() {
   let dir = "test/tmp/implementation-helper-validate-failure-artifact"
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_pinned_ticket_metadata(dir)
+  write_fake_jj(dir <> "/bin/jj")
   write_fake_direnv(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
 
   let artifact =
@@ -1325,7 +1553,10 @@ pub fn validate_skips_when_fingerprint_matches_prior_pass_test() {
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  write_pinned_ticket_metadata(dir)
+  write_fake_jj(dir <> "/bin/jj")
   write_fake_direnv(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
   let assert Ok(Nil) =
     simplifile.write(
@@ -1362,7 +1593,10 @@ pub fn validate_runs_when_prior_pass_fingerprint_differs_test() {
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  write_pinned_ticket_metadata(dir)
+  write_fake_jj(dir <> "/bin/jj")
   write_fake_direnv(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
   let assert Ok(Nil) =
     simplifile.write(
@@ -1402,7 +1636,10 @@ pub fn validate_ignores_base_drift_failure_marker_test() {
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/tmp")
+  write_pinned_ticket_metadata(dir)
+  write_fake_jj(dir <> "/bin/jj")
   write_fake_direnv(dir <> "/bin/direnv")
+  test_helpers.chmod_executable(dir <> "/bin/jj")
   test_helpers.chmod_executable(dir <> "/bin/direnv")
   let assert Ok(Nil) =
     simplifile.write(
@@ -1427,6 +1664,7 @@ pub fn refresh_base_and_validate_runs_validation_after_fresh_refresh_test() {
   let dir = "test/tmp/implementation-helper-refresh-and-validate-fresh"
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_pinned_ticket_metadata(dir)
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
@@ -1493,6 +1731,7 @@ pub fn refresh_base_and_validate_reports_validation_failure_after_clean_rebase_t
   let dir = "test/tmp/implementation-helper-refresh-and-validate-rebased-fail"
   test_helpers.reset_dir(dir)
   let assert Ok(Nil) = simplifile.create_directory_all(dir <> "/bin")
+  write_pinned_ticket_metadata(dir)
   write_fake_refresh_jj(dir <> "/bin/jj")
   write_fake_direnv(dir <> "/bin/direnv")
   test_helpers.chmod_executable(dir <> "/bin/jj")
@@ -2071,6 +2310,12 @@ pub fn execplan_implementation_prompts_trim_validation_payloads_test() {
     implementation_prompt,
     "git apply --check --allow-empty",
   )
+  assert string.contains(implementation_prompt, "immutable `base_commit_id`")
+  assert string.contains(
+    implementation_prompt,
+    "`base_source_revision` is mutable provenance only",
+  )
+  assert !string.contains(implementation_prompt, "base_change_id")
   assert !string.contains(
     implementation_prompt,
     "Recovery is intentionally narrow",
@@ -2122,6 +2367,11 @@ pub fn implementation_workflows_refresh_and_repair_before_publish_test() {
     "refresh_and_validate_after_review",
     "verify_plan_completion_before_final_validation",
   )
+  list.each([implementation, execplan], fn(workflow) {
+    assert string.contains(workflow, "scherzo-implementation\" pinned-base")
+    assert string.contains(workflow, "--from \"$base_commit_id\" --to @")
+    assert !string.contains(workflow, "SCHERZO_REVIEW_FROM")
+  })
   assert string.contains(
     execplan,
     "- id: verify_plan_completion_before_final_validation",
@@ -2252,7 +2502,11 @@ pub fn implementation_completion_gate_forwards_partial_unblocked_submission_test
   assert string.contains(diagnostic, "independent semantic completion verifier")
   assert !string.contains(diagnostic, "TOP_SECRET_IMPLEMENTATION_VALUE")
   let assert Ok(jj_log) = simplifile.read(dir <> "/jj.log")
-  assert jj_log == "diff --from local-start --to @ --name-only --color=never\n"
+  assert string.contains(
+    jj_log,
+    "diff --from 2222222222222222222222222222222222222222 --to @ --name-only --color=never",
+  )
+  assert !string.contains(jj_log, "main@scherzo-agent")
 }
 
 pub fn implementation_completion_gate_reports_semantic_validator_crash_test() {
@@ -2770,7 +3024,7 @@ fn setup_plan_completion_gate_fixture(dir: String) -> String {
         <> "  \"source_issue_title\": \"Example ExecPlan source\",\n"
         <> "  \"source_issue_url\": \"https://linear.example/LIV-127\",\n"
         <> "  \"plan_path\": \"docs/plans/example.md\",\n"
-        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "  \"base_commit_id\": \"2222222222222222222222222222222222222222\"\n"
         <> "}\n",
     )
   write_fake_jj(dir <> "/bin/jj")
@@ -2905,7 +3159,7 @@ fn write_plan_completion_verdict(
         <> "  \"evidence\": [\"Required behavior is present.\"],\n"
         <> "  \"checked_acceptance_criteria\": [\"Required work.\"],\n"
         <> "  \"plan_path\": \"docs/plans/example.md\",\n"
-        <> "  \"verified_base_change_id\": \"local-start\",\n"
+        <> "  \"verified_base_commit_id\": \"2222222222222222222222222222222222222222\",\n"
         <> "  \"verified_change_id\": \"publishchange\",\n"
         <> "  \"verified_diff_fingerprint\": \""
         <> fingerprint
@@ -2930,7 +3184,7 @@ fn write_plan_completion_verdict_with_deferred_manual_verification(
         <> "  \"evidence\": [\"Implementation prerequisites for manual check are present.\"],\n"
         <> "  \"checked_acceptance_criteria\": [\"Required work.\"],\n"
         <> "  \"plan_path\": \"docs/plans/example.md\",\n"
-        <> "  \"verified_base_change_id\": \"local-start\",\n"
+        <> "  \"verified_base_commit_id\": \"2222222222222222222222222222222222222222\",\n"
         <> "  \"verified_change_id\": \"publishchange\",\n"
         <> "  \"verified_diff_fingerprint\": \""
         <> fingerprint
@@ -3011,7 +3265,7 @@ fn write_publish_fixture_metadata(dir: String) -> Nil {
         <> "  \"issue_identifier\": \"SCH-123\",\n"
         <> "  \"issue_title\": \"Fix publish\",\n"
         <> "  \"issue_url\": \"https://linear.example/SCH-123\",\n"
-        <> "  \"base_change_id\": \"local-start\"\n"
+        <> "  \"base_commit_id\": \"2222222222222222222222222222222222222222\"\n"
         <> "}\n",
     )
   let assert Ok(Nil) =
@@ -3093,7 +3347,39 @@ fn write_fake_analyze_jj(path: String) -> Nil {
       "#!/bin/sh\n"
         <> "printf '%s\\n' \"$*\" >> jj.log\n"
         <> "if [ \"$1\" = diff ]; then echo 'src/example.gleam'; exit 0; fi\n"
-        <> "if [ \"$1\" = log ]; then echo localchange; exit 0; fi\n"
+        <> "if [ \"$1\" = log ]; then echo 2222222222222222222222222222222222222222; exit 0; fi\n"
+        <> "exit 1\n",
+    )
+  Nil
+}
+
+fn write_fake_moving_baseline_jj(path: String) -> Nil {
+  let assert Ok(Nil) =
+    simplifile.write(
+      path,
+      "#!/bin/sh\n"
+        <> "printf '%s\\n' \"$*\" >> jj.log\n"
+        <> "if [ \"$1\" = diff ]; then\n"
+        <> "  from=\n"
+        <> "  prev=\n"
+        <> "  for arg in \"$@\"; do if [ \"$prev\" = --from ]; then from=$arg; fi; prev=$arg; done\n"
+        <> "  echo '.scherzo/workflows/scripts/scherzo-implementation'\n"
+        <> "  if [ \"$from\" = main@scherzo-agent ] && [ -f .source-bookmark-moved ]; then echo 'src/upstream-after-collection.gleam'; fi\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = log ]; then\n"
+        <> "  rev=\n"
+        <> "  template=\n"
+        <> "  prev=\n"
+        <> "  for arg in \"$@\"; do if [ \"$prev\" = -r ]; then rev=$arg; fi; if [ \"$prev\" = -T ]; then template=$arg; fi; prev=$arg; done\n"
+        <> "  case \"$rev\" in\n"
+        <> "    2222222222222222222222222222222222222222|@-) echo 2222222222222222222222222222222222222222;;\n"
+        <> "    @) case \"$template\" in *change_id.short*) echo publishchange;; *commit_id*) echo 3333333333333333333333333333333333333333;; *) echo currentcommit;; esac;;\n"
+        <> "    conflicts*) exit 0;;\n"
+        <> "    *) exit 1;;\n"
+        <> "  esac\n"
+        <> "  exit 0\n"
+        <> "fi\n"
         <> "exit 1\n",
     )
   Nil
@@ -3135,6 +3421,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  done\n"
         <> "  case \"$rev\" in\n"
         <> "    main@origin) case \"$template\" in *commit_id*) echo 1111111111111111111111111111111111111111;; *) echo remotecommit;; esac; exit 0;;\n"
+        <> "    1111111111111111111111111111111111111111|2222222222222222222222222222222222222222) echo \"$rev\"; exit 0;;\n"
         <> "    @-) case \"$template\" in *commit_id*) echo 2222222222222222222222222222222222222222;; *) echo localparentcommit;; esac; exit 0;;\n"
         <> "    @) case \"$template\" in *change_id.short*) echo publishchange;; *description*) if [ \"${SCHERZO_FAKE_EMPTY_DESCRIPTION:-}\" = 1 ] && [ ! -f .fake-described ]; then printf '\\n'; else echo currentdescription; fi;; *commit_id*) if [ \"${SCHERZO_FAKE_INVALID_COMMIT_ID:-}\" = 1 ]; then echo not-a-git-oid; elif [ -f .fake-described ]; then echo 5555555555555555555555555555555555555555; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "    conflicts*) exit 0;;\n"
@@ -3168,6 +3455,7 @@ fn write_fake_refresh_jj(path: String) -> Nil {
         <> "if [ \"$1\" = rebase ]; then\n"
         <> "  if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT_AFTER_REBASE:-}\" = 1 ]; then touch .fake-conflict; echo 'simulated conflict' >&2; exit 1; fi\n"
         <> "  if [ \"${SCHERZO_FAKE_REFRESH_REBASE_FAIL:-}\" = 1 ]; then echo 'simulated rebase infrastructure failure' >&2; exit 1; fi\n"
+        <> "  touch .fake-rebased\n"
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = resolve ] && [ \"$2\" = --list ]; then\n"
@@ -3188,9 +3476,10 @@ fn write_fake_refresh_jj(path: String) -> Nil {
         <> "    prev=$arg\n"
         <> "  done\n"
         <> "  case \"$rev\" in\n"
-        <> "    main@origin) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; case \"$template\" in *commit_id*) echo 1111111111111111111111111111111111111111;; *) echo remotecommit;; esac; exit 0;;\n"
-        <> "    main) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; case \"$template\" in *commit_id*) echo 1111111111111111111111111111111111111111;; *) echo localfallbackcommit;; esac; exit 0;;\n"
-        <> "    @-) case \"$template\" in *change_id*) echo refreshed-base-change;; *commit_id*) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ]; then echo 1111111111111111111111111111111111111111; else echo 2222222222222222222222222222222222222222; fi;; *) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ]; then echo remotecommit; else echo localparentcommit; fi;; esac; exit 0;;\n"
+        <> "    main@origin) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; case \"$template\" in *commit_id*) echo \"${SCHERZO_FAKE_REFRESH_BASE_COMMIT:-1111111111111111111111111111111111111111}\";; *) echo remotecommit;; esac; exit 0;;\n"
+        <> "    main) if [ \"${SCHERZO_FAKE_REFRESH_BASE_MISSING:-}\" = 1 ]; then exit 1; fi; case \"$template\" in *commit_id*) echo \"${SCHERZO_FAKE_REFRESH_BASE_COMMIT:-1111111111111111111111111111111111111111}\";; *) echo localfallbackcommit;; esac; exit 0;;\n"
+        <> "    1111111111111111111111111111111111111111|2222222222222222222222222222222222222222|6666666666666666666666666666666666666666) echo \"$rev\"; exit 0;;\n"
+        <> "    @-) case \"$template\" in *change_id*) echo refreshed-base-change;; *commit_id*) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ] || [ -f .fake-rebased ]; then echo \"${SCHERZO_FAKE_REFRESH_BASE_COMMIT:-1111111111111111111111111111111111111111}\"; else echo 2222222222222222222222222222222222222222; fi;; *) if [ \"${SCHERZO_FAKE_REFRESH_PARENT_MATCH:-}\" = 1 ] || [ -f .fake-rebased ]; then echo remotecommit; else echo localparentcommit; fi;; esac; exit 0;;\n"
         <> "    @) case \"$template\" in *change_id.short*) echo refreshchange;; *description*) if [ \"${SCHERZO_FAKE_EMPTY_DESCRIPTION:-}\" = 1 ] && [ ! -f .fake-described ]; then printf '\\n'; else echo currentdescription; fi;; *commit_id*) if [ \"${SCHERZO_FAKE_INVALID_COMMIT_ID:-}\" = 1 ]; then echo not-a-git-oid; elif [ -f .fake-described ]; then echo 5555555555555555555555555555555555555555; else echo 3333333333333333333333333333333333333333; fi;; *) echo currentcommit;; esac; exit 0;;\n"
         <> "    conflicts*) if [ \"${SCHERZO_FAKE_REFRESH_CONFLICT:-}\" = 1 ] || [ -f .fake-conflict ]; then echo conflictchange; fi; exit 0;;\n"
         <> "    remote_bookmarks*) exit 0;;\n"
