@@ -65,9 +65,9 @@ agents:
         - scherzo-pi
       env:
         SCHERZO_PI_SESSION_PERSISTENCE: "1"
-    turn_timeout: 1h
+    turn_timeout: 3h
     read_timeout: 5s
-    stall_timeout: 20m
+    stall_timeout: 30m
     auto_retry: true
     # Route extension UI requests to the operator through scherzoctl attach/ui.
     ui_requests: operator
