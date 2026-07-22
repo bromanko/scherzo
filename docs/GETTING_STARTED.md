@@ -721,12 +721,40 @@ List available checks:
 direnv exec . scherzo doctor --list-checks
 ```
 
+### HTTP proxy environment
+
+Scherzo configures the shared OTP `httpc` profile from the standard
+`http_proxy`, `https_proxy`, and `no_proxy` environment variables. The uppercase
+`HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` forms are also supported; a non-empty
+lowercase value takes precedence when both forms are present. Pass these
+variables to the Scherzo process through its shell or service manager and restart
+the daemon after changing them.
+
+Proxy URLs may be written as `http://host:port` or `host:port`. Both HTTP and
+HTTPS destinations use a plain HTTP proxy; HTTPS requests establish a CONNECT
+tunnel. `https://` proxy URLs, SOCKS proxies, URL paths, and credentials
+embedded in the proxy URL are not supported by OTP `httpc`. Malformed values
+fail startup with a diagnostic that does not include the configured URL or
+credentials.
+
+`no_proxy` is a comma-separated list. Exact hosts and IP addresses, domain
+suffixes such as `.example.test` or `*.example.test`, optional host ports, and
+`*` are supported. Port-qualified entries apply to the host at every port.
+CIDR entries are not supported by OTP `httpc` and should be expanded to exact
+addresses or hostnames.
+
+This configuration covers Scherzo's in-process HTTP calls, including Linear
+GraphQL, Linear attachment uploads, and managed UI pairing. It does not proxy
+the custom WebSocket client or change proxy handling in pi, git, workspace
+drivers, or other child processes; configure those tools independently.
+
 Common doctor failures:
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Config file not found | Running from the wrong directory or no config path passed | Run from the target repo or pass `.scherzo/scherzo.yaml` |
-| Linear auth failure | Missing/invalid `LINEAR_API_KEY` | Export a valid key in the Scherzo process environment |
+| Linear auth failure | Missing/invalid `LINEAR_API_KEY`, or required proxy variables were not passed to Scherzo | Export a valid key and the required proxy environment in the Scherzo process environment |
+| HTTP client proxy configuration failed | Malformed or unsupported proxy URL | Use a plain `http://host:port` proxy without embedded credentials, then restart Scherzo |
 | Project not found | Wrong `tracker.linear.tasks_from` project slug | Copy the slug from the Linear project URL/config |
 | State/label mismatch | Board does not have configured states or labels | Create labels/states or adjust `tracker`, `workflows`, `task_routing`, and `task_updates` config |
 | No workflow route | Task label suffix does not match a top-level `workflows` key | Add the workflow YAML and workflow key or fix the Linear label |

@@ -72,6 +72,26 @@ The control FFI backs the local loopback JSON control protocol in `src/scherzo/c
 
 `getenv/1` returns a non-empty environment value or `not_found`.
 
+## `src/scherzo_http_client_ffi.erl`
+
+The HTTP-client FFI is wrapped by `src/scherzo/http_client.gleam`. It owns the
+VM-global proxy options on OTP `httpc`'s default profile; callers configure it
+once before starting any command that can make an in-process HTTP request.
+
+`ensure_started/0` starts the `inets` and `ssl` applications best effort and
+returns `Nil`. It remains available to local test-server helpers that only need
+the applications running.
+
+`configure/3` accepts the already-selected HTTP proxy, HTTPS proxy, and no-proxy
+strings. Empty proxy strings leave that profile option unchanged. Proxy values
+may omit the scheme, which defaults to `http://`; only a plain HTTP proxy with a
+host and valid port is accepted. Embedded credentials, paths, query strings,
+fragments, and non-HTTP schemes are rejected. The no-proxy parser handles exact
+hosts and addresses, domain suffixes, optional ports, and the all-destinations
+`*` form before setting OTP's `proxy` and `https_proxy` options. It starts
+`inets` and `ssl` before configuration and returns finite, redacted errors that
+never include proxy values or credentials.
+
 ## `src/scherzo_redaction_ffi.erl`
 
 The redaction FFI is wrapped by `src/scherzo/session/redaction.gleam`. Redaction is safety-critical because failures can otherwise leak raw pi event JSON or secrets into logs and ledgers.

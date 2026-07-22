@@ -6,6 +6,7 @@ import scherzo/code_snapshot
 import scherzo/connect
 import scherzo/ctl
 import scherzo/doctor
+import scherzo/http_client
 import scherzo/json_schema_self_check
 import scherzo/local_workflow_run
 import scherzo/log
@@ -311,7 +312,35 @@ pub fn main() -> Nil {
       |> io.println
       halt(0)
     }
+    False -> run_with_http_client_configuration(arguments)
+  }
+}
+
+fn run_with_http_client_configuration(arguments: List(String)) -> Nil {
+  case command_uses_http_client(arguments) {
     False -> run_from_args(arguments)
+    True ->
+      case http_client.configure() {
+        Ok(Nil) -> run_from_args(arguments)
+        Error(configuration_error) -> {
+          io.println_error(
+            log.error("startup_failed", [
+              #("code", "http_client_configuration_failed"),
+              #("message", http_client.error_message(configuration_error)),
+            ]),
+          )
+          halt(1)
+        }
+      }
+  }
+}
+
+fn command_uses_http_client(arguments: List(String)) -> Bool {
+  case parse_args(arguments) {
+    Ok(Run(_, _)) | Ok(Doctor(_)) -> True
+    Ok(Connect(["--help"])) | Ok(Connect(["-h"])) -> False
+    Ok(Connect(_)) -> True
+    _ -> False
   }
 }
 

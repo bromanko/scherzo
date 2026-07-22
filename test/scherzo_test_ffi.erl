@@ -9,7 +9,10 @@
     drain_port_data_messages/1,
     drain_port_exit_messages/1,
     drain_any_port_data_messages/0,
-    drain_any_subject_messages/0
+    drain_any_subject_messages/0,
+    httpc_proxy_options/0,
+    reset_httpc_proxy_options/0,
+    httpc_post/1
 ]).
 
 set_cwd(Path) ->
@@ -22,6 +25,47 @@ getenv(Name) ->
     case os:getenv(binary_to_list(Name)) of
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
+    end.
+
+httpc_proxy_options() ->
+    case httpc:get_options([proxy, https_proxy]) of
+        {ok, Options} ->
+            {HttpHost, HttpPort, NoProxy} = proxy_snapshot(proplists:get_value(proxy, Options)),
+            {HttpsHost, HttpsPort, _} = proxy_snapshot(proplists:get_value(https_proxy, Options)),
+            {ok, {
+                HttpHost,
+                HttpPort,
+                HttpsHost,
+                HttpsPort,
+                [unicode:characters_to_binary(Value) || Value <- NoProxy]
+            }};
+        {error, _} -> {error, nil}
+    end.
+
+proxy_snapshot({undefined, NoProxy}) -> {<<>>, 0, NoProxy};
+proxy_snapshot({{Host, Port}, NoProxy}) ->
+    {unicode:characters_to_binary(Host), Port, NoProxy}.
+
+reset_httpc_proxy_options() ->
+    ok = httpc_manager:set_options([
+        {proxy, {undefined, []}},
+        {https_proxy, {undefined, []}}
+    ], httpc_manager),
+    case httpc:get_options([proxy, https_proxy]) of
+        {ok, _} -> {ok, nil};
+        {error, _} -> {error, nil}
+    end.
+
+httpc_post(Url) ->
+    Request = {
+        unicode:characters_to_list(Url),
+        [],
+        "application/json",
+        <<"{}">>
+    },
+    case httpc:request(post, Request, [{timeout, 1000}], [{body_format, binary}]) of
+        {ok, _} -> {ok, nil};
+        {error, _} -> {error, nil}
     end.
 
 os_pid() ->
