@@ -1562,8 +1562,9 @@ pub fn jj_driver_publish_commit_stack_create_failure_reports_gh_diagnostics_test
   let logged = log_text(log)
   assert string.contains(
     logged,
-    "git push --remote origin --bookmark " <> branch <> " --allow-new",
+    "git push --remote origin --bookmark " <> branch,
   )
+  assert !string.contains(logged, "--allow-new")
   assert string.contains(logged, "gh: pr create --repo example/repo")
   assert count_log_lines_containing(log, "gh: pr view") == 3
 }
@@ -1813,8 +1814,9 @@ pub fn jj_driver_publish_commit_stack_retry_reuses_stable_branch_pr_test() {
   )
   assert string.contains(
     logged,
-    "git push --remote origin --bookmark " <> branch <> " --allow-new",
+    "git push --remote origin --bookmark " <> branch,
   )
+  assert !string.contains(logged, "--allow-new")
   assert string.contains(
     logged,
     "gh: pr create --repo example/repo --base main --head " <> branch,
@@ -1955,8 +1957,9 @@ pub fn jj_driver_publish_commit_stack_push_auth_failure_with_existing_pr_reports
   let logged = log_text(log)
   assert string.contains(
     logged,
-    "git push --remote origin --bookmark " <> branch <> " --allow-new",
+    "git push --remote origin --bookmark " <> branch,
   )
+  assert !string.contains(logged, "--allow-new")
   assert !string.contains(logged, "gh: pr create")
 }
 

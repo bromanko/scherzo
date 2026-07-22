@@ -2066,8 +2066,6 @@ def publish_commit_stack(root: Path, args: list[str]) -> None:
     if bookmark.returncode != 0:
         json_failure(status="publication_failed", failure_code="bookmark_failed", message=(bookmark.stderr or bookmark.stdout or "jj bookmark failed").strip())
     push_args = ["git", "push", "--remote", remote, "--bookmark", branch]
-    if not values.get("target-branch"):
-        push_args.append("--allow-new")
     push = run_jj(
         root,
         push_args,
