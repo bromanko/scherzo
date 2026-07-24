@@ -120,6 +120,14 @@ Scherzo does not currently handle SIGINT directly in Gleam/OTP. The FFI below in
 
 `init/1`, `handle_event/2`, `handle_call/2`, `handle_info/2`, `terminate/2`, and `code_change/3` are callback exports required by Erlang's `gen_event` behavior. They are not application API.
 
+## `src/scherzo_http_client_ffi.erl`
+
+The HTTP-client FFI is wrapped by `src/scherzo/http_client_proxy.gleam`. Erlang `httpc` does not read standard proxy environment variables itself, so the wrapper parses lowercase or uppercase `http_proxy`, `https_proxy`, and `no_proxy` values before Scherzo-owned `gleam_httpc` requests. Proxy URLs must use `http://`, contain no credentials, and include a valid host and optional port. Invalid settings fail without including the environment value in diagnostics.
+
+`ensure_started/0` starts the Erlang `inets` and `ssl` applications if needed and returns `Nil`. It owns no per-request resources.
+
+`set_proxy/4` accepts the finite proxy kind `http` or `https`, a validated host, port, and no-proxy host list. It configures the VM-global default `httpc` profile through `httpc:set_options/1`. It returns `Ok(Nil)` on success and `Error(Nil)` for rejected options or unexpected FFI failures. The Gleam wrapper maps failure to typed `ProxyError` values and never includes a proxy URL or credentials in errors.
+
 ## `src/scherzo_config_ffi.erl`
 
 The config/path FFI is low risk and owns no resources.

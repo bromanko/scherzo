@@ -112,19 +112,15 @@ pub fn build_detail_by_identifier_request(
 ) -> Result(linear.Request, error.TrackerError) {
   use endpoint <- try_tracker(require_https_endpoint(config.endpoint))
   use api_key <- try_tracker(require_api_key(config))
-  use scope <- try_tracker(require_task_scope(config))
+  use _scope <- try_tracker(require_task_scope(config))
   let body =
     json.object([
       #("query", json.string(detail_by_identifier_query())),
       #(
         "variables",
-        json.object(
-          linear_task_scope.issue_filter_variables(scope, "taskFilter")
-          |> list.append([
-            #("issueRemoteId", json.string(identifier)),
-            #("issueIdentifier", json.string(identifier)),
-          ]),
-        ),
+        json.object([
+          #("issueId", json.string(identifier)),
+        ]),
       ),
     ])
     |> json.to_string
@@ -164,9 +160,7 @@ fn detail_by_id_query_for_scope(
 }
 
 pub fn detail_by_identifier_query() -> String {
-  "query ScherzoTaskDetailByIdentifier("
-  <> linear_task_scope.issue_filter_declaration("taskFilter")
-  <> ", $issueRemoteId: ID!, $issueIdentifier: String!) { issues(first: 2, filter: { and: [$taskFilter], or: [{ id: { eq: $issueRemoteId } }, { identifier: { eq: $issueIdentifier } }] }) { nodes { id identifier title description priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } pageInfo { hasNextPage endCursor } } }"
+  "query ScherzoTaskDetailByIdentifier($issueId: String!) { issue(id: $issueId) { project { slugId } id identifier title description priority branchName url createdAt updatedAt state { id name type } labels { nodes { id name } } } }"
 }
 
 pub fn parse_page_response(

@@ -9,6 +9,7 @@ import gleam/result
 import gleam/string
 import scherzo/config/types as config_types
 import scherzo/error
+import scherzo/http_client_proxy
 import scherzo/linear
 import scherzo/linear_body_data
 
@@ -80,6 +81,12 @@ pub fn real_upload_transport(
   case string.starts_with(string.lowercase(upload_request.url), "https://") {
     False -> Error(error.LinearApiRequest("upload URL must use https://"))
     True -> {
+      use Nil <- try_tracker(
+        http_client_proxy.configure_from_environment()
+        |> result.map_error(fn(proxy_error) {
+          error.LinearApiRequest(http_client_proxy.error_message(proxy_error))
+        }),
+      )
       use request <- try_tracker(
         http_request.to(upload_request.url)
         |> result.replace_error(error.LinearApiRequest("invalid upload URL")),

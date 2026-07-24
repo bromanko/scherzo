@@ -370,20 +370,12 @@ pub fn linear_adapter_task_detail_lookup_by_identifier_and_remote_id_test() {
     linear_adapter.from_tracker_config(tracker_config(), fn(request) {
       case string.contains(request.body, "ScherzoTaskDetailByIdentifier") {
         True -> {
-          assert string.contains(request.body, "issues(first: 2")
-          assert string.contains(request.body, "\"issueRemoteId\":\"LIV-770\"")
-          assert string.contains(
-            request.body,
-            "\"issueIdentifier\":\"LIV-770\"",
-          )
-          assert string.contains(
-            request.body,
-            "identifier: { eq: $issueIdentifier }",
-          )
-          assert string.contains(
-            request.body,
-            "\"taskFilter\":{\"project\":{\"slugId\":{\"eq\":\"PROJ\"}}}",
-          )
+          assert string.contains(request.body, "ScherzoTaskDetailByIdentifier")
+          assert string.contains(request.body, "issue(id: $issueId)")
+          assert string.contains(request.body, "issueId")
+          assert string.contains(request.body, "LIV-770")
+          assert !string.contains(request.body, "issueRemoteId")
+          assert !string.contains(request.body, "taskFilter")
           Ok(linear.Response(
             status: 200,
             body: task_detail_by_identifier_response(),
@@ -431,10 +423,9 @@ pub fn linear_adapter_task_detail_lookup_by_identifier_and_remote_id_test() {
 
 pub fn linear_adapter_task_detail_display_id_contract_fixture_decodes_test() {
   // This fixture is a captured read-only Linear issue(id: "LIV-864") response.
-  // Keep decoding it as a legacy response shape while request construction uses
-  // the current IssueFilter-backed detail query. Linear returns project.slugId as
-  // the normalized suffix, while configured project filters may include a
-  // human-readable prefix.
+  // The request uses the same supported direct lookup. Project and label scope
+  // are enforced after decode. Linear may return only the normalized project
+  // slug suffix while configuration includes a human-readable prefix.
   let assert Ok(body) =
     simplifile.read(
       "test/fixtures/linear/display_id_issue_lookup_response.json",
@@ -447,13 +438,11 @@ pub fn linear_adapter_task_detail_display_id_contract_fixture_decodes_test() {
       ),
       fn(request) {
         assert string.contains(request.body, "ScherzoTaskDetailByIdentifier")
-        assert string.contains(request.body, "issues(first: 2")
-        assert string.contains(request.body, "\"issueRemoteId\":\"LIV-864\"")
-        assert string.contains(request.body, "\"issueIdentifier\":\"LIV-864\"")
-        assert string.contains(
-          request.body,
-          "identifier: { eq: $issueIdentifier }",
-        )
+        assert string.contains(request.body, "issue(id: $issueId)")
+        assert string.contains(request.body, "issueId")
+        assert string.contains(request.body, "LIV-864")
+        assert !string.contains(request.body, "issueRemoteId")
+        assert !string.contains(request.body, "taskFilter")
         Ok(linear.Response(status: 200, body: body))
       },
     )
