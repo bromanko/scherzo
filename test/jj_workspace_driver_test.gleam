@@ -64,6 +64,7 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  esac\n"
         <> "done\n"
         <> "if [ \"$1\" = git ] && [ \"$2\" = fetch ]; then\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_TRACKED_FETCH_FAIL:-}\" = 1 ]; then for arg in \"$@\"; do if [ \"$arg\" = --tracked ]; then echo 'simulated tracked fetch failure' >&2; exit 1; fi; done; fi\n"
         <> "  if [ \"${SCHERZO_FAKE_JJ_FETCH_FAIL:-}\" = 1 ]; then echo 'simulated fetch failure' >&2; exit 1; fi\n"
         <> "  exit 0\n"
         <> "fi\n"
@@ -549,6 +550,7 @@ pub fn jj_driver_lifecycle_create_implements_root_workspace_creation_test() {
   assert_exit(artifact, 0)
   let assert [
     fetch_line,
+    tracked_fetch_line,
     resolve_line,
     add_line,
     "root",
@@ -558,6 +560,8 @@ pub fn jj_driver_lifecycle_create_implements_root_workspace_creation_test() {
     == "--repository "
     <> repo
     <> " git fetch --remote upstream --branch develop"
+  assert tracked_fetch_line
+    == "--repository " <> repo <> " git fetch --remote upstream --tracked"
   assert resolve_line
     == "--repository "
     <> repo
@@ -793,6 +797,33 @@ pub fn jj_driver_failed_default_fetch_explains_offline_configuration_test() {
   assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_BASE_BRANCH")
   assert string.contains(artifact.stderr, "SCHERZO_JJ_WORKSPACE_REMOTE")
   assert !string.contains(log_text(log), "workspace add")
+}
+
+pub fn jj_driver_tracked_bookmark_refresh_failure_stops_workspace_creation_test() {
+  let dir = "test/tmp/jj-workspace-driver-tracked-fetch-fails"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+
+  let artifact =
+    run_jj(
+      "jj_driver_tracked_fetch_fails",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_JJ_WORKSPACE_REMOTE", "upstream"),
+        #("SCHERZO_FAKE_JJ_TRACKED_FETCH_FAIL", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stderr, "simulated tracked fetch failure")
+  assert string.contains(
+    artifact.stderr,
+    "could not refresh tracked bookmarks from remote 'upstream'",
+  )
+  let logged = log_text(log)
+  assert string.contains(logged, "git fetch --remote upstream --branch main")
+  assert string.contains(logged, "git fetch --remote upstream --tracked")
+  assert !string.contains(logged, "workspace add")
 }
 
 pub fn jj_driver_derived_workspace_uses_source_at_and_skips_base_fetch_test() {
@@ -2352,15 +2383,23 @@ pub fn jj_driver_baseline_uses_summary_changed_records_test() {
       "baseline --json",
       fake_env(workspace, bin, log, [
         #("SCHERZO_FAKE_JJ_CHANGED_FILES", "dirty.txt\n"),
+        #(
+          "SCHERZO_FAKE_JJ_PARENT_LOG_OUTPUT",
+          "1111111111111111111111111111111111111111",
+        ),
       ]),
     )
 
   assert_exit(artifact, 0)
   assert string.contains(artifact.stdout, "\"dirty\":true")
+  assert string.contains(
+    artifact.stdout,
+    "\"baseline_id\":\"1111111111111111111111111111111111111111\"",
+  )
   assert log_lines(log)
     == [
       "diff --summary --color=never",
-      "log -r @- --no-graph -T change_id --color=never",
+      "log -r @- --no-graph -T commit_id --color=never",
       "log -r @ --no-graph -T commit_id --color=never",
       "log -r @ --no-graph -T change_id.short() --color=never",
     ]

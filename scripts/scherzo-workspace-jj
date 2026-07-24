@@ -809,6 +809,20 @@ def lifecycle_create() -> None:
                     "for non-main branches set SCHERZO_JJ_WORKSPACE_BASE_BRANCH, and for "
                     "alternate remotes set SCHERZO_JJ_WORKSPACE_REMOTE."
                 )
+            ok, message = fetch_tracked_bookmarks(
+                repo_root,
+                remote,
+                repository=True,
+                error_channel=ERROR_CHANNEL_HUMAN,
+            )
+            if not ok:
+                sys.stderr.write(message[:OUTPUT_TEXT_LIMIT])
+                if message and not message.endswith("\n"):
+                    sys.stderr.write("\n")
+                fail(
+                    f"could not refresh tracked bookmarks from remote '{remote}' "
+                    "before creating root workspace"
+                )
 
     workspace_parent = prepare_destination_for_workspace_add(workspace_path)
     workspace_name = lifecycle_workspace_name(workspace_path)
@@ -1227,7 +1241,7 @@ def baseline_json(root: Path) -> None:
         "baseline_id": revision_value(
             root,
             "@-",
-            "change_id",
+            "commit_id",
             default="unknown-baseline",
             error_channel=ERROR_CHANNEL_JSON,
         ),
@@ -1302,6 +1316,23 @@ def fetch_ref(
     proc = run_jj(
         root,
         ["git", "fetch", "--remote", remote, "--branch", base],
+        repository=repository,
+        error_channel=error_channel,
+    )
+    text = (proc.stderr or proc.stdout or "").strip()
+    return proc.returncode == 0, text
+
+
+def fetch_tracked_bookmarks(
+    root: Path,
+    remote: str,
+    *,
+    repository: bool = False,
+    error_channel: str = ERROR_CHANNEL_HUMAN,
+) -> tuple[bool, str]:
+    proc = run_jj(
+        root,
+        ["git", "fetch", "--remote", remote, "--tracked"],
         repository=repository,
         error_channel=error_channel,
     )

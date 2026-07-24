@@ -333,7 +333,7 @@ The command prints exactly one JSON object followed by a newline:
 ```json
 {
   "version": 1,
-  "baseline_id": "base-change-or-revision",
+  "baseline_id": "immutable-base-revision",
   "workspace_revision_id": "current-revision",
   "change_id": "current-change",
   "dirty": true
@@ -345,7 +345,7 @@ Required fields:
 | Field | Contract |
 | --- | --- |
 | `version` | Integer `1`. |
-| `baseline_id` | Non-empty backend-specific id for the prepared baseline. |
+| `baseline_id` | Non-empty immutable backend-specific revision id for the prepared baseline. It MUST resolve to exactly one revision even when mutable change identities diverge. |
 | `workspace_revision_id` | Non-empty backend-specific id for the current workspace revision. |
 | `change_id` | Non-empty backend-specific id for the mutable workspace change. |
 | `dirty` | Boolean indicating whether `changed-files --json` would report any records. |
@@ -514,7 +514,7 @@ A VCS-backed driver is suitable for workflows that run in a source workspace and
 - keep changed-file and diff semantics stable enough for workflow validation, and
 - document which ignored files, generated files, caches, and backend metadata appear in `changed-files`.
 
-`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces, and packaged installs expose the same command as `scherzo-workspace-jj`. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-commit-stack` from `describe --json`. Its changed-file view is the jj current-change diff (`jj diff` without explicit revision arguments), enriched from `jj diff --summary` when status details are available; this preserves the normal prepared-parent baseline for single-parent changes while avoiding ambiguous `@-` revsets for merge-resolution workspaces. Root workspace base selection is operator policy supplied through driver environment such as `SCHERZO_JJ_WORKSPACE_BASE`, `SCHERZO_JJ_WORKSPACE_REMOTE`, `SCHERZO_JJ_WORKSPACE_BASE_BRANCH`, and `SCHERZO_JJ_WORKSPACE_FETCH_BASE`; publication remote selection is separate through `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE`. GitHub repository publication can be pinned with `SCHERZO_GITHUB_REPO=owner/repo` when remote URL inference is not enough. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` are not jj driver configuration inputs; commit-stack publication fails closed when only the legacy publication remote is present.
+`scripts/scherzo-workspace-jj` is the bundled VCS-backed driver for Scherzo dogfood workspaces, and packaged installs expose the same command as `scherzo-workspace-jj`. It implements lifecycle `create`, `before-step`, `after-step`, and `remove` directly for jj workspaces, including workspace creation, verification, optional direnv trust, and workspace-forget cleanup. It reports capabilities `status`, `diff`, `changed-files`, `assert-only`, `baseline`, `refresh-base`, and `publish-commit-stack` from `describe --json`. Its changed-file view is the jj current-change diff (`jj diff` without explicit revision arguments), enriched from `jj diff --summary` when status details are available; this preserves the normal prepared-parent baseline for single-parent changes while avoiding ambiguous `@-` revsets for merge-resolution workspaces. Its baseline id is the immutable parent commit id rather than the mutable jj change id. Root workspace base selection is operator policy supplied through driver environment such as `SCHERZO_JJ_WORKSPACE_BASE`, `SCHERZO_JJ_WORKSPACE_REMOTE`, `SCHERZO_JJ_WORKSPACE_BASE_BRANCH`, and `SCHERZO_JJ_WORKSPACE_FETCH_BASE`; when base fetching is enabled, creation also refreshes tracked remote bookmarks so hosting-provider deletion of merged publication branches prunes their stale local bookmarks. Publication remote selection is separate through `SCHERZO_JJ_WORKSPACE_PUBLISH_REMOTE`. GitHub repository publication can be pinned with `SCHERZO_GITHUB_REPO=owner/repo` when remote URL inference is not enough. Legacy `SCHERZO_PR_REMOTE` and `SCHERZO_PR_BASE` are not jj driver configuration inputs; commit-stack publication fails closed when only the legacy publication remote is present.
 
 ## 13. Compatibility and versioning
 
