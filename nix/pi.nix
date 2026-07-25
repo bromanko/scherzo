@@ -1,29 +1,27 @@
-{
-  lib,
-  stdenv,
-  buildNpmPackage,
-  fetchFromGitHub,
-  nodejs_22,
-  makeWrapper,
-  fd,
-  ripgrep,
+{ lib
+, stdenv
+, buildNpmPackage
+, fetchurl
+, nodejs_22
+, makeWrapper
+, fd
+, ripgrep
+,
 }:
 
 buildNpmPackage rec {
   pname = "pi";
-  version = "0.80.10-rpc-progress";
+  version = "0.82.1-rpc-progress";
 
-  src = fetchFromGitHub {
-    owner = "earendil-works";
-    repo = "pi";
-    rev = "v0.80.10";
-    hash = "sha256-Vs/ndHYzFyfN4CjPV2zMYblLXe9IuM13UrPJI1VsZEQ=";
+  src = fetchurl {
+    url = "https://github.com/earendil-works/pi/releases/download/v0.82.1/pi-0.82.1-source.tar.gz";
+    hash = "sha256-5+37qJvEsxaD95IJtZoBudYnMC1p/y34ve6o9fY87XM=";
   };
 
   patches = [ ./patches/pi-rpc-message-progress.patch ];
 
   nodejs = nodejs_22;
-  npmDepsHash = "sha256-Ro2ovgqH6EpFb20M5DvcP6KIxXZPHcjeEdo1Sh4JbDM=";
+  npmDepsHash = "sha256-+7Kss4l85CSC84Y9qHp65AXjxIlsWzITPuA6uqQ+9XE=";
   npmDepsFetcherVersion = 2;
   makeCacheWritable = true;
   npmRebuildFlags = [ "--ignore-scripts" ];
@@ -31,8 +29,8 @@ buildNpmPackage rec {
   nativeBuildInputs = [ makeWrapper ];
 
   # Do not run the monorepo npm build script here: the ai package's build script
-  # refreshes generated model metadata from network sources. The checked-in
-  # generated files are sufficient for this pinned Scherzo fork build.
+  # refreshes generated model metadata from network sources. The release source
+  # archive's generated files are sufficient for this pinned Scherzo build.
   buildPhase = ''
     runHook preBuild
 
@@ -40,7 +38,6 @@ buildNpmPackage rec {
     (cd packages/ai && ../../node_modules/.bin/tsgo -p tsconfig.build.json)
     (cd packages/agent && ../../node_modules/.bin/tsgo -p tsconfig.build.json)
     (cd packages/coding-agent && ../../node_modules/.bin/tsgo -p tsconfig.build.json && chmod +x dist/cli.js && npm run copy-assets)
-    (cd packages/orchestrator && ../../node_modules/.bin/tsgo -p tsconfig.build.json && chmod +x dist/cli.js)
 
     runHook postBuild
   '';
@@ -52,9 +49,15 @@ buildNpmPackage rec {
     mkdir -p "$packageRoot" "$out/bin"
     cp package.json package-lock.json "$packageRoot/"
     cp -PR node_modules "$packageRoot/node_modules"
+    # These development-only workspace links are outside the runtime package
+    # set copied below and would otherwise be dangling in the Nix output.
+    rm -f \
+      "$packageRoot/node_modules/@earendil-works/pi-evals" \
+      "$packageRoot/node_modules/@earendil-works/pi-server" \
+      "$packageRoot/node_modules/@earendil-works/pi-storage-sqlite-node"
     mkdir -p "$packageRoot/packages"
 
-    for package in ai agent tui coding-agent orchestrator; do
+    for package in ai agent tui coding-agent; do
       mkdir -p "$packageRoot/packages/$package"
       cp -R "packages/$package/dist" "$packageRoot/packages/$package/dist"
       cp "packages/$package/package.json" "$packageRoot/packages/$package/package.json"

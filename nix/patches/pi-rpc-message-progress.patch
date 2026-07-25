@@ -1,16 +1,31 @@
 diff --git a/packages/coding-agent/docs/rpc.md b/packages/coding-agent/docs/rpc.md
-index 1493f2d..88b729b 100644
+index 12f5b02..9288d16 100644
 --- a/packages/coding-agent/docs/rpc.md
 +++ b/packages/coding-agent/docs/rpc.md
-@@ -18,0 +19,3 @@ Common options:
+@@ -16,6 +16,9 @@ Common options:
+ - `--name <name>` / `-n <name>`: Set the session display name at startup
+ - `--no-session`: Disable session persistence
+ - `--session-dir <path>`: Custom session storage directory
 +- `--rpc-message-updates <full|progress|off>`: Control streaming assistant updates. `progress` emits bounded, content-free liveness events; `off` suppresses streaming updates.
 +
 +`PI_RPC_MESSAGE_UPDATES` configures the same mode for subprocess clients. The default is `full` for compatibility.
-@@ -816 +819,2 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
+ 
+ ## Protocol Overview
+ 
+@@ -843,7 +846,8 @@ Events are streamed to stdout as JSON lines during agent operation. Events do no
+ | `turn_start` | New turn begins |
+ | `turn_end` | Turn completes (includes assistant message and tool results) |
+ | `message_start` | Message begins |
 -| `message_update` | Streaming update (text/thinking/toolcall deltas) |
 +| `message_update` | Full streaming update (default `full` mode only) |
 +| `message_progress` | Rate-limited, content-free streaming progress (`progress` mode only) |
-@@ -883 +887,9 @@ Emitted when a message begins and completes. The `message` field contains an `Ag
+ | `message_end` | Message completes |
+ | `bash_execution_update` | Direct RPC bash command output chunk |
+ | `tool_execution_start` | Tool begins execution |
+@@ -914,7 +918,15 @@ Emitted when a message begins and completes. The `message` field contains an `Ag
+ 
+ ### message_update (Streaming)
+ 
 -Emitted during streaming of assistant messages. Contains both the partial message and a streaming delta event.
 +Emitted during streaming of assistant messages in the default `full` mode. Contains both the partial message and a streaming delta event.
 +
@@ -21,16 +36,34 @@ index 1493f2d..88b729b 100644
 +```
 +
 +Progress records are driven by provider message updates rather than a timer. A provider that stops producing message updates therefore produces no false heartbeat. In `off` mode, neither `message_update` nor `message_progress` is emitted. Final `message_end`, `turn_end`, and agent lifecycle records are unchanged in all modes.
+ 
+ ```json
+ {
 diff --git a/packages/coding-agent/src/cli/args.ts b/packages/coding-agent/src/cli/args.ts
-index 0ca3396..1931f31 100644
+index 1e9b36b..9becac1 100644
 --- a/packages/coding-agent/src/cli/args.ts
 +++ b/packages/coding-agent/src/cli/args.ts
-@@ -8,0 +9 @@ import type { ExtensionFlag } from "../core/extensions/types.ts";
+@@ -6,6 +6,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+ import chalk from "chalk";
+ import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, ENV_SESSION_DIR } from "../config.ts";
+ import type { ExtensionFlag } from "../core/extensions/types.ts";
 +import { parseRpcMessageUpdates, type RpcMessageUpdates } from "../modes/rpc/rpc-message-updates.ts";
-@@ -49,0 +51,2 @@ export interface Args {
+ 
+ export type Mode = "text" | "json" | "rpc";
+ 
+@@ -47,6 +48,8 @@ export interface Args {
+ 	offline?: boolean;
+ 	verbose?: boolean;
+ 	projectTrustOverride?: boolean;
 +	rpcMessageUpdates?: RpcMessageUpdates;
 +	rpcMessageUpdatesFlagSeen?: boolean;
-@@ -82,0 +86,17 @@ export function parseArgs(args: string[]): Args {
+ 	messages: string[];
+ 	fileArgs: string[];
+ 	/** Unknown flags (potentially extension flags) - map of flag name to value */
+@@ -80,6 +83,23 @@ export function parseArgs(args: string[]): Args {
+ 			if (mode === "text" || mode === "json" || mode === "rpc") {
+ 				result.mode = mode;
+ 			}
 +		} else if (arg === "--rpc-message-updates") {
 +			result.rpcMessageUpdatesFlagSeen = true;
 +			const value = args[i + 1];
@@ -48,26 +81,56 @@ index 0ca3396..1931f31 100644
 +					result.rpcMessageUpdates = parsed.mode;
 +				}
 +			}
-@@ -243,0 +264 @@ ${chalk.bold("Options:")}
+ 		} else if (arg === "--continue" || arg === "-c") {
+ 			result.continue = true;
+ 		} else if (arg === "--resume" || arg === "-r") {
+@@ -241,6 +261,7 @@ ${chalk.bold("Options:")}
+   --system-prompt <text>         System prompt (default: coding assistant prompt)
+   --append-system-prompt <text>  Append text or file contents to the system prompt (can be used multiple times)
+   --mode <mode>                  Output mode: text (default), json, or rpc
 +  --rpc-message-updates <mode>   RPC updates: full (default), progress, or off
-@@ -377,0 +399 @@ ${chalk.bold("Environment Variables:")}
+   --print, -p                    Non-interactive mode: process prompt and exit
+   --continue, -c                 Continue previous session
+   --resume, -r                   Select a session to resume
+@@ -375,6 +396,7 @@ ${chalk.bold("Environment Variables:")}
+   AWS_BEARER_TOKEN_BEDROCK         - Bedrock API key (bearer token)
+   AWS_REGION                       - AWS region for Amazon Bedrock (e.g., us-east-1)
+   ${ENV_AGENT_DIR.padEnd(32)} - Config directory (default: ~/${CONFIG_DIR_NAME}/agent)
 +  PI_RPC_MESSAGE_UPDATES           - RPC updates: full (default), progress, or off
+   ${ENV_SESSION_DIR.padEnd(32)} - Session storage directory (overridden by --session-dir)
+   PI_PACKAGE_DIR                   - Override package directory (for Nix/Guix store paths)
+   PI_OFFLINE                       - Disable startup network operations when set to 1/true/yes
 diff --git a/packages/coding-agent/src/index.ts b/packages/coding-agent/src/index.ts
-index 26757fb..9e7f3ae 100644
+index e223d31..cb0a371 100644
 --- a/packages/coding-agent/src/index.ts
 +++ b/packages/coding-agent/src/index.ts
-@@ -332,0 +333,4 @@ export {
+@@ -337,6 +337,10 @@ export {
+ 	type RpcEventListener,
+ 	type RpcExtensionUIRequest,
+ 	type RpcExtensionUIResponse,
 +	type RpcMessageProgressEvent,
 +	type RpcMessageUpdates,
 +	type RpcModeOptions,
 +	type RpcOutputEvent,
+ 	type RpcResponse,
+ 	type RpcSessionState,
+ 	runPrintMode,
 diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
-index 5eaa3e5..2caa9d5 100644
+index ce7465f..61eb829 100644
 --- a/packages/coding-agent/src/main.ts
 +++ b/packages/coding-agent/src/main.ts
-@@ -46,0 +47 @@ import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts"
+@@ -45,6 +45,7 @@ import { builtInExtensions } from "./extensions/index.ts";
+ import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
+ import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
+ import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 +import { resolveRpcMessageUpdates } from "./modes/rpc/rpc-message-updates.ts";
-@@ -809,0 +811,8 @@ export async function main(args: string[], options?: MainOptions) {
+ import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+ import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.ts";
+ import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.ts";
+@@ -814,8 +815,16 @@ export async function main(args: string[], options?: MainOptions) {
+ 	}
+ 
+ 	if (appMode === "rpc") {
 +		const messageUpdates = resolveRpcMessageUpdates({
 +			cliMode: parsed.rpcMessageUpdates,
 +			cliFlagSeen: parsed.rpcMessageUpdatesFlagSeen,
@@ -76,68 +139,134 @@ index 5eaa3e5..2caa9d5 100644
 +		if (!parsed.rpcMessageUpdatesFlagSeen && messageUpdates.warning) {
 +			reportDiagnostics([{ type: "warning", message: messageUpdates.warning }]);
 +		}
-@@ -811 +820 @@ export async function main(args: string[], options?: MainOptions) {
+ 		printTimings();
 -		await runRpcMode(runtime);
 +		await runRpcMode(runtime, { messageUpdates: messageUpdates.mode });
+ 	} else if (appMode === "interactive") {
+ 		const interactiveMode = new InteractiveMode(runtime, {
+ 			migratedProviders,
 diff --git a/packages/coding-agent/src/modes/index.ts b/packages/coding-agent/src/modes/index.ts
 index 732aee5..2e3ba70 100644
 --- a/packages/coding-agent/src/modes/index.ts
 +++ b/packages/coding-agent/src/modes/index.ts
-@@ -8 +8,2 @@ export { type ModelInfo, RpcClient, type RpcClientOptions, type RpcEventListener
+@@ -5,7 +5,8 @@
+ export { InteractiveMode, type InteractiveModeOptions } from "./interactive/interactive-mode.ts";
+ export { type PrintModeOptions, runPrintMode } from "./print-mode.ts";
+ export { type ModelInfo, RpcClient, type RpcClientOptions, type RpcEventListener } from "./rpc/rpc-client.ts";
 -export { runRpcMode } from "./rpc/rpc-mode.ts";
 +export type { RpcMessageProgressEvent, RpcMessageUpdates, RpcOutputEvent } from "./rpc/rpc-message-updates.ts";
 +export { type RpcModeOptions, runRpcMode } from "./rpc/rpc-mode.ts";
+ export type {
+ 	RpcCommand,
+ 	RpcExtensionUIRequest,
 diff --git a/packages/coding-agent/src/modes/rpc/rpc-client.ts b/packages/coding-agent/src/modes/rpc/rpc-client.ts
-index 934c6f1..2a3b7e6 100644
+index 79cd7f2..01bd16c 100644
 --- a/packages/coding-agent/src/modes/rpc/rpc-client.ts
 +++ b/packages/coding-agent/src/modes/rpc/rpc-client.ts
-@@ -10 +10 @@ import type { ImageContent } from "@earendil-works/pi-ai";
+@@ -7,11 +7,12 @@
+ import { type ChildProcess, spawn } from "node:child_process";
+ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+ import type { ImageContent } from "@earendil-works/pi-ai";
 -import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
 +import type { SessionStats } from "../../core/agent-session.ts";
-@@ -14,0 +15 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
+ import type { BashResult } from "../../core/bash-executor.ts";
+ import type { CompactionResult } from "../../core/compaction/index.ts";
+ import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
+ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 +import type { RpcOutputEvent } from "./rpc-message-updates.ts";
-@@ -49 +50 @@ export interface ModelInfo {
+ import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
+ 
+ // ============================================================================
+@@ -46,7 +47,7 @@ export interface ModelInfo {
+ 	reasoning: boolean;
+ }
+ 
 -export type RpcEventListener = (event: AgentSessionEvent) => void;
 +export type RpcEventListener = (event: RpcOutputEvent) => void;
-@@ -467 +468 @@ export class RpcClient {
+ 
+ // ============================================================================
+ // RPC Client
+@@ -472,9 +473,9 @@ export class RpcClient {
+ 	/**
+ 	 * Collect events until agent becomes idle.
+ 	 */
 -	collectEvents(timeout = 60000): Promise<AgentSessionEvent[]> {
 +	collectEvents(timeout = 60000): Promise<RpcOutputEvent[]> {
-@@ -469 +470 @@ export class RpcClient {
+ 		return new Promise((resolve, reject) => {
 -			const events: AgentSessionEvent[] = [];
 +			const events: RpcOutputEvent[] = [];
-@@ -489 +490 @@ export class RpcClient {
+ 			const timer = setTimeout(() => {
+ 				unsubscribe();
+ 				reject(new Error(`Timeout collecting events. Stderr: ${this.stderr}`));
+@@ -494,7 +495,7 @@ export class RpcClient {
+ 	/**
+ 	 * Send prompt and wait for completion, returning all events.
+ 	 */
 -	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<AgentSessionEvent[]> {
 +	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<RpcOutputEvent[]> {
-@@ -513 +514 @@ export class RpcClient {
+ 		const eventsPromise = this.collectEvents(timeout);
+ 		await this.prompt(message, images);
+ 		return eventsPromise;
+@@ -518,7 +519,7 @@ export class RpcClient {
+ 
+ 			// Otherwise it's an event
+ 			for (const listener of this.eventListeners) {
 -				listener(data as AgentSessionEvent);
 +				listener(data as RpcOutputEvent);
+ 			}
+ 		} catch {
+ 			// Ignore non-JSON lines
 diff --git a/packages/coding-agent/src/modes/rpc/rpc-mode.ts b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
-index 58b6453..582c845 100644
+index e3988e8..4680936 100644
 --- a/packages/coding-agent/src/modes/rpc/rpc-mode.ts
 +++ b/packages/coding-agent/src/modes/rpc/rpc-mode.ts
-@@ -30,0 +31 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
+@@ -28,6 +28,7 @@ import {
+ import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+ import { type Theme, theme } from "../interactive/theme/theme.ts";
+ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 +import { createRpcSessionEventFilter, type RpcMessageUpdates } from "./rpc-message-updates.ts";
-@@ -48,0 +50,4 @@ export type {
+ import type {
+ 	RpcCommand,
+ 	RpcExtensionUIRequest,
+@@ -46,12 +47,17 @@ export type {
+ 	RpcSessionState,
+ } from "./rpc-types.ts";
+ 
 +export interface RpcModeOptions {
 +	messageUpdates?: RpcMessageUpdates;
 +}
 +
-@@ -53 +58 @@ export type {
+ /**
+  * Run in RPC mode.
+  * Listens for JSON commands on stdin, outputs events and responses on stdout.
+  */
 -export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<never> {
 +export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcModeOptions = {}): Promise<never> {
-@@ -54,0 +60 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
+ 	takeOverStdout();
 +	const filterSessionEvent = createRpcSessionEventFilter(options.messageUpdates ?? "full");
-@@ -355 +361,4 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
+ 	let session = runtimeHost.session;
+ 	let unsubscribe: (() => void) | undefined;
+ 	let unsubscribeBackpressure: (() => void) | undefined;
+@@ -352,7 +358,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
+ 		unsubscribe?.();
+ 		unsubscribeBackpressure?.();
+ 		unsubscribe = session.subscribe((event) => {
 -			output(event);
 +			const outputEvent = filterSessionEvent(event);
 +			if (outputEvent) {
 +				output(outputEvent);
 +			}
+ 			if (event.type === "agent_settled") {
+ 				void checkShutdownRequested();
+ 			}
 diff --git a/packages/coding-agent/test/args.test.ts b/packages/coding-agent/test/args.test.ts
 index 8591974..b1c094b 100644
 --- a/packages/coding-agent/test/args.test.ts
 +++ b/packages/coding-agent/test/args.test.ts
-@@ -127,0 +128,24 @@ describe("parseArgs", () => {
+@@ -125,6 +125,30 @@ describe("parseArgs", () => {
+ 			expect(result.mode).toBe("rpc");
+ 		});
+ 
 +		test("parses --rpc-message-updates", () => {
 +			const result = parseArgs(["--rpc-message-updates", "progress"]);
 +			expect(result.rpcMessageUpdates).toBe("progress");
@@ -162,12 +291,15 @@ index 8591974..b1c094b 100644
 +			});
 +		});
 +
+ 		test("parses --session", () => {
+ 			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
+ 			expect(result.session).toBe("/path/to/session.jsonl");
 diff --git a/packages/coding-agent/src/modes/rpc/rpc-message-updates.ts b/packages/coding-agent/src/modes/rpc/rpc-message-updates.ts
 new file mode 100644
-index 0000000..5c41aaf
+index 0000000..3876e68
 --- /dev/null
 +++ b/packages/coding-agent/src/modes/rpc/rpc-message-updates.ts
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,83 @@
 +import type { AgentSessionEvent } from "../../core/agent-session.ts";
 +
 +export const RPC_MESSAGE_UPDATE_MODES = ["full", "progress", "off"] as const;
@@ -191,10 +323,7 @@ index 0000000..5c41aaf
 +	return RPC_MESSAGE_UPDATE_MODES.includes(value as RpcMessageUpdates);
 +}
 +
-+export function parseRpcMessageUpdates(
-+	value: string | undefined,
-+	source: "cli" | "env",
-+): RpcMessageUpdateParseResult {
++export function parseRpcMessageUpdates(value: string | undefined, source: "cli" | "env"): RpcMessageUpdateParseResult {
 +	if (value === undefined) {
 +		return { mode: "full" };
 +	}
@@ -205,8 +334,7 @@ index 0000000..5c41aaf
 +
 +	return {
 +		mode: "full",
-+		warning:
-+			`Invalid RPC message update mode "${value}" from ${source}. Valid values: ${RPC_MESSAGE_UPDATE_MODES.join(", ")}`,
++		warning: `Invalid RPC message update mode "${value}" from ${source}. Valid values: ${RPC_MESSAGE_UPDATE_MODES.join(", ")}`,
 +	};
 +}
 +
