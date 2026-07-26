@@ -2,7 +2,13 @@ import gleam/option.{type Option, None, Some}
 import scherzo/agent/pi_event
 import scherzo/error
 
-const decision_grace_max_ms = 1000
+// Pi announces its retry decision through `agent_end.willRetry` and
+// `auto_retry_start`. After a provider transport failure (for example a
+// WebSocket disconnect) pi may tear down the connection and stay quiet for
+// several seconds before those events reach Scherzo, so the decision grace
+// must tolerate that gap instead of racing it. The effective grace is
+// min(pi read timeout, this cap); willRetry=false still fails immediately.
+const decision_grace_max_ms = 60_000
 
 pub type State {
   NoPendingAutoRetry

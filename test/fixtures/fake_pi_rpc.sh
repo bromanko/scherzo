@@ -248,7 +248,13 @@ while IFS= read -r line; do
       fi
       if [[ -n "${FAKE_PI_AUTO_RETRY_SUCCESS:-}" ]]; then
         jq -cn '{type:"message_start",message:{role:"assistant",provider:"openai-codex-responses",stopReason:"error",errorMessage:"Codex SSE response headers timed out after 10000ms",content:[]}}'
+        if [[ -n "${FAKE_PI_AUTO_RETRY_DECISION_DELAY_MS:-}" ]]; then
+          sleep "$(awk "BEGIN { print ${FAKE_PI_AUTO_RETRY_DECISION_DELAY_MS} / 1000 }")"
+        fi
         jq -cn --arg turns "$prompt_seen" '{type:"agent_end",willRetry:true,turns:($turns|tonumber)}'
+        if [[ -n "${FAKE_PI_AUTO_RETRY_DECISION_DELAY_MS:-}" ]]; then
+          sleep "$(awk "BEGIN { print ${FAKE_PI_AUTO_RETRY_DECISION_DELAY_MS} / 1000 }")"
+        fi
         jq -cn '{type:"auto_retry_start",attempt:1,maxAttempts:3,delayMs:1,errorMessage:"Codex SSE response headers timed out after 10000ms"}'
         jq -cn '{type:"turn_start"}'
         jq -cn '{type:"message_update",delta:"POPULATED"}'
