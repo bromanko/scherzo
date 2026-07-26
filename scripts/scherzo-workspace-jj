@@ -447,6 +447,13 @@ def write_bounded_backend_output(proc: subprocess.CompletedProcess[str]) -> None
             sys.stderr.write("\n")
 
 
+def write_process_output(completed: subprocess.CompletedProcess[str]) -> None:
+    if completed.stdout:
+        sys.stdout.write(completed.stdout)
+    if completed.stderr:
+        sys.stderr.write(completed.stderr)
+
+
 def require_jj_repo_root(repo_root: Path) -> None:
     if not (repo_root / ".jj").is_dir():
         fail(f"repo root is not a jj repository: {repo_root}")
@@ -742,6 +749,30 @@ def run_jj_root(workspace_path: Path) -> str:
     return proc.stdout.strip()
 
 
+def run_jj_status_with_stale_recovery(
+    root: Path,
+) -> subprocess.CompletedProcess[str]:
+    status_args = ["status", "--color=never"]
+    completed = run_jj(root, status_args)
+    if completed.returncode == 0:
+        return completed
+
+    combined_output = f"{completed.stdout}{completed.stderr}"
+    if "workspace update-stale" not in combined_output:
+        return completed
+
+    sys.stderr.write(
+        "scherzo-workspace-jj: running "
+        "`jj workspace update-stale` before retrying status\n"
+    )
+    update = run_jj(root, ["workspace", "update-stale"])
+    if update.returncode != 0:
+        write_process_output(completed)
+        return update
+
+    return run_jj(root, status_args)
+
+
 def verify_current_workspace(workspace_path: Path) -> None:
     if not (workspace_path / ".jj").exists():
         fail(f"workspace is missing .jj: {workspace_path}")
@@ -751,7 +782,8 @@ def verify_current_workspace(workspace_path: Path) -> None:
 
     ensure_portable_scherzo_bridge(workspace_path)
 
-    status = run_jj(workspace_path, ["status", "--color=never"], capture=False)
+    status = run_jj_status_with_stale_recovery(workspace_path)
+    write_process_output(status)
     if status.returncode != 0:
         fail("jj status failed")
 
@@ -955,38 +987,10 @@ def ensure_workspace(root: Path) -> None:
         fail("workspace directory does not exist")
 
 
-def write_process_output(completed: subprocess.CompletedProcess[str]) -> None:
-    if completed.stdout:
-        sys.stdout.write(completed.stdout)
-    if completed.stderr:
-        sys.stderr.write(completed.stderr)
-
-
 def run_jj_status_human(root: Path) -> None:
-    status_args = ["status", "--color=never"]
-    completed = run_jj(root, status_args)
-    if completed.returncode == 0:
-        write_process_output(completed)
-        raise SystemExit(0)
-
-    combined_output = f"{completed.stdout}{completed.stderr}"
-    if "workspace update-stale" not in combined_output:
-        write_process_output(completed)
-        raise SystemExit(1)
-
-    sys.stderr.write(
-        "scherzo-workspace-jj: running "
-        "`jj workspace update-stale` before retrying status\n"
-    )
-    update = run_jj(root, ["workspace", "update-stale"])
-    if update.returncode != 0:
-        write_process_output(completed)
-        write_process_output(update)
-        raise SystemExit(1)
-
-    retried = run_jj(root, status_args)
-    write_process_output(retried)
-    raise SystemExit(0 if retried.returncode == 0 else 1)
+    completed = run_jj_status_with_stale_recovery(root)
+    write_process_output(completed)
+    raise SystemExit(0 if completed.returncode == 0 else 1)
 
 
 def run_jj_capture(

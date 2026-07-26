@@ -2632,6 +2632,67 @@ pub fn jj_driver_lifecycle_before_step_verifies_workspace_test() {
   assert log_lines(log) == ["root", "status --color=never"]
 }
 
+pub fn jj_driver_lifecycle_create_updates_stale_workspace_once_test() {
+  let dir = "test/tmp/jj-workspace-driver-create-stale"
+  let #(repo, workspace, bin, log) = setup_driver_fixture(dir)
+  let count_file = absolute(dir <> "/status-count")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_create_stale_once",
+      "lifecycle create",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_FAKE_JJ_STATUS_COUNT_FILE", count_file),
+        #("SCHERZO_FAKE_JJ_STATUS_FAIL_ONCE", "1"),
+        #(
+          "SCHERZO_FAKE_JJ_STATUS_FAIL_OUTPUT",
+          "working copy is stale; run `jj workspace update-stale`\n",
+        ),
+        #("SCHERZO_FAKE_JJ_STATUS", "working copy clean\n"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert string.contains(artifact.stderr, "jj workspace update-stale")
+  assert log_lines(log)
+    == [
+      "root",
+      "status --color=never",
+      "workspace update-stale",
+      "status --color=never",
+    ]
+}
+
+pub fn jj_driver_lifecycle_before_step_fails_when_update_stale_fails_test() {
+  let dir = "test/tmp/jj-workspace-driver-before-step-update-stale-failure"
+  let #(_, workspace, bin, log) = setup_driver_fixture(dir)
+  let count_file = absolute(dir <> "/status-count")
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_before_step_update_stale_failure",
+      "lifecycle before-step",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_FAKE_JJ_STATUS_COUNT_FILE", count_file),
+        #("SCHERZO_FAKE_JJ_STATUS_FAIL_ONCE", "1"),
+        #(
+          "SCHERZO_FAKE_JJ_STATUS_FAIL_OUTPUT",
+          "working copy is stale; run `jj workspace update-stale`\n",
+        ),
+        #("SCHERZO_FAKE_JJ_UPDATE_STALE_FAIL", "1"),
+        #("SCHERZO_FAKE_JJ_UPDATE_STALE_OUTPUT", "update stale failed\n"),
+      ]),
+    )
+
+  assert_exit(artifact, 1)
+  assert string.contains(artifact.stderr, "update stale failed")
+  assert log_lines(log)
+    == ["root", "status --color=never", "workspace update-stale"]
+}
+
 pub fn jj_driver_lifecycle_before_step_reports_broken_portable_symlink_test() {
   let dir = tmp_fixture_dir("jj-workspace-driver-before-step-broken-symlink")
   let #(_, workspace, bin, log) = setup_driver_fixture(dir)
