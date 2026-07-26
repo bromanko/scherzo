@@ -69,6 +69,15 @@ fn driver_orchestrator(
   repo: String,
   script: String,
 ) -> config_types.OrchestratorConfig {
+  driver_orchestrator_with_env(root, repo, script, [])
+}
+
+fn driver_orchestrator_with_env(
+  root: String,
+  repo: String,
+  script: String,
+  driver_env: List(#(String, String)),
+) -> config_types.OrchestratorConfig {
   let workspace_root = root <> "/workspaces"
   let config_dir = repo <> "/.scherzo"
   let assert Ok(Nil) = simplifile.create_directory_all(config_dir)
@@ -88,7 +97,7 @@ fn driver_orchestrator(
         config_types.WorkspaceAssertOnly,
       ],
       timeout_ms: 20_000,
-      env: [],
+      env: driver_env,
     )
   config_types.OrchestratorConfig(
     effective: effective(workspace_root),
@@ -206,6 +215,137 @@ pub fn workflow_jj_workspace_driver_lifecycle_reuses_main_and_cleans_up_smoke_te
     )
   assert list.status == step_artifact.StepSucceeded
   assert !string.contains(list.stdout, "scherzo-smoke-ABC-123-run-1-main")
+
+  let anonymous_heads =
+    command_step.run(
+      "jj_workspace_driver_anonymous_heads",
+      "jj --repository \""
+        <> repo
+        <> "\" --ignore-working-copy log -r 'heads(all()) ~ bookmarks()' --no-graph -T commit_id",
+      ".",
+      20_000,
+      [],
+      test_helpers.default_artifact_limits(),
+    )
+  assert anonymous_heads.status == step_artifact.StepSucceeded
+  assert string.trim(anonymous_heads.stdout) == ""
+}
+
+pub fn workflow_jj_workspace_cleanup_ignores_abandon_failure_smoke_test() {
+  let root = "test/tmp/workflow-jj-workspace-abandon-failure"
+  reset_dir(root)
+  let repo = setup_jj_repo(root)
+  let script = absolute("scripts/scherzo-workspace-jj")
+  let bin = absolute(root <> "/bin")
+  let wrapper = bin <> "/jj"
+  let real_jj =
+    command_step.run(
+      "locate_real_jj",
+      "command -v jj",
+      ".",
+      5000,
+      [],
+      test_helpers.default_artifact_limits(),
+    )
+  assert real_jj.status == step_artifact.StepSucceeded
+  let real_jj_path = string.trim(real_jj.stdout)
+  let assert Ok(Nil) = simplifile.create_directory_all(bin)
+  let assert Ok(Nil) =
+    simplifile.write(
+      wrapper,
+      "#!/bin/sh\n"
+        <> "for arg in \"$@\"; do\n"
+        <> "  if [ \"$arg\" = abandon ]; then echo 'simulated abandon failure' >&2; exit 1; fi\n"
+        <> "done\n"
+        <> "exec \"$SCHERZO_REAL_JJ\" \"$@\"\n",
+    )
+  test_helpers.chmod_executable(wrapper)
+  let inherited_path = case path.env("PATH") {
+    Some(value) -> value
+    None -> ""
+  }
+  let orch =
+    driver_orchestrator_with_env(root, repo, script, [
+      #("PATH", bin <> ":" <> inherited_path),
+      #("SCHERZO_REAL_JJ", real_jj_path),
+    ])
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      driver_dag(),
+      orch,
+      empty_tracker(),
+      [],
+      "run-abandon-failure",
+      workflow_run.default_dependencies(),
+    )
+
+  assert simplifile.is_directory(success.run_root) == Ok(False)
+}
+
+pub fn jj_workspace_driver_remove_preserves_bookmarked_commit_smoke_test() {
+  let root = "test/tmp/jj-workspace-driver-protected-remove"
+  reset_dir(root)
+  let repo = setup_jj_repo(root)
+  let run_root = absolute(root <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let script = absolute("scripts/scherzo-workspace-jj")
+  let setup =
+    command_step.run(
+      "setup_protected_jj_workspace",
+      "mkdir -p "
+        <> test_helpers.shell_quote(run_root <> "/workspaces")
+        <> " && jj --repository "
+        <> test_helpers.shell_quote(repo)
+        <> " workspace add --name protected-remove -r main "
+        <> test_helpers.shell_quote(workspace)
+        <> " && cd "
+        <> test_helpers.shell_quote(workspace)
+        <> " && printf 'protected\\n' > protected.txt"
+        <> " && jj status --color=never >/dev/null"
+        <> " && jj describe -m protected"
+        <> " && jj bookmark set protected-remove -r @",
+      ".",
+      20_000,
+      [],
+      test_helpers.default_artifact_limits(),
+    )
+  assert setup.status == step_artifact.StepSucceeded
+
+  let remove =
+    command_step.run(
+      "remove_protected_jj_workspace",
+      "env SCHERZO_WORKSPACE_PATH="
+        <> test_helpers.shell_quote(workspace)
+        <> " SCHERZO_RUN_ROOT="
+        <> test_helpers.shell_quote(run_root)
+        <> " SCHERZO_REPO_ROOT="
+        <> test_helpers.shell_quote(repo)
+        <> " "
+        <> test_helpers.shell_quote(script)
+        <> " lifecycle remove",
+      ".",
+      20_000,
+      [],
+      test_helpers.default_artifact_limits(),
+    )
+  assert remove.status == step_artifact.StepSucceeded
+  assert simplifile.is_directory(workspace) == Ok(False)
+
+  let protected =
+    command_step.run(
+      "inspect_protected_jj_commit",
+      "jj --repository "
+        <> test_helpers.shell_quote(repo)
+        <> " --ignore-working-copy log -r protected-remove --no-graph -T description",
+      ".",
+      20_000,
+      [],
+      test_helpers.default_artifact_limits(),
+    )
+  assert protected.status == step_artifact.StepSucceeded
+  assert string.trim(protected.stdout) == "protected"
 }
 
 fn absolute(value: String) -> String {

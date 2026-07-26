@@ -48,6 +48,8 @@ PORTABLE_SCHERZO_LINKS = [
 ]
 DEFAULT_BASE_CANDIDATES = ["main@origin", "main", "@"]
 OUTPUT_TEXT_LIMIT = 4000
+BEST_EFFORT_REMOVE_TIMEOUT_SECONDS = 0.5
+REMOVE_CANDIDATE_MARKER = "scherzo-remove-candidate"
 ERROR_CHANNEL_HUMAN = "human"
 ERROR_CHANNEL_JSON = "json"
 
@@ -903,12 +905,73 @@ def lifecycle_create() -> None:
     allow_trusted_envrc_after_create(workspace_path)
 
 
-def forget_workspace_at(target: Path) -> None:
+def best_effort_remove_warning(message: str, detail: str = "") -> None:
+    try:
+        print(f"scherzo-workspace-jj: warning: {message}", file=sys.stderr)
+        if detail:
+            print(detail[:OUTPUT_TEXT_LIMIT], file=sys.stderr)
+    except Exception:
+        # History cleanup is strictly less important than preserving the
+        # workflow's existing workspace-removal outcome.
+        pass
+
+
+def best_effort_removal_candidate(target: Path) -> str | None:
+    try:
+        inspected = run_command(
+            [
+                "jj",
+                "--ignore-working-copy",
+                "log",
+                "-r",
+                "@",
+                "--no-graph",
+                "-T",
+                f'concat(commit_id, " {REMOVE_CANDIDATE_MARKER}")',
+            ],
+            cwd=target,
+            timeout=BEST_EFFORT_REMOVE_TIMEOUT_SECONDS,
+            missing_command_message="jj executable not found",
+        )
+        if inspected.returncode != 0:
+            best_effort_remove_warning(
+                f"could not inspect disposable jj commit at {target}; continuing removal without history cleanup",
+                inspected.stderr or inspected.stdout,
+            )
+            return None
+        suffix = f" {REMOVE_CANDIDATE_MARKER}"
+        output = inspected.stdout.strip()
+        if not output:
+            return None
+        if not output.endswith(suffix):
+            best_effort_remove_warning(
+                f"jj returned an invalid disposable commit candidate at {target}; continuing removal without history cleanup"
+            )
+            return None
+        commit_id = output[: -len(suffix)]
+        if EXPECTED_HEAD_RE.fullmatch(commit_id) is None:
+            best_effort_remove_warning(
+                f"jj returned an invalid disposable commit ID at {target}; continuing removal without history cleanup"
+            )
+            return None
+        return commit_id
+    except (Exception, SystemExit) as exc:
+        best_effort_remove_warning(
+            f"could not inspect disposable jj commit at {target}; continuing removal without history cleanup",
+            str(exc),
+        )
+        return None
+
+
+def forget_workspace_at(target: Path) -> str | None:
     if not target.is_dir():
-        return
-    root_proc = run_command(["jj", "root"], cwd=target, missing_command_message="jj executable not found")
+        return None
+    root_proc = run_command(
+        ["jj", "root"], cwd=target, missing_command_message="jj executable not found"
+    )
     if root_proc.returncode != 0:
-        return
+        return None
+    removal_candidate = best_effort_removal_candidate(target)
     # Cleanup must be able to forget workspaces left stale by concurrent
     # workflow lanes. We are deleting the workspace tree anyway, so avoid
     # snapshot/update of the working copy during this metadata operation.
@@ -920,28 +983,97 @@ def forget_workspace_at(target: Path) -> None:
     )
     if status.returncode != 0:
         fail(f"could not forget jj workspace: {target}")
+    return removal_candidate
 
 
-def forget_workspace_children(base: Path) -> None:
+def forget_workspace_children(base: Path) -> list[str]:
+    candidates: list[str] = []
     if not base.is_dir():
-        return
+        return candidates
     for target in sorted(base.iterdir()):
         if target.is_symlink():
             continue
         if target.is_dir() and (target / ".jj").is_dir():
-            forget_workspace_at(target)
+            candidate = forget_workspace_at(target)
+            if candidate is not None and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
 
 
-def forget_run_workspaces(workspace_path: Path, run_root: Path | None) -> None:
+def forget_run_workspaces(workspace_path: Path, run_root: Path | None) -> list[str]:
     if run_root is not None:
-        forget_workspace_children(run_root / "workspaces")
-        return
+        return forget_workspace_children(run_root / "workspaces")
     # Daemon cleanup always passes SCHERZO_RUN_ROOT and forgets every manifest
     # workspace under that run root. Without SCHERZO_RUN_ROOT, only the explicit
     # workspace path is supported; do not infer a legacy run root from
     # SCHERZO_WORKSPACE_PATH/workspaces.
     if (workspace_path / ".jj").is_dir():
-        forget_workspace_at(workspace_path)
+        candidate = forget_workspace_at(workspace_path)
+        return [candidate] if candidate is not None else []
+    return []
+
+
+def best_effort_abandon_forgotten_commits(candidates: list[str]) -> None:
+    if not candidates:
+        return
+    try:
+        raw_repo_root = env_value("SCHERZO_REPO_ROOT")
+        if raw_repo_root is None:
+            best_effort_remove_warning(
+                "SCHERZO_REPO_ROOT is unavailable; continuing removal without jj history cleanup"
+            )
+            return
+        repo_root = Path(raw_repo_root).resolve(strict=True)
+        if not (repo_root / ".jj").is_dir():
+            best_effort_remove_warning(
+                f"configured repository is not a jj root: {repo_root}; continuing removal without history cleanup"
+            )
+            return
+
+        candidate_set = "(" + " | ".join(candidates) + ")"
+        protected_refs = (
+            '(bookmarks() | remote_bookmarks(remote="*") | tags() | '
+            'remote_tags(remote="*") | immutable())'
+        )
+        # Re-evaluate every guard in the abandon operation itself. A candidate
+        # is disposable only while it is visible, no longer a working copy, not
+        # an ancestor of a durable ref, and has no descendants outside this
+        # run's captured workspace commits.
+        disposable = (
+            f"{candidate_set} & all() & ~working_copies() & ~::{protected_refs} "
+            f"& ~::(({candidate_set}):: ~ {candidate_set})"
+        )
+        selected = run_jj(
+            repo_root,
+            ["log", "-r", disposable, "--no-graph", "-T", "commit_id"],
+            ignore_working_copy=True,
+            timeout=BEST_EFFORT_REMOVE_TIMEOUT_SECONDS,
+        )
+        if selected.returncode != 0:
+            best_effort_remove_warning(
+                "could not verify forgotten jj commits are disposable; continuing removal without history cleanup",
+                selected.stderr or selected.stdout,
+            )
+            return
+        if not selected.stdout.strip():
+            return
+
+        abandoned = run_jj(
+            repo_root,
+            ["abandon", "-r", disposable],
+            ignore_working_copy=True,
+            timeout=BEST_EFFORT_REMOVE_TIMEOUT_SECONDS,
+        )
+        if abandoned.returncode != 0:
+            best_effort_remove_warning(
+                "could not abandon forgotten jj workspace commits; continuing removal",
+                abandoned.stderr or abandoned.stdout,
+            )
+    except (Exception, SystemExit) as exc:
+        best_effort_remove_warning(
+            "unexpected error while abandoning forgotten jj workspace commits; continuing removal",
+            str(exc),
+        )
 
 
 def remove_workspace_directory(workspace_path: Path, run_root: Path | None) -> None:
@@ -960,7 +1092,8 @@ def lifecycle_remove() -> None:
     validate_remove_target(workspace_path, run_root)
     if shutil.which("jj") is None:
         return
-    forget_run_workspaces(workspace_path, run_root)
+    removal_candidates = forget_run_workspaces(workspace_path, run_root)
+    best_effort_abandon_forgotten_commits(removal_candidates)
     remove_workspace_directory(workspace_path, run_root)
 
 

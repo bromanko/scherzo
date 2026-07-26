@@ -13,6 +13,8 @@ import support/test_helpers
 @external(erlang, "erlang", "unique_integer")
 fn unique_integer() -> Int
 
+const removal_candidate = "1111111111111111111111111111111111111111"
+
 fn tmp_fixture_dir(name: String) -> String {
   let base = case path.env("TMPDIR") {
     Some(value) -> value
@@ -90,6 +92,17 @@ fn write_fake_jj(path: String) -> Nil {
         <> "      *) shift ;;\n"
         <> "    esac\n"
         <> "  done\n"
+        <> "  case \"$template\" in *scherzo-remove-candidate*)\n"
+        <> "    if [ -n \"${SCHERZO_FAKE_JJ_REMOVE_CAPTURE_SLEEP_SECONDS:-}\" ]; then sleep \"$SCHERZO_FAKE_JJ_REMOVE_CAPTURE_SLEEP_SECONDS\"; fi\n"
+        <> "    if [ \"${SCHERZO_FAKE_JJ_REMOVE_CAPTURE_FAIL:-}\" = 1 ]; then echo 'simulated removal candidate failure' >&2; exit 1; fi\n"
+        <> "    if [ -n \"${SCHERZO_FAKE_JJ_REMOVE_CANDIDATE:-}\" ]; then printf '%s scherzo-remove-candidate' \"$SCHERZO_FAKE_JJ_REMOVE_CANDIDATE\"; fi\n"
+        <> "    exit 0\n"
+        <> "  ;; esac\n"
+        <> "  case \"$revision\" in *working_copies*)\n"
+        <> "    if [ \"${SCHERZO_FAKE_JJ_REMOVE_VERIFY_FAIL:-}\" = 1 ]; then echo 'simulated removal safety failure' >&2; exit 1; fi\n"
+        <> "    if [ \"${SCHERZO_FAKE_JJ_REMOVE_PROTECTED:-}\" != 1 ]; then printf '%s' \"${SCHERZO_FAKE_JJ_REMOVE_CANDIDATE:-}\"; fi\n"
+        <> "    exit 0\n"
+        <> "  ;; esac\n"
         <> "  case \"$revision\" in conflicts*) if [ \"${SCHERZO_FAKE_JJ_HAS_CONFLICTS:-}\" = 1 ]; then printf '%s\\n' \"${SCHERZO_FAKE_JJ_CONFLICT_CHANGE:-conflict}\"; fi; exit 0 ;; esac\n"
         <> "  for missing in ${SCHERZO_FAKE_JJ_MISSING_REVISIONS:-}; do\n"
         <> "    if [ \"$revision\" = \"$missing\" ]; then exit 1; fi\n"
@@ -166,6 +179,11 @@ fn write_fake_jj(path: String) -> Nil {
         <> "  if [ \"${SCHERZO_FAKE_JJ_RESOLVE_LIST_FAIL:-}\" = 1 ]; then printf '%s\\n' \"${SCHERZO_FAKE_JJ_RESOLVE_LIST_FAIL_MESSAGE:-simulated resolve list failure}\" >&2; exit 1; fi\n"
         <> "  if [ \"${SCHERZO_FAKE_JJ_RESOLVE_NO_CONFLICTS_NONZERO:-}\" = 1 ]; then printf '%s\\n' 'No conflicts found' >&2; exit 1; fi\n"
         <> "  printf '%s' \"${SCHERZO_FAKE_JJ_RESOLVE_LIST:-}\"\n"
+        <> "  exit 0\n"
+        <> "fi\n"
+        <> "if [ \"$1\" = abandon ]; then\n"
+        <> "  if [ -n \"${SCHERZO_FAKE_JJ_REMOVE_ABANDON_SLEEP_SECONDS:-}\" ]; then sleep \"$SCHERZO_FAKE_JJ_REMOVE_ABANDON_SLEEP_SECONDS\"; fi\n"
+        <> "  if [ \"${SCHERZO_FAKE_JJ_REMOVE_ABANDON_FAIL:-}\" = 1 ]; then echo 'simulated abandon failure' >&2; exit 1; fi\n"
         <> "  exit 0\n"
         <> "fi\n"
         <> "if [ \"$1\" = workspace ] && [ \"$2\" = forget ]; then\n"
@@ -2733,7 +2751,12 @@ pub fn jj_driver_lifecycle_remove_skips_portable_scherzo_bridge_test() {
     )
 
   assert_exit(artifact, 0)
-  assert log_lines(log) == ["root", "--ignore-working-copy workspace forget"]
+  assert log_lines(log)
+    == [
+      "root",
+      "--ignore-working-copy log -r @ --no-graph -T concat(commit_id, \" scherzo-remove-candidate\")",
+      "--ignore-working-copy workspace forget",
+    ]
 }
 
 pub fn jj_driver_lifecycle_remove_forgets_run_workspaces_test() {
@@ -2751,7 +2774,158 @@ pub fn jj_driver_lifecycle_remove_forgets_run_workspaces_test() {
     )
 
   assert_exit(artifact, 0)
-  assert log_lines(log) == ["root", "--ignore-working-copy workspace forget"]
+  assert log_lines(log)
+    == [
+      "root",
+      "--ignore-working-copy log -r @ --no-graph -T concat(commit_id, \" scherzo-remove-candidate\")",
+      "--ignore-working-copy workspace forget",
+    ]
+}
+
+pub fn jj_driver_lifecycle_remove_abandons_disposable_commit_test() {
+  let dir = "test/tmp/jj-workspace-driver-remove-abandon"
+  let #(repo, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_abandon",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_RUN_ROOT", run_root),
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_FAKE_JJ_REMOVE_CANDIDATE", removal_candidate),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert simplifile.is_directory(workspace) == Ok(False)
+  assert count_log_lines_containing(log, "abandon -r") == 1
+}
+
+pub fn jj_driver_lifecycle_remove_abandon_failure_is_non_fatal_test() {
+  let dir = "test/tmp/jj-workspace-driver-remove-abandon-failure"
+  let #(repo, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_abandon_failure",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_RUN_ROOT", run_root),
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_FAKE_JJ_REMOVE_CANDIDATE", removal_candidate),
+        #("SCHERZO_FAKE_JJ_REMOVE_ABANDON_FAIL", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert simplifile.is_directory(workspace) == Ok(False)
+  assert string.contains(artifact.stderr, "simulated abandon failure")
+  assert string.contains(artifact.stderr, "continuing removal")
+}
+
+pub fn jj_driver_lifecycle_remove_abandon_timeout_is_non_fatal_test() {
+  let dir = tmp_fixture_dir("jj-workspace-driver-remove-abandon-timeout")
+  let #(repo, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_abandon_timeout",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_RUN_ROOT", run_root),
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_FAKE_JJ_REMOVE_CANDIDATE", removal_candidate),
+        #("SCHERZO_FAKE_JJ_REMOVE_ABANDON_SLEEP_SECONDS", "2"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert simplifile.is_directory(workspace) == Ok(False)
+  assert string.contains(artifact.stderr, "timed out after 0.5 seconds")
+  assert string.contains(artifact.stderr, "continuing removal")
+}
+
+pub fn jj_driver_lifecycle_remove_safety_failure_is_non_fatal_test() {
+  let dir = "test/tmp/jj-workspace-driver-remove-safety-failure"
+  let #(repo, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_safety_failure",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_RUN_ROOT", run_root),
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_FAKE_JJ_REMOVE_CANDIDATE", removal_candidate),
+        #("SCHERZO_FAKE_JJ_REMOVE_VERIFY_FAIL", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert simplifile.is_directory(workspace) == Ok(False)
+  assert string.contains(artifact.stderr, "simulated removal safety failure")
+  assert string.contains(artifact.stderr, "continuing removal")
+  assert count_log_lines_containing(log, "abandon -r") == 0
+}
+
+pub fn jj_driver_lifecycle_remove_inspection_timeout_is_non_fatal_test() {
+  let dir = tmp_fixture_dir("jj-workspace-driver-remove-inspection-timeout")
+  let #(_, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_inspection_timeout",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_RUN_ROOT", run_root),
+        #("SCHERZO_FAKE_JJ_REMOVE_CAPTURE_SLEEP_SECONDS", "2"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert simplifile.is_directory(workspace) == Ok(False)
+  assert string.contains(artifact.stderr, "timed out after 0.5 seconds")
+  assert count_log_lines_containing(log, "abandon -r") == 0
+}
+
+pub fn jj_driver_lifecycle_remove_preserves_protected_commit_test() {
+  let dir = "test/tmp/jj-workspace-driver-remove-protected"
+  let #(repo, _, bin, log) = setup_driver_fixture(dir)
+  let run_root = absolute(dir <> "/run")
+  let workspace = run_root <> "/workspaces/main"
+  let assert Ok(Nil) = simplifile.create_directory_all(workspace <> "/.jj")
+
+  let artifact =
+    run_jj(
+      "jj_driver_remove_protected",
+      "lifecycle remove",
+      fake_env(workspace, bin, log, [
+        #("SCHERZO_RUN_ROOT", run_root),
+        #("SCHERZO_REPO_ROOT", repo),
+        #("SCHERZO_FAKE_JJ_REMOVE_CANDIDATE", removal_candidate),
+        #("SCHERZO_FAKE_JJ_REMOVE_PROTECTED", "1"),
+      ]),
+    )
+
+  assert_exit(artifact, 0)
+  assert simplifile.is_directory(workspace) == Ok(False)
+  assert count_log_lines_containing(log, "abandon -r") == 0
 }
 
 pub fn jj_driver_lifecycle_remove_without_run_root_does_not_infer_run_root_test() {
@@ -2794,7 +2968,12 @@ pub fn jj_driver_lifecycle_remove_surfaces_forget_failure_test() {
   assert string.contains(artifact.stderr, "simulated forget failure")
   assert string.contains(artifact.stderr, "could not forget jj workspace")
   assert simplifile.is_directory(run_root) == Ok(True)
-  assert log_lines(log) == ["root", "--ignore-working-copy workspace forget"]
+  assert log_lines(log)
+    == [
+      "root",
+      "--ignore-working-copy log -r @ --no-graph -T concat(commit_id, \" scherzo-remove-candidate\")",
+      "--ignore-working-copy workspace forget",
+    ]
 }
 
 pub fn jj_driver_lifecycle_remove_rejects_unsafe_targets_test() {
