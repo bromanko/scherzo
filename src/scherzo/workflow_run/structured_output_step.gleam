@@ -628,9 +628,13 @@ fn receipt_json_for_tool(
   case tool_calls {
     [] -> None
     [call, ..rest] ->
-      case call.name == tool_name, call.receipt_json {
-        True, Some(receipt_json) -> Some(receipt_json)
-        _, _ -> receipt_json_for_tool(rest, tool_name)
+      case
+        call.name == tool_name,
+        result_artifact.tool_call_succeeded(call),
+        call.receipt_json
+      {
+        True, True, Some(receipt_json) -> Some(receipt_json)
+        _, _, _ -> receipt_json_for_tool(rest, tool_name)
       }
   }
 }

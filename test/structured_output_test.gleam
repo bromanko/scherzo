@@ -301,6 +301,72 @@ pub fn pi_tool_call_source_accepts_matching_successful_object_arguments_test() {
   assert json_value.object_has_key(entries, "artifact_type")
 }
 
+pub fn failed_then_successful_tool_call_retains_successful_arguments_test() {
+  let assert Ok(structured_output.StructuredOutputPresent(payload)) =
+    validate_tool_source([
+      tool_call("submit_example_artifact", Some("{not json"), Some("failed"), 1),
+      tool_call(
+        "submit_example_artifact",
+        Some(
+          "{\"schema_version\":1,\"artifact_type\":\"example\",\"selected\":\"corrected\"}",
+        ),
+        Some("success"),
+        1,
+      ),
+    ])
+
+  assert string.contains(payload, "\"selected\":\"corrected\"")
+}
+
+pub fn successful_then_failed_tool_call_retains_successful_arguments_test() {
+  let assert Ok(structured_output.StructuredOutputPresent(payload)) =
+    validate_tool_source([
+      tool_call(
+        "submit_example_artifact",
+        Some(
+          "{\"schema_version\":1,\"artifact_type\":\"example\",\"selected\":\"corrected\"}",
+        ),
+        Some("succeeded"),
+        1,
+      ),
+      tool_call("submit_example_artifact", Some("{not json"), Some("failed"), 1),
+    ])
+
+  assert string.contains(payload, "\"selected\":\"corrected\"")
+}
+
+pub fn multiple_failed_tool_calls_report_failed_not_multiple_test() {
+  let assert Error(error) =
+    validate_tool_source([
+      tool_call("submit_example_artifact", Some("{not json"), Some("failed"), 1),
+      tool_call("submit_example_artifact", Some("[]"), None, 1),
+    ])
+
+  assert structured_output.error_code(error)
+    == "structured_output_tool_call_failed"
+}
+
+pub fn multiple_successful_tool_calls_still_report_multiple_test() {
+  let assert Error(error) =
+    validate_tool_source([
+      tool_call(
+        "submit_example_artifact",
+        Some("{\"schema_version\":1,\"artifact_type\":\"first\"}"),
+        Some("success"),
+        1,
+      ),
+      tool_call(
+        "submit_example_artifact",
+        Some("{\"schema_version\":1,\"artifact_type\":\"second\"}"),
+        Some("success"),
+        1,
+      ),
+    ])
+
+  assert structured_output.error_code(error)
+    == "structured_output_tool_call_multiple"
+}
+
 pub fn json_schema_validator_runs_for_final_response_source_test() {
   let source = structured_output_source.FinalResponseSource
   let spec =

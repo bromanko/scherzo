@@ -349,25 +349,44 @@ fn validate_phase_payload(
   phase: String,
   artifact: result_artifact.ResultArtifact,
 ) -> PhaseResult {
-  let matching =
-    list.filter(artifact.tool_calls, fn(call) {
-      call.name == tool.tool_spec.tool_name
-    })
-  case matching {
-    [call] -> validate_tool_call(tool.step_id, phase, call)
-    [] ->
+  validate_phase_tool_calls(
+    tool.step_id,
+    phase,
+    tool.tool_spec.tool_name,
+    artifact.tool_calls,
+  )
+}
+
+pub fn validate_phase_tool_calls(
+  step_id: String,
+  phase: String,
+  tool_name: String,
+  tool_calls: List(result_artifact.ToolCallSubmission),
+) -> PhaseResult {
+  let matching = list.filter(tool_calls, fn(call) { call.name == tool_name })
+  let successful = list.filter(matching, result_artifact.tool_call_succeeded)
+  case matching, successful {
+    [], _ ->
       phase_failed(
-        tool.step_id,
+        step_id,
         phase,
         payload_failure_code(phase),
         "provider response did not include the required review-lane tool call",
       )
-    _ ->
+    _, [] ->
       phase_failed(
-        tool.step_id,
+        step_id,
+        phase,
+        "provider_tool_call_failed",
+        "review-lane tool calls did not report successful completion",
+      )
+    _, [call] -> validate_tool_call(step_id, phase, call)
+    _, _ ->
+      phase_failed(
+        step_id,
         phase,
         payload_failure_code(phase),
-        "provider response included multiple review-lane tool calls",
+        "provider response included multiple successful review-lane tool calls",
       )
   }
 }
@@ -377,42 +396,32 @@ fn validate_tool_call(
   phase: String,
   call: result_artifact.ToolCallSubmission,
 ) -> PhaseResult {
-  case tool_call_succeeded(call.status) {
-    False ->
+  case call.arguments_json {
+    None ->
       phase_failed(
         step_id,
         phase,
-        "provider_tool_call_failed",
-        "review-lane tool call did not report successful completion",
+        payload_failure_code(phase),
+        "review-lane tool call did not include JSON arguments",
       )
-    True ->
-      case call.arguments_json {
-        None ->
+    Some(arguments_json) ->
+      case json_value.parse(arguments_json) {
+        Error(Nil) ->
           phase_failed(
             step_id,
             phase,
             payload_failure_code(phase),
-            "review-lane tool call did not include JSON arguments",
+            "review-lane tool call arguments were not valid JSON",
           )
-        Some(arguments_json) ->
-          case json_value.parse(arguments_json) {
-            Error(Nil) ->
-              phase_failed(
-                step_id,
-                phase,
-                payload_failure_code(phase),
-                "review-lane tool call arguments were not valid JSON",
-              )
-            Ok(json_value.JObject(entries)) ->
-              validate_submission_object(step_id, phase, entries)
-            Ok(_) ->
-              phase_failed(
-                step_id,
-                phase,
-                payload_failure_code(phase),
-                "review-lane tool call arguments must be a JSON object",
-              )
-          }
+        Ok(json_value.JObject(entries)) ->
+          validate_submission_object(step_id, phase, entries)
+        Ok(_) ->
+          phase_failed(
+            step_id,
+            phase,
+            payload_failure_code(phase),
+            "review-lane tool call arguments must be a JSON object",
+          )
       }
   }
 }
@@ -543,16 +552,6 @@ fn first_failed(phases: List(PhaseResult)) -> Option(PhaseResult) {
         True -> Some(phase)
         False -> first_failed(rest)
       }
-  }
-}
-
-fn tool_call_succeeded(status: Option(String)) -> Bool {
-  case status {
-    Some(value) -> {
-      let normalized = value |> string.trim |> string.lowercase
-      normalized == "success" || normalized == "succeeded"
-    }
-    None -> False
   }
 }
 

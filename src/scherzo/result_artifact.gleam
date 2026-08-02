@@ -32,6 +32,16 @@ pub type ResultArtifact {
   )
 }
 
+pub fn tool_call_succeeded(call: ToolCallSubmission) -> Bool {
+  case call.status {
+    Some(value) -> {
+      let normalized = string.lowercase(string.trim(value))
+      normalized == "success" || normalized == "succeeded"
+    }
+    None -> False
+  }
+}
+
 pub fn empty() -> ResultArtifact {
   from_final_response(None, False, "none")
 }

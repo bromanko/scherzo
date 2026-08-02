@@ -2659,6 +2659,75 @@ pub fn pi_tool_call_source_persists_retained_structured_artifact_test() {
   assert !string.contains(contents, "final_json_should_be_ignored")
 }
 
+pub fn failed_then_successful_tool_call_retains_correction_without_retry_test() {
+  let subject = process.new_subject()
+  let agent_subject = process.new_subject()
+  let root = "test/tmp/workflow-run/tool-source-correction"
+  test_helpers.reset_dir(root)
+  let result =
+    result_artifact.from_final_response_with_tool_calls(None, False, "test", [
+      result_artifact.ToolCallSubmission(
+        name: "submit_example_artifact",
+        arguments_json: Some(
+          "{\"schema_version\":1,\"artifact_type\":\"example\",\"findings\":[]}",
+        ),
+        status: Some("failed"),
+        sibling_count: 1,
+        receipt_json: Some("{\"call\":\"failed\"}"),
+      ),
+      result_artifact.ToolCallSubmission(
+        name: "submit_example_artifact",
+        arguments_json: Some(
+          "{\"schema_version\":1,\"artifact_type\":\"example\",\"findings\":[\"corrected\"]}",
+        ),
+        status: Some("success"),
+        sibling_count: 1,
+        receipt_json: Some("{\"call\":\"corrected\"}"),
+      ),
+    ])
+  let base = deps(subject, None)
+  let dependencies =
+    workflow_run.Dependencies(
+      ..base,
+      agent_step: fn(
+        _issue,
+        _context,
+        prompt_mode,
+        _attempt_context,
+        _effective,
+        _tracker,
+        _emit_update,
+        _command_ready,
+        _record_pi_session,
+      ) {
+        process.send(agent_subject, prompt_mode_name(prompt_mode))
+        Ok(success_agent_with_result(result))
+      },
+      checkpoint: workflow_checkpoint.ledger_writer(root, fn() { 123 }),
+    )
+
+  let assert Ok(success) =
+    workflow_run.execute(
+      issue(),
+      tool_call_structured_output_dag(),
+      orchestrator(),
+      empty_tracker(),
+      [],
+      "run-1",
+      dependencies,
+    )
+
+  assert test_async.expect_message(agent_subject) == "original"
+  test_async.assert_no_extra_message(agent_subject)
+  let assert Ok(artifact) = dict.get(success.artifacts, "example_json")
+  let assert Some(step_artifact.StructuredOutputValid(metadata)) =
+    artifact.structured_output
+  assert metadata.retry == None
+  assert metadata.source_receipt_json == Some("{\"call\":\"corrected\"}")
+  let assert Ok(contents) = simplifile.read(metadata.path)
+  assert string.contains(contents, "\"findings\":[\"corrected\"]")
+}
+
 pub fn final_json_without_configured_tool_call_source_fails_test() {
   let subject = process.new_subject()
   let assert Error(failure) =

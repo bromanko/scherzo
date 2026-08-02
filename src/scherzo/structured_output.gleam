@@ -363,24 +363,40 @@ fn validate_tool_call_source(
   let matching = matching_tool_calls(agent_result.tool_calls, tool_name)
   case matching {
     [] -> missing_tool_call_result(spec, tool_name, agent_result.tool_calls)
-    [call] ->
-      validate_single_tool_call(
-        spec,
-        call,
-        tool_name,
-        secrets,
-        validator_runner,
-      )
-    [_, ..] ->
-      Error(tool_source_error(
-        spec,
-        "structured_output_tool_call_multiple",
-        "expected exactly one successful Pi tool call named `"
-          <> tool_name
-          <> "` for structured artifact `"
-          <> spec.artifact_name
-          <> "`, but multiple matching calls were observed",
-      ))
+    [_, ..] -> {
+      let successful =
+        list.filter(matching, result_artifact.tool_call_succeeded)
+      case successful {
+        [] ->
+          Error(tool_source_error(
+            spec,
+            "structured_output_tool_call_failed",
+            "Pi tool calls named `"
+              <> tool_name
+              <> "` for structured artifact `"
+              <> spec.artifact_name
+              <> "` did not report successful completion",
+          ))
+        [call] ->
+          validate_single_tool_call(
+            spec,
+            call,
+            tool_name,
+            secrets,
+            validator_runner,
+          )
+        [_, ..] ->
+          Error(tool_source_error(
+            spec,
+            "structured_output_tool_call_multiple",
+            "expected exactly one successful Pi tool call named `"
+              <> tool_name
+              <> "` for structured artifact `"
+              <> spec.artifact_name
+              <> "`, but multiple successful matching calls were observed",
+          ))
+      }
+    }
   }
 }
 
@@ -403,26 +419,13 @@ fn validate_single_tool_call(
           <> "` was submitted in the same assistant batch as another tool call",
       ))
     False ->
-      case successful_tool_status(call.status) {
-        False ->
-          Error(tool_source_error(
-            spec,
-            "structured_output_tool_call_failed",
-            "Pi tool call `"
-              <> tool_name
-              <> "` for structured artifact `"
-              <> spec.artifact_name
-              <> "` did not report successful completion",
-          ))
-        True ->
-          validate_tool_call_arguments(
-            spec,
-            call,
-            tool_name,
-            secrets,
-            validator_runner,
-          )
-      }
+      validate_tool_call_arguments(
+        spec,
+        call,
+        tool_name,
+        secrets,
+        validator_runner,
+      )
   }
 }
 
@@ -542,16 +545,6 @@ fn missing_tool_call_result(
           <> spec.artifact_name
           <> "`, but only different tool names were observed",
       ))
-  }
-}
-
-fn successful_tool_status(status: Option(String)) -> Bool {
-  case status {
-    Some(value) -> {
-      let normalized = string.lowercase(string.trim(value))
-      normalized == "success" || normalized == "succeeded"
-    }
-    None -> False
   }
 }
 
