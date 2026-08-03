@@ -11,17 +11,17 @@
 
 buildNpmPackage rec {
   pname = "pi";
-  version = "0.82.1-rpc-progress";
+  version = "0.83.0-rpc-progress";
 
   src = fetchurl {
-    url = "https://github.com/earendil-works/pi/releases/download/v0.82.1/pi-0.82.1-source.tar.gz";
-    hash = "sha256-5+37qJvEsxaD95IJtZoBudYnMC1p/y34ve6o9fY87XM=";
+    url = "https://github.com/earendil-works/pi/releases/download/v0.83.0/pi-0.83.0-source.tar.gz";
+    hash = "sha256-8iW4fsO0gl3VuU6SKoYpVYrdyjGhtNLCBq5Zio4mksA=";
   };
 
   patches = [ ./patches/pi-rpc-message-progress.patch ];
 
   nodejs = nodejs_22;
-  npmDepsHash = "sha256-+7Kss4l85CSC84Y9qHp65AXjxIlsWzITPuA6uqQ+9XE=";
+  npmDepsHash = "sha256-9UNt/vgx9ZHtzaL8vPGVsVZYuF9eVF2pAtAK799C9WA=";
   npmDepsFetcherVersion = 2;
   makeCacheWritable = true;
   npmRebuildFlags = [ "--ignore-scripts" ];
