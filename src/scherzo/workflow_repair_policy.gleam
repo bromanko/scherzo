@@ -63,6 +63,20 @@ pub fn has_repairable_boundary(
   }
 }
 
+pub fn repairable_step_ids(
+  attempts: List(projection.StepAttemptStatus),
+  dag: workflow_dag.WorkflowDag,
+  terminal_failed terminal_failed: Bool,
+) -> List(String) {
+  let direct = repair_boundaries(attempts)
+  let stale = case terminal_failed {
+    True -> stale_active_repair_boundaries(attempts, dag)
+    False -> []
+  }
+  list.append(direct, stale)
+  |> list.map(fn(boundary) { boundary.step_id })
+}
+
 pub fn validate_run_root(
   run_id: String,
   run_root: String,

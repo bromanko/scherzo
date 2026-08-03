@@ -257,13 +257,21 @@ pub fn retry_dry_run(
           attempts,
           workspace_root,
         )
+      let boundary_step =
+        boundary_step_id(retry_plan, selected_boundary.step_id)
       Ok(RetryDryRunPlan(
         run_id: run.run_id,
         issue_identifier: issue.identifier,
         requested_step_id: selected_boundary.step_id,
         safe_point: retry_plan.safe_point,
         preserved_step_ids: retry_plan.preserved_step_ids,
-        discarded_step_ids: retry_plan.discarded_step_ids,
+        discarded_step_ids: excluded_steps_for_total_plan(
+          dag,
+          boundary_step,
+          retry_plan,
+          attempts,
+          run.terminal_failed,
+        ),
         reason: retry_plan.reason,
         summary: retry_plan.summary,
       ))
@@ -506,7 +514,16 @@ fn repair_boundary_for_planning_mode(
           attempt_index: selected_attempt_index,
           normalization_records: selected_boundary.normalization_records,
         )
-      #(boundary, excluded_steps_for_plan(dag, boundary_step, retry_plan))
+      #(
+        boundary,
+        excluded_steps_for_total_plan(
+          dag,
+          boundary_step,
+          retry_plan,
+          attempts,
+          run.terminal_failed,
+        ),
+      )
     }
   }
 }
@@ -1856,18 +1873,39 @@ fn latest_attempt_index_for_step(
   })
 }
 
-fn excluded_steps_for_plan(
+fn excluded_steps_for_total_plan(
   dag: workflow_dag.WorkflowDag,
   selected_step_id: String,
   retry_plan: workflow_retry_planner.RetryPlan,
+  attempts: List(projection.StepAttemptStatus),
+  terminal_failed: Bool,
 ) -> List(String) {
-  case retry_plan.safe_point {
+  let selected_branch = case retry_plan.safe_point {
     workflow_retry_planner.FreshStart ->
       dag
       |> workflow_dag.steps
       |> list.map(fn(step) { step.id })
     _ -> descendants_including_self(dag, selected_step_id)
   }
+  workflow_repair_policy.repairable_step_ids(
+    attempts,
+    dag,
+    terminal_failed: terminal_failed,
+  )
+  |> list.fold(selected_branch, fn(excluded, step_id) {
+    list.append(descendants_including_self(dag, step_id), excluded)
+  })
+  |> step_ids_in_dag_order(dag)
+}
+
+fn step_ids_in_dag_order(
+  step_ids: List(String),
+  dag: workflow_dag.WorkflowDag,
+) -> List(String) {
+  dag
+  |> workflow_dag.steps
+  |> list.map(fn(step) { step.id })
+  |> list.filter(fn(step_id) { list.contains(step_ids, step_id) })
 }
 
 fn current_or_recorded(current: String, recorded: String) -> String {

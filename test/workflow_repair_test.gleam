@@ -461,6 +461,49 @@ pub fn retry_step_requires_step_when_terminal_failed_run_has_multiple_stale_agen
   assert workflow_repair.describe_error(error) == "ambiguous_repair_step"
 }
 
+pub fn retry_step_restarts_parallel_stale_agents_without_session_facts_test() {
+  let root = "test/tmp/workflow-repair"
+  let run_root = recovery_run_root(root)
+  test_helpers.reset_dir(root)
+  ensure_directory(run_root)
+  let projection =
+    projection.fold(terminal_failed_stale_multi_agent_run_records())
+  let assert Ok(dag) = workflow_dag.parse(multiple_stale_agent_workflow_yaml())
+  let observation = current_recovery_workflow(dag, root)
+
+  let assert Ok(plan) =
+    workflow_repair.plan(
+      projection,
+      command.RetryWorkflowStepRunId("run-1"),
+      Some("first_agent"),
+      observation,
+    )
+  assert has_superseded_candidate_attempt(
+    plan.candidate.attempts,
+    "first_agent",
+    1,
+    2,
+  )
+  assert has_superseded_candidate_attempt(
+    plan.candidate.attempts,
+    "second_agent",
+    1,
+    2,
+  )
+
+  let assert Ok(finalized) =
+    recovery.finalize_retry_step_candidates_with_config(
+      projection,
+      [plan.candidate],
+      dict.from_list([#("run-1", observation)]),
+      artifact_store.new(root),
+      99,
+      recovery_effective_config(root),
+    )
+  assert list.length(finalized.resumptions) == 1
+  assert finalized.records_to_append == []
+}
+
 pub fn retry_step_rejects_terminal_failed_stale_command_attempt_test() {
   let projection = projection.fold(terminal_failed_stale_command_run_records())
   let assert Ok(dag) = workflow_dag.parse(stale_command_workflow_yaml())
@@ -606,6 +649,52 @@ pub fn retry_step_requires_step_when_multiple_repair_boundaries_exist_test() {
     )
 
   assert workflow_repair.describe_error(error) == "ambiguous_repair_step"
+}
+
+pub fn retry_step_restarts_parallel_repair_boundaries_together_test() {
+  let projection = projection.fold(multiple_boundary_run_records())
+  let assert Ok(dag) = workflow_dag.parse(multiple_boundary_workflow_yaml())
+  let target = command.RetryWorkflowStepRunId("run-1")
+  let observation = current_workflow(dag)
+
+  let assert Ok(plan) =
+    workflow_repair.plan(projection, target, Some("first"), observation)
+  assert has_superseded_candidate_attempt(
+    plan.candidate.attempts,
+    "first",
+    1,
+    2,
+  )
+  assert has_superseded_candidate_attempt(
+    plan.candidate.attempts,
+    "second",
+    1,
+    2,
+  )
+
+  let assert Ok(preview) =
+    workflow_repair.retry_dry_run(
+      projection,
+      target,
+      Some("first"),
+      observation,
+    )
+  assert preview.discarded_step_ids == ["first", "second", "finish"]
+
+  let assert Ok(exact_plan) =
+    workflow_repair.plan_exact(projection, target, Some("first"), observation)
+  assert has_superseded_candidate_attempt(
+    exact_plan.candidate.attempts,
+    "first",
+    1,
+    2,
+  )
+  assert !has_superseded_candidate_attempt(
+    exact_plan.candidate.attempts,
+    "second",
+    1,
+    2,
+  )
 }
 
 pub fn retry_step_rejects_selected_failed_continued_step_test() {
