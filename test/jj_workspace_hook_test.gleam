@@ -117,6 +117,7 @@ pub fn root_workspace_fetches_configured_jj_base_before_add_test() {
   let lines = string.split(string.trim(contents), on: "\n")
   let assert [
     fetch_line,
+    tracked_fetch_line,
     resolve_line,
     add_line,
     "root",
@@ -126,6 +127,8 @@ pub fn root_workspace_fetches_configured_jj_base_before_add_test() {
     == "--repository "
     <> repo
     <> " git fetch --remote upstream --branch develop"
+  assert tracked_fetch_line
+    == "--repository " <> repo <> " git fetch --remote upstream --tracked"
   assert resolve_line
     == "--repository "
     <> repo
